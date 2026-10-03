@@ -295,21 +295,6 @@ class AudioController:
             self.shuffle_button.setText(f"Shuffle: {mode.title()}")
 
 
-        def cycle_loop_mode(self):
-            self.loop_mode = (self.loop_mode + 1) % 3
-            modes = ["Off", "All", "Current"]
-            self.loop_button.setText(f"Loop: {modes[self.loop_mode]}")
-
-
-        def update_play_button(self, state):
-            self._sync_pcm_sink_state(state)
-            if state == QMediaPlayer.PlaybackState.PlayingState:
-                self.play_button.setText("Pause")
-            else:
-                self.play_button.setText("Play")
-            self.update_transport_buttons()
-
-
         def handle_media_status(self, status):
             if status == QMediaPlayer.MediaStatus.EndOfMedia:
                 if self.loop_mode == 2:
