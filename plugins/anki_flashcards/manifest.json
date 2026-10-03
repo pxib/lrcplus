@@ -1,0 +1,6 @@
+{
+  "name": "Anki Flashcards",
+  "version": "1.0.0",
+  "description": "Select lyric words and export Anki-ready TSV flashcards.",
+  "api_version": 3
+}

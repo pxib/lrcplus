@@ -697,6 +697,72 @@ def yomi_word_surfaces(text):
     return [str(word.get("surface", "")) for word in words if word.get("surface")]
 
 
+def analyze_lyric_words(lines):
+    """Return tokenizer words aligned with lyric lines and timestamps."""
+    normalized = []
+    for line in lines or []:
+        if isinstance(line, dict):
+            text = str(line.get("text", "") or "")
+            start_ms = int(line.get("start_ms", 0) or 0)
+        else:
+            text = str(getattr(line, "text", "") or "")
+            start_ms = round(float(getattr(line, "start", 0) or 0) * 1000)
+        normalized.append({"text": text, "start_ms": start_ms})
+
+    if not normalized:
+        return []
+
+    offsets = []
+    source_parts = []
+    source_position = 0
+    for index, line in enumerate(normalized):
+        offsets.append(source_position)
+        source_parts.append(line["text"])
+        source_position += len(line["text"])
+        if index < len(normalized) - 1:
+            source_parts.append("\n")
+            source_position += 1
+
+    source = "".join(source_parts)
+    words = _analyze(source)
+    if not words:
+        return []
+
+    result = []
+    source_position = 0
+    for word in words:
+        surface = str(word.get("surface", "") or "")
+        if not surface.strip():
+            continue
+        found_at = source.find(surface, source_position)
+        if found_at < 0:
+            continue
+        source_position = found_at + len(surface)
+
+        line_index = -1
+        for index, offset in enumerate(offsets):
+            line_end = offset + len(normalized[index]["text"])
+            if offset <= found_at < line_end:
+                line_index = index
+                break
+        if line_index < 0 or not any(char.isalnum() for char in surface):
+            continue
+
+        reading = str(
+            word.get("reading_raw") or word.get("reading") or ""
+        ).strip()
+        if reading == "*":
+            reading = ""
+        result.append({
+            "text": surface,
+            "reading": reading,
+            "context": normalized[line_index]["text"],
+            "line_index": line_index,
+            "start_ms": normalized[line_index]["start_ms"],
+        })
+    return result
+
+
 def _build_segments_from_words(text, words, should_continue=None):
     segments = []
     source_position = 0

@@ -1,7 +1,7 @@
 # LyricsPlus Plugin API
 
-> **Current API version:** 2  
-> **Supported plugin API versions:** 1–2
+> **Current API version:** 3
+> **Supported plugin API versions:** 1–3
 
 The LyricsPlus Plugin API lets plugins integrate with the player without importing internal UI or manager code.
 
@@ -14,7 +14,9 @@ Plugins can currently:
 - register plugin settings widgets in Settings > Plugins;
 - register automatic lyric-reading providers;
 - add menu actions;
+- add buttons to the main playback controls;
 - inspect and control playback;
+- read a snapshot of current lyrics and analyze its words;
 - cleanly participate in the plugin lifecycle.
 
 ---
@@ -648,6 +650,17 @@ If the named menu does not already exist, LyricsPlus creates it.
 
 Plugin-owned actions are automatically removed when the plugin unloads.
 
+## Main-window buttons
+
+Plugins can add a button to the main playback controls:
+
+```python
+api.add_main_window_button("Flashcard", callback)
+```
+
+Buttons registered before the main window is ready are queued. Buttons are
+owned by the registering plugin and removed when it unloads.
+
 ---
 
 # 10. Playback API
@@ -661,6 +674,26 @@ path = context.api.get_current_track()
 ```
 
 Returns a string path or `None`.
+
+## Current lyrics
+
+```python
+lines = context.api.get_current_lyrics()
+```
+
+Returns a detached list of dictionaries containing each lyric line's `text`
+and `start_ms` timestamp. The snapshot can be passed to
+`context.api.analyze_lyric_words(lines)`.
+
+## Analyze lyric words
+
+```python
+words = context.api.analyze_lyric_words(lines)
+```
+
+Returns dictionaries with `text`, `reading`, `context`, `line_index`, and
+`start_ms`. Analysis uses the application's configured tokenizer and may be
+slow for a full song, so plugins should call it from a worker thread.
 
 ## Position
 
@@ -717,7 +750,7 @@ Example:
   "name": "My Plugin",
   "version": "1.0.0",
   "description": "Does something useful.",
-  "api_version": 2
+    "api_version": 3
 }
 ```
 
@@ -742,7 +775,7 @@ The manifest's `plugin_id` is not used to override the folder name.
 LyricsPlus currently supports:
 
 ```text
-Plugin API v1 through v2
+Plugin API v1 through v3
 ```
 
 A plugin requesting an unsupported API version is not loaded.
@@ -750,7 +783,7 @@ A plugin requesting an unsupported API version is not loaded.
 For new plugins, use:
 
 ```json
-"api_version": 2
+"api_version": 3
 ```
 
 Older v1 plugins remain supported by the current API.
@@ -815,7 +848,7 @@ Suggested `manifest.json`:
   "name": "Example Readings",
   "version": "1.0.0",
   "description": "An example LyricsPlus reading provider.",
-  "api_version": 2
+    "api_version": 3
 }
 ```
 
@@ -836,7 +869,10 @@ Suggested `manifest.json`:
 | `register_settings_widget(...)` | Add a plugin-owned section to Settings > Plugins |
 | `register_reading_provider(...)` | Register an automatic reading provider |
 | `add_menu_action(...)` | Add a plugin-owned menu action |
+| `add_main_window_button(...)` | Add a plugin-owned main-window button |
 | `get_current_track()` | Get the current track path |
+| `get_current_lyrics()` | Get a snapshot of current lyric lines |
+| `analyze_lyric_words(lines)` | Analyze lyric words and readings |
 | `get_position()` | Get playback position in milliseconds |
 | `get_duration()` | Get track duration in milliseconds |
 | `play()` | Start playback |

@@ -1,16 +1,16 @@
-"""Public LyricsPlus Plugin API v2.
+"""Public LyricsPlus Plugin API v3.
 
 The API deliberately exposes stable capabilities instead of requiring plugins
 to import internal LyricsPlus modules or poke at the main window directly.
-Version 2 keeps every v1 capability and adds events, services, persistent
-plugin settings, menu actions and playback controls.
+Version 3 keeps earlier capabilities and adds main-window buttons and lyric
+word analysis alongside events, services, settings, menu actions and playback.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable
 
-PLUGIN_API_VERSION = 2
+PLUGIN_API_VERSION = 3
 MIN_PLUGIN_API_VERSION = 1
 
 
@@ -141,9 +141,32 @@ class LyricsPlusAPI:
             self.plugin_id, str(menu), str(text), callback, shortcut=shortcut,
         )
 
+    def add_main_window_button(
+        self,
+        text: str,
+        callback: Callable[..., Any],
+    ) -> None:
+        """Add a plugin-owned button to the main playback controls."""
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        self._manager.add_main_window_button(
+            self.plugin_id, str(text), callback,
+        )
+
     # ----------------------------- player ------------------------------
     def get_current_track(self) -> str | None:
         return self._manager.get_current_track()
+
+    def get_current_lyrics(self) -> list[dict[str, Any]]:
+        """Return a detached snapshot of the current lyric lines."""
+        return self._manager.get_current_lyrics()
+
+    def analyze_lyric_words(
+        self,
+        lyrics: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Tokenize a lyric snapshot into words and readings."""
+        return self._manager.analyze_lyric_words(lyrics)
 
     def get_position(self) -> int:
         return self._manager.get_position()

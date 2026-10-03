@@ -17,7 +17,7 @@ from lyrics.reading_providers import (
     register_reading_provider as _register_reading_provider,
     unregister_reading_provider as _unregister_reading_provider,
 )
-from lyrics.furigana import clear_reading_segment_cache
+from lyrics.furigana import analyze_lyric_words, clear_reading_segment_cache
 
 
 @dataclass
@@ -61,6 +61,8 @@ class PluginManager:
         self._host_window = None
         self._owned_actions: list[tuple[str, Any, Any]] = []
         self._pending_menu_actions: list[tuple[str, str, str, Callable[..., Any], str | None]] = []
+        self._owned_buttons: list[tuple[str, Any, Any]] = []
+        self._pending_buttons: list[tuple[str, str, Callable[..., Any]]] = []
         self._settings_widgets: list[dict[str, Any]] = []
         self.disabled_plugins = {str(plugin_id) for plugin_id in (disabled_plugins or set())}
         self.plugins_dir: Path | None = None
@@ -80,6 +82,9 @@ class PluginManager:
         for plugin_id, menu, text, callback, shortcut in list(self._pending_menu_actions):
             self._create_menu_action(plugin_id, menu, text, callback, shortcut)
         self._pending_menu_actions.clear()
+        for plugin_id, text, callback in list(self._pending_buttons):
+            self._create_main_window_button(plugin_id, text, callback)
+        self._pending_buttons.clear()
 
     def add_menu_action(self, owner: str, menu: str, text: str, callback: Callable[..., Any], *, shortcut: str | None = None) -> None:
         if self._host_window is None:
@@ -104,6 +109,33 @@ class PluginManager:
         action.triggered.connect(callback)
         target.addAction(action)
         self._owned_actions.append((owner, target, action))
+
+    def add_main_window_button(
+        self,
+        owner: str,
+        text: str,
+        callback: Callable[..., Any],
+    ) -> None:
+        if self._host_window is None:
+            self._pending_buttons.append((owner, text, callback))
+            return
+        self._create_main_window_button(owner, text, callback)
+
+    def _create_main_window_button(
+        self,
+        owner: str,
+        text: str,
+        callback: Callable[..., Any],
+    ) -> None:
+        from PySide6.QtWidgets import QPushButton
+
+        layout = getattr(self._host_window, "plugin_buttons_layout", None)
+        if layout is None:
+            raise RuntimeError("The host window does not expose plugin buttons")
+        button = QPushButton(text, self._host_window)
+        button.clicked.connect(callback)
+        layout.addWidget(button)
+        self._owned_buttons.append((owner, layout, button))
 
     # -------------------------- plugin settings -----------------------
     def register_settings_widget(
@@ -174,6 +206,23 @@ class PluginManager:
         player = self._player()
         path = getattr(player, "current_audio_path", None) if player is not None else None
         return str(path) if path else None
+
+    def get_current_lyrics(self) -> list[dict[str, Any]]:
+        player = self._player()
+        lines = getattr(player, "lyric_lines", []) if player is not None else []
+        return [
+            {
+                "text": str(getattr(line, "text", "") or ""),
+                "start_ms": round(float(getattr(line, "start", 0) or 0) * 1000),
+            }
+            for line in lines
+        ]
+
+    def analyze_lyric_words(
+        self,
+        lyrics: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return analyze_lyric_words(lyrics)
 
     def get_position(self) -> int:
         player = self._player()
@@ -362,6 +411,7 @@ class PluginManager:
 
     def _remove_owned(self, plugin_id: str) -> None:
         self._pending_menu_actions = [item for item in self._pending_menu_actions if item[0] != plugin_id]
+        self._pending_buttons = [item for item in self._pending_buttons if item[0] != plugin_id]
         self._settings_widgets = [
             entry for entry in self._settings_widgets
             if entry["owner"] != plugin_id
@@ -371,6 +421,11 @@ class PluginManager:
                 menu.removeAction(action)
                 action.deleteLater()
                 self._owned_actions.remove((owner, menu, action))
+        for owner, layout, button in list(self._owned_buttons):
+            if owner == plugin_id:
+                layout.removeWidget(button)
+                button.deleteLater()
+                self._owned_buttons.remove((owner, layout, button))
         for provider_id, owner in list(self.reading_providers.items()):
             if owner == plugin_id:
                 _unregister_reading_provider(provider_id)

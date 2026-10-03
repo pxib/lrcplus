@@ -23,6 +23,7 @@ def main() -> int:
     )
 
     window = Player(plugin_manager=plugin_manager)
+    plugin_manager.set_host_window(window)
     plugin_manager.emit("app_ready", window=window)
     window.show()
 
