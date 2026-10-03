@@ -684,7 +684,11 @@ class LyricsController:
             self._set_furigana_progress(0, 0, request_id)
             return
 
+        progress_interval = max(1, (len(lines) + 99) // 100)
+
         def progress(done, total):
+            if done < total and done % progress_interval:
+                return
             self._furigana_progress_bridge.progress.emit(
                 done, total, request_id
             )
@@ -731,9 +735,6 @@ class LyricsController:
             self.furigana_progress_bar.setFormat(
                 f"Generating furigana… {done} / {total}"
             )
-        if hasattr(self, "scrolling_lyrics_widget"):
-            self.scrolling_lyrics_widget.refresh_furigana_for_texts()
-        self._refresh_current_lyric_furigana()
 
     def _furigana_prefetch_finished(self, request_id):
         if request_id != getattr(self, "_furigana_prefetch_id", request_id):

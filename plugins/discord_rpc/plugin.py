@@ -51,6 +51,11 @@ class DiscordRpcPlugin:
         self.window = None
         self.rpc = None
         self.connected = False
+        self._rpc_task_lock = threading.Lock()
+        self._rpc_pending_task = None
+        self._rpc_worker_active = False
+        self._rpc_retry_after = 0.0
+        self._rpc_unavailable_logged = False
 
         self.current_path = None
         self._last_payload = None
@@ -74,7 +79,6 @@ class DiscordRpcPlugin:
         context.on("app_ready", self.on_app_ready)
 
     def on_unload(self, context):
-        self.clear_presence()
         self.disconnect()
 
     def on_app_ready(self, window):
@@ -88,55 +92,109 @@ class DiscordRpcPlugin:
         player.playbackStateChanged.connect(self.on_playback_state_changed)
         player.positionChanged.connect(self.on_position_changed)
 
-        self.try_connect()
         self.update_presence()
 
     # ------------------------------------------------------------------
     # Discord connection
     # ------------------------------------------------------------------
 
-    def try_connect(self):
-        if self.connected:
-            return True
+    def _schedule_rpc_task(self, action, payload=None):
+        with self._rpc_task_lock:
+            self._rpc_pending_task = (action, payload)
+            if self._rpc_worker_active:
+                return
+            self._rpc_worker_active = True
 
+        threading.Thread(
+            target=self._run_rpc_tasks,
+            daemon=True,
+            name="DiscordRichPresence",
+        ).start()
+
+    def _ensure_rpc_connected(self):
+        if self.connected and self.rpc is not None:
+            return True
+        if time.monotonic() < self._rpc_retry_after:
+            return False
         if Presence is None:
-            self.log(
-                "Discord RPC is unavailable because pypresence is not installed."
-            )
+            if not self._rpc_unavailable_logged:
+                self.log(
+                    "Discord RPC is unavailable because pypresence is not installed."
+                )
+                self._rpc_unavailable_logged = True
             return False
 
+        rpc = None
         try:
-            self.rpc = Presence(DISCORD_CLIENT_ID)
-            self.rpc.connect()
+            rpc = Presence(DISCORD_CLIENT_ID)
+            rpc.connect()
+            self.rpc = rpc
             self.connected = True
+            self._rpc_retry_after = 0.0
             self.log("Connected to Discord RPC.")
             return True
         except Exception as error:
+            if rpc is not None:
+                try:
+                    rpc.close()
+                except Exception:
+                    pass
             self.rpc = None
             self.connected = False
+            self._rpc_retry_after = time.monotonic() + 10.0
             self.log(f"Discord RPC is not available: {error!r}")
             return False
 
-    def disconnect(self):
-        if self.rpc is not None:
-            try:
-                self.rpc.close()
-            except Exception:
-                pass
+    def _run_rpc_tasks(self):
+        while True:
+            with self._rpc_task_lock:
+                task = self._rpc_pending_task
+                self._rpc_pending_task = None
+                if task is None:
+                    self._rpc_worker_active = False
+                    return
 
+            action, payload = task
+            try:
+                if action == "update":
+                    if not self._ensure_rpc_connected():
+                        continue
+                    values, frozen_payload = payload
+                    self.rpc.update(**values)
+                    self._last_payload = frozen_payload
+                elif action == "clear":
+                    if self.rpc is not None:
+                        self.rpc.clear()
+                    self._last_payload = None
+                elif action == "disconnect":
+                    if self.rpc is not None:
+                        try:
+                            self.rpc.clear()
+                        except Exception:
+                            pass
+                    self._close_rpc()
+            except Exception as error:
+                self.log(f"Discord RPC {action} failed: {error!r}")
+                self._rpc_retry_after = time.monotonic() + 10.0
+                self._close_rpc()
+
+    def _close_rpc(self):
+        rpc = self.rpc
         self.rpc = None
         self.connected = False
         self._last_payload = None
+        if rpc is not None:
+            try:
+                rpc.close()
+            except Exception:
+                pass
+
+    def disconnect(self):
+        self._schedule_rpc_task("disconnect")
+        self._last_payload = None
 
     def clear_presence(self):
-        if self.rpc is None:
-            return
-
-        try:
-            self.rpc.clear()
-        except Exception:
-            pass
-
+        self._schedule_rpc_task("clear")
         self._last_payload = None
 
     # ------------------------------------------------------------------
@@ -734,9 +792,6 @@ class DiscordRpcPlugin:
             self.clear_presence()
             return
 
-        if not self.try_connect():
-            return
-
         player = getattr(self.window, "media_player", None)
         if player is None:
             return
@@ -812,12 +867,7 @@ class DiscordRpcPlugin:
         if not force and frozen_payload == self._last_payload:
             return
 
-        try:
-            self.rpc.update(**payload)
-            self._last_payload = frozen_payload
-        except Exception as error:
-            self.log(f"Discord RPC update failed: {error!r}")
-            self.disconnect()
+        self._schedule_rpc_task("update", (payload, frozen_payload))
 
     def log(self, message):
         if self.context is not None:

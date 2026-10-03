@@ -1305,9 +1305,13 @@ class FuriganaWidget(QWidget):
         # recalculate row geometry instead of waiting for an unrelated resize.
         parent = self.parentWidget()
         while parent is not None:
-            refresh = getattr(parent, "_refresh_row_heights", None)
-            if callable(refresh):
-                QTimer.singleShot(0, refresh)
+            schedule_refresh = getattr(
+                parent,
+                "_schedule_row_height_refresh",
+                None,
+            )
+            if callable(schedule_refresh):
+                schedule_refresh()
                 break
             parent = parent.parentWidget()
 
@@ -3033,6 +3037,7 @@ class ScrollingLyricsWidget(QWidget):
         self.fade_in_readings = True
         self._continuous_last_position_ms = None
         self.rows = []
+        self._row_height_refresh_pending = False
         self.current_line = -1
         self.scroll_animation = None
 
@@ -3139,6 +3144,16 @@ class ScrollingLyricsWidget(QWidget):
 
     def _row_axis_end(self, row):
         return row.geometry().right() if self._is_vertical_layout() else row.geometry().bottom()
+
+    def _schedule_row_height_refresh(self):
+        if self._row_height_refresh_pending:
+            return
+        self._row_height_refresh_pending = True
+        QTimer.singleShot(0, self._run_scheduled_row_height_refresh)
+
+    def _run_scheduled_row_height_refresh(self):
+        self._row_height_refresh_pending = False
+        self._refresh_row_heights()
 
     def _refresh_row_heights(self):
         if self._is_vertical_layout():
@@ -3943,15 +3958,8 @@ class ScrollingLyricsWidget(QWidget):
 
     def refresh_furigana_for_texts(self, texts=None):
         wanted = None if texts is None else {str(text).lstrip() for text in texts}
-        changed = False
 
         for row_index, row in enumerate(self.rows):
-            if (
-                self.limited_reading_rendering
-                and self.current_line >= 0
-                and abs(row_index - self.current_line) > self.limited_reading_range
-            ):
-                continue
             if wanted is None or row.lyric in wanted:
                 # Timed LRCX segments contain karaoke metadata. Replacing them
                 # with a plain full-line furigana cache destroys that metadata
@@ -3970,15 +3978,6 @@ class ScrollingLyricsWidget(QWidget):
                     row.segments = row.apply_manual_overrides(cached)
                     row._update_content_geometry()
                     row.update()
-                    changed = True
-
-        # Rows are initially created with plain-text geometry while furigana
-        # is generated in the background. Once ruby arrives, the widget's
-        # minimum height grows, but its fixed layout height would otherwise
-        # remain at the old plain-text value. Recalculate the scrolling layout
-        # after each batch so padding stays correct during generation too.
-        if changed:
-            self._refresh_row_heights()
 
     def set_placeholder_text(self, index, text):
         """Update the display text for an empty timestamp row."""
