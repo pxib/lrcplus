@@ -1,0 +1,6 @@
+{
+  "name": "Cantonese Readings",
+  "version": "2.0.0",
+  "description": "Plugin API v2 Cantonese readings: Jyutping and Yale via PyCantonese.",
+  "api_version": 2
+}

@@ -1,0 +1,18 @@
+# Created by venv; see https://docs.python.org/3/library/venv.html
+dist/
+build/
+back/
+.pytest_cache/
+__pycache__/
+inspect/
+Lib/
+uiwave/
+Include/
+Scripts/
+tests/
+share/
+lrc_player_settings.json
+pyvenv.cfg
+*.lrc
+*.lrcx
+*.mp3
