@@ -1,5 +1,6 @@
 from pathlib import Path
 import math
+import shutil
 import subprocess
 from array import array
 import sys
@@ -7,6 +8,10 @@ import sys
 from PySide6.QtCore import Qt, Signal, QThread, QRectF
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QPixmap
 from PySide6.QtWidgets import QWidget
+
+
+def find_ffmpeg():
+    return shutil.which("ffmpeg")
 
 
 class _WaveformWorker(QThread):
@@ -23,8 +28,12 @@ class _WaveformWorker(QThread):
             # Decode through ffmpeg so MP3/FLAC/M4A/etc. work uniformly.
             # A mono 8 kHz stream is plenty for a visual overview and keeps
             # memory/CPU use low even for long songs.
+            ffmpeg = find_ffmpeg()
+            if ffmpeg is None:
+                raise FileNotFoundError("ffmpeg was not found.")
+
             cmd = [
-                "ffmpeg", "-v", "error",
+                ffmpeg, "-v", "error",
                 "-i", self.path,
                 "-ac", "1",
                 "-ar", "2000",
@@ -141,10 +150,16 @@ class WaveformWidget(QWidget):
         self._duration_ms = 0
         self._position_ms = 0
         self._error = None
-        self._loading = True
+        self._loading = False
         self._stop_worker()
 
+        if find_ffmpeg() is None:
+            self._error = "ffmpeg was not found."
+            self.update()
+            return
+
         self._worker = _WaveformWorker(path, parent=self)
+        self._loading = True
         self._worker.loaded.connect(self._on_loaded)
         self._worker.failed.connect(self._on_failed)
         self._worker.finished.connect(self._worker_finished)

@@ -654,6 +654,17 @@ class SettingsDialog(QDialog):
     def _create_playback_controls(self, layout):
         self._add_section_heading(layout, "Playback")
 
+        self.show_waveform_checkbox = QCheckBox(
+            "Show playback waveform"
+        )
+        self.show_waveform_checkbox.setChecked(
+            bool(self.playback_settings.get("show_waveform", True))
+        )
+        self.show_waveform_checkbox.setToolTip(
+            "Show the audio waveform in the main player."
+        )
+        layout.addWidget(self.show_waveform_checkbox)
+
         self.precise_timestamp_fps = QComboBox()
         for fps in (15, 30, 60, 120):
             self.precise_timestamp_fps.addItem(f"{fps} FPS", fps)
@@ -1535,6 +1546,7 @@ class SettingsDialog(QDialog):
             "shuffle_mode": self.shuffle_mode_combo.currentData(),
             "after_playback": self.after_playback_combo.currentData(),
             "output_device": self.output_device_combo.currentData(),
+            "show_waveform": self.show_waveform_checkbox.isChecked(),
         }
 
     def get_karaoke_settings(self):

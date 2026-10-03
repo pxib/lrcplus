@@ -27,7 +27,7 @@ from core.debug import debug_print
 from lyrics.lrcx_parser import get_lrcx_offset
 from lyrics.widgets import FuriganaWidget
 from lyrics.ass_parser import parse_ass
-from lyrics.waveform import WaveformWidget
+from lyrics.waveform import WaveformWidget, find_ffmpeg
 from core.settings import get_playback_settings, get_karaoke_settings, save_karaoke_settings, get_lyrics_attachment, set_lyrics_attachment
 
 try:
@@ -909,6 +909,12 @@ class LrcEditorDialog(QDialog):
         self.lyrics_transport_toggle.setToolTip(
             "Toggle between the normal seekbar and the audio waveform."
         )
+        ffmpeg_available = find_ffmpeg() is not None
+        self.lyrics_transport_toggle.setEnabled(ffmpeg_available)
+        if not ffmpeg_available:
+            self.lyrics_transport_toggle.setToolTip(
+                "Waveform is unavailable because ffmpeg was not found."
+            )
         self.lyrics_transport_toggle.toggled.connect(self._toggle_lyrics_transport)
         transport_mode_row.addWidget(self.lyrics_transport_toggle)
         transport_mode_row.addStretch()
@@ -1133,6 +1139,11 @@ class LrcEditorDialog(QDialog):
             self.karaoke_transport_toggle.setToolTip(
                 "Toggle between the normal seekbar and the audio waveform."
             )
+            self.karaoke_transport_toggle.setEnabled(ffmpeg_available)
+            if not ffmpeg_available:
+                self.karaoke_transport_toggle.setToolTip(
+                    "Waveform is unavailable because ffmpeg was not found."
+                )
             self.karaoke_transport_toggle.toggled.connect(self._toggle_karaoke_transport)
             karaoke_transport_controls.addWidget(self.karaoke_transport_toggle)
             karaoke_layout.addLayout(karaoke_transport_controls)

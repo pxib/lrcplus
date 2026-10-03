@@ -20,6 +20,7 @@ PLAYBACK_DEFAULTS = {
     "output_device": "",
     "volume": 80,
     "high_volume_warning_shown": False,
+    "show_waveform": True,
 }
 
 KARAOKE_DEFAULTS = {
@@ -102,6 +103,9 @@ def get_playback_settings(payload=None):
                 "high_volume_warning_shown",
                 PLAYBACK_DEFAULTS["high_volume_warning_shown"],
             )
+        ),
+        "show_waveform": bool(
+            values.get("show_waveform", PLAYBACK_DEFAULTS["show_waveform"])
         ),
     }
 

@@ -40,7 +40,7 @@ from core.settings import (
 from core.recent import get_recent_songs
 from core.music_library import LibraryTrack, scan_folders
 from lyrics.widgets import FuriganaWidget, ScrollingLyricsWidget
-from lyrics.waveform import WaveformWidget
+from lyrics.waveform import WaveformWidget, find_ffmpeg
 from lyrics.writer import convert_lyrics
 from ui.settings_dialog import SettingsDialog
 from ui.lrc_editor import LrcEditorDialog
@@ -250,10 +250,12 @@ class Player(AudioController, LyricsController, QMainWindow):
             # LYRICS LIST
             # --------------------------------------------------
 
-            self.lyrics_list_collapsed = False
+            self.lyrics_list_collapsed = bool(
+                load_all_settings().get("lyrics_list_collapsed", False)
+            )
 
             self.lyrics_list_toggle = QPushButton(
-                "Lyrics [-]"
+                "Lyrics [+]" if self.lyrics_list_collapsed else "Lyrics [-]"
             )
             self.lyrics_list_toggle.setFlat(True)
             self.lyrics_list_toggle.setCursor(
@@ -268,6 +270,9 @@ class Player(AudioController, LyricsController, QMainWindow):
 
             self.lyrics_list_widget = QListWidget()
             self.lyrics_list_widget.setMaximumHeight(150)
+            self.lyrics_list_widget.setVisible(
+                not self.lyrics_list_collapsed
+            )
             self.lyrics_list_widget.itemClicked.connect(
                 self.jump_to_lyric_item
             )
@@ -316,6 +321,10 @@ class Player(AudioController, LyricsController, QMainWindow):
             # Interactive waveform overview. It mirrors the seek bar but also
             # shows lyric boundaries and supports direct seeking.
             self.waveform_widget = WaveformWidget()
+            self.waveform_widget.setVisible(
+                self.playback_settings.get("show_waveform", True)
+                and find_ffmpeg() is not None
+            )
             self.waveform_widget.seekRequested.connect(
                 self._seek_from_waveform
             )
@@ -1151,6 +1160,10 @@ class Player(AudioController, LyricsController, QMainWindow):
                 not self.lyrics_list_collapsed
             )
 
+            settings = load_all_settings()
+            settings["lyrics_list_collapsed"] = self.lyrics_list_collapsed
+            save_all_settings(settings)
+
             if self.lyrics_list_collapsed:
                 self.lyrics_list_toggle.setText(
                     "Lyrics [+]"
@@ -1612,6 +1625,10 @@ class Player(AudioController, LyricsController, QMainWindow):
 
                 self.playback_settings = dialog.get_playback_settings()
                 save_playback_settings(self.playback_settings)
+                self.waveform_widget.setVisible(
+                    self.playback_settings.get("show_waveform", True)
+                    and find_ffmpeg() is not None
+                )
                 self._apply_output_device(self.playback_settings)
                 self._update_shuffle_button_text()
 
