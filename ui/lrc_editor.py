@@ -259,6 +259,8 @@ class LrcEditorDialog(QDialog):
         self.current_playback_line = -1
         self.sidebar_sort_mode = "source"
         self._view_line_indices = []
+        self._share_checked_line_ids = set()
+        self._share_selection_active = False
         self._playback_line_starts = []
         self._playback_line_rows = []
         self._preview_segments_line_index = None
@@ -856,6 +858,7 @@ class LrcEditorDialog(QDialog):
         self.line_list = QListWidget()
         self.line_list.setMinimumWidth(250)
         self.line_list.currentRowChanged.connect(self.load_selected_line)
+        self.line_list.itemChanged.connect(self._share_line_checks_changed)
         # Delete removes the selected lyric/timestamp from the document.
         # Install this on the list rather than using a dialog-wide shortcut so
         # Delete keeps its normal meaning while editing lyric/timestamp fields.
@@ -1292,6 +1295,37 @@ class LrcEditorDialog(QDialog):
         source_layout.addLayout(source_tools)
         self.tabs.addTab(source_page, "Source")
 
+        # ----------------------------- Share --------------------------
+        self.share_page = QWidget()
+        share_layout = QVBoxLayout(self.share_page)
+        share_layout.addWidget(QLabel("Copy or export the current lyrics as text."))
+
+        share_format_row = QHBoxLayout()
+        share_format_row.addWidget(QLabel("Format:"))
+        self.share_format_combo = QComboBox()
+        self.share_format_combo.addItem("Plain text", "text")
+        self.share_format_combo.addItem("With line timestamps", "lrc")
+        share_format_row.addWidget(self.share_format_combo)
+        share_format_row.addStretch()
+        share_layout.addLayout(share_format_row)
+
+        share_actions = QHBoxLayout()
+        copy_share_button = QPushButton("Copy")
+        copy_share_button.clicked.connect(self.copy_share_text)
+        export_share_button = QPushButton("Export…")
+        export_share_button.clicked.connect(self.export_share_text)
+        share_actions.addWidget(copy_share_button)
+        share_actions.addWidget(export_share_button)
+        share_actions.addStretch()
+        share_layout.addLayout(share_actions)
+
+        self.share_status_label = QLabel("")
+        share_layout.addWidget(self.share_status_label)
+        self.share_selection_label = QLabel("")
+        share_layout.addWidget(self.share_selection_label)
+        share_layout.addStretch()
+        self.tabs.addTab(self.share_page, "Share")
+
         # ---------------------------- Advanced --------------------------
         advanced_page = QWidget()
         advanced_layout = QVBoxLayout(advanced_page)
@@ -1366,6 +1400,18 @@ class LrcEditorDialog(QDialog):
         line_list_layout = QVBoxLayout(line_list_panel)
         line_list_layout.setContentsMargins(0, 0, 0, 0)
         line_list_layout.addWidget(self.sidebar_sort_combo)
+
+        self.share_selection_controls = QWidget()
+        share_selection_layout = QHBoxLayout(self.share_selection_controls)
+        share_selection_layout.setContentsMargins(0, 0, 0, 0)
+        select_all_share_lines = QPushButton("Select All")
+        select_all_share_lines.clicked.connect(self.select_all_share_lines)
+        clear_share_line_selection = QPushButton("Clear")
+        clear_share_line_selection.clicked.connect(self.clear_share_line_selection)
+        share_selection_layout.addWidget(select_all_share_lines)
+        share_selection_layout.addWidget(clear_share_line_selection)
+        self.share_selection_controls.setVisible(False)
+        line_list_layout.addWidget(self.share_selection_controls)
         line_list_layout.addWidget(self.line_list, 1)
 
         self.go_to_current_lyric_button = QPushButton("Go to Current Lyric")
@@ -1458,7 +1504,7 @@ class LrcEditorDialog(QDialog):
         layout.addLayout(buttons)
 
         workspace.setSizes([250, 900, 360])
-        self._update_tab_specific_controls()
+        self._tab_changed(self.tabs.currentIndex())
 
     def _tab_changed(self, index):
         # Source is intentionally a raw full-width workspace.
@@ -1471,7 +1517,48 @@ class LrcEditorDialog(QDialog):
             panel.setVisible(index != source_index)
         else:
             self.line_list.setVisible(index != source_index)
+        self._set_share_selection_active(
+            index == self.tabs.indexOf(self.share_page)
+        )
         self._update_tab_specific_controls()
+
+    def _set_share_selection_active(self, active):
+        active = bool(active)
+        self._share_selection_active = active
+        self.share_selection_controls.setVisible(active)
+        blocker = QSignalBlocker(self.line_list)
+        for row in range(self.line_list.count()):
+            item = self.line_list.item(row)
+            flags = item.flags()
+            if active:
+                flags |= Qt.ItemFlag.ItemIsUserCheckable
+                line_index = item.data(Qt.ItemDataRole.UserRole)
+                is_checked = (
+                    isinstance(line_index, int)
+                    and 0 <= line_index < len(self.lines)
+                    and id(self.lines[line_index]) in self._share_checked_line_ids
+                )
+                item.setCheckState(
+                    Qt.CheckState.Checked
+                    if is_checked
+                    else Qt.CheckState.Unchecked
+                )
+            else:
+                line_index = item.data(Qt.ItemDataRole.UserRole)
+                if (
+                    item.checkState() == Qt.CheckState.Checked
+                    and isinstance(line_index, int)
+                    and 0 <= line_index < len(self.lines)
+                ):
+                    self._share_checked_line_ids.add(
+                        id(self.lines[line_index])
+                    )
+                item.setData(Qt.ItemDataRole.CheckStateRole, None)
+                flags &= ~Qt.ItemFlag.ItemIsUserCheckable
+            item.setFlags(flags)
+        del blocker
+        if active:
+            self._update_share_selection_status()
 
     def _update_tab_specific_controls(self):
         if not self.karaoke_enabled:
@@ -1719,18 +1806,77 @@ class LrcEditorDialog(QDialog):
             indexed.sort(key=lambda item: (item[1].start, item[0]), reverse=True)
 
         self._view_line_indices = [index for index, _ in indexed]
+        current_line_ids = {id(line) for line in self.lines}
+        self._share_checked_line_ids.intersection_update(current_line_ids)
+
         blocker = QSignalBlocker(self.line_list)
         self.line_list.clear()
         for line_index, line in indexed:
             item = QListWidgetItem(f"{format_timestamp(line.start)}  {line.text}")
             item.setData(Qt.ItemDataRole.UserRole, line_index)
+            if self._share_selection_active:
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(
+                    Qt.CheckState.Checked
+                    if id(line) in self._share_checked_line_ids
+                    else Qt.CheckState.Unchecked
+                )
+            else:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
             self.line_list.addItem(item)
         del blocker
 
         if preserve_line_index is not None:
             self._select_line_index(preserve_line_index)
 
+        self._update_share_selection_status()
         self._refresh_lyrics_waveform_markers()
+
+    def _checked_share_line_indices(self):
+        return {
+            int(self.line_list.item(row).data(Qt.ItemDataRole.UserRole))
+            for row in range(self.line_list.count())
+            if self.line_list.item(row).checkState() == Qt.CheckState.Checked
+        }
+
+    @staticmethod
+    def _lines_for_share(lines, selected_indices):
+        selected_indices = set(selected_indices or ())
+        if not selected_indices:
+            return list(lines)
+        return [
+            line
+            for index, line in enumerate(lines)
+            if index in selected_indices
+        ]
+
+    def _update_share_selection_status(self):
+        label = getattr(self, "share_selection_label", None)
+        if label is None:
+            return
+        selected_count = len(self._checked_share_line_indices())
+        if selected_count:
+            label.setText(
+                f"Sharing {selected_count} checked line(s) only."
+            )
+        else:
+            label.setText("No lines checked; sharing all lyrics.")
+
+    def _share_line_checks_changed(self, _item):
+        self._share_checked_line_ids = {
+            id(self.lines[line_index])
+            for line_index in self._checked_share_line_indices()
+            if 0 <= line_index < len(self.lines)
+        }
+        self._update_share_selection_status()
+
+    def select_all_share_lines(self):
+        for row in range(self.line_list.count()):
+            self.line_list.item(row).setCheckState(Qt.CheckState.Checked)
+
+    def clear_share_line_selection(self):
+        for row in range(self.line_list.count()):
+            self.line_list.item(row).setCheckState(Qt.CheckState.Unchecked)
 
     def sidebar_sort_changed(self, _index):
         current = self._current_line_index()
@@ -2153,7 +2299,7 @@ class LrcEditorDialog(QDialog):
             return
 
         try:
-            tokens = build_furigana_segments(source_text)
+            tokens = build_furigana_segments(source_text, force=True)
         except Exception as error:
             debug_print(f"[Generation] Failed for {source_text!r}: {error}")
             QMessageBox.warning(
@@ -2163,8 +2309,37 @@ class LrcEditorDialog(QDialog):
             )
             return
 
-        self.load_selected_line(self.line_list.currentRow())
         generated = any(token.get("reading") for token in tokens)
+        if generated:
+            editor_tokens = self._furigana_editor_tokens(line)
+            previous_loading = self.loading
+            self.loading = True
+            blocker = QSignalBlocker(self.furigana_table)
+            try:
+                self.furigana_table.setRowCount(0)
+                for token in editor_tokens:
+                    text_value = str(token.get("text", ""))
+                    if not text_value:
+                        continue
+                    row = self.furigana_table.rowCount()
+                    self.furigana_table.insertRow(row)
+                    self.furigana_table.setItem(
+                        row, 0, QTableWidgetItem(text_value)
+                    )
+                    self.furigana_table.setItem(
+                        row,
+                        1,
+                        QTableWidgetItem(str(token.get("reading") or "")),
+                    )
+            finally:
+                del blocker
+                self.loading = previous_loading
+
+            if self.furigana_table.rowCount():
+                self.furigana_changed(self.furigana_table.item(0, 1))
+        else:
+            self.load_selected_line(self.line_list.currentRow())
+
         QMessageBox.information(
             self,
             "Generate Readings",
@@ -2211,7 +2386,7 @@ class LrcEditorDialog(QDialog):
             if not source_text:
                 continue
             try:
-                tokens = build_furigana_segments(source_text)
+                tokens = build_furigana_segments(source_text, force=True)
             except Exception as error:
                 debug_print(f"[Generation] Failed for {source_text!r}: {error}")
                 errors += 1
@@ -4291,6 +4466,69 @@ class LrcEditorDialog(QDialog):
             )
         return serialize_lrc(self.lines, generation_mode=mode)
 
+    @staticmethod
+    def _share_text_for_lines(lines, include_timestamps=False):
+        output = []
+        for line in lines:
+            text = str(line.text)
+            if include_timestamps:
+                text = f"[{format_timestamp(line.start)}]{text}"
+            output.append(text)
+        return "\n".join(output) + ("\n" if output else "")
+
+    def _share_text(self):
+        if self._source_dirty:
+            self.reload_model_from_source()
+            if self._source_dirty:
+                return None
+        include_timestamps = self.share_format_combo.currentData() == "lrc"
+        lines = self._lines_for_share(
+            self.lines,
+            self._checked_share_line_indices(),
+        )
+        return self._share_text_for_lines(lines, include_timestamps)
+
+    def copy_share_text(self):
+        contents = self._share_text()
+        if contents is None:
+            return
+        QApplication.clipboard().setText(contents)
+        mode = "timestamped lyrics" if self.share_format_combo.currentData() == "lrc" else "plain lyrics"
+        self.share_status_label.setText(f"Copied {mode} to clipboard.")
+
+    def export_share_text(self):
+        contents = self._share_text()
+        if contents is None:
+            return
+
+        extension = ".lrc" if self.share_format_combo.currentData() == "lrc" else ".txt"
+        default_path = self.lrc_path.with_name(
+            f"{self.lrc_path.stem}-share{extension}"
+        )
+        file_filter = "LRC Files (*.lrc)" if extension == ".lrc" else "Text Files (*.txt)"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Lyrics",
+            str(default_path),
+            file_filter,
+        )
+        if not path:
+            return
+
+        target = Path(path)
+        if target.suffix.lower() != extension:
+            target = target.with_suffix(extension)
+        try:
+            target.write_text(contents, encoding="utf-8")
+        except OSError as error:
+            QMessageBox.warning(
+                self,
+                "Export Lyrics",
+                f"Could not export lyrics:\n{error}",
+            )
+            return
+        self.share_status_label.setText(f"Exported to {target}.")
+
     def import_ass(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -4378,8 +4616,14 @@ class LrcEditorDialog(QDialog):
         # are intentionally omitted by the LRCX serializer. Only explicitly
         # authored/imported ruby requires LRCX storage.
         has_ruby = any(
-            segment.ruby
-            and getattr(segment, "ruby_source", None) != "generated"
+            (
+                segment.ruby
+                and getattr(segment, "ruby_source", None) != "generated"
+            )
+            or any(
+                reading
+                for _, _, reading in getattr(segment, "ruby_spans", []) or []
+            )
             for line in self.lines
             for segment in line.segments
         )

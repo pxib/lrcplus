@@ -1,6 +1,0 @@
-{
-  "name": "Korean Romanization",
-  "version": "1.0.0",
-  "description": "Generate pronunciation-aware Revised Romanization readings using Koroman.",
-  "api_version": 1
-}

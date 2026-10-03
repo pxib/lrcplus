@@ -10,6 +10,10 @@ uiwave/
 Include/
 Scripts/
 tests/
+!/tests/
+/tests/*
+!/tests/test_lyrics_share.py
+!/tests/test_all_romaji_word_spacing.py
 share/
 lrc_player_settings.json
 pyvenv.cfg

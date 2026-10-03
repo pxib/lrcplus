@@ -35,8 +35,17 @@ MUSICBRAINZ_MIN_SCORE = 80
 
 # Lyrics are intentionally batched so Discord RPC is not updated for every
 # single line. A new lyric is published when playback enters the next block.
-LYRIC_LINES_PER_UPDATE = 10
+LYRIC_LINES_MIN = 1
+LYRIC_LINES_MAX = 15
+LYRIC_LINES_DEFAULT = 10
 LYRIC_UPDATE_COOLDOWN = 5.0
+
+DEFAULT_SETTINGS = {
+    "include_lyrics": True,
+    "lyric_lines_per_update": LYRIC_LINES_DEFAULT,
+    "lookup_online_artwork": True,
+    "upload_embedded_artwork": True,
+}
 
 
 class DiscordRpcPlugin:
@@ -49,6 +58,7 @@ class DiscordRpcPlugin:
     def __init__(self):
         self.context = None
         self.window = None
+        self.settings = dict(DEFAULT_SETTINGS)
         self.rpc = None
         self.connected = False
         self._rpc_task_lock = threading.Lock()
@@ -76,7 +86,31 @@ class DiscordRpcPlugin:
 
     def on_load(self, context):
         self.context = context
+        self.settings = {
+            key: context.api.get_setting(key, default)
+            for key, default in DEFAULT_SETTINGS.items()
+        }
+        self.settings["lyric_lines_per_update"] = (
+            self._normalize_lyric_lines_per_update(
+                self.settings["lyric_lines_per_update"]
+            )
+        )
         context.on("app_ready", self.on_app_ready)
+        context.api.register_settings_widget(
+            "Discord Rich Presence",
+            self.create_settings_widget,
+            apply=self.apply_settings_widget,
+            description="Choose what LyricsPlus shares with Discord and which artwork sources it can use.",
+            order=20,
+        )
+
+    @staticmethod
+    def _normalize_lyric_lines_per_update(value):
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = LYRIC_LINES_DEFAULT
+        return max(LYRIC_LINES_MIN, min(LYRIC_LINES_MAX, value))
 
     def on_unload(self, context):
         self.disconnect()
@@ -246,7 +280,7 @@ class DiscordRpcPlugin:
     # ------------------------------------------------------------------
 
     def _maybe_publish_lyric(self):
-        if self.window is None:
+        if not self.settings.get("include_lyrics", True) or self.window is None:
             return
 
         line_index = getattr(self.window, "current_line", -1)
@@ -258,7 +292,10 @@ class DiscordRpcPlugin:
         if line_index < 0 or line_index >= len(lyrics):
             return
 
-        bucket = line_index // LYRIC_LINES_PER_UPDATE
+        lines_per_update = self._normalize_lyric_lines_per_update(
+            self.settings.get("lyric_lines_per_update", LYRIC_LINES_DEFAULT)
+        )
+        bucket = line_index // lines_per_update
         now = time.monotonic()
 
         # The same bucket never needs another update. A new bucket must also
@@ -720,11 +757,15 @@ class DiscordRpcPlugin:
     def _resolve_cover(self, path: Path, metadata):
         # Album covers only: MusicBrainz/Cover Art Archive first, then the
         # embedded cover inside this local audio file. Never use UI/Booru art.
-        cover_url = self._musicbrainz_cover(path, metadata)
-        if cover_url:
-            return cover_url
+        if self.settings.get("lookup_online_artwork", True):
+            cover_url = self._musicbrainz_cover(path, metadata)
+            if cover_url:
+                return cover_url
 
-        return self._upload_embedded_cover(path)
+        if self.settings.get("upload_embedded_artwork", True):
+            return self._upload_embedded_cover(path)
+
+        return None
 
     # ------------------------------------------------------------------
     # Background cover resolution
@@ -737,13 +778,21 @@ class DiscordRpcPlugin:
         """Resolve network artwork without blocking the Qt/UI thread."""
         key = self._cover_cache_key(path)
 
+        lookup_online = self.settings.get("lookup_online_artwork", True)
+        upload_embedded = self.settings.get("upload_embedded_artwork", True)
+        if not lookup_online and not upload_embedded:
+            return
+
         if key in self._cover_jobs:
             return
 
-        if (
-            f"mb:{key}" in self._cover_cache
-            or f"litterbox:{key}" in self._cover_cache
-        ):
+        needs_online_lookup = (
+            lookup_online and f"mb:{key}" not in self._cover_cache
+        )
+        needs_embedded_upload = (
+            upload_embedded and f"litterbox:{key}" not in self._cover_cache
+        )
+        if not needs_online_lookup and not needs_embedded_upload:
             return
 
         # Copy the small metadata dict so the worker owns its input.
@@ -775,14 +824,139 @@ class DiscordRpcPlugin:
 
     def _cached_cover(self, path):
         key = self._cover_cache_key(path)
-        return (
-            self._cover_cache.get(f"mb:{key}")
-            or self._cover_cache.get(f"litterbox:{key}")
-        )
+        if self.settings.get("lookup_online_artwork", True):
+            cover_url = self._cover_cache.get(f"mb:{key}")
+            if cover_url:
+                return cover_url
+        if self.settings.get("upload_embedded_artwork", True):
+            return self._cover_cache.get(f"litterbox:{key}")
+        return None
 
     # ------------------------------------------------------------------
     # Presence
     # ------------------------------------------------------------------
+
+    def create_settings_widget(self, parent):
+        from PySide6.QtWidgets import (
+            QCheckBox,
+            QFormLayout,
+            QLabel,
+            QSpinBox,
+            QVBoxLayout,
+            QWidget,
+        )
+
+        widget = QWidget(parent)
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        widget.include_lyrics = QCheckBox(
+            "Include current lyrics in Discord activity"
+        )
+        widget.include_lyrics.setChecked(
+            self.settings.get("include_lyrics", True)
+        )
+        widget.include_lyrics.setToolTip(
+            "Periodically shares the current lyric line in your Discord activity."
+        )
+        layout.addWidget(widget.include_lyrics)
+
+        widget.lyric_lines_per_update = QSpinBox()
+        widget.lyric_lines_per_update.setRange(
+            LYRIC_LINES_MIN, LYRIC_LINES_MAX
+        )
+        widget.lyric_lines_per_update.setValue(
+            self._normalize_lyric_lines_per_update(
+                self.settings.get(
+                    "lyric_lines_per_update", LYRIC_LINES_DEFAULT
+                )
+            )
+        )
+        lyric_interval_form = QFormLayout()
+        lyric_interval_form.addRow(
+            "Lines per status sync:", widget.lyric_lines_per_update
+        )
+        layout.addLayout(lyric_interval_form)
+
+        widget.lyric_rate_warning = QLabel(
+            "Values below 3 may trigger frequent updates and hit Discord RPC rate limits."
+        )
+        widget.lyric_rate_warning.setWordWrap(True)
+        widget.lyric_rate_warning.setStyleSheet("color: #C06030;")
+        layout.addWidget(widget.lyric_rate_warning)
+
+        def update_lyric_controls():
+            enabled = widget.include_lyrics.isChecked()
+            widget.lyric_lines_per_update.setEnabled(enabled)
+            widget.lyric_rate_warning.setVisible(
+                enabled and widget.lyric_lines_per_update.value() < 3
+            )
+
+        widget.include_lyrics.toggled.connect(update_lyric_controls)
+        widget.lyric_lines_per_update.valueChanged.connect(
+            update_lyric_controls
+        )
+        update_lyric_controls()
+
+        widget.lookup_online_artwork = QCheckBox(
+            "Look up album artwork online"
+        )
+        widget.lookup_online_artwork.setChecked(
+            self.settings.get("lookup_online_artwork", True)
+        )
+        widget.lookup_online_artwork.setToolTip(
+            "Uses MusicBrainz and the Cover Art Archive to find album artwork."
+        )
+        layout.addWidget(widget.lookup_online_artwork)
+
+        widget.upload_embedded_artwork = QCheckBox(
+            "Upload embedded artwork to a temporary image host"
+        )
+        widget.upload_embedded_artwork.setChecked(
+            self.settings.get("upload_embedded_artwork", True)
+        )
+        widget.upload_embedded_artwork.setToolTip(
+            "Uploads artwork embedded in the audio file to Litterbox. The link expires after 12 hours."
+        )
+        layout.addWidget(widget.upload_embedded_artwork)
+        layout.addStretch()
+        return widget
+
+    def apply_settings_widget(self, widget):
+        values = {
+            "include_lyrics": widget.include_lyrics.isChecked(),
+            "lyric_lines_per_update": (
+                self._normalize_lyric_lines_per_update(
+                    widget.lyric_lines_per_update.value()
+                )
+            ),
+            "lookup_online_artwork": widget.lookup_online_artwork.isChecked(),
+            "upload_embedded_artwork": widget.upload_embedded_artwork.isChecked(),
+        }
+        lyrics_changed = values["include_lyrics"] != self.settings.get(
+            "include_lyrics", True
+        )
+        lyric_interval_changed = (
+            values["lyric_lines_per_update"]
+            != self.settings.get(
+                "lyric_lines_per_update", LYRIC_LINES_DEFAULT
+            )
+        )
+        self.settings.update(values)
+
+        for key, value in values.items():
+            self.context.api.set_setting(key, value)
+
+        if lyrics_changed:
+            self._lyric_bucket = None
+            self._current_rpc_lyric = None
+            self._last_lyric_rpc_update = 0.0
+        elif lyric_interval_changed:
+            self._lyric_bucket = None
+            self._maybe_publish_lyric()
+
+        if self.window is not None:
+            self.update_presence(force=True)
 
     def update_presence(self, force=False):
         path = self._audio_path()
@@ -821,7 +995,10 @@ class DiscordRpcPlugin:
         #
         # The artist remains part of the track metadata while the visible
         # state line is reserved for the album and periodically updated lyric.
-        if self._current_rpc_lyric:
+        if (
+            self.settings.get("include_lyrics", True)
+            and self._current_rpc_lyric
+        ):
             context_text = album or "Unknown album"
             presence_state = f"{context_text} | {self._current_rpc_lyric}"
         else:
@@ -840,7 +1017,7 @@ class DiscordRpcPlugin:
         # background worker fill in the artwork on a later player tick.
         cover_url = self._cached_cover(path)
 
-        if path_changed and not cover_url:
+        if (path_changed or force) and not cover_url:
             self._start_cover_resolution(path, metadata)
 
         if cover_url:

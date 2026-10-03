@@ -729,14 +729,6 @@ def _build_segments_from_words(text, words, should_continue=None):
             parts[0]["_romaji_word_start"] = True
             for part in parts[1:]:
                 part["_romaji_word_start"] = False
-        # Preserve tokenizer word boundaries for the optional All-Romaji
-        # display. Japanese lyrics usually omit spaces, so the renderer can
-        # use this metadata to add readable word spacing without changing the
-        # original lyric text.
-        if parts:
-            parts[0]["_romaji_word_start"] = True
-            for part in parts[1:]:
-                part["_romaji_word_start"] = False
         segments.extend(parts)
         source_position = found_at + len(surface)
     if source_position < len(text):
@@ -749,15 +741,20 @@ def _split_segments_by_lines(segments, line_count):
     for segment in segments:
         pieces = str(segment.get("text", "")).split("\n")
         reading = segment.get("reading")
+        word_start = bool(segment.get("_romaji_word_start", False))
         for i, piece in enumerate(pieces):
             if piece and line_index < line_count:
-                result[line_index].append({"text": piece, "reading": reading})
+                result[line_index].append({
+                    "text": piece,
+                    "reading": reading,
+                    "_romaji_word_start": word_start and i == 0,
+                })
             if i < len(pieces) - 1:
                 line_index += 1
     return result
 
-def prefetch_furigana_batches(lines, batch_size=10, progress_callback=None, should_continue=None):
-    if not automatic_readings_enabled():
+def prefetch_furigana_batches(lines, batch_size=10, progress_callback=None, should_continue=None, force=False):
+    if not automatic_readings_enabled() and not force:
         if progress_callback: progress_callback(0, 0)
         return 0, 0
     if get_reading_mode() == "auto":
@@ -839,7 +836,7 @@ def prefetch_furigana_batches(lines, batch_size=10, progress_callback=None, shou
             if progress_callback: progress_callback(completed,total)
     return completed,total
 
-def build_furigana_segments(text, progress_callback=None, should_continue=None):
+def build_furigana_segments(text, progress_callback=None, should_continue=None, force=False):
     """Build automatic ruby: furigana for Japanese, pinyin for Chinese."""
     text = str(text or "")
     if not text:
@@ -854,7 +851,7 @@ def build_furigana_segments(text, progress_callback=None, should_continue=None):
     if cached is not None:
         return cached
 
-    if not automatic_readings_enabled():
+    if not automatic_readings_enabled() and not force:
         return _fallback(text)
 
     if mode in available_reading_providers():

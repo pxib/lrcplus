@@ -1528,7 +1528,10 @@ class FuriganaWidget(QWidget):
         # be converted directly. This is display-only and leaves the source
         # lyric and timing data untouched.
         reading = str(segment.get("reading") or "")
-        source = reading if reading and any("\u3400" <= ch <= "\u9fff" for ch in text) else text
+        source = reading if reading and any(
+            "\u3400" <= ch <= "\u9fff" or ch == "々"
+            for ch in text
+        ) else text
 
         # A small-tsu at the end of this segment belongs to the next segment.
         source_for_conversion = source
