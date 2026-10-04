@@ -60,7 +60,7 @@ class PluginManager:
         self.reading_providers: dict[str, str] = {}
         self._host_window = None
         self._owned_actions: list[tuple[str, Any, Any]] = []
-        self._pending_menu_actions: list[tuple[str, str, str, Callable[..., Any], str | None]] = []
+        self._pending_menu_actions: list[tuple[str, str, str, Callable[..., Any], str | None, bool]] = []
         self._owned_buttons: list[tuple[str, Any, Any]] = []
         self._pending_buttons: list[tuple[str, str, Callable[..., Any]]] = []
         self._settings_widgets: list[dict[str, Any]] = []
@@ -79,20 +79,20 @@ class PluginManager:
     def set_host_window(self, window: Any) -> None:
         """Attach the main window and realize any queued plugin UI."""
         self._host_window = window
-        for plugin_id, menu, text, callback, shortcut in list(self._pending_menu_actions):
-            self._create_menu_action(plugin_id, menu, text, callback, shortcut)
+        for plugin_id, menu, text, callback, shortcut, checkable in list(self._pending_menu_actions):
+            self._create_menu_action(plugin_id, menu, text, callback, shortcut, checkable)
         self._pending_menu_actions.clear()
         for plugin_id, text, callback in list(self._pending_buttons):
             self._create_main_window_button(plugin_id, text, callback)
         self._pending_buttons.clear()
 
-    def add_menu_action(self, owner: str, menu: str, text: str, callback: Callable[..., Any], *, shortcut: str | None = None) -> None:
+    def add_menu_action(self, owner: str, menu: str, text: str, callback: Callable[..., Any], *, shortcut: str | None = None, checkable: bool = False) -> None:
         if self._host_window is None:
-            self._pending_menu_actions.append((owner, menu, text, callback, shortcut))
+            self._pending_menu_actions.append((owner, menu, text, callback, shortcut, checkable))
             return
-        self._create_menu_action(owner, menu, text, callback, shortcut)
+        self._create_menu_action(owner, menu, text, callback, shortcut, checkable)
 
-    def _create_menu_action(self, owner: str, menu: str, text: str, callback: Callable[..., Any], shortcut: str | None) -> None:
+    def _create_menu_action(self, owner: str, menu: str, text: str, callback: Callable[..., Any], shortcut: str | None, checkable: bool = False) -> None:
         from PySide6.QtGui import QAction, QKeySequence
         menu_bar = self._host_window.menuBar()
         target = None
@@ -104,11 +104,18 @@ class PluginManager:
         if target is None:
             target = menu_bar.addMenu(menu)
         action = QAction(text, self._host_window)
+        action.setCheckable(checkable)
         if shortcut:
             action.setShortcut(QKeySequence(shortcut))
         action.triggered.connect(callback)
         target.addAction(action)
         self._owned_actions.append((owner, target, action))
+
+    def set_menu_action_checked(self, owner: str, text: str, checked: bool) -> None:
+        for action_owner, _, action in self._owned_actions:
+            if action_owner == owner and action.text() == text:
+                action.setChecked(checked)
+                return
 
     def add_main_window_button(
         self,

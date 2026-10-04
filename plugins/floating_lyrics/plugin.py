@@ -229,6 +229,7 @@ class FloatingLyricsWindow(QWidget):
         super().__init__(None)
         self.settings = settings
         self._drag_offset = None
+        self.visibility_changed = None
 
         # Required for rgba() window backgrounds to actually reveal whatever
         # is behind this top-level floating window.
@@ -251,6 +252,16 @@ class FloatingLyricsWindow(QWidget):
         if hasattr(self, "_background"):
             self._background.setGeometry(self.rect())
         super().resizeEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.visibility_changed is not None:
+            self.visibility_changed(True)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        if self.visibility_changed is not None:
+            self.visibility_changed(False)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -482,6 +493,7 @@ class FloatingLyricsPlugin:
         "click_through": False,
         "remember_position": True,
         "hide_on_pause": False,
+        "enabled": True,
         "window_x": None,
         "window_y": None,
     }
@@ -491,13 +503,19 @@ class FloatingLyricsPlugin:
         self.window = None
         self.settings = self._load_settings()
         self.floating = FloatingLyricsWindow(self.settings)
+        self.floating.visibility_changed = self._set_menu_checked
 
         context.api.on("app_ready", self.on_app_ready)
         context.api.on("position_changed", self.on_position_changed)
         context.api.on("track_changed", self.on_track_changed)
         context.api.on("playback_state_changed", self.on_playback_state_changed)
 
-        context.api.add_menu_action("Plugins", "Floating Lyrics", self.toggle_window)
+        context.api.add_menu_action(
+            "Plugins",
+            "Floating Lyrics",
+            self.toggle_window,
+            checkable=True,
+        )
         context.api.register_settings_widget(
             "Floating Lyrics",
             self.create_settings_widget,
@@ -532,6 +550,9 @@ class FloatingLyricsPlugin:
     def _show_after_main_window(self):
         if self.window is None:
             return
+        if not self.settings.get("enabled", True):
+            self._set_menu_checked(False)
+            return
 
         x = self.settings.get("window_x")
         y = self.settings.get("window_y")
@@ -552,14 +573,19 @@ class FloatingLyricsPlugin:
         self.floating.raise_()
         self.refresh()
 
-    def toggle_window(self):
-        if self.floating.isVisible():
-            self._remember_position()
-            self.floating.hide()
-        else:
+    def _set_menu_checked(self, checked):
+        self.context.api.set_menu_action_checked("Floating Lyrics", checked)
+
+    def toggle_window(self, checked=False):
+        self.settings["enabled"] = bool(checked)
+        self._save_settings()
+        if checked:
             self.floating.show()
             self.floating.raise_()
             self.refresh()
+        else:
+            self._remember_position()
+            self.floating.hide()
 
     def create_settings_widget(self, parent):
         return FloatingLyricsSettingsWidget(self.settings, parent)
@@ -603,6 +629,8 @@ class FloatingLyricsPlugin:
             self._remember_position()
             self.floating.hide()
         elif "playing" in state or "play" == state:
+            if not self.settings.get("enabled", True):
+                return
             self.floating.show()
             self.floating.raise_()
             self.refresh()

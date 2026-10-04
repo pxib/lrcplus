@@ -129,6 +129,7 @@ class LyricsPlusAPI:
         callback: Callable[..., Any],
         *,
         shortcut: str | None = None,
+        checkable: bool = False,
     ) -> None:
         """Add an owned action to a named application menu.
 
@@ -138,7 +139,14 @@ class LyricsPlusAPI:
         if not callable(callback):
             raise TypeError("callback must be callable")
         self._manager.add_menu_action(
-            self.plugin_id, str(menu), str(text), callback, shortcut=shortcut,
+            self.plugin_id, str(menu), str(text), callback,
+            shortcut=shortcut, checkable=checkable,
+        )
+
+    def set_menu_action_checked(self, text: str, checked: bool) -> None:
+        """Set the checked state of this plugin's named menu action."""
+        self._manager.set_menu_action_checked(
+            self.plugin_id, str(text), bool(checked),
         )
 
     def add_main_window_button(

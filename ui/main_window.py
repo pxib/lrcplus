@@ -38,7 +38,7 @@ from core.settings import (
     save_music_library,
 )
 from core.recent import get_recent_songs
-from core.music_library import LibraryTrack, scan_folders
+from core.music_library import LibraryTrack, read_track, scan_folders
 from lyrics.widgets import FuriganaWidget, ScrollingLyricsWidget
 from lyrics.waveform import WaveformWidget, find_ffmpeg
 from lyrics.writer import convert_lyrics
@@ -47,6 +47,22 @@ from ui.lrc_editor import LrcEditorDialog
 from ui.playlist_dialog import PlaylistDialog
 from ui.artwork_background import ArtworkBackgroundWidget, extract_embedded_cover, load_embedded_cover_thumbnail
 from core.booru_artwork import fetch_booru_artwork
+
+
+def _lyrics_search_query(audio_path):
+    audio_path = Path(audio_path)
+    try:
+        track = read_track(audio_path)
+    except (OSError, ValueError):
+        return audio_path.stem
+
+    title = str(getattr(track, "title", "") or "").strip()
+    artist = str(getattr(track, "artist", "") or "").strip()
+    if artist and title:
+        return f"{artist} - {title}"
+    if title and title.casefold() != audio_path.stem.casefold():
+        return title
+    return audio_path.stem
 
 
 class ClickableSlider(QSlider):
@@ -622,6 +638,7 @@ class Player(AudioController, LyricsController, QMainWindow):
             self.workspace_stack.addWidget(self.lyrics_page)
             self.workspace_stack.setCurrentWidget(self.library_page)
             self.workspace_stack.currentChanged.connect(self._handle_workspace_changed)
+            self._handle_workspace_changed(self.workspace_stack.currentIndex())
             self._populate_library_view()
 
             layout.addWidget(self.workspace_stack, 1)
@@ -1112,7 +1129,10 @@ class Player(AudioController, LyricsController, QMainWindow):
             """Refresh the lyrics renderer after returning to the Lyrics page."""
             if not hasattr(self, "workspace_stack"):
                 return
-            if self.workspace_stack.widget(index) is not self.lyrics_page:
+            current_page = self.workspace_stack.widget(index)
+            self.library_button.setEnabled(current_page is not self.library_page)
+            self.lyrics_view_button.setEnabled(current_page is not self.lyrics_page)
+            if current_page is not self.lyrics_page:
                 return
 
             QTimer.singleShot(0, self._refresh_lyrics_after_page_show)
@@ -1315,7 +1335,6 @@ class Player(AudioController, LyricsController, QMainWindow):
             self.current_index = 0
             known = {track.path for track in self.library_tracks}
             changed = False
-            from core.music_library import read_track
             for path in self.playlist:
                 resolved = str(path.resolve())
                 if resolved not in known:
@@ -1365,10 +1384,11 @@ class Player(AudioController, LyricsController, QMainWindow):
             query_input = QLineEdit(dialog)
             query_input.setPlaceholderText("Song title, artist, or keywords")
 
-            # Start with the currently playing file name. Keep the full stem so
-            # searches still work when the file is named "Artist - Title".
+            # Prefer embedded tags, falling back to the filename when unavailable.
             if self.current_audio_path:
-                query_input.setText(self.current_audio_path.stem)
+                query_input.setText(
+                    _lyrics_search_query(self.current_audio_path)
+                )
 
             search_button = QPushButton("Search", dialog)
             search_row.addWidget(query_input)
