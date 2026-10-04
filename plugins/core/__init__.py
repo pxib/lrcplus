@@ -1,0 +1,1 @@
+"""Official LyricsPlus plugins bundled with the application."""

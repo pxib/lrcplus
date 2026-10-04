@@ -271,56 +271,69 @@ class PluginManager:
         except Exception as error:
             return {"plugin_id": child.name, "name": child.name, "version": "Invalid", "description": f"Invalid manifest: {error}"}
 
-    def discover_plugins(self, plugins_dir: Path) -> list[dict[str, str]]:
+    def discover_plugins(self, plugins_dir: Path) -> list[dict[str, Any]]:
         """Return plugin metadata without importing plugin modules."""
         plugins_dir = Path(plugins_dir)
         result = []
         if not plugins_dir.exists():
             return result
 
-        for child in sorted(plugins_dir.iterdir()):
-            if not child.is_dir() or child.name.startswith("_"):
+        plugin_roots = [
+            (plugins_dir / "core", "Core"),
+            (plugins_dir / "community", "Community"),
+            (plugins_dir, "Community"),
+        ]
+        for plugin_root, category in plugin_roots:
+            if not plugin_root.is_dir():
                 continue
-            plugin_file = child / "plugin.py"
-            if not plugin_file.exists():
-                continue
+            for child in sorted(plugin_root.iterdir()):
+                if not child.is_dir() or child.name.startswith("_"):
+                    continue
+                plugin_file = child / "plugin.py"
+                if not plugin_file.exists():
+                    continue
 
-            metadata = {
-                "plugin_id": child.name,
-                "name": child.name.replace("_", " ").title(),
-                "version": "Unknown",
-                "description": "",
-                "api_version": PLUGIN_API_VERSION,
-            }
-            manifest = self._manifest_metadata(child)
-            if manifest is not None:
-                metadata.update({k: v for k, v in manifest.items() if k in {"plugin_id", "name", "version", "description", "api_version"}})
-                metadata["plugin_id"] = child.name
-            else:
-                try:
-                    tree = ast.parse(plugin_file.read_text(encoding="utf-8"))
-                    class_name = None
-                    for node in tree.body:
-                        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "PLUGIN_CLASS" for t in node.targets) and isinstance(node.value, ast.Name):
-                            class_name = node.value.id
-                            break
-                    if class_name:
+                metadata = {
+                    "plugin_id": child.name,
+                    "name": child.name.replace("_", " ").title(),
+                    "version": "Unknown",
+                    "description": "",
+                    "api_version": PLUGIN_API_VERSION,
+                    "category": category,
+                    "plugin_dir": child,
+                }
+                manifest = self._manifest_metadata(child)
+                if manifest is not None:
+                    metadata.update({k: v for k, v in manifest.items() if k in {"plugin_id", "name", "version", "description", "api_version"}})
+                    metadata["plugin_id"] = child.name
+                else:
+                    try:
+                        tree = ast.parse(plugin_file.read_text(encoding="utf-8"))
+                        class_name = None
                         for node in tree.body:
-                            if isinstance(node, ast.ClassDef) and node.name == class_name:
-                                for item in node.body:
-                                    if isinstance(item, ast.Assign) and len(item.targets) == 1 and isinstance(item.targets[0], ast.Name) and item.targets[0].id in {"name", "version", "description"} and isinstance(item.value, ast.Constant) and isinstance(item.value.value, str):
-                                        metadata[item.targets[0].id] = item.value.value
+                            if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "PLUGIN_CLASS" for t in node.targets) and isinstance(node.value, ast.Name):
+                                class_name = node.value.id
                                 break
-                except (OSError, SyntaxError, UnicodeError):
-                    pass
-            result.append(metadata)
+                        if class_name:
+                            for node in tree.body:
+                                if isinstance(node, ast.ClassDef) and node.name == class_name:
+                                    for item in node.body:
+                                        if isinstance(item, ast.Assign) and len(item.targets) == 1 and isinstance(item.targets[0], ast.Name) and item.targets[0].id in {"name", "version", "description"} and isinstance(item.value, ast.Constant) and isinstance(item.value.value, str):
+                                            metadata[item.targets[0].id] = item.value.value
+                                    break
+                    except (OSError, SyntaxError, UnicodeError):
+                        pass
+                result.append(metadata)
         return result
 
     def discover_and_load(self, plugins_dir: Path) -> None:
         self.plugins_dir = Path(plugins_dir)
         for metadata in self.discover_plugins(self.plugins_dir):
             plugin_id = str(metadata["plugin_id"])
-            if plugin_id in self.disabled_plugins:
+            if (
+                plugin_id in self.disabled_plugins
+                and metadata.get("category") != "Core"
+            ):
                 continue
             api_version = metadata.get("api_version", PLUGIN_API_VERSION)
             try:
@@ -336,7 +349,7 @@ class PluginManager:
                 self.log(plugin_id, self.load_errors[plugin_id])
                 continue
             try:
-                self.load_from_file(plugin_id, self.plugins_dir / plugin_id / "plugin.py", metadata)
+                self.load_from_file(plugin_id, metadata["plugin_dir"] / "plugin.py", metadata)
             except Exception as error:
                 self.load_errors[plugin_id] = f"{type(error).__name__}: {error}"
                 self.log(plugin_id, f"failed to load: {self.load_errors[plugin_id]}")

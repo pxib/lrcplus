@@ -489,7 +489,8 @@ class SettingsDialog(QDialog):
 
                 details = QVBoxLayout()
                 title = QLabel(
-                    f"<b>{plugin['name']}</b>  <span style='color: gray;'>v{plugin['version']}</span>"
+                    f"<b>{plugin['name']}</b>  "
+                    f"<span style='color: gray;'>{plugin['category']} · v{plugin['version']}</span>"
                 )
                 details.addWidget(title)
                 description = QLabel(plugin['description'] or "No description available.")
@@ -515,7 +516,11 @@ class SettingsDialog(QDialog):
                     row.addWidget(settings_button)
 
                 toggle = QCheckBox("Enabled")
-                toggle.setChecked(plugin_id not in disabled)
+                is_core_plugin = plugin["category"] == "Core"
+                toggle.setChecked(is_core_plugin or plugin_id not in disabled)
+                toggle.setEnabled(not is_core_plugin)
+                if is_core_plugin:
+                    toggle.setToolTip("Core plugins cannot be disabled.")
                 row.addWidget(toggle)
                 self.plugin_toggles[plugin_id] = toggle
 

@@ -27,10 +27,19 @@ A plugin lives in its own folder:
 
 ```text
 plugins/
-└── my_plugin/
-    ├── plugin.py
-    └── manifest.json        # optional, recommended
+├── core/                    # Official LyricsPlus plugins
+│   └── my_plugin/
+│       ├── plugin.py
+│       └── manifest.json    # optional, recommended
+└── community/               # Unofficial community plugins
+    └── another_plugin/
+        ├── plugin.py
+        └── manifest.json
 ```
+
+Each plugin folder must have a unique folder name, which is used as its plugin
+ID. Plugins placed directly in `plugins/` remain supported for compatibility
+and are listed as Community plugins.
 
 A minimal plugin:
 

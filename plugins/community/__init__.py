@@ -1,0 +1,1 @@
+"""Community plugins installed alongside LyricsPlus."""
