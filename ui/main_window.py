@@ -5,12 +5,13 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 
 from PySide6.QtCore import Qt, QUrl, QTimer, Signal, QThread, QSize, QRect
-from PySide6.QtGui import QAction, QKeySequence, QShortcut, QPixmap
+from PySide6.QtGui import QAction, QKeySequence, QShortcut, QPixmap, QPainter
 from PySide6.QtMultimedia import QAudioOutput, QMediaDevices, QMediaPlayer
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
     QInputDialog, QMainWindow, QScrollArea, QStackedWidget, QLineEdit,
     QMessageBox, QPushButton, QProgressBar, QSlider, QTextEdit, QToolButton, QVBoxLayout, QWidget,
+    QGraphicsView, QGraphicsScene,
     QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QTreeWidget, QTreeWidgetItem, QAbstractItemView, QStyledItemDelegate,
 )
 
@@ -110,6 +111,70 @@ class AlbumCoverDelegate(QStyledItemDelegate):
             painter.restore()
             return
         super().paint(painter, option, index)
+
+
+class CoverPreviewView(QGraphicsView):
+    def __init__(self, pixmap, parent=None):
+        super().__init__(parent)
+        scene = QGraphicsScene(self)
+        self.image_item = scene.addPixmap(pixmap)
+        self.setScene(scene)
+        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+
+    def fit_to_view(self):
+        self.resetTransform()
+        self.fitInView(self.image_item, Qt.AspectRatioMode.KeepAspectRatio)
+
+    def set_actual_size(self):
+        self.resetTransform()
+        self.centerOn(self.image_item)
+
+    def zoom(self, factor):
+        current_scale = self.transform().m11()
+        if 0.05 <= current_scale * factor <= 8:
+            self.scale(factor, factor)
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta:
+            self.zoom(1.2 if delta > 0 else 1 / 1.2)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+
+class CoverPreviewDialog(QDialog):
+    def __init__(self, pixmap, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Album Cover")
+        self.resize(900, 700)
+
+        self.view = CoverPreviewView(pixmap, self)
+        controls = QHBoxLayout()
+        zoom_out = QToolButton(self)
+        zoom_out.setText("-")
+        zoom_out.setToolTip("Zoom out")
+        zoom_in = QToolButton(self)
+        zoom_in.setText("+")
+        zoom_in.setToolTip("Zoom in")
+        fit = QPushButton("Fit", self)
+        actual_size = QPushButton("100%", self)
+        zoom_out.clicked.connect(lambda: self.view.zoom(1 / 1.2))
+        zoom_in.clicked.connect(lambda: self.view.zoom(1.2))
+        fit.clicked.connect(self.view.fit_to_view)
+        actual_size.clicked.connect(self.view.set_actual_size)
+        controls.addWidget(zoom_out)
+        controls.addWidget(zoom_in)
+        controls.addWidget(fit)
+        controls.addWidget(actual_size)
+        controls.addStretch(1)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(controls)
+        layout.addWidget(self.view, 1)
+        QTimer.singleShot(0, self.view.fit_to_view)
 
 
 class LibraryScanWorker(QThread):
@@ -784,13 +849,13 @@ class Player(AudioController, LyricsController, QMainWindow):
             self.library_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
             self.library_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             self.library_table.itemDoubleClicked.connect(self._play_library_item)
+            self.library_table.itemClicked.connect(self._open_library_cover_preview)
             header = self.library_table.header()
             header.setStretchLastSection(False)
             header.setSectionsMovable(True)
             header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             header.customContextMenuRequested.connect(self._show_library_column_menu)
-            header.sectionResized.connect(lambda *_: self._save_library_column_state())
-            header.sectionMoved.connect(lambda *_: self._save_library_column_state())
+            self.library_table.setTreePosition(2)
             self.library_table.setIconSize(QSize(52, 52))
             self.library_table.setItemDelegateForColumn(0, AlbumCoverDelegate(self.library_table))
             # Covers are loaded lazily for visible rows only. This prevents a
@@ -807,6 +872,8 @@ class Player(AudioController, LyricsController, QMainWindow):
             self.library_table.setColumnWidth(10, 360)
             self.library_table.setColumnWidth(11, 150)
             self._apply_library_column_state()
+            header.sectionResized.connect(lambda *_: self._save_library_column_state())
+            header.sectionMoved.connect(lambda *_: self._save_library_column_state())
             root.addWidget(self.library_table, 1)
             return page
 
@@ -1005,6 +1072,20 @@ class Player(AudioController, LyricsController, QMainWindow):
                 return
             self.load_audio(path)
             self.media_player.play()
+
+        def _open_library_cover_preview(self, item, column):
+            if column != 0:
+                return
+            path = item.data(0, Qt.ItemDataRole.UserRole)
+            if not path:
+                return
+            cover_data = extract_embedded_cover(path)
+            if not cover_data:
+                return
+            pixmap = QPixmap()
+            if not pixmap.loadFromData(cover_data):
+                return
+            CoverPreviewDialog(pixmap, self).exec()
 
         def add_music_folder(self):
             folder = QFileDialog.getExistingDirectory(self, "Add Music Folder")
