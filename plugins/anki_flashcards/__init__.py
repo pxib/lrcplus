@@ -1,0 +1,1 @@
+"""Anki flashcard export plugin."""

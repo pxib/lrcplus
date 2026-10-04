@@ -1,7 +1,8 @@
 Janome==0.5.0
-pygame-ce==2.5.8
 PySide6>=6.8
 requests
 pypresence
 mutagen
 Pillow
+fugashi
+pytest

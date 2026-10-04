@@ -6,7 +6,14 @@ from PySide6.QtGui import QIcon
 
 from core.plugin_manager import PluginManager
 from core.settings import get_disabled_plugins
+from lyrics.furigana import katakana_to_hiragana, token_to_furigana_segments
 from ui.main_window import Player
+
+__all__ = [
+    "main",
+    "katakana_to_hiragana",
+    "token_to_furigana_segments",
+]
 
 
 def main() -> int:
