@@ -1,7 +1,9 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtMultimedia import QMediaDevices
-from PySide6.QtGui import QFontDatabase
+from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPolygon
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
+    QButtonGroup,
     QColorDialog,
     QCheckBox,
     QComboBox,
@@ -21,7 +23,10 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QLineEdit,
     QGroupBox,
+    QToolButton,
 )
+from core.settings import APPEARANCE_DEFAULTS
+from core.theme import build_theme_palette
 
 LYRIC_KEYS = (
     "scrolling_lyrics",
@@ -62,6 +67,345 @@ LYRIC_KEYS = (
 LOCAL_LYRIC_KEYS = tuple(key for key in LYRIC_KEYS if key not in {"furigana_parser", "mecab_parse_mode"})
 
 
+class _SpinStepButton(QToolButton):
+    def __init__(self, parent, direction):
+        super().__init__(parent)
+        self.direction = direction
+        self.setObjectName(
+            "spinStepUp" if direction > 0 else "spinStepDown"
+        )
+        self.setAutoRepeat(True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        center_x = self.width() // 2
+        center_y = self.height() // 2
+        if self.direction > 0:
+            points = QPolygon((
+                QPoint(center_x - 4, center_y + 2),
+                QPoint(center_x + 4, center_y + 2),
+                QPoint(center_x, center_y - 3),
+            ))
+        else:
+            points = QPolygon((
+                QPoint(center_x - 4, center_y - 2),
+                QPoint(center_x + 4, center_y - 2),
+                QPoint(center_x, center_y + 3),
+            ))
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#53665e"))
+        painter.drawPolygon(points)
+
+
+class ThemedSpinBox(QSpinBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self._step_up = _SpinStepButton(self, 1)
+        self._step_down = _SpinStepButton(self, -1)
+        self._step_up.clicked.connect(self.stepUp)
+        self._step_down.clicked.connect(self.stepDown)
+        self.lineEdit().setTextMargins(0, 0, 24, 0)
+        self._position_step_buttons()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_step_buttons()
+
+    def _position_step_buttons(self):
+        button_width = 22
+        usable_height = max(0, self.height() - 2)
+        upper_height = usable_height // 2
+        x = max(1, self.width() - button_width - 1)
+        self._step_up.setGeometry(x, 1, button_width, upper_height)
+        self._step_down.setGeometry(
+            x,
+            1 + upper_height,
+            button_width,
+            usable_height - upper_height,
+        )
+
+
+_NativeComboBox = QComboBox
+
+
+class _ComboDropButton(QToolButton):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setObjectName("comboDropIndicator")
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clicked.connect(lambda _checked=False: parent.showPopup())
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        center_x = self.width() // 2
+        center_y = self.height() // 2
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QColor("#53665e"))
+        painter.drawLine(
+            QPoint(center_x - 3, center_y - 1),
+            QPoint(center_x, center_y + 2),
+        )
+        painter.drawLine(
+            QPoint(center_x, center_y + 2),
+            QPoint(center_x + 3, center_y - 1),
+        )
+
+
+class ThemedComboBox(_NativeComboBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._drop_indicator = _ComboDropButton(self)
+        self._position_drop_indicator()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_drop_indicator()
+
+    def _position_drop_indicator(self):
+        button_width = 24
+        self._drop_indicator.setGeometry(
+            max(1, self.width() - button_width - 1),
+            1,
+            button_width,
+            max(0, self.height() - 2),
+        )
+
+
+# All settings combos use the painted dropdown indicator.
+QComboBox = ThemedComboBox
+
+
+SETTINGS_DIALOG_STYLE = """
+    QDialog {
+        background: @WINDOW@;
+        color: @TEXT@;
+    }
+    QDialog QWidget {
+        color: @TEXT@;
+        background-color: @WINDOW@;
+    }
+    QDialog QTabWidget::pane {
+        background: @SURFACE@;
+        border: 1px solid @BORDER@;
+        border-radius: 5px;
+    }
+    QDialog QTabBar::tab {
+        color: @MUTED@;
+        background: @RAISED@;
+        border: 1px solid @BORDER@;
+        border-bottom: none;
+        padding: 7px 11px;
+    }
+    QDialog QTabBar::tab:selected {
+        color: @ACCENT_TEXT@;
+        background: @ACCENT_SOFT@;
+    }
+    QDialog QPushButton#themeModeButton {
+        color: @MUTED@;
+        background: @RAISED@;
+        border: 1px solid @BORDER@;
+        border-radius: 5px;
+        padding: 6px 14px;
+        min-height: 20px;
+    }
+    QDialog QPushButton#themeModeButton:checked {
+        color: @ACCENT_TEXT@;
+        background: @ACCENT_SOFT@;
+        border-color: @ACCENT_BORDER@;
+    }
+    QDialog QLineEdit,
+    QDialog QSpinBox,
+    QDialog QTextEdit,
+    QDialog QListWidget {
+        color: @TEXT@;
+        background: @SURFACE@;
+        border: 1px solid @FIELD_BORDER@;
+        border-radius: 4px;
+        padding: 4px 6px;
+        selection-background-color: @ACCENT_SOFT@;
+        selection-color: @TEXT@;
+    }
+    QDialog QComboBox {
+        color: @TEXT@;
+        background: @SURFACE@;
+        border: 1px solid @FIELD_BORDER@;
+        border-radius: 4px;
+        padding: 4px 28px 4px 6px;
+        selection-background-color: @ACCENT_SOFT@;
+        selection-color: @TEXT@;
+    }
+    QDialog QComboBox:hover {
+        border-color: @ACCENT_BORDER@;
+    }
+    QDialog QComboBox::drop-down {
+        width: 24px;
+        background: @RAISED@;
+        border-left: 1px solid @BORDER@;
+        border-top-right-radius: 4px;
+        border-bottom-right-radius: 4px;
+    }
+    QDialog QComboBox::drop-down:hover {
+        background: @RAISED_HOVER@;
+    }
+    QDialog QComboBox::down-arrow {
+        image: none;
+        width: 0;
+        height: 0;
+    }
+    QDialog QToolButton#comboDropIndicator {
+        background: @RAISED@;
+        border: none;
+        border-left: 1px solid @BORDER@;
+        border-top-right-radius: 4px;
+        border-bottom-right-radius: 4px;
+        padding: 0;
+    }
+    QDialog QToolButton#comboDropIndicator:hover {
+        background: @RAISED_HOVER@;
+    }
+    QDialog QComboBox QAbstractItemView {
+        color: @TEXT@;
+        background: @SURFACE@;
+        border: 1px solid @FIELD_BORDER@;
+        selection-background-color: @ACCENT_SOFT@;
+        selection-color: @TEXT@;
+        outline: none;
+    }
+    QDialog QToolButton#spinStepUp,
+    QDialog QToolButton#spinStepDown {
+        background: @RAISED@;
+        border: none;
+        border-left: 1px solid @BORDER@;
+        padding: 0;
+    }
+    QDialog QToolButton#spinStepUp {
+        border-bottom: 1px solid @BORDER@;
+        border-top-right-radius: 4px;
+    }
+    QDialog QToolButton#spinStepDown {
+        border-bottom-right-radius: 4px;
+    }
+    QDialog QToolButton#spinStepUp:hover,
+    QDialog QToolButton#spinStepDown:hover {
+        background: @RAISED_HOVER@;
+    }
+    QDialog QPushButton {
+        color: @TEXT@;
+        background: @SURFACE@;
+        border: 1px solid @FIELD_BORDER@;
+        border-radius: 5px;
+        padding: 6px 11px;
+        min-height: 20px;
+    }
+    QDialog QPushButton:hover {
+        background: @RAISED_HOVER@;
+        border-color: @ACCENT_BORDER@;
+    }
+    QDialog QPushButton:pressed {
+        background: @PRESSED@;
+    }
+    QDialog QGroupBox {
+        color: @TEXT@;
+        background: @SURFACE_ALT@;
+        border: 1px solid @BORDER@;
+        border-radius: 5px;
+        margin-top: 10px;
+        padding: 8px;
+    }
+    QDialog QGroupBox::title {
+        subcontrol-origin: margin;
+        left: 8px;
+        padding: 0 4px;
+    }
+    QDialog QSlider::groove:horizontal {
+        height: 4px;
+        background: @BORDER@;
+        border-radius: 2px;
+    }
+    QDialog QSlider::sub-page:horizontal {
+        background: @ACCENT@;
+        border-radius: 2px;
+    }
+    QDialog QSlider::handle:horizontal {
+        width: 12px;
+        margin: -5px 0;
+        background: @SURFACE@;
+        border: 2px solid @ACCENT@;
+        border-radius: 7px;
+    }
+    QDialog QScrollBar:vertical {
+        width: 10px;
+        margin: 3px 2px;
+        background: transparent;
+        border: none;
+    }
+    QDialog QScrollBar:horizontal {
+        height: 10px;
+        margin: 2px 3px;
+        background: transparent;
+        border: none;
+    }
+    QDialog QScrollBar::handle:vertical,
+    QDialog QScrollBar::handle:horizontal {
+        background: @SCROLL_HANDLE@;
+        border-radius: 5px;
+        min-height: 28px;
+        min-width: 28px;
+    }
+    QDialog QScrollBar::handle:vertical:hover,
+    QDialog QScrollBar::handle:horizontal:hover {
+        background: @ACCENT_BORDER@;
+    }
+    QDialog QScrollBar::add-line:vertical,
+    QDialog QScrollBar::sub-line:vertical,
+    QDialog QScrollBar::add-line:horizontal,
+    QDialog QScrollBar::sub-line:horizontal {
+        width: 0;
+        height: 0;
+        background: transparent;
+        border: none;
+    }
+    QDialog QScrollBar::add-page:vertical,
+    QDialog QScrollBar::sub-page:vertical,
+    QDialog QScrollBar::add-page:horizontal,
+    QDialog QScrollBar::sub-page:horizontal {
+        background: transparent;
+    }
+"""
+
+
+def _apply_settings_dialog_style(dialog, theme_mode, theme_color):
+    palette = build_theme_palette(theme_mode, theme_color)
+    style = SETTINGS_DIALOG_STYLE
+    for token, key in (
+        ("@WINDOW@", "window"),
+        ("@TEXT@", "text"),
+        ("@SURFACE@", "surface"),
+        ("@SURFACE_ALT@", "surface_alt"),
+        ("@RAISED@", "raised"),
+        ("@RAISED_HOVER@", "raised_hover"),
+        ("@PRESSED@", "pressed"),
+        ("@MUTED@", "muted"),
+        ("@BORDER@", "border"),
+        ("@FIELD_BORDER@", "field_border"),
+        ("@ACCENT@", "accent"),
+        ("@ACCENT_HOVER@", "accent_hover"),
+        ("@ACCENT_BORDER@", "accent_border"),
+        ("@ACCENT_SOFT@", "accent_soft"),
+        ("@ACCENT_TEXT@", "accent_text"),
+        ("@SCROLL_HANDLE@", "scroll_handle"),
+    ):
+        style = style.replace(token, palette[key])
+    dialog.setStyleSheet(style)
+
+
 class PluginSettingsDialog(QDialog):
     """Standalone settings window for one plugin's registered settings."""
 
@@ -69,6 +413,13 @@ class PluginSettingsDialog(QDialog):
         super().__init__(parent)
         self.plugin_manager = plugin_manager
         self.plugin_id = str(plugin_id)
+        theme_color = getattr(
+            parent,
+            "theme_color",
+            APPEARANCE_DEFAULTS["theme_color"],
+        )
+        theme_mode = getattr(parent, "theme_mode", "light")
+        _apply_settings_dialog_style(self, theme_mode, theme_color)
         self.setWindowTitle(f"{plugin_name} Settings")
         self.resize(520, 460)
 
@@ -160,6 +511,18 @@ class SettingsDialog(QDialog):
         self.global_lyrics = dict(global_lyrics or {})
         self.startup_settings = dict(startup_settings or {})
         self.appearance_settings = dict(appearance_settings or {})
+        self.theme_mode = self.appearance_settings.get("theme_mode", "light")
+        if self.theme_mode not in {"light", "dark"}:
+            self.theme_mode = "light"
+        self.theme_color = str(
+            self.appearance_settings.get(
+                "theme_color",
+                APPEARANCE_DEFAULTS["theme_color"],
+            )
+        )
+        if not QColor(self.theme_color).isValid():
+            self.theme_color = APPEARANCE_DEFAULTS["theme_color"]
+        self.theme_color = QColor(self.theme_color).name()
         self.playback_settings = dict(playback_settings or {})
         self.karaoke_settings = dict(karaoke_settings or {})
         self.local_overrides = dict(local_overrides or {})
@@ -167,6 +530,9 @@ class SettingsDialog(QDialog):
         self.plugin_manager = plugin_manager
         self.plugin_toggles = {}
 
+        _apply_settings_dialog_style(
+            self, self.theme_mode, self.theme_color
+        )
         self.setWindowTitle("Settings")
         self.resize(700, 600)
 
@@ -200,6 +566,41 @@ class SettingsDialog(QDialog):
         # ===== APPEARANCE =====
         appearance_tab = QWidget()
         appearance_layout = QVBoxLayout(appearance_tab)
+
+        theme_heading = QLabel("<b>Theme</b>")
+        appearance_layout.addWidget(theme_heading)
+        theme_mode_row = QHBoxLayout()
+        theme_mode_row.addWidget(QLabel("Color mode"))
+        self.light_theme_button = QPushButton("Light")
+        self.dark_theme_button = QPushButton("Dark")
+        for button in (self.light_theme_button, self.dark_theme_button):
+            button.setObjectName("themeModeButton")
+            button.setCheckable(True)
+        self.theme_mode_group = QButtonGroup(self)
+        self.theme_mode_group.setExclusive(True)
+        self.theme_mode_group.addButton(self.light_theme_button)
+        self.theme_mode_group.addButton(self.dark_theme_button)
+        self.light_theme_button.setChecked(self.theme_mode == "light")
+        self.dark_theme_button.setChecked(self.theme_mode == "dark")
+        self.light_theme_button.clicked.connect(
+            lambda _checked=False: self._set_theme_mode("light")
+        )
+        self.dark_theme_button.clicked.connect(
+            lambda _checked=False: self._set_theme_mode("dark")
+        )
+        theme_mode_row.addWidget(self.light_theme_button)
+        theme_mode_row.addWidget(self.dark_theme_button)
+        theme_mode_row.addStretch(1)
+        appearance_layout.addLayout(theme_mode_row)
+
+        theme_color_row = QHBoxLayout()
+        theme_color_row.addWidget(QLabel("Accent color"))
+        self.theme_color_button = QPushButton()
+        self.theme_color_button.setMinimumWidth(120)
+        self.theme_color_button.clicked.connect(self._choose_theme_color)
+        theme_color_row.addWidget(self.theme_color_button, 1)
+        appearance_layout.addLayout(theme_color_row)
+        self._update_theme_color_button()
 
         background_heading = QLabel("<b>Background</b>")
         appearance_layout.addWidget(background_heading)
@@ -928,7 +1329,7 @@ class SettingsDialog(QDialog):
         )
         controls["ruby_padding"] = ruby_padding
 
-        ruby_font_size = QSpinBox()
+        ruby_font_size = ThemedSpinBox()
         ruby_font_size.setRange(6, 72)
         ruby_font_size.setValue(int(values.get("ruby_font_size", 18)))
         ruby_font_size.setSuffix(" pt")
@@ -946,7 +1347,7 @@ class SettingsDialog(QDialog):
         controls["font_family"] = font_family
         self._add_labeled(layout, "Font family:", font_family)
 
-        font_size = QSpinBox()
+        font_size = ThemedSpinBox()
         font_size.setRange(10, 96)
         font_size.setValue(int(values.get("font_size", 32)))
         font_size.setSuffix(" pt")
@@ -1221,6 +1622,38 @@ class SettingsDialog(QDialog):
         self._add_labeled(layout, title, button)
         return button
 
+    def _update_theme_color_button(self):
+        color = QColor(self.theme_color)
+        palette = build_theme_palette(self.theme_mode, self.theme_color)
+        self.theme_color_button.setText(color.name().upper())
+        self.theme_color_button.setToolTip("Choose the app accent color")
+        self.theme_color_button.setStyleSheet(
+            "QPushButton {"
+            f" color: {palette['accent_text']}; background: {color.name()};"
+            f" border: 1px solid {palette['field_border']}; border-radius: 5px;"
+            " padding: 6px 11px; text-align: left; }"
+            f"QPushButton:hover {{ border-color: {palette['accent_border']}; }}"
+        )
+
+    def _set_theme_mode(self, theme_mode):
+        self.theme_mode = theme_mode
+        self._update_theme_color_button()
+        _apply_settings_dialog_style(
+            self, self.theme_mode, self.theme_color
+        )
+
+    def _choose_theme_color(self):
+        color = QColorDialog.getColor(
+            QColor(self.theme_color), self, "Choose accent color"
+        )
+        if not color.isValid():
+            return
+        self.theme_color = color.name()
+        self._update_theme_color_button()
+        _apply_settings_dialog_style(
+            self, self.theme_mode, self.theme_color
+        )
+
     def _local_setting_name(self, key):
         names = {
             "scrolling_lyrics": "Display mode:", "lyrics_direction": "Lyrics direction:",
@@ -1348,7 +1781,7 @@ class SettingsDialog(QDialog):
             editor.setCurrentIndex(index if index >= 0 else 0)
             return editor
         if key in {"font_size", "ruby_font_size"}:
-            editor = QSpinBox()
+            editor = ThemedSpinBox()
             if key == "ruby_font_size":
                 editor.setRange(6, 72)
             else:
@@ -1492,6 +1925,8 @@ class SettingsDialog(QDialog):
 
     def get_appearance_settings(self):
         return {
+            "theme_mode": self.theme_mode,
+            "theme_color": self.theme_color,
             "background_enabled": self.background_enabled_checkbox.isChecked(),
             "artwork_source": self.artwork_source_combo.currentData(),
             "booru_tags": self.booru_tags_edit.text().strip() or "scenery",

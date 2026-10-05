@@ -115,7 +115,30 @@ class ArtworkBackgroundWidget(QWidget):
     def set_artwork_bytes(self, data):
         pixmap = QPixmap()
 
-        if data and pixmap.loadFromData(data):
+        if data:
+            image_data = QByteArray(data)
+            buffer = QBuffer(image_data)
+            if buffer.open(QIODevice.OpenModeFlag.ReadOnly):
+                reader = QImageReader(buffer)
+                reader.setAutoTransform(True)
+                original_size = reader.size()
+                max_size = QSize(
+                    max(1, self.width() * 2),
+                    max(1, self.height() * 2),
+                )
+                if original_size.isValid():
+                    scaled_size = original_size.scaled(
+                        max_size,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                    )
+                    if scaled_size.isValid() and scaled_size != original_size:
+                        reader.setScaledSize(scaled_size)
+                image = reader.read()
+                buffer.close()
+                if not image.isNull():
+                    pixmap = QPixmap.fromImage(image)
+
+        if not pixmap.isNull():
             self._source_pixmap = pixmap
             self._rebuild_background()
             self.update()

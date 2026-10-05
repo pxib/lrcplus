@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt, QUrl, QTimer, Signal, QThread, QSize, QRect
 from PySide6.QtGui import QAction, QKeySequence, QShortcut, QPixmap, QPainter
 from PySide6.QtMultimedia import QAudioOutput, QMediaDevices, QMediaPlayer
 from PySide6.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
+    QButtonGroup, QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
     QInputDialog, QMainWindow, QScrollArea, QStackedWidget, QLineEdit,
     QMessageBox, QPushButton, QProgressBar, QSlider, QTextEdit, QToolButton, QVBoxLayout, QWidget,
     QGraphicsView, QGraphicsScene,
@@ -48,6 +48,7 @@ from ui.lrc_editor import LrcEditorDialog
 from ui.playlist_dialog import PlaylistDialog
 from ui.artwork_background import ArtworkBackgroundWidget, extract_embedded_cover, load_embedded_cover_thumbnail
 from core.booru_artwork import fetch_booru_artwork
+from core.theme import build_theme_palette
 
 
 def _lyrics_search_query(audio_path):
@@ -201,7 +202,8 @@ class Player(AudioController, LyricsController, QMainWindow):
             self._booru_request_id = 0
 
             self.setWindowTitle("LyricsPlus")
-            self.resize(1100, 700)
+            self.resize(1180, 760)
+            self.setObjectName("lyricsPlusWindow")
 
             self.startup_settings = get_startup_settings()
             self.appearance_settings = get_appearance_settings()
@@ -455,6 +457,7 @@ class Player(AudioController, LyricsController, QMainWindow):
 
             self.shuffle_enabled = False
             self.shuffle_button = QPushButton("Shuffle: Off")
+            self.shuffle_button.setObjectName("dockAction")
             self.shuffle_button.clicked.connect(self.cycle_shuffle_mode)
             self._update_shuffle_button_text()
 
@@ -559,9 +562,17 @@ class Player(AudioController, LyricsController, QMainWindow):
             )
 
             self.library_button = QPushButton("Library")
+            self.library_button.setObjectName("workspaceButton")
+            self.library_button.setCheckable(True)
             self.library_button.clicked.connect(lambda: self.workspace_stack.setCurrentWidget(self.library_page))
             self.lyrics_view_button = QPushButton("Lyrics")
+            self.lyrics_view_button.setObjectName("workspaceButton")
+            self.lyrics_view_button.setCheckable(True)
             self.lyrics_view_button.clicked.connect(lambda: self.workspace_stack.setCurrentWidget(self.lyrics_page))
+            self.workspace_button_group = QButtonGroup(self)
+            self.workspace_button_group.setExclusive(True)
+            self.workspace_button_group.addButton(self.library_button)
+            self.workspace_button_group.addButton(self.lyrics_view_button)
 
             # --------------------------------------------------
             # TRANSPORT CONTROLS
@@ -576,6 +587,25 @@ class Player(AudioController, LyricsController, QMainWindow):
 
             for button in (self.previous_button, self.rewind_button, self.play_button, self.stop_button, self.forward_button, self.next_button):
                 button.setEnabled(False)
+                button.setObjectName("transportButton")
+                button.setMinimumHeight(36)
+
+            self.previous_button.setToolTip("Previous track")
+            self.rewind_button.setToolTip("Seek backward 5 seconds")
+            self.play_button.setObjectName("primaryTransportButton")
+            self.play_button.setToolTip("Play or pause (Space)")
+            self.stop_button.setToolTip("Stop playback")
+            self.forward_button.setToolTip("Seek forward 5 seconds")
+            self.next_button.setToolTip("Next track")
+            for button, width in (
+                (self.previous_button, 58),
+                (self.rewind_button, 62),
+                (self.play_button, 76),
+                (self.stop_button, 58),
+                (self.forward_button, 62),
+                (self.next_button, 58),
+            ):
+                button.setFixedWidth(width)
 
             self.previous_button.clicked.connect(self.previous_track)
             self.rewind_button.clicked.connect(lambda: self.skip_seconds(-5))
@@ -587,6 +617,7 @@ class Player(AudioController, LyricsController, QMainWindow):
             self.mute_button = QPushButton(
                 "Mute"
             )
+            self.mute_button.setObjectName("dockAction")
             self.mute_button.clicked.connect(
                 self.toggle_mute
             )
@@ -595,48 +626,95 @@ class Player(AudioController, LyricsController, QMainWindow):
             # LAYOUT
             # --------------------------------------------------
 
+            self.seek_slider.setObjectName("seekSlider")
+            self.current_time_label.setObjectName("timeLabel")
+            self.duration_label.setObjectName("timeLabel")
+
             seek_layout = QHBoxLayout()
             seek_layout.setContentsMargins(0, 0, 0, 0)
+            seek_layout.setSpacing(10)
             seek_layout.addWidget(self.current_time_label)
             seek_layout.addWidget(self.seek_slider, 1)
             seek_layout.addWidget(self.duration_label)
 
             volume_layout = QHBoxLayout()
             volume_layout.setContentsMargins(0, 0, 0, 0)
-            volume_layout.addStretch()
+            volume_layout.setSpacing(8)
             volume_layout.addWidget(self.shuffle_button)
-            volume_layout.addWidget(QLabel("Speed:"))
+            volume_layout.addSpacing(8)
+            volume_layout.addWidget(QLabel("Speed"))
             volume_layout.addWidget(self.speed_slider)
             volume_layout.addWidget(self.speed_label)
+            volume_layout.addStretch(1)
             volume_layout.addWidget(self.mute_button)
-            volume_layout.addWidget(QLabel("Volume:"))
+            volume_layout.addWidget(QLabel("Volume"))
             volume_layout.addWidget(self.volume_slider)
             volume_layout.addWidget(self.volume_percentage_label)
 
-            controls_layout = QHBoxLayout()
-            controls_layout.setContentsMargins(0, 0, 0, 0)
-            controls_layout.addWidget(self.open_button)
-            controls_layout.addWidget(self.settings_button)
-            controls_layout.addWidget(self.lyrics_button)
-            controls_layout.addWidget(self.recent_button)
-            controls_layout.addWidget(self.playlist_button)
-            controls_layout.addWidget(self.library_button)
-            controls_layout.addWidget(self.lyrics_view_button)
+            player_controls_layout = QHBoxLayout()
+            player_controls_layout.setContentsMargins(0, 0, 0, 0)
+            player_controls_layout.setSpacing(6)
+            player_controls_layout.addWidget(self.previous_button)
+            player_controls_layout.addWidget(self.rewind_button)
+            player_controls_layout.addWidget(self.play_button)
+            player_controls_layout.addWidget(self.stop_button)
+            player_controls_layout.addWidget(self.forward_button)
+            player_controls_layout.addWidget(self.next_button)
+            player_controls_layout.addSpacing(14)
+            player_controls_layout.addLayout(seek_layout, 1)
+
+            player_dock = QWidget()
+            player_dock.setObjectName("playerDock")
+            player_dock_layout = QVBoxLayout(player_dock)
+            player_dock_layout.setContentsMargins(14, 10, 14, 10)
+            player_dock_layout.setSpacing(8)
+            player_dock_layout.addLayout(player_controls_layout)
+            player_dock_layout.addLayout(volume_layout)
+
+            header = QWidget()
+            header.setObjectName("mainHeader")
+            header_layout = QHBoxLayout(header)
+            header_layout.setContentsMargins(0, 0, 0, 10)
+            header_layout.setSpacing(8)
+            brand_label = QLabel("LyricsPlus")
+            brand_label.setObjectName("brandLabel")
+            header_layout.addWidget(brand_label)
+            header_layout.addSpacing(12)
+            header_layout.addWidget(self.library_button)
+            header_layout.addWidget(self.lyrics_view_button)
+            header_layout.addStretch(1)
+
+            self.plugins_menu = QMenu(self)
+            self.plugins_button = QToolButton()
+            self.plugins_button.setText("Plugins")
+            self.plugins_button.setPopupMode(
+                QToolButton.ToolButtonPopupMode.InstantPopup
+            )
+            self.plugins_button.setMenu(self.plugins_menu)
+            self.plugins_button.setVisible(False)
+            for button in (
+                self.plugins_button,
+                self.open_button,
+                self.lyrics_button,
+                self.recent_button,
+                self.playlist_button,
+                self.settings_button,
+            ):
+                button.setObjectName("headerAction")
+                button.setMinimumHeight(34)
+            header_layout.addWidget(self.plugins_button)
+            header_layout.addWidget(self.open_button)
+            header_layout.addWidget(self.lyrics_button)
+            header_layout.addWidget(self.recent_button)
+            header_layout.addWidget(self.playlist_button)
             self.plugin_buttons_layout = QHBoxLayout()
             self.plugin_buttons_layout.setContentsMargins(0, 0, 0, 0)
-            controls_layout.addLayout(self.plugin_buttons_layout)
-            controls_layout.addStretch()
-            controls_layout.addWidget(self.previous_button)
-            controls_layout.addWidget(self.rewind_button)
-            controls_layout.addWidget(self.play_button)
-            controls_layout.addWidget(self.stop_button)
-            controls_layout.addWidget(self.forward_button)
-            controls_layout.addWidget(self.next_button)
-            controls_layout.addStretch()
+            header_layout.addLayout(self.plugin_buttons_layout)
+            header_layout.addWidget(self.settings_button)
 
             layout = QVBoxLayout()
-            layout.setContentsMargins(12, 12, 12, 12)
-            layout.setSpacing(8)
+            layout.setContentsMargins(18, 14, 18, 14)
+            layout.setSpacing(10)
 
             self.lyric_display_stack = QStackedWidget()
             self.lyric_display_stack.setAttribute(
@@ -706,24 +784,16 @@ class Player(AudioController, LyricsController, QMainWindow):
             self._handle_workspace_changed(self.workspace_stack.currentIndex())
             self._populate_library_view()
 
+            layout.addWidget(header, 0)
             layout.addWidget(self.workspace_stack, 1)
             layout.addWidget(self.waveform_widget, 0)
-            layout.addLayout(
-                seek_layout,
-                0,
-            )
-            layout.addLayout(
-                volume_layout,
-                0,
-            )
-            layout.addLayout(
-                controls_layout,
-                0,
-            )
+            layout.addWidget(player_dock, 0)
 
             container = QWidget()
+            container.setObjectName("mainSurface")
             container.setLayout(layout)
             self.setCentralWidget(container)
+            self._apply_main_window_style()
 
             self._furigana_prefetch_id = 0
             self._furigana_progress_bridge = _FuriganaProgressBridge(self)
@@ -814,13 +884,17 @@ class Player(AudioController, LyricsController, QMainWindow):
 
             toolbar = QHBoxLayout()
             self.library_search = QLineEdit()
+            self.library_search.setObjectName("librarySearch")
             self.library_search.setPlaceholderText("Search library...")
             self.library_search.textChanged.connect(self._populate_library_view)
             add_folder = QPushButton("Add Music Folder")
+            add_folder.setObjectName("headerAction")
             add_folder.clicked.connect(self.add_music_folder)
             remove_folder = QPushButton("Remove Folder")
+            remove_folder.setObjectName("headerAction")
             remove_folder.clicked.connect(self.remove_music_folder)
             rescan = QPushButton("Rescan")
+            rescan.setObjectName("headerAction")
             rescan.clicked.connect(self.rescan_music_library)
             toolbar.addWidget(self.library_search, 1)
             toolbar.addWidget(add_folder)
@@ -842,6 +916,7 @@ class Player(AudioController, LyricsController, QMainWindow):
                 ("modified", "File last modified"),
             ]
             self.library_table = QTreeWidget()
+            self.library_table.setObjectName("libraryTable")
             self.library_table.setColumnCount(len(self.library_columns))
             self.library_table.setHeaderLabels([label for _, label in self.library_columns])
             self.library_table.setRootIsDecorated(True)
@@ -898,7 +973,9 @@ class Player(AudioController, LyricsController, QMainWindow):
         def _apply_library_column_state(self):
             state = self.library_column_state or {}
             header = self.library_table.header()
-            hidden = set(state.get("hidden", []))
+            hidden = set(state.get("hidden", [])) if "hidden" in state else set(
+                range(6, len(self.library_columns))
+            )
             widths = state.get("widths", {})
             order = state.get("order", [])
             for logical in range(len(self.library_columns)):
@@ -930,11 +1007,198 @@ class Player(AudioController, LyricsController, QMainWindow):
         def _reset_library_columns(self):
             header = self.library_table.header()
             for logical in range(len(self.library_columns)):
-                header.setSectionHidden(logical, logical >= 9)
+                header.setSectionHidden(logical, logical >= 6)
                 current = header.visualIndex(logical)
                 if current != logical: header.moveSection(current, logical)
             self.library_column_state = {}
             self._save_library_column_state()
+
+        def _apply_main_window_style(self):
+            palette = build_theme_palette(
+                self.appearance_settings.get("theme_mode", "light"),
+                self.appearance_settings.get("theme_color", "#3a9879"),
+            )
+            style = """
+                QMainWindow#lyricsPlusWindow,
+                QWidget#mainSurface {
+                    background: @WINDOW@;
+                    color: @TEXT@;
+                }
+                QWidget#mainHeader {
+                    background: @HEADER@;
+                    border-bottom: 1px solid @BORDER@;
+                }
+                QLabel#brandLabel {
+                    color: @BRAND@;
+                    font-size: 18px;
+                    font-weight: 700;
+                }
+                QPushButton#workspaceButton {
+                    color: @MUTED@;
+                    background: transparent;
+                    border: 1px solid transparent;
+                    border-radius: 6px;
+                    padding: 7px 13px;
+                    font-weight: 600;
+                }
+                QPushButton#workspaceButton:hover {
+                    background: @RAISED@;
+                }
+                QPushButton#workspaceButton:checked {
+                    color: @ACCENT_TEXT@;
+                    background: @ACCENT_SOFT@;
+                    border-color: @ACCENT_BORDER@;
+                }
+                QPushButton#headerAction,
+                QToolButton#headerAction {
+                    color: @HEADER_BUTTON_TEXT@;
+                    background: @SURFACE@;
+                    border: 1px solid @FIELD_BORDER@;
+                    border-radius: 6px;
+                    padding: 6px 10px;
+                }
+                QPushButton#headerAction:hover,
+                QToolButton#headerAction:hover {
+                    background: @RAISED_HOVER@;
+                    border-color: @ACCENT_BORDER@;
+                }
+                QPushButton#headerAction:pressed,
+                QToolButton#headerAction:pressed {
+                    background: @PRESSED@;
+                }
+                QLineEdit#librarySearch {
+                    color: @TEXT@;
+                    background: @SURFACE@;
+                    border: 1px solid @FIELD_BORDER@;
+                    border-radius: 6px;
+                    padding: 8px 10px;
+                    selection-background-color: @ACCENT@;
+                }
+                QTreeWidget#libraryTable {
+                    color: @TEXT@;
+                    background: @SURFACE@;
+                    alternate-background-color: @SURFACE_ALT@;
+                    border: 1px solid @BORDER@;
+                    border-radius: 6px;
+                    outline: none;
+                }
+                QTreeWidget#libraryTable::item {
+                    padding: 4px 3px;
+                }
+                QTreeWidget#libraryTable::item:selected {
+                    color: @ACCENT_TEXT@;
+                    background: @ACCENT_SOFT@;
+                }
+                QTreeWidget#libraryTable QHeaderView::section {
+                    color: @MUTED@;
+                    background: @RAISED@;
+                    border: none;
+                    border-right: 1px solid @BORDER@;
+                    border-bottom: 1px solid @BORDER@;
+                    padding: 7px 6px;
+                    font-weight: 600;
+                }
+                QWidget#playerDock {
+                    background: @DOCK@;
+                    border: 1px solid @DOCK_BORDER@;
+                    border-radius: 8px;
+                }
+                QWidget#playerDock QLabel {
+                    color: @DOCK_TEXT@;
+                    background: transparent;
+                }
+                QPushButton#dockAction {
+                    color: @DOCK_TEXT@;
+                    background: @DOCK_CONTROL@;
+                    border: 1px solid @DOCK_CONTROL_BORDER@;
+                    border-radius: 6px;
+                    padding: 5px 9px;
+                    min-height: 28px;
+                }
+                QPushButton#dockAction:hover {
+                    background: @DOCK_CONTROL_HOVER@;
+                }
+                QLabel#timeLabel {
+                    color: @DOCK_TEXT@;
+                    font-weight: 600;
+                }
+                QPushButton#transportButton {
+                    color: @DOCK_TEXT@;
+                    background: @DOCK_CONTROL@;
+                    border: 1px solid @DOCK_CONTROL_BORDER@;
+                    border-radius: 6px;
+                    padding: 5px 8px;
+                    font-weight: 600;
+                }
+                QPushButton#transportButton:hover:enabled {
+                    background: @DOCK_CONTROL_HOVER@;
+                }
+                QPushButton#transportButton:disabled {
+                    color: @DOCK_MUTED@;
+                    background: @DOCK_DISABLED@;
+                    border-color: @DOCK_BORDER@;
+                }
+                QPushButton#primaryTransportButton {
+                    color: @ACCENT_TEXT@;
+                    background: @ACCENT@;
+                    border: 1px solid @ACCENT_BORDER@;
+                    border-radius: 6px;
+                    padding: 5px 8px;
+                    font-weight: 700;
+                }
+                QPushButton#primaryTransportButton:hover:enabled {
+                    background: @ACCENT_HOVER@;
+                }
+                QSlider#seekSlider::groove:horizontal {
+                    height: 4px;
+                    background: @SEEK_TRACK@;
+                    border-radius: 2px;
+                }
+                QSlider#seekSlider::sub-page:horizontal {
+                    background: @ACCENT@;
+                    border-radius: 2px;
+                }
+                QSlider#seekSlider::handle:horizontal {
+                    width: 12px;
+                    margin: -5px 0;
+                    background: @SLIDER_HANDLE@;
+                    border: 2px solid @ACCENT@;
+                    border-radius: 7px;
+                }
+            """
+            replacements = {
+                "@ACCENT@": "accent",
+                "@ACCENT_HOVER@": "accent_hover",
+                "@ACCENT_BORDER@": "accent_border",
+                "@ACCENT_SOFT@": "accent_soft",
+                "@ACCENT_TEXT@": "accent_text",
+                "@WINDOW@": "window",
+                "@HEADER@": "header",
+                "@TEXT@": "text",
+                "@BRAND@": "brand",
+                "@MUTED@": "muted",
+                "@BORDER@": "border",
+                "@FIELD_BORDER@": "field_border",
+                "@HEADER_BUTTON_TEXT@": "header_button_text",
+                "@SURFACE@": "surface",
+                "@SURFACE_ALT@": "surface_alt",
+                "@RAISED@": "raised",
+                "@RAISED_HOVER@": "raised_hover",
+                "@PRESSED@": "pressed",
+                "@DOCK@": "dock",
+                "@DOCK_BORDER@": "dock_border",
+                "@DOCK_CONTROL@": "dock_control",
+                "@DOCK_CONTROL_HOVER@": "dock_control_hover",
+                "@DOCK_CONTROL_BORDER@": "dock_control_border",
+                "@DOCK_DISABLED@": "dock_disabled",
+                "@DOCK_TEXT@": "dock_text",
+                "@DOCK_MUTED@": "dock_muted",
+                "@SEEK_TRACK@": "seek_track",
+                "@SLIDER_HANDLE@": "slider_handle",
+            }
+            for marker, key in replacements.items():
+                style = style.replace(marker, palette[key])
+            self.setStyleSheet(style)
 
         @staticmethod
         def _format_library_duration(seconds):
@@ -1211,8 +1475,8 @@ class Player(AudioController, LyricsController, QMainWindow):
             if not hasattr(self, "workspace_stack"):
                 return
             current_page = self.workspace_stack.widget(index)
-            self.library_button.setEnabled(current_page is not self.library_page)
-            self.lyrics_view_button.setEnabled(current_page is not self.lyrics_page)
+            self.library_button.setChecked(current_page is self.library_page)
+            self.lyrics_view_button.setChecked(current_page is self.lyrics_page)
             if current_page is not self.lyrics_page:
                 return
 
@@ -1725,6 +1989,7 @@ class Player(AudioController, LyricsController, QMainWindow):
 
                 self.appearance_settings = dialog.get_appearance_settings()
                 save_appearance_settings(self.appearance_settings)
+                self._apply_main_window_style()
                 self._apply_appearance_settings()
 
                 self.playback_settings = dialog.get_playback_settings()

@@ -1,4 +1,5 @@
 import json
+import re
 import time
 import uuid
 from copy import deepcopy
@@ -241,6 +242,8 @@ def save_startup_settings(values):
 
 
 APPEARANCE_DEFAULTS = {
+    "theme_mode": "light",
+    "theme_color": "#3a9879",
     "background_enabled": True,
     "background_blur_mode": "quality",
     "background_blur_bleed": False,
@@ -266,7 +269,18 @@ def get_appearance_settings(payload=None):
             value = fallback
         return max(minimum, min(maximum, value))
 
+    theme_color = str(
+        values.get("theme_color", APPEARANCE_DEFAULTS["theme_color"])
+    ).strip()
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", theme_color):
+        theme_color = APPEARANCE_DEFAULTS["theme_color"]
+    theme_mode = values.get("theme_mode")
+    if theme_mode not in {"light", "dark"}:
+        theme_mode = APPEARANCE_DEFAULTS["theme_mode"]
+
     return {
+        "theme_mode": theme_mode,
+        "theme_color": theme_color.lower(),
         "background_enabled": bool(
             values.get(
                 "background_enabled",

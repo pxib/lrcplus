@@ -94,15 +94,22 @@ class PluginManager:
 
     def _create_menu_action(self, owner: str, menu: str, text: str, callback: Callable[..., Any], shortcut: str | None, checkable: bool = False) -> None:
         from PySide6.QtGui import QAction, QKeySequence
-        menu_bar = self._host_window.menuBar()
         target = None
-        for action in menu_bar.actions():
-            candidate = action.menu()
-            if candidate is not None and candidate.title().replace("&", "").casefold() == menu.replace("&", "").casefold():
-                target = candidate
-                break
+        if menu.replace("&", "").casefold() == "plugins":
+            target = getattr(self._host_window, "plugins_menu", None)
+            if target is not None:
+                button = getattr(self._host_window, "plugins_button", None)
+                if button is not None:
+                    button.setVisible(True)
         if target is None:
-            target = menu_bar.addMenu(menu)
+            menu_bar = self._host_window.menuBar()
+            for action in menu_bar.actions():
+                candidate = action.menu()
+                if candidate is not None and candidate.title().replace("&", "").casefold() == menu.replace("&", "").casefold():
+                    target = candidate
+                    break
+        if target is None:
+            target = self._host_window.menuBar().addMenu(menu)
         action = QAction(text, self._host_window)
         action.setCheckable(checkable)
         if shortcut:
@@ -140,6 +147,8 @@ class PluginManager:
         if layout is None:
             raise RuntimeError("The host window does not expose plugin buttons")
         button = QPushButton(text, self._host_window)
+        button.setObjectName("headerAction")
+        button.setMinimumHeight(34)
         button.clicked.connect(callback)
         layout.addWidget(button)
         self._owned_buttons.append((owner, layout, button))
@@ -441,6 +450,10 @@ class PluginManager:
                 menu.removeAction(action)
                 action.deleteLater()
                 self._owned_actions.remove((owner, menu, action))
+                if menu is getattr(self._host_window, "plugins_menu", None) and not menu.actions():
+                    button = getattr(self._host_window, "plugins_button", None)
+                    if button is not None:
+                        button.setVisible(False)
         for owner, layout, button in list(self._owned_buttons):
             if owner == plugin_id:
                 layout.removeWidget(button)

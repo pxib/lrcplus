@@ -2,6 +2,8 @@ from pathlib import Path
 import math
 import shutil
 import subprocess
+import tempfile
+import threading
 from array import array
 import sys
 
@@ -14,6 +16,30 @@ def find_ffmpeg():
     return shutil.which("ffmpeg")
 
 
+def _waveform_peaks_from_pcm(pcm_file, samples):
+    pcm_file.seek(0, 2)
+    total_bytes = pcm_file.tell()
+    total = total_bytes // 2
+    if total <= 0:
+        return [], 0
+
+    bucket_count = min(max(200, int(samples)), total)
+    peaks = []
+    scale = 32768.0 * 32768.0
+    for index in range(bucket_count):
+        start = (index * total) // bucket_count
+        end = max(start + 1, ((index + 1) * total) // bucket_count)
+        pcm_file.seek(start * 2)
+        bucket = array("h")
+        bucket.frombytes(pcm_file.read((end - start) * 2))
+        if sys.byteorder != "little":
+            bucket.byteswap()
+        count = len(bucket)
+        acc = sum(sample * sample for sample in bucket)
+        peaks.append(min(1.0, math.sqrt(acc / (count * scale))))
+    return peaks, total
+
+
 class _WaveformWorker(QThread):
     loaded = Signal(list, int)
     failed = Signal(str)
@@ -22,9 +48,29 @@ class _WaveformWorker(QThread):
         super().__init__(parent)
         self.path = str(path)
         self.samples = max(200, int(samples))
+        self._process = None
+        self._process_lock = threading.Lock()
+        self._cancelled = threading.Event()
+
+    def cancel(self):
+        self._cancelled.set()
+        self.requestInterruption()
+        with self._process_lock:
+            process = self._process
+            if process is not None and process.poll() is None:
+                try:
+                    process.terminate()
+                except OSError:
+                    pass
+
+    def _is_cancelled(self):
+        return self._cancelled.is_set() or self.isInterruptionRequested()
 
     def run(self):
         try:
+            if self._is_cancelled():
+                return
+
             # Decode through ffmpeg so MP3/FLAC/M4A/etc. work uniformly.
             # A mono 8 kHz stream is plenty for a visual overview and keeps
             # memory/CPU use low even for long songs.
@@ -40,45 +86,60 @@ class _WaveformWorker(QThread):
                 "-f", "s16le",
                 "-",
             ]
-            proc = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=120,
-                check=False,
-            )
-            if proc.returncode != 0 or not proc.stdout:
-                raise RuntimeError(proc.stderr.decode("utf-8", "replace").strip() or "ffmpeg could not decode the audio.")
+            with tempfile.TemporaryFile() as decoded_audio:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=decoded_audio,
+                    stderr=subprocess.PIPE,
+                )
+                with self._process_lock:
+                    self._process = process
+                    interrupted = self._is_cancelled()
 
-            # Decode directly into native signed-short values.  This avoids
-            # millions of tiny bytes slices/int.from_bytes calls on long tracks.
-            samples = array("h")
-            samples.frombytes(proc.stdout)
-            if sys.byteorder != "little":
-                samples.byteswap()
-            total = len(samples)
+                if interrupted and process.poll() is None:
+                    try:
+                        process.terminate()
+                    except OSError:
+                        pass
+
+                try:
+                    _, stderr = process.communicate(timeout=120)
+                except subprocess.TimeoutExpired:
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                    _, stderr = process.communicate()
+                    if not self._is_cancelled():
+                        raise RuntimeError(
+                            stderr.decode("utf-8", "replace").strip()
+                            or "ffmpeg timed out while decoding the audio."
+                        )
+                    return
+                finally:
+                    with self._process_lock:
+                        if self._process is process:
+                            self._process = None
+
+                if self._is_cancelled():
+                    return
+                if process.returncode != 0:
+                    raise RuntimeError(stderr.decode("utf-8", "replace").strip() or "ffmpeg could not decode the audio.")
+
+                peaks, total = _waveform_peaks_from_pcm(
+                    decoded_audio, self.samples
+                )
             if total <= 0:
                 raise RuntimeError("No audio samples were decoded.")
 
-            # Collapse the stream into a fixed number of RMS buckets. The
-            # 2 kHz decode rate is far above the visual resolution of ~1400
-            # bars while reducing decoding and Python-side work by 75%.
-            bucket_count = min(self.samples, total)
-            peaks = []
-            scale = 32768.0 * 32768.0
-            for i in range(bucket_count):
-                start = (i * total) // bucket_count
-                end = max(start + 1, ((i + 1) * total) // bucket_count)
-                bucket = samples[start:end]
-                count = len(bucket)
-                acc = sum(sample * sample for sample in bucket)
-                peaks.append(min(1.0, math.sqrt(acc / (count * scale))))
-
-            self.loaded.emit(peaks, max(1, round(total / 2000 * 1000)))
+            if not self._is_cancelled():
+                self.loaded.emit(peaks, max(1, round(total / 2000 * 1000)))
         except FileNotFoundError:
-            self.failed.emit("ffmpeg was not found.")
+            if not self._is_cancelled():
+                self.failed.emit("ffmpeg was not found.")
         except Exception as exc:
-            self.failed.emit(str(exc))
+            if not self._is_cancelled():
+                self.failed.emit(str(exc))
 
 
 class WaveformWidget(QWidget):
@@ -413,17 +474,13 @@ class WaveformWidget(QWidget):
         self.update()
 
     def _stop_worker(self):
-        # Capture the worker locally so a concurrent finished-signal handler
-        # cannot replace self._worker with None between the checks and wait().
         worker = self._worker
         self._worker = None
 
         if worker is not None:
             try:
-                if worker.isRunning():
-                    worker.requestInterruption()
-                    worker.terminate()
-                    worker.wait(300)
+                worker.cancel()
+                worker.wait()
             except RuntimeError:
                 # Qt may already have destroyed the QThread wrapper.
                 pass
@@ -432,11 +489,14 @@ class WaveformWidget(QWidget):
         # Keep the QThread object alive until Qt delivers the signal handlers,
         # then release it safely.
         worker = self.sender()
-        if worker is self._worker and worker is not None:
+        if worker is not None:
             worker.deleteLater()
-            self._worker = None
+            if worker is self._worker:
+                self._worker = None
 
     def _on_loaded(self, peaks, duration_ms):
+        if self.sender() is not self._worker:
+            return
         self._peaks = peaks
         if duration_ms > 0:
             self._duration_ms = duration_ms
@@ -445,6 +505,8 @@ class WaveformWidget(QWidget):
         self.update()
 
     def _on_failed(self, message):
+        if self.sender() is not self._worker:
+            return
         self._loading = False
         self._error = message
         self.update()

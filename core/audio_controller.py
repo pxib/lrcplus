@@ -590,7 +590,11 @@ class AudioController:
 
 
         def handle_media_status(self, status):
-            if status != QMediaPlayer.MediaStatus.EndOfMedia:
+            if (
+                status != QMediaPlayer.MediaStatus.EndOfMedia
+                or self.media_player.mediaStatus()
+                != QMediaPlayer.MediaStatus.EndOfMedia
+            ):
                 return
 
             paths = self._playback_paths()
