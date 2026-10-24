@@ -3673,7 +3673,23 @@ class LrcEditorDialog(QDialog):
         if rebuild_segments or self._preview_segments_line_index != index:
             line_end = getattr(line, "end", None)
             if line_end is None:
-                line_end = line.segments[-1].start if line.segments else line.start
+                timeline = sorted(
+                    (candidate.start, candidate_index)
+                    for candidate_index, candidate in enumerate(self.lines)
+                )
+                timeline_index = next(
+                    (i for i, (_start, candidate_index) in enumerate(timeline)
+                     if candidate_index == index),
+                    None,
+                )
+                if timeline_index is not None and timeline_index + 1 < len(timeline):
+                    line_end = timeline[timeline_index + 1][0]
+                elif self.player is not None and hasattr(self.player, "media_player"):
+                    duration = self.player.media_player.duration()
+                    if duration > 0:
+                        line_end = duration / 1000.0
+                if line_end is None:
+                    line_end = line.segments[-1].start if line.segments else line.start
             self.karaoke_renderer_preview.set_segments(
                 line.text,
                 line.segments,

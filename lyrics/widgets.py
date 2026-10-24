@@ -3940,7 +3940,12 @@ class ScrollingLyricsWidget(QWidget):
                             finish_at = max(finish_at, float(value))
                         except (TypeError, ValueError):
                             pass
-            previous_row.set_karaoke_position(finish_at)
+            # Some files place the next lyric before the last segment's start
+            # (for example, a trailing segment at 55.800 after a line at
+            # 55.450). In that case the segment has no usable interval and
+            # falls back to a one-second sweep. Move past that fallback too,
+            # so the completed row is fully filled when playback advances.
+            previous_row.set_karaoke_position(finish_at + 1.0)
 
         if current is not None:
             row = self.rows[current]

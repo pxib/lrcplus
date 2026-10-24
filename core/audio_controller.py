@@ -2,6 +2,7 @@ import random
 from pathlib import Path
 
 import numpy as np
+from pedalboard import PitchShift
 from PySide6.QtCore import QUrl
 from PySide6.QtMultimedia import (
     QAudioBufferOutput,
@@ -63,6 +64,86 @@ def apply_pcm_gain_to_bytes(data, sample_format, gain):
     limits = np.iinfo(dtype)
     result = np.clip(np.rint(boosted * peak), limits.min, limits.max)
     return result.astype(dtype).tobytes()
+
+
+def apply_pcm_pitch_to_bytes(data, sample_format, channels, sample_rate, semitones):
+    """Shift decoded PCM pitch while preserving its playback duration."""
+    shift = float(semitones)
+    if abs(shift) < 0.001:
+        return data
+    if sample_format == QAudioFormat.SampleFormat.Float:
+        dtype, floating = np.float32, True
+    elif sample_format == QAudioFormat.SampleFormat.Int16:
+        dtype, floating = np.int16, False
+    elif sample_format == QAudioFormat.SampleFormat.Int32:
+        dtype, floating = np.int32, False
+    else:
+        raise ValueError("Pitch processing requires floating-point, 16-bit, or 32-bit PCM.")
+    samples = np.frombuffer(data, dtype=dtype)
+    channels = max(1, int(channels))
+    frame_count = len(samples) // channels
+    if frame_count < 2:
+        return data
+    frames = samples[:frame_count * channels].reshape(frame_count, channels).astype(np.float32)
+    # Rubber Band needs a useful block of context. Qt emits small chunks, so
+    # accumulate them and pitch shift fixed blocks before draining output.
+    state = (channels, int(sample_rate), shift)
+    reset_effect = getattr(apply_pcm_pitch_to_bytes, "_state", None) != state
+    if reset_effect:
+        apply_pcm_pitch_to_bytes._state = state
+        apply_pcm_pitch_to_bytes._input = np.empty((0, channels), dtype=np.float32)
+        apply_pcm_pitch_to_bytes._pending = np.empty((0, channels), dtype=np.float32)
+        apply_pcm_pitch_to_bytes._tail = None
+        apply_pcm_pitch_to_bytes._started = False
+    input_buffer = np.concatenate((apply_pcm_pitch_to_bytes._input, frames), axis=0)
+    pending = apply_pcm_pitch_to_bytes._pending
+    block_frames = 16384
+    overlap_frames = 4096
+    hop_frames = block_frames - overlap_frames
+    while input_buffer.shape[0] >= block_frames:
+        block = input_buffer[:block_frames]
+        input_buffer = input_buffer[hop_frames:]
+        processed = PitchShift(semitones=shift)(block.T, sample_rate, reset=True).T
+        prior_tail = apply_pcm_pitch_to_bytes._tail
+        if prior_tail is None:
+            output_block = processed[:hop_frames]
+        else:
+            phase = np.linspace(0.0, np.pi / 2.0, overlap_frames, endpoint=True)
+            old_gain = np.cos(phase)[:, None]
+            new_gain = np.sin(phase)[:, None]
+            blended = prior_tail * old_gain + processed[:overlap_frames] * new_gain
+            output_block = np.concatenate(
+                (blended, processed[overlap_frames:hop_frames]), axis=0
+            )
+        pending = np.concatenate((pending, output_block), axis=0)
+        apply_pcm_pitch_to_bytes._tail = processed[hop_frames:block_frames]
+    apply_pcm_pitch_to_bytes._input = input_buffer
+    # Pad only the initial block latency; queued processed samples are never
+    # stretched or discarded.
+    shifted = np.zeros_like(frames)
+    if not apply_pcm_pitch_to_bytes._started and pending.shape[0] >= block_frames * 2:
+        apply_pcm_pitch_to_bytes._started = True
+    if apply_pcm_pitch_to_bytes._started:
+        available = min(frame_count, pending.shape[0])
+        if available:
+            shifted[:available] = pending[:available]
+            pending = pending[available:]
+    apply_pcm_pitch_to_bytes._pending = pending
+    if floating:
+        result = np.clip(shifted, -1.0, 1.0).astype(dtype)
+    else:
+        limits = np.iinfo(dtype)
+        result = np.clip(np.rint(shifted), limits.min, limits.max).astype(dtype)
+    return result.tobytes()
+
+
+def reset_pcm_pitch_state():
+    """Drop buffered samples so seeks and pitch changes cannot replay stale audio."""
+    apply_pcm_pitch_to_bytes._state = None
+    apply_pcm_pitch_to_bytes._input = np.empty((0, 0), dtype=np.float32)
+    apply_pcm_pitch_to_bytes._pending = np.empty((0, 0), dtype=np.float32)
+    apply_pcm_pitch_to_bytes._tail = None
+    apply_pcm_pitch_to_bytes._started = False
 
 class AudioController:
         def load_audio(self, path):
@@ -341,12 +422,16 @@ class AudioController:
 
         def _flush_pcm_output(self):
             self._stop_pcm_sink()
+            reset_pcm_pitch_state()
+            if hasattr(self, "volume_slider"):
+                self.audio_output.setVolume(self.volume_slider.value() / 100.0)
 
 
         def _configure_pcm_volume(self, value, refresh_format=False):
             value = int(value)
             self._current_pcm_gain = volume_to_gain(value)
-            if value <= 100:
+            pitch_active = abs(float(getattr(self, "pitch_semitones", 0.0))) >= 0.001
+            if value <= 100 and not pitch_active:
                 output = self._pcm_buffer_output
                 self.media_player.setAudioBufferOutput(None)
                 self._pcm_buffer_output = None
@@ -370,11 +455,15 @@ class AudioController:
             if self.media_player.audioBufferOutput() is not output:
                 self.media_player.setAudioBufferOutput(output)
 
-            self.audio_output.setVolume(0.0)
+            # Keep the native player audible until the processed sink has
+            # successfully started. This avoids muting playback if Qt cannot
+            # provide a decoded buffer for the selected output device.
+            self.audio_output.setVolume(0.0 if value > 100 else value / 100.0)
 
 
         def _write_pcm_buffer(self, buffer):
-            if self.volume_slider.value() <= 100 or not buffer.isValid():
+            if (self.volume_slider.value() <= 100
+                    and abs(float(getattr(self, "pitch_semitones", 0.0))) < 0.001) or not buffer.isValid():
                 return
 
             data = bytes(buffer.data())
@@ -383,11 +472,15 @@ class AudioController:
 
             audio_format = buffer.format()
             try:
-                pcm = apply_pcm_gain_to_bytes(
-                    data,
-                    audio_format.sampleFormat(),
-                    self._current_pcm_gain,
+                pcm = apply_pcm_pitch_to_bytes(
+                    data, audio_format.sampleFormat(), audio_format.channelCount(),
+                    audio_format.sampleRate(),
+                    getattr(self, "pitch_semitones", 0.0),
                 )
+                if self.volume_slider.value() > 100:
+                    pcm = apply_pcm_gain_to_bytes(
+                        pcm, audio_format.sampleFormat(), self._current_pcm_gain,
+                    )
                 if self._pcm_sink is None or self._pcm_sink.format() != audio_format:
                     self._stop_pcm_sink()
                     self._pcm_sink = QAudioSink(
@@ -400,6 +493,13 @@ class AudioController:
                     self._pcm_sink_io = self._pcm_sink.start()
                     if self._pcm_sink_io is None:
                         raise RuntimeError("Qt could not start the PCM audio sink.")
+
+                # Keep the direct route audible while a fresh pitch setting
+                # warms up its processing queue. Switch routes only once that
+                # queue has enough processed audio to avoid a dropout.
+                if (abs(float(getattr(self, "pitch_semitones", 0.0))) >= 0.001
+                        and getattr(apply_pcm_pitch_to_bytes, "_started", False)):
+                    self.audio_output.setVolume(0.0)
 
                 self._pcm_pending.extend(pcm)
                 self._drain_pcm_pending()
@@ -448,15 +548,16 @@ class AudioController:
             self.audio_output.setVolume(1.0)
             QMessageBox.warning(
                 self,
-                "Volume boost unavailable",
-                f"Could not process decoded audio for boosted playback:\n{error}",
+                "Audio processing unavailable",
+                f"Could not process decoded audio:\n{error}",
             )
 
 
         def _sync_pcm_sink_state(self, state):
             if (
                 state == QMediaPlayer.PlaybackState.PlayingState
-                and self.volume_slider.value() > 100
+                and (self.volume_slider.value() > 100
+                     or abs(float(getattr(self, "pitch_semitones", 0.0))) >= 0.001)
                 and self._pcm_buffer_output is not None
                 and self.media_player.audioBufferOutput()
                 is not self._pcm_buffer_output
@@ -570,6 +671,27 @@ class AudioController:
             self.playback_speed = value / 100.0
             self.media_player.setPlaybackRate(self.playback_speed)
             self.speed_label.setText(f"{abs(value)}%")
+
+
+        def handle_pitch_change(self, mode, value):
+            value = float(value)
+            if mode == "Octaves":
+                semitones = value * 12.0
+            elif mode == "Percent":
+                semitones = 12.0 * np.log2(max(0.01, value) / 100.0)
+            else:
+                semitones = value
+            self.pitch_semitones = max(-24.0, min(24.0, float(semitones)))
+            self.pitch_settings = {"mode": mode, "value": value}
+            self.playback_settings["pitch_mode"] = mode
+            self.playback_settings["pitch_value"] = value
+            save_playback_settings(self.playback_settings)
+            self.pitch_status_label.setText(f"{self.pitch_semitones:+.1f} st")
+            # The pitch processor starts a fresh overlap buffer when its shift
+            # changes. Keep normal playback audible until the new output is ready.
+            reset_pcm_pitch_state()
+            self.audio_output.setVolume(self.volume_slider.value() / 100.0)
+            self._configure_pcm_volume(self.volume_slider.value(), refresh_format=True)
 
 
         def cycle_loop_mode(self):

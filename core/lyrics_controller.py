@@ -61,10 +61,13 @@ class LyricsController:
             and getattr(self.lyric_lines[current_index], "segments", None)
         ):
             line = self.lyric_lines[current_index]
+            line_end = getattr(line, "end", None)
+            if line_end is None and current_index + 1 < len(self.lyric_lines):
+                line_end = self.lyric_lines[current_index + 1].start
             self.lyric_widget.set_segments(
                 line.text,
                 line.segments,
-                getattr(line, "end", None),
+                line_end,
             )
         else:
             self.lyric_widget.set_lyric(
@@ -335,10 +338,13 @@ class LyricsController:
                 )
 
                 if line is not None and line.segments:
+                    line_end = getattr(line, "end", None)
+                    if line_end is None and self.current_line + 1 < len(self.lyric_lines):
+                        line_end = self.lyric_lines[self.current_line + 1].start
                     self.lyric_widget.set_segments(
                         line.text,
                         line.segments,
-                        getattr(line, "end", None),
+                        line_end,
                     )
                 else:
                     self.lyric_widget.set_lyric(current_text)
@@ -1080,10 +1086,13 @@ class LyricsController:
 
             line = self.lyric_lines[self.current_line]
             if line.segments:
+                line_end = getattr(line, "end", None)
+                if line_end is None and self.current_line + 1 < len(self.lyric_lines):
+                    line_end = self.lyric_lines[self.current_line + 1].start
                 self.lyric_widget.set_segments(
                     line.text,
                     line.segments,
-                    getattr(line, "end", None),
+                    line_end,
                 )
             else:
                 self.lyric_widget.set_lyric(text)

@@ -1,4 +1,5 @@
 from pathlib import Path
+import math
 import random
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -9,7 +10,7 @@ from PySide6.QtGui import QAction, QKeySequence, QShortcut, QPixmap, QPainter
 from PySide6.QtMultimedia import QAudioOutput, QMediaDevices, QMediaPlayer
 from PySide6.QtWidgets import (
     QButtonGroup, QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
-    QInputDialog, QMainWindow, QScrollArea, QStackedWidget, QLineEdit,
+    QInputDialog, QMainWindow, QScrollArea, QStackedWidget, QLineEdit, QDoubleSpinBox,
     QMessageBox, QPushButton, QProgressBar, QSlider, QTextEdit, QToolButton, QVBoxLayout, QWidget,
     QGraphicsView, QGraphicsScene,
     QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QTreeWidget, QTreeWidgetItem, QAbstractItemView, QStyledItemDelegate,
@@ -219,6 +220,8 @@ class Player(AudioController, LyricsController, QMainWindow):
             self._pcm_sink = None
             self._pcm_sink_io = None
             self._pcm_pending = bytearray()
+            self.pitch_settings = {"mode": "Semitones", "value": 0}
+            self.pitch_semitones = 0.0
             self._pcm_drain_timer = QTimer(self)
             self._pcm_drain_timer.setInterval(10)
             self._pcm_drain_timer.timeout.connect(self._drain_pcm_pending)
@@ -269,6 +272,17 @@ class Player(AudioController, LyricsController, QMainWindow):
             # Global defaults. Local overrides are resolved when a file loads.
             self.global_lyrics_settings = get_global_lyrics_settings()
             self.playback_settings = get_playback_settings()
+            self.pitch_settings = {
+                "mode": self.playback_settings.get("pitch_mode", "Semitones"),
+                "value": self.playback_settings.get("pitch_value", 0),
+            }
+            _pmode = self.pitch_settings["mode"]
+            _pvalue = float(self.pitch_settings["value"])
+            self.pitch_semitones = (
+                _pvalue * 12.0 if _pmode == "Octaves"
+                else 12.0 * math.log2(max(0.01, _pvalue) / 100.0)
+                if _pmode == "Percent" else _pvalue
+            )
             self._apply_output_device(self.playback_settings)
             self.karaoke_settings = get_karaoke_settings()
             self.local_lyrics_overrides = {}
@@ -622,6 +636,14 @@ class Player(AudioController, LyricsController, QMainWindow):
                 self.toggle_mute
             )
 
+            self.pitch_options_button = QToolButton()
+            self.pitch_options_button.setText("Pitch")
+            self.pitch_options_button.setObjectName("dockAction")
+            self.pitch_options_button.setToolTip("Change audio pitch without changing playback speed")
+            self.pitch_options_button.clicked.connect(self.open_pitch_options)
+            self.pitch_status_label = QLabel(f"{self.pitch_semitones:+.1f} st")
+            self.pitch_status_label.setMinimumWidth(48)
+
             # --------------------------------------------------
             # LAYOUT
             # --------------------------------------------------
@@ -641,6 +663,9 @@ class Player(AudioController, LyricsController, QMainWindow):
             volume_layout.setContentsMargins(0, 0, 0, 0)
             volume_layout.setSpacing(8)
             volume_layout.addWidget(self.shuffle_button)
+            volume_layout.addSpacing(8)
+            volume_layout.addWidget(self.pitch_options_button)
+            volume_layout.addWidget(self.pitch_status_label)
             volume_layout.addSpacing(8)
             volume_layout.addWidget(QLabel("Speed"))
             volume_layout.addWidget(self.speed_slider)
@@ -2266,3 +2291,44 @@ class Player(AudioController, LyricsController, QMainWindow):
             self._stop_pcm_sink()
 
             event.accept()
+
+        def open_pitch_options(self):
+            menu = QMenu(self.pitch_options_button)
+            mode_menu = menu.addMenu("Units")
+            modes = ["Octaves", "Percent", "Semitones"]
+            for mode in modes:
+                action = mode_menu.addAction(mode)
+                action.setCheckable(True)
+                action.setChecked(self.pitch_settings["mode"] == mode)
+                action.triggered.connect(lambda _checked=False, selected=mode: self._set_pitch_mode(selected))
+            menu.addSeparator()
+            value_action = menu.addAction(f"Value: {self.pitch_settings['value']:g}")
+            value_action.triggered.connect(self._edit_pitch_value)
+            reset_action = menu.addAction("Reset pitch")
+            reset_action.triggered.connect(lambda: self.handle_pitch_change(self.pitch_settings["mode"], 0 if self.pitch_settings["mode"] != "Percent" else 100))
+            menu.exec(self.pitch_options_button.mapToGlobal(self.pitch_options_button.rect().bottomLeft()))
+
+
+        def _set_pitch_mode(self, mode):
+            current = self.pitch_semitones
+            if mode == "Octaves":
+                value = round(current / 12.0, 2)
+            elif mode == "Percent":
+                value = round(100.0 * (2.0 ** (current / 12.0)), 1)
+            else:
+                value = round(current, 1)
+            self.pitch_settings = {"mode": mode, "value": value}
+            self.handle_pitch_change(mode, value)
+
+
+        def _edit_pitch_value(self):
+            mode = self.pitch_settings["mode"]
+            if mode == "Octaves":
+                value, ok = QInputDialog.getDouble(self, "Pitch", "Octaves:", float(self.pitch_settings["value"]), -2.0, 2.0, 2)
+            elif mode == "Percent":
+                value, ok = QInputDialog.getDouble(self, "Pitch", "Percent:", float(self.pitch_settings["value"]), 25.0, 400.0, 1)
+            else:
+                value, ok = QInputDialog.getDouble(self, "Pitch", "Semitones:", float(self.pitch_settings["value"]), -24.0, 24.0, 1)
+            if ok:
+                self.handle_pitch_change(mode, value)
+

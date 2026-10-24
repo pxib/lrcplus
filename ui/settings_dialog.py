@@ -1987,6 +1987,9 @@ class SettingsDialog(QDialog):
             "after_playback": self.after_playback_combo.currentData(),
             "output_device": self.output_device_combo.currentData(),
             "show_waveform": self.show_waveform_checkbox.isChecked(),
+            "volume": self.playback_settings.get("volume", 80),
+            "pitch_mode": self.playback_settings.get("pitch_mode", "Semitones"),
+            "pitch_value": self.playback_settings.get("pitch_value", 0),
         }
 
     def get_karaoke_settings(self):

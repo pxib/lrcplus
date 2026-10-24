@@ -22,6 +22,8 @@ PLAYBACK_DEFAULTS = {
     "volume": 80,
     "high_volume_warning_shown": False,
     "show_waveform": True,
+    "pitch_mode": "Semitones",
+    "pitch_value": 0,
 }
 
 KARAOKE_DEFAULTS = {
@@ -84,6 +86,15 @@ def get_playback_settings(payload=None):
     after_playback = str(values.get("after_playback", PLAYBACK_DEFAULTS["after_playback"])).lower()
     if after_playback not in {"next_track", "stop", "repeat_all", "repeat_track"}:
         after_playback = PLAYBACK_DEFAULTS["after_playback"]
+    pitch_mode = str(values.get("pitch_mode", PLAYBACK_DEFAULTS["pitch_mode"]))
+    if pitch_mode not in {"Octaves", "Percent", "Semitones"}:
+        pitch_mode = PLAYBACK_DEFAULTS["pitch_mode"]
+    try:
+        pitch_value = float(values.get("pitch_value", PLAYBACK_DEFAULTS["pitch_value"]))
+    except (TypeError, ValueError):
+        pitch_value = 0.0
+    if not (pitch_value == pitch_value and abs(pitch_value) < 100000):
+        pitch_value = 0.0
     try:
         volume = int(values.get("volume", PLAYBACK_DEFAULTS["volume"]))
     except (TypeError, ValueError):
@@ -108,6 +119,8 @@ def get_playback_settings(payload=None):
         "show_waveform": bool(
             values.get("show_waveform", PLAYBACK_DEFAULTS["show_waveform"])
         ),
+        "pitch_mode": pitch_mode,
+        "pitch_value": pitch_value,
     }
 
 
