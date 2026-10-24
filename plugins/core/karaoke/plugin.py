@@ -59,6 +59,7 @@ class PitchLane(QWidget):
         self.position_seconds = 0.0
         self.offset_seconds = 0.0
         self.live_pitch_points = []
+        self._live_pitch_was_valid = False
         self.live_pitch_alpha = 0.0
         self.setMinimumHeight(180)
 
@@ -113,14 +114,23 @@ class PitchLane(QWidget):
         self.live_pitch_alpha = max(0.0, min(1.0, float(alpha)))
         if midi_pitch is not None and position is not None:
             position = float(position)
+            if not self._live_pitch_was_valid:
+                self.live_pitch_points.append((position, float(midi_pitch), time.monotonic()))
+            elif self.live_pitch_points:
+                previous = self.live_pitch_points[-1][1]
+                # Suppress brief octave/harmonic errors while retaining
+                # responsiveness to real changes in sung pitch.
+                midi_pitch = 0.70 * previous + 0.30 * float(midi_pitch)
+                self.live_pitch_points.append((position, midi_pitch, time.monotonic()))
+            self._live_pitch_was_valid = True
             if self.live_pitch_points and position < self.live_pitch_points[-1][0] - 1.0:
                 self.live_pitch_points.clear()
-            if not self.live_pitch_points or position > self.live_pitch_points[-1][0]:
-                self.live_pitch_points.append((position, float(midi_pitch)))
-            else:
-                self.live_pitch_points[-1] = (position, float(midi_pitch))
+            if len(self.live_pitch_points) > 1 and position <= self.live_pitch_points[-2][0]:
+                self.live_pitch_points[-1] = (position, float(midi_pitch), time.monotonic())
             cutoff = position - self.WINDOW_SECONDS
             self.live_pitch_points = [point for point in self.live_pitch_points if point[0] >= cutoff]
+        else:
+            self._live_pitch_was_valid = False
         self.update()
 
     def _section_start(self):
@@ -285,7 +295,12 @@ class PitchLane(QWidget):
             pitch_height = bottom - top
             path = QPainterPath()
             started = False
-            for position, pitch in self.live_pitch_points:
+            previous_detected_at = None
+            for position, pitch, detected_at in self.live_pitch_points:
+                if (previous_detected_at is not None
+                        and detected_at - previous_detected_at > 0.14):
+                    started = False
+                previous_detected_at = detected_at
                 if not (section_start <= position <= section_start + self.WINDOW_SECONDS
                         and low_pitch <= pitch <= high_pitch):
                     started = False
