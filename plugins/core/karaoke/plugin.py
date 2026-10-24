@@ -114,19 +114,22 @@ class PitchLane(QWidget):
         self.live_pitch_alpha = max(0.0, min(1.0, float(alpha)))
         if midi_pitch is not None and position is not None:
             position = float(position)
+            if self.live_pitch_points and position < self.live_pitch_points[-1][0] - 1.0:
+                # A seek resets the trail before adding the first point at the
+                # new location, so the old position cannot affect this check.
+                self.live_pitch_points.clear()
+                self._live_pitch_was_valid = False
+            elif self.live_pitch_points and position <= self.live_pitch_points[-1][0]:
+                # Replace points at or after a slightly re-anchored clock value
+                # to keep the trail ordered without retaining stale future data.
+                self.live_pitch_points = [
+                    point for point in self.live_pitch_points if point[0] < position
+                ]
             if not self._live_pitch_was_valid:
                 self.live_pitch_points.append((position, float(midi_pitch), time.monotonic()))
-            elif self.live_pitch_points:
-                previous = self.live_pitch_points[-1][1]
-                # Suppress brief octave/harmonic errors while retaining
-                # responsiveness to real changes in sung pitch.
-                midi_pitch = 0.70 * previous + 0.30 * float(midi_pitch)
-                self.live_pitch_points.append((position, midi_pitch, time.monotonic()))
+            else:
+                self.live_pitch_points.append((position, float(midi_pitch), time.monotonic()))
             self._live_pitch_was_valid = True
-            if self.live_pitch_points and position < self.live_pitch_points[-1][0] - 1.0:
-                self.live_pitch_points.clear()
-            if len(self.live_pitch_points) > 1 and position <= self.live_pitch_points[-2][0]:
-                self.live_pitch_points[-1] = (position, float(midi_pitch), time.monotonic())
             cutoff = position - self.WINDOW_SECONDS
             self.live_pitch_points = [point for point in self.live_pitch_points if point[0] >= cutoff]
         else:
@@ -368,6 +371,17 @@ class KaraokeScreen(QDialog):
             "QDoubleSpinBox { background: #294653; color: white; padding: 6px;"
             " border: 1px solid #527381; border-radius: 5px; }"
         )
+        self.transpose_spin = QDoubleSpinBox()
+        self.transpose_spin.setRange(-24, 24)
+        self.transpose_spin.setDecimals(0)
+        self.transpose_spin.setSingleStep(1)
+        self.transpose_spin.setSuffix(" st")
+        self.transpose_spin.setPrefix("Transpose ")
+        self.transpose_spin.setToolTip("Shift the MIDI melody and pitch targets by semitones")
+        self.transpose_spin.setStyleSheet(
+            "QDoubleSpinBox { background: #294653; color: white; padding: 6px;"
+            " border: 1px solid #527381; border-radius: 5px; }"
+        )
         self.close_label = QLabel("ESC  CLOSE")
         self.close_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.close_label.setStyleSheet("color: #a99eae; font-size: 14px;")
@@ -375,6 +389,7 @@ class KaraokeScreen(QDialog):
         top.addStretch(1)
         top.addWidget(self.track_combo)
         top.addWidget(self.offset_spin)
+        top.addWidget(self.transpose_spin)
         self.square_wave_checkbox = QCheckBox("Square wave")
         self.square_wave_checkbox.setChecked(True)
         self.square_wave_checkbox.setToolTip("Mix the selected MIDI melody into song playback")
@@ -412,6 +427,9 @@ class KaraokeScreen(QDialog):
             "color: #ffd66b; font-size: 18px; font-weight: 700; padding: 3px 0;"
         )
         layout.addWidget(self.judgment_status)
+        self.judgment_counter = QLabel("AMAZING 0  PERFECT 0  GOOD 0  OK 0  BAD 0  ??? 0  MISS 0")
+        self.judgment_counter.setStyleSheet("color: #d6e6ea; font-size: 12px; padding-bottom: 3px;")
+        layout.addWidget(self.judgment_counter)
         self.pitch_lane = PitchLane(self)
         layout.addWidget(self.pitch_lane, 2)
         layout.addStretch(2)
@@ -469,6 +487,7 @@ class KaraokePlugin:
         self._judged_note_indices = set()
         self._judgment_score = 0
         self._judgment_combo = 0
+        self._judgment_counts = {name: 0 for name in ("AMAZING", "PERFECT", "GOOD", "OK", "BAD", "???", "MISS")}
         self._judgment_last = "Ready"
         self._judgment_position = None
         self.current_midi = None
@@ -550,6 +569,7 @@ class KaraokePlugin:
             self.on_midi_track_selected
         )
         self.screen.offset_spin.valueChanged.connect(self.on_alignment_offset_changed)
+        self.screen.transpose_spin.valueChanged.connect(self.on_transpose_changed)
         self.screen.square_wave_checkbox.toggled.connect(self._square_wave_toggled)
         self.screen.mic_button.clicked.connect(self.toggle_mic_pitch)
         self.square_wave_enabled = self.screen.square_wave_checkbox.isChecked()
@@ -666,8 +686,23 @@ class KaraokePlugin:
         track_index = self.screen.track_combo.itemData(combo_index)
         track = self.current_midi["tracks"][track_index]
         self.selected_midi_track = track
-        self.screen.pitch_lane.set_notes(track["notes"])
+        self.screen.pitch_lane.set_notes(self._transposed_notes(track["notes"]))
         self._reset_judgment(start_position=self._estimated_position_seconds())
+
+    def _transpose_semitones(self):
+        return int(self.screen.transpose_spin.value()) if self.screen is not None else 0
+
+    def _transposed_notes(self, notes):
+        semitones = self._transpose_semitones()
+        return [dict(note, pitch=max(0, min(127, int(note["pitch"]) + semitones)))
+                for note in notes]
+
+    def on_transpose_changed(self, _semitones):
+        if self.screen is not None and self.selected_midi_track is not None:
+            self.screen.pitch_lane.set_notes(
+                self._transposed_notes(self.selected_midi_track["notes"])
+            )
+            self._reset_judgment(start_position=self._estimated_position_seconds())
 
     def on_alignment_offset_changed(self, offset_seconds):
         if self.screen is not None:
@@ -756,7 +791,7 @@ class KaraokePlugin:
             (
                 float(note["start"]),
                 float(note["end"]),
-                int(note["pitch"]),
+                max(0, min(127, int(note["pitch"]) + self._transpose_semitones())),
                 max(0.0, min(1.0, float(note.get("velocity", 90)) / 127.0)),
             )
             for note in (self.selected_midi_track or {}).get("notes", [])
@@ -947,10 +982,18 @@ class KaraokePlugin:
         }
         self._judgment_score = 0
         self._judgment_combo = 0
+        self._judgment_counts = {name: 0 for name in ("AMAZING", "PERFECT", "GOOD", "OK", "BAD", "???", "MISS")}
         self._judgment_last = "Ready"
         self._judgment_position = position
         if self.screen is not None:
             self.screen.judgment_status.setText("Score 0  |  Combo 0  |  Ready")
+            self.screen.judgment_counter.setText(self._format_judgment_counter())
+
+    def _format_judgment_counter(self):
+        return "  ".join(
+            f"{name} {self._judgment_counts[name]}"
+            for name in ("AMAZING", "PERFECT", "GOOD", "OK", "BAD", "???", "MISS")
+        )
 
     def _update_judgments(self, position_seconds):
         if (self.screen is None or self.mic_pitch_detector is None
@@ -978,7 +1021,8 @@ class KaraokePlugin:
                 start = float(note["start"]) + offset
                 end = float(note["end"]) + offset
                 if start <= position <= end:
-                    target_hz = 440.0 * (2.0 ** ((int(note["pitch"]) - 69) / 12.0))
+                    target_pitch = max(0, min(127, int(note["pitch"]) + self._transpose_semitones()))
+                    target_hz = 440.0 * (2.0 ** ((target_pitch - 69) / 12.0))
                     cents = 1200 * math.log2(frequency / target_hz)
                     self._judgment_samples.setdefault(index, []).append(abs(cents))
 
@@ -990,22 +1034,30 @@ class KaraokePlugin:
                 continue
 
             cents_values = self._judgment_samples.get(index, [])
-            required_samples = max(1, math.ceil((end - (float(note["start"]) + offset)) * 4))
+            # Allow a little more microphone jitter and brief pitch slips while
+            # still requiring enough samples to judge the sung note reliably.
+            required_samples = max(1, math.ceil((end - (float(note["start"]) + offset)) * 3))
             if len(cents_values) < required_samples:
-                rating, points = "Miss", 0
+                rating, points = "MISS", 0
             else:
                 average_cents = sum(cents_values) / len(cents_values)
-                in_tune_ratio = sum(value <= 50 for value in cents_values) / len(cents_values)
-                if average_cents <= 20 and in_tune_ratio >= 0.90:
-                    rating, points = "Perfect", 1000
-                elif average_cents <= 40 and in_tune_ratio >= 0.75:
-                    rating, points = "Great", 700
-                elif average_cents <= 75 and in_tune_ratio >= 0.50:
-                    rating, points = "Good", 400
+                # Classify by the nearest semitone: each label covers a
+                # half-semitone window around its stated distance.
+                if average_cents < 50:
+                    rating, points = "AMAZING", 1000
+                elif average_cents < 150:
+                    rating, points = "PERFECT", 800
+                elif average_cents < 250:
+                    rating, points = "GOOD", 600
+                elif average_cents < 350:
+                    rating, points = "OK", 400
+                elif average_cents < 600:
+                    rating, points = "BAD", 200
                 else:
-                    rating, points = "Miss", 0
+                    rating, points = "???", 0
 
             self._judged_note_indices.add(index)
+            self._judgment_counts[rating] += 1
             self._judgment_score += points
             self._judgment_combo = self._judgment_combo + 1 if points else 0
             self._judgment_last = f"{rating}  +{points}"
@@ -1013,6 +1065,7 @@ class KaraokePlugin:
                 f"{self._judgment_last}  |  Score {self._judgment_score}"
                 f"  |  Combo {self._judgment_combo}"
             )
+            self.screen.judgment_counter.setText(self._format_judgment_counter())
 
     def _refresh_mic_pitch_label(self, position_seconds):
         screen = self.screen
@@ -1037,7 +1090,7 @@ class KaraokePlugin:
         offset = screen.offset_spin.value()
         for note in (self.selected_midi_track or {}).get("notes", []):
             if float(note["start"]) + offset <= position_seconds <= float(note["end"]) + offset:
-                target = int(note["pitch"])
+                target = max(0, min(127, int(note["pitch"]) + self._transpose_semitones()))
                 break
         if target is None:
             comparison = "no target note"

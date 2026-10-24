@@ -8,4 +8,5 @@ mutagen
 Pillow
 fugashi
 pytest
+numpy
 pedalboard>=0.9.17
