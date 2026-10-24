@@ -15,7 +15,7 @@ import numpy as np
 import sounddevice as sd
 
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
     QComboBox,
@@ -58,6 +58,8 @@ class PitchLane(QWidget):
         self._notes_revision = 0
         self.position_seconds = 0.0
         self.offset_seconds = 0.0
+        self.live_pitch_points = []
+        self.live_pitch_alpha = 0.0
         self.setMinimumHeight(180)
 
     def set_notes(self, notes):
@@ -105,6 +107,20 @@ class PitchLane(QWidget):
     def set_offset(self, offset_seconds):
         self.offset_seconds = float(offset_seconds)
         self._invalidate_chart()
+        self.update()
+
+    def set_live_pitch(self, midi_pitch=None, alpha=0.0, position=None):
+        self.live_pitch_alpha = max(0.0, min(1.0, float(alpha)))
+        if midi_pitch is not None and position is not None:
+            position = float(position)
+            if self.live_pitch_points and position < self.live_pitch_points[-1][0] - 1.0:
+                self.live_pitch_points.clear()
+            if not self.live_pitch_points or position > self.live_pitch_points[-1][0]:
+                self.live_pitch_points.append((position, float(midi_pitch)))
+            else:
+                self.live_pitch_points[-1] = (position, float(midi_pitch))
+            cutoff = position - self.WINDOW_SECONDS
+            self.live_pitch_points = [point for point in self.live_pitch_points if point[0] >= cutoff]
         self.update()
 
     def _section_start(self):
@@ -260,6 +276,36 @@ class PitchLane(QWidget):
             painter.restore()
             painter.setPen(QPen(QColor("#ffcf42"), 3))
             painter.drawLine(int(playhead_x), int(top), int(playhead_x), int(bottom))
+        if (len(self.live_pitch_points) > 1 and self.live_pitch_alpha > 0
+                and self._pitch_range is not None):
+            low_pitch, high_pitch = self._pitch_range
+            left, right, top, bottom = self._plot_geometry()
+            section_start = self._section_start()
+            plot_width = right - left
+            pitch_height = bottom - top
+            path = QPainterPath()
+            started = False
+            for position, pitch in self.live_pitch_points:
+                if not (section_start <= position <= section_start + self.WINDOW_SECONDS
+                        and low_pitch <= pitch <= high_pitch):
+                    started = False
+                    continue
+                x = left + (position - section_start) / self.WINDOW_SECONDS * plot_width
+                y = bottom - (pitch - low_pitch) / max(1, high_pitch - low_pitch) * pitch_height
+                if started:
+                    path.lineTo(x, y)
+                else:
+                    path.moveTo(x, y)
+                    started = True
+            glow = QColor("#ffffff")
+            glow.setAlpha(round(55 * self.live_pitch_alpha))
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QPen(glow, 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            painter.drawPath(path)
+            streak = QColor("#ffffff")
+            streak.setAlpha(round(245 * self.live_pitch_alpha))
+            painter.setPen(QPen(streak, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            painter.drawPath(path)
         painter.end()
 
 
@@ -402,6 +448,7 @@ class KaraokePlugin:
         self.mic_pitch_detector = None
         self._mic_pitch_hz = 0.0
         self._mic_pitch_confidence = 0.0
+        self._mic_pitch_last_detected = None
         self._mic_pitch_status = "Mic pitch: off"
         self._judgment_samples = {}
         self._judged_note_indices = set()
@@ -811,6 +858,14 @@ class KaraokePlugin:
         position_seconds = self._estimated_position_seconds()
         position_ms = position_seconds * 1000.0
         self.screen.pitch_lane.set_position(position_ms)
+        detected_at = self._mic_pitch_last_detected
+        age = time.monotonic() - detected_at if detected_at is not None else 1.0
+        alpha = max(0.0, min(1.0, (0.8 - age) / 0.55))
+        midi_pitch = None
+        if (self._mic_pitch_hz > 0 and self._mic_pitch_confidence >= 0.30
+                and self.mic_pitch_detector is not None and age <= 0.12):
+            midi_pitch = 69 + 12 * math.log2(self._mic_pitch_hz / 440.0)
+        self.screen.pitch_lane.set_live_pitch(midi_pitch, alpha, position_seconds)
         self.screen.current_lyric.set_karaoke_position(position_seconds)
         self._refresh_mic_pitch_label(position_seconds)
         self._update_judgments(position_seconds)
@@ -837,6 +892,8 @@ class KaraokePlugin:
     def _on_mic_pitch_detected(self, frequency, confidence):
         self._mic_pitch_hz = float(frequency)
         self._mic_pitch_confidence = float(confidence)
+        if self._mic_pitch_hz > 0 and self._mic_pitch_confidence >= 0.30:
+            self._mic_pitch_last_detected = time.monotonic()
 
     def _on_mic_pitch_status(self, message):
         self._mic_pitch_status = str(message)
@@ -858,6 +915,7 @@ class KaraokePlugin:
         detector.wait(1500)
         self.mic_pitch_detector = None
         self._mic_pitch_hz = 0.0
+        self._mic_pitch_last_detected = None
         self._mic_pitch_status = "Mic pitch: off"
         if self.screen is not None:
             self.screen.mic_button.setText("Start Mic")
