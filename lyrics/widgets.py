@@ -839,7 +839,11 @@ class FuriganaWidget(QWidget):
                     )
 
                 future.add_done_callback(finished_karaoke)
-                return
+                # Render authored LRCX ruby immediately while the automatic
+                # reading worker runs.  Returning here used to leave the
+                # previous/generated view on screen until the cache was ready,
+                # making valid manual readings appear to be rejected.
+                whole_tokens = [{"text": text, "reading": None}]
 
         # Readings already resolved on the lyric model override a fresh
         # automatic parse.  This includes generated readings: generation and
@@ -857,6 +861,7 @@ class FuriganaWidget(QWidget):
         ]
 
         prepared = []
+        rendered_explicit_ranges = set()
         token_offset = 0
 
         def owner_for(position):
@@ -908,6 +913,45 @@ class FuriganaWidget(QWidget):
             for piece_index, (a, b) in enumerate(pieces):
                 if a >= b:
                     continue
+
+                # A saved/manual ruby span describes its complete base-text
+                # range. Automatic tokenization may divide that range into
+                # several differently-sized tokens, so render the explicit
+                # span once as authored instead of letting generated readings
+                # replace it token by token.
+                explicit_match = next(
+                    (
+                        (range_index, x, y, ruby, ruby_source)
+                        for range_index, (x, y, ruby, ruby_source)
+                        in enumerate(explicit_ranges)
+                        if x <= a < y and b <= y
+                    ),
+                    None,
+                )
+                if explicit_match is not None:
+                    range_index, x, y, ruby, ruby_source = explicit_match
+                    if range_index in rendered_explicit_ranges:
+                        continue
+                    if a != x:
+                        continue
+                    owner = owner_for(a)
+                    if owner is None:
+                        continue
+                    prepared.append({
+                        "text": text[x:y],
+                        "reading": ruby,
+                        "start": owner["start"],
+                        "end": owner["end"],
+                        "instant": owner["instant"],
+                        "line_end": line_end,
+                        "karaoke_group": owner["karaoke_group"],
+                        "timing_group": owner["karaoke_group"],
+                        "ruby_source": ruby_source or "manual",
+                        "_romaji_word_start": bool(token.get("_romaji_word_start", False)),
+                    })
+                    rendered_explicit_ranges.add(range_index)
+                    continue
+
                 owner = owner_for(a)
                 if owner is None:
                     continue
@@ -916,17 +960,7 @@ class FuriganaWidget(QWidget):
                 reading = None
                 source = "generated"
 
-                exact_explicit = next(
-                    (
-                        (ruby, ruby_source)
-                        for x, y, ruby, ruby_source in explicit_ranges
-                        if x == a and y == b
-                    ),
-                    None,
-                )
-                if exact_explicit is not None:
-                    reading, source = exact_explicit
-                elif a == token_start and b == token_end:
+                if a == token_start and b == token_end:
                     reading = token_reading
                 elif token_reading:
                     # A karaoke boundary cut through a ruby token.  Keep the
