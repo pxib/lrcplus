@@ -1412,9 +1412,26 @@ class FuriganaWidget(QWidget):
                 piece["gap_before"] = 0
 
             # A single segment can itself be wider than the panel. Split it
-            # into visible character chunks so Japanese text can wrap naturally.
+            # at spaces first, then into visible character chunks so Japanese
+            # text and unusually long words can still fit naturally.
             if not rows[-1] and width > available and len(piece["text"]) > 1:
                 text_value = piece["text"]
+                word_pieces = re.findall(r"\S+\s*|\s+", text_value)
+                if len(word_pieces) > 1:
+                    for word_index, word in enumerate(word_pieces):
+                        clone = dict(piece)
+                        clone["text"] = word
+                        clone["base_width"] = base_metrics.horizontalAdvance(word)
+                        clone["reading"] = None
+                        clone["reading_width"] = 0
+                        clone["width"] = clone["base_width"]
+                        clone["gap_before"] = (
+                            piece.get("gap_before", 0) if word_index == 0 else 0
+                        )
+                        clone["_visual_split"] = True
+                        add_piece(clone)
+                    return
+
                 chunk = ""
                 for char in text_value:
                     candidate = chunk + char
@@ -2245,6 +2262,71 @@ class FuriganaWidget(QWidget):
                 elif self.highlight_animation in {"none", "pop", "scale"}:
                     normal_pen = self.highlight_color
 
+            # Classic karaoke uses a hard edge. Draw only the not-yet-sung
+            # portion in the normal color; the highlighted pass below draws
+            # the sung portion. Drawing the whole glyph twice compounds its
+            # antialiased edge coverage and makes it look brighter/thicker.
+            normal_sweep_clip = None
+            if progress > 0.0:
+                if segment.get("_vertical"):
+                    start, end = vertical_piece_sweep.get(
+                        id(segment), (0.0, 1.0)
+                    )
+                    span = max(1e-9, end - start)
+                    local_progress = max(
+                        0.0,
+                        min(
+                            1.0,
+                            (min(1.0, progress) - start) / span,
+                        ),
+                    )
+                    top = float(segment["base_y"]) - base_metrics.ascent()
+                    fill_height = max(
+                        0.0,
+                        float(
+                            segment.get("height", base_metrics.height())
+                        ) * local_progress,
+                    )
+                    normal_sweep_clip = QRectF(
+                        0,
+                        top + fill_height,
+                        self.width(),
+                        max(0.0, self.height() - top - fill_height),
+                    )
+                elif getattr(self, "karaoke_sweep_style", "classic") == "classic":
+                    if timing_group in timing_spans:
+                        karaoke_left, karaoke_right = timing_spans[timing_group]
+                        karaoke_width = max(0.0, karaoke_right - karaoke_left)
+                    else:
+                        karaoke_left = segment.get("karaoke_x", base_x)
+                        karaoke_width = segment.get(
+                            "karaoke_width", segment["width"]
+                        )
+                    progress_value = min(1.0, max(0.0, progress))
+                    easing = getattr(self, "karaoke_sweep_easing", "linear")
+                    if easing == "ease_in":
+                        progress_value *= progress_value
+                    elif easing == "ease_out":
+                        progress_value = 1.0 - (1.0 - progress_value) ** 2
+                    elif easing == "ease_in_out":
+                        if progress_value < 0.5:
+                            progress_value = 2.0 * progress_value * progress_value
+                        else:
+                            progress_value = (
+                                1.0
+                                - ((-2.0 * progress_value + 2.0) ** 2) / 2.0
+                            )
+                    sweep_end = karaoke_left + karaoke_width * progress_value
+                    normal_sweep_clip = QRectF(
+                        sweep_end,
+                        0,
+                        max(0.0, self.width() - sweep_end),
+                        self.height(),
+                    )
+
+            if normal_sweep_clip is not None:
+                painter.save()
+                painter.setClipRect(normal_sweep_clip)
             painter.setPen(normal_pen)
             if segment.get("_vertical"):
                 painter.drawText(
@@ -2258,6 +2340,8 @@ class FuriganaWidget(QWidget):
                     int(segment["base_y"]),
                     segment["text"],
                 )
+            if normal_sweep_clip is not None:
+                painter.restore()
 
             # Slide sweeps the current-line highlight across the lyric.
             if (
@@ -2568,6 +2652,20 @@ class FuriganaWidget(QWidget):
 
                 painter.setFont(self.reading_font)
 
+                reading_normal_sweep_clip = (
+                    normal_sweep_clip
+                    if (
+                        progress > 0.0
+                        and not segment.get("reading_vertical")
+                        and getattr(
+                            self, "karaoke_sweep_style", "classic"
+                        ) == "classic"
+                    )
+                    else None
+                )
+                if reading_normal_sweep_clip is not None:
+                    painter.save()
+                    painter.setClipRect(reading_normal_sweep_clip)
                 painter.setPen(normal_pen)
                 if segment.get("reading_vertical"):
                     reading_x = segment.get("reading_x", reading_x)
@@ -2595,6 +2693,8 @@ class FuriganaWidget(QWidget):
                         int(draw_y),
                         display_reading,
                     )
+                if reading_normal_sweep_clip is not None:
+                    painter.restore()
 
                 # Slide highlighting must cover ruby too, not only base text.
                 if (

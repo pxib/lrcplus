@@ -32,6 +32,7 @@ class PitchLane(QWidget):
         self._note_starts = []
         self._max_note_duration = 0.0
         self._pitch_range = None
+        self._page_pitch_ranges = {}
         self._lowest_note_pitch = None
         self._highest_note_pitch = None
         self._base_pixmap = None
@@ -62,10 +63,10 @@ class PitchLane(QWidget):
         self._lowest_note_pitch = min((pitch for _start, _end, pitch in self.notes), default=None)
         self._highest_note_pitch = max((pitch for _start, _end, pitch in self.notes), default=None)
         self._pitch_range = (
-            (max(0, min(note[2] for note in self.notes) - 2),
-             min(127, max(note[2] for note in self.notes) + 2))
+            (min(note[2] for note in self.notes), max(note[2] for note in self.notes))
             if self.notes else None
         )
+        self._page_pitch_ranges.clear()
         self._notes_revision += 1
         self._invalidate_chart()
         self.update()
@@ -89,8 +90,23 @@ class PitchLane(QWidget):
 
     def set_offset(self, offset_seconds):
         self.offset_seconds = float(offset_seconds)
+        self._page_pitch_ranges.clear()
         self._invalidate_chart()
         self.update()
+
+    def _pitch_range_for_section(self, section_start):
+        """Return the note range for one 12-second page of the lane."""
+        if section_start not in self._page_pitch_ranges:
+            section_end = section_start + self.WINDOW_SECONDS
+            pitches = [
+                pitch for start, end, pitch in self.notes
+                if end + self.offset_seconds >= section_start
+                and start + self.offset_seconds <= section_end
+            ]
+            self._page_pitch_ranges[section_start] = (
+                (min(pitches), max(pitches)) if pitches else self._pitch_range
+            )
+        return self._page_pitch_ranges[section_start]
 
     def set_live_pitch(self, midi_pitch=None, alpha=0.0, position=None):
         self.live_pitch_alpha = max(0.0, min(1.0, float(alpha)))
@@ -158,21 +174,22 @@ class PitchLane(QWidget):
             self._base_pixmap, self._cache_key = pixmap, key
             return
 
-        if self._pitch_range is None:
+        page_pitch_range = self._pitch_range_for_section(section_start)
+        if page_pitch_range is None:
             painter.setPen(QColor("#b8c8ce"))
             painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "Import a MIDI file to show its melody")
             painter.end()
             self._base_pixmap, self._cache_key = pixmap, key
             return
 
-        low_pitch, high_pitch = self._pitch_range
-        if high_pitch <= low_pitch:
-            high_pitch = low_pitch + 1
+        low_pitch, high_pitch = page_pitch_range
+        pitch_count = high_pitch - low_pitch + 1
+        row_height = plot_height / max(1, pitch_count)
         start_time = section_start
         end_time = start_time + self.WINDOW_SECONDS
 
         def y_for(pitch):
-            return bottom - (int(pitch) - low_pitch) / (high_pitch - low_pitch) * plot_height
+            return bottom - (int(pitch) - low_pitch + 0.5) * row_height
 
         for pitch in range(low_pitch, high_pitch + 1):
             y = y_for(pitch)
@@ -195,7 +212,6 @@ class PitchLane(QWidget):
         # Notes are sorted by start. Only inspect notes that can overlap this section.
         search_start = max(0.0, start_time - self.offset_seconds - self._max_note_duration)
         first_note = bisect_left(self._note_starts, search_start)
-        row_height = plot_height / max(1, high_pitch - low_pitch)
         for note_index in range(first_note, len(self.notes)):
             note_start_raw, note_end_raw, pitch = self.notes[note_index]
             note_start = note_start_raw + self.offset_seconds
@@ -206,6 +222,12 @@ class PitchLane(QWidget):
                 continue
             x1 = left + (note_start - start_time) / self.WINDOW_SECONDS * plot_width
             x2 = left + (note_end - start_time) / self.WINDOW_SECONDS * plot_width
+            if x2 <= left or x1 >= right:
+                continue
+            # Notes can span a page boundary. Keep the visible fragment inside
+            # this page's time grid instead of drawing it into the margin.
+            x1 = max(left, x1)
+            x2 = min(right, x2)
             y = y_for(pitch)
             if pitch == self._lowest_note_pitch:
                 color = QColor("#a855f7")
@@ -273,7 +295,11 @@ class PitchLane(QWidget):
             painter.drawLine(int(playhead_x), int(top), int(playhead_x), int(bottom))
         if (len(self.live_pitch_points) > 1 and self.live_pitch_alpha > 0
                 and self._pitch_range is not None):
-            low_pitch, high_pitch = self._pitch_range
+            pitch_range = self._pitch_range_for_section(self._section_start())
+            if pitch_range is None:
+                painter.end()
+                return
+            low_pitch, high_pitch = pitch_range
             left, right, top, bottom = self._plot_geometry()
             section_start = self._section_start()
             plot_width = right - left
@@ -291,7 +317,8 @@ class PitchLane(QWidget):
                     started = False
                     continue
                 x = left + (position - section_start) / self.WINDOW_SECONDS * plot_width
-                y = bottom - (pitch - low_pitch) / max(1, high_pitch - low_pitch) * pitch_height
+                row_height = pitch_height / max(1, high_pitch - low_pitch + 1)
+                y = bottom - (pitch - low_pitch + 0.5) * row_height
                 if started:
                     path.lineTo(x, y)
                 else:

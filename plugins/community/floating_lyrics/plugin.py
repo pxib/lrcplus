@@ -19,13 +19,14 @@ class BaseLyricRenderer:
         painter.setPen(QColor(owner.text_color))
         for segment in prepared:
             width = segment["width"]
+            base_y = segment.get("base_y", self.FIXED_BASE_Y)
             base_x = (
                 segment["x"]
                 + (width - segment["base_width"]) / 2
             )
             painter.drawText(
                 int(base_x),
-                self.FIXED_BASE_Y,
+                int(base_y),
                 segment["text"],
             )
 
@@ -44,14 +45,6 @@ class RubyRenderer:
         base_metrics = QFontMetrics(owner.base_font)
         reading_metrics = QFontMetrics(owner.reading_font)
 
-        fixed_base_y = owner._base_renderer.FIXED_BASE_Y
-        reading_y = (
-            fixed_base_y
-            - base_metrics.height()
-            - self.RUBY_GAP
-            + reading_metrics.ascent()
-        )
-
         for segment in prepared:
             reading = segment.get("reading")
             if not reading:
@@ -62,6 +55,14 @@ class RubyRenderer:
                 segment["x"]
                 + (width - segment["reading_width"]) / 2
             )
+            reading_y = segment.get("reading_y")
+            if reading_y is None:
+                reading_y = (
+                    owner._base_renderer.FIXED_BASE_Y
+                    - base_metrics.height()
+                    - self.RUBY_GAP
+                    + reading_metrics.ascent()
+                )
             painter.drawText(
                 int(reading_x),
                 int(reading_y),
@@ -94,6 +95,7 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
         self._pan_timer = QTimer(self)
         self._pan_timer.setInterval(16)
         self._pan_timer.timeout.connect(self._advance_pan)
+        self.set_text_wrapping(True)
 
     def set_lyric(self, lyric):
         super().set_lyric(lyric)
@@ -104,6 +106,15 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
         return super()._prepare_segments()
 
     def _configure_pan(self):
+        # Wrapped rows are already constrained to the viewport, so horizontal
+        # panning would make the row appear to shift away from its alignment.
+        if self.wrap_text:
+            self._pan_active = False
+            self._pan_timer.stop()
+            self._pan_offset = 0.0
+            self.update()
+            return
+
         prepared = self._raw_segments()
         if not prepared or self.width() <= 0:
             return
@@ -238,7 +249,7 @@ class FloatingLyricsWindow(QWidget):
         self.text_color = "#FFFFFF"
         self.setWindowTitle("Floating Lyrics")
 
-        self.resize(720, 150)
+        self.resize(720, 250)
 
         # Paint the actual translucent surface ourselves. Qt stylesheets on a
         # translucent top-level window do not reliably provide this.
@@ -277,8 +288,7 @@ class FloatingLyricsWindow(QWidget):
         layout.addLayout(top)
 
         self.lyric_widget = SplitRenderFuriganaWidget()
-        self.lyric_widget.setMinimumHeight(110)
-        self.lyric_widget.setMaximumHeight(110)
+        self.lyric_widget.setMinimumHeight(190)
         self.lyric_widget.set_alignment("center")
         self.lyric_widget.set_ruby_visible(True)
         layout.addWidget(self.lyric_widget, 1)
