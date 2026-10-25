@@ -691,7 +691,11 @@ class AudioController:
             # changes. Keep normal playback audible until the new output is ready.
             reset_pcm_pitch_state()
             self.audio_output.setVolume(self.volume_slider.value() / 100.0)
-            self._configure_pcm_volume(self.volume_slider.value(), refresh_format=True)
+            # Keep the active Qt buffer output and sink connected while the
+            # pitch processor warms its new setting. Recreating the output
+            # during playback can detach the decoded-buffer stream and leave
+            # native audio playing at the new displayed value but unchanged pitch.
+            self._configure_pcm_volume(self.volume_slider.value())
 
 
         def cycle_loop_mode(self):

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDoubleSpinBox,
     QFileDialog,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -35,6 +36,7 @@ from PySide6.QtWidgets import (
 from core.settings import get_karaoke_settings
 from core.pitch_detector import PitchDetector
 from lyrics.widgets import FuriganaWidget
+from ui.artwork_background import ArtworkBackgroundWidget
 from plugins.core.karaoke.midi import MidiImportError, load_midi
 
 
@@ -166,7 +168,7 @@ class PitchLane(QWidget):
             return
 
         pixmap = QPixmap(size)
-        pixmap.fill(QColor("#102735"))
+        pixmap.fill(QColor(7, 18, 28, 105))
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         left, right, top, bottom = self._plot_geometry()
@@ -339,26 +341,41 @@ class KaraokeScreen(QDialog):
             "QLabel { background: transparent; border: none; }"
         )
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(7, 6, 7, 6)
-        layout.setSpacing(0)
+        self.background = ArtworkBackgroundWidget(parent=self)
+        self.background.set_blur_radius(0)
+        self.background.set_darkness(48)
+        self.background.set_background_enabled(True)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.addWidget(self.background)
+
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        background_layout = QVBoxLayout(self.background)
+        background_layout.setContentsMargins(0, 0, 0, 0)
+        background_layout.addWidget(content)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(5)
 
         top = QHBoxLayout()
         self.track_label = QLabel("KARAOKE")
         self.track_label.setStyleSheet(
-            "color: #ffd66b; font-size: 20px; font-weight: 700;"
+            "color: white; font-size: 18px; font-weight: 700;"
+            " background: rgba(15, 21, 28, 185); padding: 7px 12px;"
+            " border: 2px solid rgba(255,255,255,150); border-radius: 8px;"
         )
         self.midi_button = QPushButton("Import MIDI…")
         self.midi_button.setStyleSheet(
-            "QPushButton { background: #294653; color: white; border: 1px solid #527381;"
-            " padding: 7px 12px; border-radius: 5px; }"
-            "QPushButton:hover { background: #356173; }"
+            "QPushButton { background: rgba(15, 21, 28, 190); color: white; border: 1px solid #a8c3cd;"
+            " padding: 6px 10px; border-radius: 6px; }"
+            "QPushButton:hover { background: rgba(38, 77, 94, 220); }"
         )
         self.track_combo = QComboBox()
         self.track_combo.setMinimumWidth(190)
         self.track_combo.setStyleSheet(
-            "QComboBox { background: #294653; color: white; padding: 6px;"
-            " border: 1px solid #527381; border-radius: 5px; }"
+            "QComboBox { background: rgba(15, 21, 28, 190); color: white; padding: 5px;"
+            " border: 1px solid #a8c3cd; border-radius: 6px; }"
         )
         self.offset_spin = QDoubleSpinBox()
         self.offset_spin.setRange(-30.0, 30.0)
@@ -368,8 +385,8 @@ class KaraokeScreen(QDialog):
         self.offset_spin.setPrefix("Sync ")
         self.offset_spin.setToolTip("Shift MIDI notes earlier or later to match the recording")
         self.offset_spin.setStyleSheet(
-            "QDoubleSpinBox { background: #294653; color: white; padding: 6px;"
-            " border: 1px solid #527381; border-radius: 5px; }"
+            "QDoubleSpinBox { background: rgba(15, 21, 28, 190); color: white; padding: 5px;"
+            " border: 1px solid #a8c3cd; border-radius: 6px; }"
         )
         self.transpose_spin = QDoubleSpinBox()
         self.transpose_spin.setRange(-24, 24)
@@ -379,12 +396,15 @@ class KaraokeScreen(QDialog):
         self.transpose_spin.setPrefix("Transpose ")
         self.transpose_spin.setToolTip("Shift the MIDI melody and pitch targets by semitones")
         self.transpose_spin.setStyleSheet(
-            "QDoubleSpinBox { background: #294653; color: white; padding: 6px;"
-            " border: 1px solid #527381; border-radius: 5px; }"
+            "QDoubleSpinBox { background: rgba(15, 21, 28, 190); color: white; padding: 5px;"
+            " border: 1px solid #a8c3cd; border-radius: 6px; }"
         )
         self.close_label = QLabel("ESC  CLOSE")
         self.close_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.close_label.setStyleSheet("color: #a99eae; font-size: 14px;")
+        self.close_label.setStyleSheet(
+            "color: white; font-size: 13px; background: rgba(15,21,28,185);"
+            " padding: 7px 10px; border-radius: 6px;"
+        )
         top.addWidget(self.track_label)
         top.addStretch(1)
         top.addWidget(self.track_combo)
@@ -413,46 +433,62 @@ class KaraokeScreen(QDialog):
 
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
-        self.progress.setFixedHeight(8)
+        self.progress.setFixedHeight(24)
         self.progress.setStyleSheet(
-            "QProgressBar { background: #40364b; border: none; border-radius: 4px; }"
-            "QProgressBar::chunk { background: #16b8ff; border-radius: 4px; }"
+            "QProgressBar { background: rgba(8,25,39,185); border: 3px solid rgba(255,255,255,210); border-radius: 7px; }"
+            "QProgressBar::chunk { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #54dcff, stop:1 #0876b4); border-radius: 3px; }"
         )
         layout.addWidget(self.progress)
         self.square_wave_status = QLabel("Square wave: waiting for audio")
-        self.square_wave_status.setStyleSheet("color: #a9bbc2; font-size: 12px;")
+        self.square_wave_status.setStyleSheet("color: white; font-size: 12px; background: rgba(15,21,28,155); padding: 3px 7px;")
         layout.addWidget(self.square_wave_status)
         self.judgment_status = QLabel("Score 0  |  Combo 0  |  Ready")
         self.judgment_status.setStyleSheet(
-            "color: #ffd66b; font-size: 18px; font-weight: 700; padding: 3px 0;"
+            "color: #ffe47b; font-size: 16px; font-weight: 700; padding: 3px 7px;"
+            " background: rgba(15,21,28,160); border-radius: 5px;"
         )
         layout.addWidget(self.judgment_status)
         self.judgment_counter = QLabel("AMAZING 0  PERFECT 0  GOOD 0  OK 0  BAD 0  ??? 0  MISS 0")
-        self.judgment_counter.setStyleSheet("color: #d6e6ea; font-size: 12px; padding-bottom: 3px;")
+        self.judgment_counter.setStyleSheet("color: white; font-size: 12px; padding: 3px 7px; background: rgba(15,21,28,150); border-radius: 5px;")
         layout.addWidget(self.judgment_counter)
         self.pitch_lane = PitchLane(self)
+        self.pitch_lane.setMinimumHeight(155)
+        self.pitch_lane.setMaximumHeight(245)
         layout.addWidget(self.pitch_lane, 2)
-        layout.addStretch(2)
+        layout.addStretch(1)
 
         self.current_lyric = FuriganaWidget()
-        self.current_lyric.setMinimumHeight(170)
-        self.current_lyric.set_alignment("center")
+        self.current_lyric.setMinimumHeight(190)
+        self.current_lyric.set_alignment("left")
         self.current_lyric.set_font(size=64, ruby_size=34)
         self.current_lyric.set_colors("#ffffff", "#ff42a1")
         self.current_lyric.set_ruby_visible(True)
+        self._add_lyric_outline(self.current_lyric)
         self.current_lyric.set_karaoke_sweep_style(
             get_karaoke_settings().get("sweep_style", "classic")
         )
-        layout.addWidget(self.current_lyric, 2)
+        layout.addWidget(self.current_lyric, 1)
 
         self.next_lyric = FuriganaWidget()
-        self.next_lyric.setMinimumHeight(100)
-        self.next_lyric.set_alignment("center")
-        self.next_lyric.set_font(size=40, ruby_size=22)
-        self.next_lyric.set_colors("#e7e0e8", "#ff42a1")
+        self.next_lyric.setMinimumHeight(150)
+        self.next_lyric.set_alignment("right")
+        self.next_lyric.set_font(size=64, ruby_size=34)
+        self.next_lyric.set_colors("#ffffff", "#ff42a1")
         self.next_lyric.set_ruby_visible(True)
+        self._add_lyric_outline(self.next_lyric)
         layout.addWidget(self.next_lyric, 1)
-        layout.addStretch(2)
+
+    @staticmethod
+    def _add_lyric_outline(widget):
+        outline = QGraphicsDropShadowEffect(widget)
+        outline.setBlurRadius(4)
+        outline.setOffset(0, 0)
+        outline.setColor(QColor(0, 0, 0, 240))
+        widget.setGraphicsEffect(outline)
+
+    def set_background_pixmap(self, pixmap):
+        if pixmap is not None and not pixmap.isNull():
+            self.background.set_artwork_pixmap(pixmap)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
@@ -505,6 +541,7 @@ class KaraokePlugin:
         self._synth_callback_was_playing = False
         self._screen_line_index = None
         self._screen_next_text = None
+        self._screen_next_line_index = None
         self.midi_assignments = context.api.get_setting("midi_assignments", {}) or {}
         self.midi_offsets = context.api.get_setting("midi_offsets", {}) or {}
         if not isinstance(self.midi_assignments, dict):
@@ -561,8 +598,14 @@ class KaraokePlugin:
             self.screen.close()
             return
         self.screen = KaraokeScreen(self.window)
+        background = getattr(self.window, "lyrics_background", None)
+        if background is not None:
+            self.screen.set_background_pixmap(
+                getattr(background, "_source_pixmap", None)
+            )
         self._screen_line_index = None
         self._screen_next_text = None
+        self._screen_next_line_index = None
         self.screen.finished.connect(self._screen_closed)
         self.screen.midi_button.clicked.connect(self.choose_midi_file)
         self.screen.track_combo.currentIndexChanged.connect(
@@ -597,7 +640,14 @@ class KaraokePlugin:
         if path:
             self._screen_line_index = None
             self._screen_next_text = None
+            self._screen_next_line_index = None
             self.load_midi_for_track(path)
+            if self.screen is not None:
+                background = getattr(self.window, "lyrics_background", None)
+                if background is not None:
+                    self.screen.set_background_pixmap(
+                        getattr(background, "_source_pixmap", None)
+                    )
 
     def load_midi_for_track(self, audio_path):
         """Use an assigned MIDI file, or a same-name sidecar when present."""
@@ -917,6 +967,7 @@ class KaraokePlugin:
             midi_pitch = 69 + 12 * math.log2(self._mic_pitch_hz / 440.0)
         self.screen.pitch_lane.set_live_pitch(midi_pitch, alpha, position_seconds)
         self.screen.current_lyric.set_karaoke_position(position_seconds)
+        self.screen.next_lyric.set_karaoke_position(position_seconds)
         self._refresh_mic_pitch_label(position_seconds)
         self._update_judgments(position_seconds)
 
@@ -1109,13 +1160,32 @@ class KaraokePlugin:
 
         lines = self.context.api.get_current_lyrics()
         index = getattr(self.window, "current_line", -1)
+        visible_indices = [
+            line_index
+            for line_index, line in enumerate(lines)
+            if str(line.get("text", "")).strip()
+        ]
+        page_indices = []
+        if visible_indices and index >= 0:
+            if index in visible_indices:
+                current_slot = visible_indices.index(index)
+            else:
+                current_slot = next(
+                    (slot for slot, line_index in enumerate(visible_indices)
+                     if line_index > index),
+                    len(visible_indices) - 1,
+                )
+            page_start = (current_slot // 2) * 2
+            page_indices = visible_indices[page_start:page_start + 2]
+            index = page_indices[0]
+
         upcoming = ""
+        upcoming_index = None
+        if len(page_indices) > 1:
+            upcoming_index = page_indices[1]
+            upcoming = str(lines[upcoming_index].get("text", ""))
         if 0 <= index < len(lines):
             current = str(lines[index].get("text", ""))
-            for line in lines[index + 1:]:
-                upcoming = str(line.get("text", ""))
-                if upcoming.strip():
-                    break
             if self._screen_line_index != index:
                 lyric_lines = getattr(self.window, "lyric_lines", [])
                 if index < len(lyric_lines):
@@ -1141,9 +1211,23 @@ class KaraokePlugin:
                 screen.current_lyric.set_lyric(current, generate=True)
                 self._screen_line_index = index
 
-        if upcoming != self._screen_next_text:
-            screen.next_lyric.set_lyric(upcoming, generate=True)
+        if (upcoming != self._screen_next_text
+                or upcoming_index != self._screen_next_line_index):
+            lyric_lines = getattr(self.window, "lyric_lines", [])
+            if upcoming and upcoming_index is not None and upcoming_index < len(lyric_lines):
+                lyric_line = lyric_lines[upcoming_index]
+                segments = getattr(lyric_line, "segments", None) or []
+                if segments and getattr(lyric_line, "has_karaoke", False):
+                    line_end = getattr(lyric_line, "end", None)
+                    if line_end is None and upcoming_index + 1 < len(lyric_lines):
+                        line_end = lyric_lines[upcoming_index + 1].start
+                    screen.next_lyric.set_segments(upcoming, segments, line_end)
+                else:
+                    screen.next_lyric.set_lyric(upcoming, generate=True)
+            else:
+                screen.next_lyric.set_lyric(upcoming, generate=True)
             self._screen_next_text = upcoming
+            self._screen_next_line_index = upcoming_index
         screen.next_lyric.setVisible(bool(upcoming))
 
         path = self.context.api.get_current_track()

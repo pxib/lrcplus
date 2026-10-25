@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QUrl, QTimer, Signal, QThread, QSize, QRect
 from PySide6.QtGui import QAction, QKeySequence, QShortcut, QPixmap, QPainter
 from PySide6.QtMultimedia import QAudioOutput, QMediaDevices, QMediaPlayer
 from PySide6.QtWidgets import (
-    QButtonGroup, QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
+    QButtonGroup, QComboBox, QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
     QInputDialog, QMainWindow, QScrollArea, QStackedWidget, QLineEdit, QDoubleSpinBox,
     QMessageBox, QPushButton, QProgressBar, QSlider, QTextEdit, QToolButton, QVBoxLayout, QWidget,
     QGraphicsView, QGraphicsScene,
@@ -188,6 +188,193 @@ class CoverPreviewDialog(QDialog):
         layout.addLayout(controls)
         layout.addWidget(self.view, 1)
         QTimer.singleShot(0, self.view.fit_to_view)
+
+
+class PitchChangerDialog(QDialog):
+    """Compact, live pitch-shift controls with selectable display units."""
+
+    def __init__(self, semitones, mode, on_change, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Pitch changer")
+        self.setMinimumWidth(380)
+        self._on_change = on_change
+
+        heading = QLabel("Pitch changer")
+        heading.setStyleSheet("font-size: 19px; font-weight: 600;")
+        subtitle = QLabel("Change pitch while keeping playback speed the same")
+        subtitle.setStyleSheet("color: #9aaab5;")
+
+        self.unit_combo = QComboBox()
+        self.unit_combo.addItems(("Semitones", "Octaves", "Percent"))
+        self.unit_combo.setCurrentText(mode if mode in {"Semitones", "Octaves", "Percent"} else "Semitones")
+        units_layout = QHBoxLayout()
+        units_layout.addWidget(QLabel("Units"))
+        units_layout.addStretch(1)
+        units_layout.addWidget(self.unit_combo)
+
+        self.readout = QLabel()
+        self.readout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.readout.setStyleSheet("font-size: 34px; font-weight: 600; padding: 5px;")
+
+        self.interval = QLabel()
+        self.interval.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.interval.setStyleSheet("color: #9aaab5; font-size: 13px;")
+
+        self.value_spin = QDoubleSpinBox()
+        self._configure_value_spin()
+        self.value_spin.setKeyboardTracking(False)
+        self.value_spin.setToolTip("Pitch shift in semitones")
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(-240, 240)
+        self.slider.setSingleStep(1)
+        self.slider.setPageStep(10)
+        self.slider.setToolTip("Drag to shift pitch; each major interval is one semitone")
+
+        extremes = QHBoxLayout()
+        low = QLabel("-24 st")
+        high = QLabel("+24 st")
+        low.setStyleSheet("color: #82939e;")
+        high.setStyleSheet("color: #82939e;")
+        extremes.addWidget(low)
+        extremes.addStretch(1)
+        extremes.addWidget(high)
+
+        quick_layout = QHBoxLayout()
+        quick_layout.setSpacing(6)
+        for label, shift in (("-12", -12), ("-7", -7), ("-5", -5), ("-2", -2),
+                             ("Reset", 0), ("+2", 2), ("+5", 5), ("+7", 7), ("+12", 12)):
+            button = QPushButton(label)
+            button.setToolTip("Reset to concert pitch" if shift == 0 else f"Set to {shift:+d} semitones")
+            button.clicked.connect(lambda _checked=False, value=shift: self.set_value(value))
+            quick_layout.addWidget(button)
+
+        fine_layout = QHBoxLayout()
+        down_button = QToolButton()
+        down_button.setText("-")
+        down_button.setToolTip("Lower by 0.1 semitone")
+        up_button = QToolButton()
+        up_button.setText("+")
+        up_button.setToolTip("Raise by 0.1 semitone")
+        fine_layout.addWidget(QLabel("Fine tune"))
+        fine_layout.addStretch(1)
+        fine_layout.addWidget(down_button)
+        fine_layout.addWidget(self.value_spin)
+        fine_layout.addWidget(up_button)
+
+        close_button = QPushButton("Done")
+        close_button.clicked.connect(self.accept)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(12)
+        layout.addWidget(heading)
+        layout.addWidget(subtitle)
+        layout.addLayout(units_layout)
+        layout.addSpacing(4)
+        layout.addWidget(self.readout)
+        layout.addWidget(self.interval)
+        layout.addWidget(self.slider)
+        layout.addLayout(extremes)
+        layout.addLayout(quick_layout)
+        layout.addLayout(fine_layout)
+        layout.addWidget(close_button)
+
+        self.slider.valueChanged.connect(self._from_slider)
+        self.value_spin.valueChanged.connect(self._from_spin)
+        self.unit_combo.currentTextChanged.connect(self._on_units_changed)
+        down_button.clicked.connect(lambda: self.set_value(self.slider.value() / 10.0 - 0.1))
+        up_button.clicked.connect(lambda: self.set_value(self.slider.value() / 10.0 + 0.1))
+        self.set_value(semitones, notify=False)
+
+    def set_value(self, value, notify=True):
+        value = max(-24.0, min(24.0, round(float(value), 1)))
+        self.slider.blockSignals(True)
+        self.value_spin.blockSignals(True)
+        self.slider.setValue(round(value * 10))
+        self.value_spin.setValue(self._value_in_units(value))
+        self.slider.blockSignals(False)
+        self.value_spin.blockSignals(False)
+        self._refresh_labels(value)
+        if notify:
+            self._on_change(self.unit_combo.currentText(), self._value_in_units(value))
+
+    def _from_slider(self, value):
+        self.set_value(value / 10.0)
+
+    def _from_spin(self, value):
+        mode = self.unit_combo.currentText()
+        if mode == "Octaves":
+            semitones = value * 12.0
+        elif mode == "Percent":
+            semitones = 12.0 * math.log2(max(0.01, value) / 100.0)
+        else:
+            semitones = value
+        self.set_value(semitones)
+
+    def _on_units_changed(self, mode):
+        self._configure_value_spin()
+        self.set_value(self.slider.value() / 10.0)
+
+    def _value_in_units(self, semitones):
+        mode = self.unit_combo.currentText()
+        if mode == "Octaves":
+            return round(semitones / 12.0, 2)
+        if mode == "Percent":
+            return round(100.0 * (2.0 ** (semitones / 12.0)), 1)
+        return round(semitones, 1)
+
+    def _configure_value_spin(self):
+        mode = self.unit_combo.currentText()
+        self.value_spin.blockSignals(True)
+        if mode == "Octaves":
+            self.value_spin.setRange(-2.0, 2.0)
+            self.value_spin.setDecimals(2)
+            self.value_spin.setSingleStep(0.01)
+            self.value_spin.setSuffix(" oct")
+            self.value_spin.setToolTip("Pitch shift in octaves")
+        elif mode == "Percent":
+            self.value_spin.setRange(25.0, 400.0)
+            self.value_spin.setDecimals(1)
+            self.value_spin.setSingleStep(0.1)
+            self.value_spin.setSuffix("%")
+            self.value_spin.setToolTip("Pitch frequency as a percentage of the original")
+        else:
+            self.value_spin.setRange(-24.0, 24.0)
+            self.value_spin.setDecimals(1)
+            self.value_spin.setSingleStep(0.1)
+            self.value_spin.setSuffix(" st")
+            self.value_spin.setToolTip("Pitch shift in semitones")
+        self.value_spin.blockSignals(False)
+
+    def _refresh_labels(self, value):
+        mode = self.unit_combo.currentText()
+        display_value = self._value_in_units(value)
+        if mode == "Octaves":
+            self.readout.setText(f"{display_value:+.2f} oct")
+        elif mode == "Percent":
+            self.readout.setText(f"{display_value:.1f}%")
+        else:
+            self.readout.setText(f"{display_value:+.1f} st")
+        rounded = round(value)
+        names = {
+            0: "Concert pitch",
+            1: "Minor second up", 2: "Major second up", 3: "Minor third up",
+            4: "Major third up", 5: "Perfect fourth up", 6: "Tritone up",
+            7: "Perfect fifth up", 8: "Minor sixth up", 9: "Major sixth up",
+            10: "Minor seventh up", 11: "Major seventh up", 12: "Octave up",
+        }
+        if rounded < 0:
+            interval = names.get(abs(rounded), f"{abs(rounded)} semitones")
+            interval = interval.replace(" up", " down")
+        else:
+            interval = names.get(rounded, f"{rounded} semitones")
+        cents = round((value - rounded) * 100)
+        ratio = 2.0 ** (value / 12.0)
+        detail = f"{interval}"
+        if cents:
+            detail += f" ({cents:+d} cents)"
+        self.interval.setText(f"{detail} ({value:+.1f} st) | {ratio:.3f}x frequency")
 
 
 class LibraryScanWorker(QThread):
@@ -2308,42 +2495,11 @@ class Player(AudioController, LyricsController, QMainWindow):
             event.accept()
 
         def open_pitch_options(self):
-            menu = QMenu(self.pitch_options_button)
-            mode_menu = menu.addMenu("Units")
-            modes = ["Octaves", "Percent", "Semitones"]
-            for mode in modes:
-                action = mode_menu.addAction(mode)
-                action.setCheckable(True)
-                action.setChecked(self.pitch_settings["mode"] == mode)
-                action.triggered.connect(lambda _checked=False, selected=mode: self._set_pitch_mode(selected))
-            menu.addSeparator()
-            value_action = menu.addAction(f"Value: {self.pitch_settings['value']:g}")
-            value_action.triggered.connect(self._edit_pitch_value)
-            reset_action = menu.addAction("Reset pitch")
-            reset_action.triggered.connect(lambda: self.handle_pitch_change(self.pitch_settings["mode"], 0 if self.pitch_settings["mode"] != "Percent" else 100))
-            menu.exec(self.pitch_options_button.mapToGlobal(self.pitch_options_button.rect().bottomLeft()))
-
-
-        def _set_pitch_mode(self, mode):
-            current = self.pitch_semitones
-            if mode == "Octaves":
-                value = round(current / 12.0, 2)
-            elif mode == "Percent":
-                value = round(100.0 * (2.0 ** (current / 12.0)), 1)
-            else:
-                value = round(current, 1)
-            self.pitch_settings = {"mode": mode, "value": value}
-            self.handle_pitch_change(mode, value)
-
-
-        def _edit_pitch_value(self):
-            mode = self.pitch_settings["mode"]
-            if mode == "Octaves":
-                value, ok = QInputDialog.getDouble(self, "Pitch", "Octaves:", float(self.pitch_settings["value"]), -2.0, 2.0, 2)
-            elif mode == "Percent":
-                value, ok = QInputDialog.getDouble(self, "Pitch", "Percent:", float(self.pitch_settings["value"]), 25.0, 400.0, 1)
-            else:
-                value, ok = QInputDialog.getDouble(self, "Pitch", "Semitones:", float(self.pitch_settings["value"]), -24.0, 24.0, 1)
-            if ok:
-                self.handle_pitch_change(mode, value)
+            dialog = PitchChangerDialog(
+                self.pitch_semitones,
+                self.pitch_settings.get("mode", "Semitones"),
+                self.handle_pitch_change,
+                self,
+            )
+            dialog.exec()
 
