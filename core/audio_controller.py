@@ -765,7 +765,7 @@ class AudioController:
                 )
 
             self.current_time_label.setText(
-                self.format_time(position_ms)
+                self._format_position_time(position_ms)
             )
 
             if hasattr(self, "waveform_widget"):
@@ -790,6 +790,9 @@ class AudioController:
             self.duration_label.setText(
                 self.format_time(duration_ms)
             )
+            self.current_time_label.setText(
+                self._format_position_time(self.media_player.position())
+            )
 
             if hasattr(self, "waveform_widget"):
                 self.waveform_widget.set_duration(duration_ms)
@@ -807,4 +810,28 @@ class AudioController:
                 return f"{hours}:{minutes:02d}:{seconds:02d}"
 
             return f"{minutes}:{seconds:02d}"
+
+
+        def toggle_time_display(self):
+            self.show_remaining_time = not getattr(
+                self, "show_remaining_time", False
+            )
+            if hasattr(self, "current_time_label"):
+                remaining = self.show_remaining_time
+                self.current_time_label.setToolTip(
+                    "Click to show elapsed time" if remaining
+                    else "Click to show remaining time"
+                )
+                self.current_time_label.setText(
+                    self._format_position_time(self.media_player.position())
+                )
+
+
+        def _format_position_time(self, position_ms):
+            if getattr(self, "show_remaining_time", False):
+                remaining_ms = max(
+                    0, self.media_player.duration() - int(position_ms)
+                )
+                return f"-{self.format_time(remaining_ms)}"
+            return self.format_time(position_ms)
 

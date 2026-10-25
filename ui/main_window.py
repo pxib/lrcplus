@@ -91,6 +91,17 @@ class ClickableSlider(QSlider):
         super().mousePressEvent(event)
 
 
+class ClickableTimeLabel(QLabel):
+    """A time label that emits a click for switching its display mode."""
+
+    clicked = Signal()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
 class AlbumCoverDelegate(QStyledItemDelegate):
     """Paint embedded artwork strictly inside the current cover-column bounds."""
 
@@ -383,7 +394,11 @@ class Player(AudioController, LyricsController, QMainWindow):
             # TIME LABELS
             # --------------------------------------------------
 
-            self.current_time_label = QLabel("00:00")
+            self.current_time_label = ClickableTimeLabel("00:00")
+            self.current_time_label.clicked.connect(self.toggle_time_display)
+            self.current_time_label.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.current_time_label.setToolTip("Click to show remaining time")
+            self.show_remaining_time = False
             self.duration_label = QLabel("00:00")
 
             self.is_seeking = False
