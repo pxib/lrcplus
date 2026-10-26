@@ -42,10 +42,13 @@ from plugins.core.karaoke.midi import MidiImportError, load_midi
 
 from plugins.core.karaoke.screen import PitchLane, KaraokeScreen
 
+
+KARAOKE_LYRIC_PAIR_LOOKAHEAD_RATIO = 0.40
+
 class KaraokePlugin:
     name = "Karaoke"
     version = "0.1.0"
-    description = "Full-screen karaoke with current and upcoming lyrics plus an imported MIDI pitch lane."
+    description = "Full-screen lyrics synced to the main player, with an optional MIDI pitch guide."
 
     def on_load(self, context):
         self.context = context
@@ -143,6 +146,12 @@ class KaraokePlugin:
             self.screen.close()
             return
         self.screen = KaraokeScreen(self.window)
+        # Mic scoring now lives in the standalone Karaoke Game plugin. Keep
+        # this screen focused on the song-synced lyrics and MIDI guide lane.
+        self.screen.mic_button.hide()
+        self.screen.mic_pitch_status.hide()
+        self.screen.judgment_status.hide()
+        self.screen.judgment_counter.hide()
         background = getattr(self.window, "lyrics_background", None)
         if background is not None:
             self.screen.set_background_pixmap(
@@ -711,6 +720,7 @@ class KaraokePlugin:
             if str(line.get("text", "")).strip()
         ]
         page_indices = []
+        preview_index = None
         if visible_indices and index >= 0:
             if index in visible_indices:
                 current_slot = visible_indices.index(index)
@@ -720,9 +730,56 @@ class KaraokePlugin:
                      if line_index > index),
                     len(visible_indices) - 1,
                 )
-            page_start = (current_slot // 2) * 2
-            page_indices = visible_indices[page_start:page_start + 2]
+            page_slot = (current_slot // 2) * 2
+            position_ms = int(self.context.api.get_position())
+            if page_slot > 0:
+                previous_bottom = visible_indices[page_slot - 1]
+                this_pair_start = visible_indices[page_slot]
+                previous_bottom_start_ms = int(
+                    lines[previous_bottom].get("start_ms", 0) or 0
+                )
+                this_pair_start_ms = int(
+                    lines[this_pair_start].get("start_ms", 0) or 0
+                )
+                previous_duration_ms = max(
+                    0, this_pair_start_ms - previous_bottom_start_ms
+                )
+                previous_lookahead_ms = int(
+                    previous_duration_ms * KARAOKE_LYRIC_PAIR_LOOKAHEAD_RATIO
+                )
+                if position_ms < this_pair_start_ms - previous_lookahead_ms:
+                    page_slot -= 2
+
+            next_pair_slot = page_slot + 2
+            if next_pair_slot < len(visible_indices):
+                bottom_index = visible_indices[
+                    min(page_slot + 1, len(visible_indices) - 1)
+                ]
+                next_pair_index = visible_indices[next_pair_slot]
+                bottom_start_ms = int(
+                    lines[bottom_index].get("start_ms", 0) or 0
+                )
+                next_pair_start_ms = int(
+                    lines[next_pair_index].get("start_ms", 0) or 0
+                )
+                bottom_duration_ms = max(
+                    0, next_pair_start_ms - bottom_start_ms
+                )
+                lookahead_ms = int(
+                    bottom_duration_ms * KARAOKE_LYRIC_PAIR_LOOKAHEAD_RATIO
+                )
+                if (
+                    position_ms >= next_pair_start_ms - lookahead_ms
+                    and position_ms < next_pair_start_ms
+                ):
+                    # Preview the next lyric in the top row while keeping the
+                    # bottom row visible through the end of its timestamp.
+                    preview_index = next_pair_index
+
+            page_indices = visible_indices[page_slot:page_slot + 2]
             index = page_indices[0]
+            if preview_index is not None:
+                index = preview_index
 
         upcoming = ""
         upcoming_index = None

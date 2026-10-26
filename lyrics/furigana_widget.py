@@ -128,6 +128,7 @@ class FuriganaWidget(QWidget):
         self.all_romaji = False
         self.ruby_position = "above"
         self.ruby_padding = 2
+        self.reserve_ruby_space = False
 
         # Optional multi-line layout. Disabled by default so the main lyrics
         # display keeps its existing behavior; the editor preview enables it.
@@ -304,6 +305,15 @@ class FuriganaWidget(QWidget):
         if self.ruby_padding == padding:
             return
         self.ruby_padding = padding
+        self._update_content_geometry()
+        self.update()
+
+    def set_reserve_ruby_space(self, reserve):
+        """Keep the above-ruby band even when this lyric has no reading."""
+        reserve = bool(reserve)
+        if self.reserve_ruby_space == reserve:
+            return
+        self.reserve_ruby_space = reserve
         self._update_content_geometry()
         self.update()
 
@@ -1311,7 +1321,11 @@ class FuriganaWidget(QWidget):
         base_height = QFontMetrics(self.base_font).height()
         ruby_height = 0
         romaji_height = 0
-        if self._has_visible_ruby():
+        if self._has_visible_ruby() or (
+            self.reserve_ruby_space
+            and self.show_ruby
+            and self.ruby_position == "above"
+        ):
             ruby_height = QFontMetrics(self.reading_font).height()
         elif self._has_visible_romaji():
             romaji_height = QFontMetrics(self.reading_font).height()
