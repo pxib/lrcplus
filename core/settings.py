@@ -24,6 +24,8 @@ PLAYBACK_DEFAULTS = {
     "show_waveform": True,
     "pitch_mode": "Semitones",
     "pitch_value": 0,
+    "speed_percent": 100,
+    "pitch_linked_to_speed": False,
 }
 
 KARAOKE_DEFAULTS = {
@@ -99,6 +101,10 @@ def get_playback_settings(payload=None):
         volume = int(values.get("volume", PLAYBACK_DEFAULTS["volume"]))
     except (TypeError, ValueError):
         volume = PLAYBACK_DEFAULTS["volume"]
+    try:
+        speed_percent = int(values.get("speed_percent", PLAYBACK_DEFAULTS["speed_percent"]))
+    except (TypeError, ValueError):
+        speed_percent = PLAYBACK_DEFAULTS["speed_percent"]
     return {
         "precise_timestamp_fps": _safe_fps(
             values.get("precise_timestamp_fps",
@@ -121,6 +127,13 @@ def get_playback_settings(payload=None):
         ),
         "pitch_mode": pitch_mode,
         "pitch_value": pitch_value,
+        "speed_percent": max(25, min(200, speed_percent)),
+        "pitch_linked_to_speed": bool(
+            values.get(
+                "pitch_linked_to_speed",
+                PLAYBACK_DEFAULTS["pitch_linked_to_speed"],
+            )
+        ),
     }
 
 

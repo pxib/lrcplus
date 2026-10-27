@@ -17,6 +17,7 @@ from core.audio_dsp import (
     snap_volume_percentage,
     apply_pcm_gain,
     apply_pcm_gain_to_bytes,
+    apply_pcm_rate_to_bytes,
     apply_pcm_pitch_to_bytes,
     reset_pcm_pitch_state,
 )
@@ -79,6 +80,7 @@ class AudioController:
                     str(audio_path)
                 )
             )
+            self._set_native_pitch_compensation()
 
             # Look for matching LRCX/LRC lyrics.
             lrc_path = self.find_lrc_for_audio(audio_path)
@@ -305,11 +307,37 @@ class AudioController:
                 self.audio_output.setVolume(self.volume_slider.value() / 100.0)
 
 
+        def _pcm_pitch_shift(self):
+            """Return the pitch adjustment after rate resampling the PCM stream."""
+            if getattr(self, "pitch_linked_to_speed", False):
+                # Linked mode uses speed for pitch and disables the manual offset.
+                return 0.0
+            pitch = float(getattr(self, "pitch_semitones", 0.0))
+            speed = max(0.01, float(getattr(self, "playback_speed", 1.0)))
+            speed_pitch = 12.0 * np.log2(speed)
+            # Cancel the resampling pitch change, then apply the chosen pitch.
+            return pitch - speed_pitch
+
+
+        def _displayed_pitch_semitones(self):
+            """Return the audible pitch shift represented by the current controls."""
+            pitch = float(getattr(self, "pitch_semitones", 0.0))
+            if not getattr(self, "pitch_linked_to_speed", False):
+                return pitch
+            speed = max(0.01, float(getattr(self, "playback_speed", 1.0)))
+            return 12.0 * np.log2(speed)
+
+
+        def _pcm_rate_active(self):
+            return abs(float(getattr(self, "playback_speed", 1.0)) - 1.0) >= 0.001
+
+
         def _configure_pcm_volume(self, value, refresh_format=False):
             value = int(value)
             self._current_pcm_gain = volume_to_gain(value)
-            pitch_active = abs(float(getattr(self, "pitch_semitones", 0.0))) >= 0.001
-            if value <= 100 and not pitch_active:
+            pitch_active = abs(self._pcm_pitch_shift()) >= 0.001
+            rate_active = self._pcm_rate_active()
+            if value <= 100 and not pitch_active and not rate_active:
                 output = self._pcm_buffer_output
                 self.media_player.setAudioBufferOutput(None)
                 self._pcm_buffer_output = None
@@ -341,7 +369,8 @@ class AudioController:
 
         def _write_pcm_buffer(self, buffer):
             if (self.volume_slider.value() <= 100
-                    and abs(float(getattr(self, "pitch_semitones", 0.0))) < 0.001) or not buffer.isValid():
+                    and abs(self._pcm_pitch_shift()) < 0.001
+                    and not self._pcm_rate_active()) or not buffer.isValid():
                 return
 
             data = bytes(buffer.data())
@@ -350,10 +379,14 @@ class AudioController:
 
             audio_format = buffer.format()
             try:
-                pcm = apply_pcm_pitch_to_bytes(
+                pcm = apply_pcm_rate_to_bytes(
                     data, audio_format.sampleFormat(), audio_format.channelCount(),
+                    self.playback_speed,
+                )
+                pcm = apply_pcm_pitch_to_bytes(
+                    pcm, audio_format.sampleFormat(), audio_format.channelCount(),
                     audio_format.sampleRate(),
-                    getattr(self, "pitch_semitones", 0.0),
+                    self._pcm_pitch_shift(),
                 )
                 if self.volume_slider.value() > 100:
                     pcm = apply_pcm_gain_to_bytes(
@@ -375,8 +408,12 @@ class AudioController:
                 # Keep the direct route audible while a fresh pitch setting
                 # warms up its processing queue. Switch routes only once that
                 # queue has enough processed audio to avoid a dropout.
-                if (abs(float(getattr(self, "pitch_semitones", 0.0))) >= 0.001
-                        and getattr(apply_pcm_pitch_to_bytes, "_started", False)):
+                pitch_active = abs(self._pcm_pitch_shift()) >= 0.001
+                processor_ready = (
+                    not pitch_active
+                    or getattr(apply_pcm_pitch_to_bytes, "_started", False)
+                )
+                if ((pitch_active or self._pcm_rate_active()) and processor_ready):
                     self.audio_output.setVolume(0.0)
 
                 self._pcm_pending.extend(pcm)
@@ -435,7 +472,8 @@ class AudioController:
             if (
                 state == QMediaPlayer.PlaybackState.PlayingState
                 and (self.volume_slider.value() > 100
-                     or abs(float(getattr(self, "pitch_semitones", 0.0))) >= 0.001)
+                     or abs(self._pcm_pitch_shift()) >= 0.001
+                     or self._pcm_rate_active())
                 and self._pcm_buffer_output is not None
                 and self.media_player.audioBufferOutput()
                 is not self._pcm_buffer_output
@@ -541,14 +579,42 @@ class AudioController:
             if abs(value - 100) <= snap_threshold:
                 value = 100
                 # Update slider without triggering another signal
-                self.speed_slider.blockSignals(True)
-                self.speed_slider.setValue(100)
-                self.speed_slider.blockSignals(False)
-        
-            # Value ranges from 50 to 200, representing 50% to 200% speed
+            # The dialog slider ranges from 25% to 200%.
             self.playback_speed = value / 100.0
             self.media_player.setPlaybackRate(self.playback_speed)
-            self.speed_label.setText(f"{abs(value)}%")
+            self._set_native_pitch_compensation()
+            self.playback_settings["speed_percent"] = value
+            save_playback_settings(self.playback_settings)
+            self.pitch_status_label.setText(
+                f"{self._displayed_pitch_semitones():+.1f} st"
+            )
+            reset_pcm_pitch_state()
+            self._configure_pcm_volume(self.volume_slider.value())
+
+
+        def handle_pitch_link_change(self, linked):
+            self.pitch_linked_to_speed = bool(linked)
+            self.playback_settings["pitch_linked_to_speed"] = self.pitch_linked_to_speed
+            save_playback_settings(self.playback_settings)
+            self._set_native_pitch_compensation()
+            self.pitch_status_label.setText(
+                f"{self._displayed_pitch_semitones():+.1f} st"
+            )
+            reset_pcm_pitch_state()
+            self.audio_output.setVolume(self.volume_slider.value() / 100.0)
+            self._configure_pcm_volume(self.volume_slider.value())
+
+
+        def _set_native_pitch_compensation(self):
+            """Keep Qt's direct-output fallback consistent with the link option."""
+            setter = getattr(self.media_player, "setPitchCompensation", None)
+            if setter is None:
+                return
+            try:
+                setter(not self.pitch_linked_to_speed)
+            except (RuntimeError, TypeError):
+                # Some backends expose the API but keep compensation always on.
+                pass
 
 
         def handle_pitch_change(self, mode, value):
@@ -564,7 +630,9 @@ class AudioController:
             self.playback_settings["pitch_mode"] = mode
             self.playback_settings["pitch_value"] = value
             save_playback_settings(self.playback_settings)
-            self.pitch_status_label.setText(f"{self.pitch_semitones:+.1f} st")
+            self.pitch_status_label.setText(
+                f"{self._displayed_pitch_semitones():+.1f} st"
+            )
             # The pitch processor starts a fresh overlap buffer when its shift
             # changes. Keep normal playback audible until the new output is ready.
             reset_pcm_pitch_state()

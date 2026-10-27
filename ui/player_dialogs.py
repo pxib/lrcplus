@@ -5,6 +5,7 @@ from PySide6.QtGui import QPixmap, QPainter
 from PySide6.QtWidgets import (
     QDialog,
     QComboBox,
+    QCheckBox,
     QDoubleSpinBox,
     QGraphicsScene,
     QGraphicsView,
@@ -143,7 +144,9 @@ class CoverPreviewDialog(QDialog):
 class PitchChangerDialog(QDialog):
     """Compact, live pitch-shift controls with selectable display units."""
 
-    def __init__(self, semitones, mode, on_change, parent=None):
+    def __init__(self, semitones, mode, on_change, parent=None, *, speed_percent=100,
+                 link_pitch_to_speed=False, on_speed_change=None,
+                 on_link_change=None):
         super().__init__(parent)
         self.setWindowTitle("Pitch changer")
         self.setMinimumWidth(380)
@@ -151,14 +154,32 @@ class PitchChangerDialog(QDialog):
 
         heading = QLabel("Pitch changer")
         heading.setStyleSheet("font-size: 19px; font-weight: 600;")
-        subtitle = QLabel("Change pitch while keeping playback speed the same")
+        subtitle = QLabel("Set a pitch offset; linked speed adds its natural pitch change")
         subtitle.setStyleSheet("color: #9aaab5;")
+
+        speed_layout = QHBoxLayout()
+        speed_layout.addWidget(QLabel("Speed"))
+        self.speed_slider = QSlider(Qt.Orientation.Horizontal)
+        self.speed_slider.setRange(25, 200)
+        self.speed_slider.setValue(int(speed_percent))
+        self.speed_slider.setToolTip("Playback speed from 25% to 200%")
+        self.speed_label = QLabel(f"{int(speed_percent)}%")
+        self.speed_label.setFixedWidth(48)
+        speed_layout.addWidget(self.speed_slider, 1)
+        speed_layout.addWidget(self.speed_label)
+
+        self.link_pitch_checkbox = QCheckBox("Link pitch to speed")
+        self.link_pitch_checkbox.setToolTip(
+            "When enabled, speed changes pitch like a tape deck and manual pitch controls are disabled."
+        )
+        self.link_pitch_checkbox.setChecked(bool(link_pitch_to_speed))
 
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(("Semitones", "Octaves", "Percent"))
         self.unit_combo.setCurrentText(mode if mode in {"Semitones", "Octaves", "Percent"} else "Semitones")
         units_layout = QHBoxLayout()
-        units_layout.addWidget(QLabel("Units"))
+        self.units_label = QLabel("Units")
+        units_layout.addWidget(self.units_label)
         units_layout.addStretch(1)
         units_layout.addWidget(self.unit_combo)
 
@@ -192,12 +213,14 @@ class PitchChangerDialog(QDialog):
 
         quick_layout = QHBoxLayout()
         quick_layout.setSpacing(6)
+        self.quick_pitch_buttons = []
         for label, shift in (("-12", -12), ("-7", -7), ("-5", -5), ("-2", -2),
                              ("Reset", 0), ("+2", 2), ("+5", 5), ("+7", 7), ("+12", 12)):
             button = QPushButton(label)
             button.setToolTip("Reset to concert pitch" if shift == 0 else f"Set to {shift:+d} semitones")
             button.clicked.connect(lambda _checked=False, value=shift: self.set_value(value))
             quick_layout.addWidget(button)
+            self.quick_pitch_buttons.append(button)
 
         fine_layout = QHBoxLayout()
         down_button = QToolButton()
@@ -206,7 +229,8 @@ class PitchChangerDialog(QDialog):
         up_button = QToolButton()
         up_button.setText("+")
         up_button.setToolTip("Raise by 0.1 semitone")
-        fine_layout.addWidget(QLabel("Fine tune"))
+        self.fine_tune_label = QLabel("Fine tune")
+        fine_layout.addWidget(self.fine_tune_label)
         fine_layout.addStretch(1)
         fine_layout.addWidget(down_button)
         fine_layout.addWidget(self.value_spin)
@@ -220,6 +244,8 @@ class PitchChangerDialog(QDialog):
         layout.setSpacing(12)
         layout.addWidget(heading)
         layout.addWidget(subtitle)
+        layout.addLayout(speed_layout)
+        layout.addWidget(self.link_pitch_checkbox)
         layout.addLayout(units_layout)
         layout.addSpacing(4)
         layout.addWidget(self.readout)
@@ -233,9 +259,41 @@ class PitchChangerDialog(QDialog):
         self.slider.valueChanged.connect(self._from_slider)
         self.value_spin.valueChanged.connect(self._from_spin)
         self.unit_combo.currentTextChanged.connect(self._on_units_changed)
+        self.speed_slider.valueChanged.connect(self._on_speed_changed)
+        if on_speed_change is not None:
+            self._on_speed_change = on_speed_change
+        else:
+            self._on_speed_change = lambda _value: None
+        self._on_link_change = on_link_change
+        self.link_pitch_checkbox.toggled.connect(self._on_link_toggled)
         down_button.clicked.connect(lambda: self.set_value(self.slider.value() / 10.0 - 0.1))
         up_button.clicked.connect(lambda: self.set_value(self.slider.value() / 10.0 + 0.1))
         self.set_value(semitones, notify=False)
+
+        self._pitch_controls = [
+            self.units_label, self.unit_combo, self.readout, self.interval,
+            self.slider, low, high, self.fine_tune_label, down_button,
+            self.value_spin, up_button, *self.quick_pitch_buttons,
+        ]
+        self._set_pitch_controls_enabled(not link_pitch_to_speed)
+
+    def _set_pitch_controls_enabled(self, enabled):
+        for control in getattr(self, "_pitch_controls", ()):
+            control.setEnabled(bool(enabled))
+
+    def _on_link_toggled(self, linked):
+        self._set_pitch_controls_enabled(not linked)
+        if self._on_link_change is not None:
+            self._on_link_change(linked)
+
+    def _on_speed_changed(self, value):
+        if abs(value - 100) <= 5:
+            value = 100
+            self.speed_slider.blockSignals(True)
+            self.speed_slider.setValue(value)
+            self.speed_slider.blockSignals(False)
+        self.speed_label.setText(f"{value}%")
+        self._on_speed_change(value)
 
     def set_value(self, value, notify=True):
         value = max(-24.0, min(24.0, round(float(value), 1)))

@@ -151,6 +151,12 @@ class Player(AudioController, LyricsController, QMainWindow):
             # Global defaults. Local overrides are resolved when a file loads.
             self.global_lyrics_settings = get_global_lyrics_settings()
             self.playback_settings = get_playback_settings()
+            self.playback_speed = self.playback_settings.get("speed_percent", 100) / 100.0
+            self.pitch_linked_to_speed = self.playback_settings.get(
+                "pitch_linked_to_speed", False
+            )
+            self.media_player.setPlaybackRate(self.playback_speed)
+            self._set_native_pitch_compensation()
             self.pitch_settings = {
                 "mode": self.playback_settings.get("pitch_mode", "Semitones"),
                 "value": self.playback_settings.get("pitch_value", 0),
@@ -280,8 +286,6 @@ class Player(AudioController, LyricsController, QMainWindow):
             # PLAYBACK CONTROL STATE
             # --------------------------------------------------
 
-            self.playback_speed = 1.0
-
             # --------------------------------------------------
             # SEEK BAR
             # --------------------------------------------------
@@ -333,24 +337,6 @@ class Player(AudioController, LyricsController, QMainWindow):
                     self.volume_slider.value()
                 ),
             )
-
-            # --------------------------------------------------
-            # SPEED CONTROL
-            # --------------------------------------------------
-
-            self.speed_slider = QSlider(
-                Qt.Orientation.Horizontal
-            )
-            self.speed_slider.setRange(25, 200)  # 0.5x to 2.0x
-            self.speed_slider.setValue(100)  # 1.0x
-            self.speed_slider.setFixedWidth(120)
-            self.speed_slider.valueChanged.connect(
-                self.handle_speed_change
-            )
-
-            self.speed_label = QLabel("100%")
-            self.speed_label.setFixedWidth(40)
-
 
             self.shuffle_enabled = False
             self.shuffle_button = QPushButton("Shuffle: Off")
@@ -522,9 +508,11 @@ class Player(AudioController, LyricsController, QMainWindow):
             self.pitch_options_button = QToolButton()
             self.pitch_options_button.setText("Pitch")
             self.pitch_options_button.setObjectName("dockAction")
-            self.pitch_options_button.setToolTip("Change audio pitch without changing playback speed")
+            self.pitch_options_button.setToolTip("Adjust playback speed and pitch")
             self.pitch_options_button.clicked.connect(self.open_pitch_options)
-            self.pitch_status_label = QLabel(f"{self.pitch_semitones:+.1f} st")
+            self.pitch_status_label = QLabel(
+                f"{self._displayed_pitch_semitones():+.1f} st"
+            )
             self.pitch_status_label.setMinimumWidth(48)
 
             # --------------------------------------------------
@@ -549,10 +537,6 @@ class Player(AudioController, LyricsController, QMainWindow):
             volume_layout.addSpacing(8)
             volume_layout.addWidget(self.pitch_options_button)
             volume_layout.addWidget(self.pitch_status_label)
-            volume_layout.addSpacing(8)
-            volume_layout.addWidget(QLabel("Speed"))
-            volume_layout.addWidget(self.speed_slider)
-            volume_layout.addWidget(self.speed_label)
             volume_layout.addStretch(1)
             volume_layout.addWidget(self.mute_button)
             volume_layout.addWidget(QLabel("Volume"))
@@ -2180,7 +2164,11 @@ class Player(AudioController, LyricsController, QMainWindow):
                 self.pitch_semitones,
                 self.pitch_settings.get("mode", "Semitones"),
                 self.handle_pitch_change,
-                self,
+                speed_percent=round(self.playback_speed * 100),
+                link_pitch_to_speed=self.pitch_linked_to_speed,
+                on_speed_change=self.handle_speed_change,
+                on_link_change=self.handle_pitch_link_change,
+                parent=self,
             )
             dialog.exec()
 
