@@ -4,7 +4,6 @@ from bisect import bisect_left
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -417,10 +416,6 @@ class KaraokeScreen(QDialog):
         top.addWidget(self.track_combo)
         top.addWidget(self.offset_spin)
         top.addWidget(self.transpose_spin)
-        self.square_wave_checkbox = QCheckBox("Square wave")
-        self.square_wave_checkbox.setChecked(True)
-        self.square_wave_checkbox.setToolTip("Mix the selected MIDI melody into song playback")
-        self.square_wave_checkbox.setStyleSheet("color: white; spacing: 5px;")
         self.mic_button = QPushButton("Start Mic")
         self.mic_button.setToolTip("Show your live pitch and compare it with the selected MIDI melody")
         self.mic_button.setStyleSheet(
@@ -431,7 +426,6 @@ class KaraokeScreen(QDialog):
         self.mic_pitch_status = QLabel("Mic pitch: off")
         self.mic_pitch_status.setMinimumWidth(190)
         self.mic_pitch_status.setStyleSheet("color: #d6e6ea; font-size: 13px;")
-        top.addWidget(self.square_wave_checkbox)
         top.addWidget(self.mic_button)
         top.addWidget(self.mic_pitch_status)
         top.addWidget(self.midi_button)
@@ -446,7 +440,7 @@ class KaraokeScreen(QDialog):
             "QProgressBar::chunk { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #54dcff, stop:1 #0876b4); border-radius: 3px; }"
         )
         layout.addWidget(self.progress)
-        self.square_wave_status = QLabel("Square wave: waiting for audio")
+        self.square_wave_status = QLabel("MIDI Player: waiting for audio")
         self.square_wave_status.setStyleSheet("color: white; font-size: 12px; background: rgba(15,21,28,155); padding: 3px 7px;")
         layout.addWidget(self.square_wave_status)
         self.judgment_status = QLabel("Score 0  |  Combo 0  |  Ready")
