@@ -464,6 +464,7 @@ class KaraokeScreen(QDialog):
         self.current_lyric.set_font(size=64, ruby_size=34)
         self.current_lyric.set_colors("#ffffff", "#ff42a1")
         self.current_lyric.set_ruby_visible(True)
+        self.current_lyric.set_reserve_ruby_space(True)
         self._add_lyric_outline(self.current_lyric)
         self.current_lyric.set_karaoke_sweep_style(
             get_karaoke_settings().get("sweep_style", "classic")
@@ -476,6 +477,7 @@ class KaraokeScreen(QDialog):
         self.next_lyric.set_font(size=64, ruby_size=34)
         self.next_lyric.set_colors("#ffffff", "#ff42a1")
         self.next_lyric.set_ruby_visible(True)
+        self.next_lyric.set_reserve_ruby_space(True)
         self._add_lyric_outline(self.next_lyric)
         layout.addWidget(self.next_lyric, 1)
 
