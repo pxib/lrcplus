@@ -1,5 +1,4 @@
 import math
-from collections import deque
 
 import numpy as np
 import pytest
@@ -86,38 +85,92 @@ def test_vibrato_tracks_near_the_center_pitch():
     assert abs(cents_error(estimated, 220.0)) < 40
 
 
-def test_transition_response_is_bounded_by_analysis_window_and_filter():
+@pytest.mark.parametrize("sample_rate", [8000, 16000, 44100, 48000, 96000])
+@pytest.mark.parametrize("frequency", [55.0, 110.0, 440.0, 1300.0])
+def test_range_boundaries_and_microphone_sample_rates(sample_rate, frequency):
+    time = np.arange(round(sample_rate * 0.08)) / sample_rate
+    signal = 0.5 * np.sin(2 * np.pi * frequency * time)
+    estimated, confidence = PitchEstimator(sample_rate).estimate(signal)
+
+    assert estimated > 0
+    assert abs(cents_error(estimated, frequency)) < 12
+    assert confidence > 0.9
+
+
+@pytest.mark.parametrize("sample_rate", [8000, 16000, 44100, 48000])
+@pytest.mark.parametrize("frequency", [55.0, 110.0, 220.0, 440.0, 1300.0])
+def test_quiet_fundamental_under_loud_second_harmonic(sample_rate, frequency):
+    time = np.arange(round(sample_rate * 0.08)) / sample_rate
+    signal = (0.15 * np.sin(2 * np.pi * frequency * time)
+              + np.sin(4 * np.pi * frequency * time)
+              + 0.15 * np.sin(6 * np.pi * frequency * time))
+    estimator = PitchEstimator(sample_rate)
+    estimated, confidence = estimator.estimate(signal)
+
+    assert estimated > 0
+    assert abs(cents_error(estimated, frequency)) < 25
+    assert confidence > 0.9
+    # Candidate limits must preserve the chosen fundamental.
+    limited = estimator.estimate_candidates(signal, max_candidates=1)
+    assert len(limited) == 1
+    assert limited[0] == (estimated, confidence)
+
+
+@pytest.mark.parametrize("frequency", [55.0, 110.0, 220.0, 440.0])
+def test_missing_fundamental_from_second_and_third_harmonics(frequency):
+    time = np.arange(FRAME_SIZE) / SAMPLE_RATE
+    signal = np.sin(4 * np.pi * frequency * time) + 0.6 * np.sin(
+        6 * np.pi * frequency * time
+    )
+    estimated, _ = PitchEstimator(SAMPLE_RATE).estimate(signal)
+    assert estimated > 0
+    assert abs(cents_error(estimated, frequency)) < 15
+
+
+@pytest.mark.parametrize("signal", [
+    [], np.zeros(FRAME_SIZE), np.ones(FRAME_SIZE), [0.1] * 7,
+    [0.0, float("nan")] * 1000, [float("inf")] * FRAME_SIZE,
+    np.ones((FRAME_SIZE, 2)), np.zeros((2, 2, 2)),
+])
+def test_invalid_or_unvoiced_frames_return_no_pitch(signal):
+    assert PitchEstimator(SAMPLE_RATE).estimate(signal) == (0.0, 0.0)
+
+
+def test_white_noise_and_single_impulse_are_unvoiced():
     estimator = PitchEstimator(SAMPLE_RATE)
-    hop = PitchDetector.HOP_SIZE
-    window = np.zeros(FRAME_SIZE, dtype=np.float64)
-    recent_estimates = deque(maxlen=3)
-    phase = 0.0
-    transition_sample = SAMPLE_RATE // 2
-    first_target_sample = None
+    rng = np.random.default_rng(921)
+    for _ in range(20):
+        assert estimator.estimate(rng.normal(0, 0.2, FRAME_SIZE)) == (0.0, 0.0)
+    impulse = np.zeros(FRAME_SIZE)
+    impulse[FRAME_SIZE // 2] = 1
+    assert estimator.estimate(impulse) == (0.0, 0.0)
 
-    for start in range(0, SAMPLE_RATE, hop):
-        positions = np.arange(hop) + start
-        frequency = np.where(positions < transition_sample, 440.0, 220.0)
-        phase_steps = 2.0 * np.pi * frequency / SAMPLE_RATE
-        phases = phase + np.cumsum(phase_steps)
-        block = 0.5 * np.sin(phases)
-        phase = float(phases[-1])
-        window[:-hop] = window[hop:]
-        window[-hop:] = block
-        estimated, confidence = estimator.estimate(window)
-        if confidence >= 0.70 and estimated > 0:
-            recent_estimates.append(math.log(estimated))
-            filtered_estimate = math.exp(float(np.median(recent_estimates)))
-        else:
-            recent_estimates.clear()
-            filtered_estimate = 0.0
-        if (start >= transition_sample and filtered_estimate > 0
-                and abs(cents_error(filtered_estimate, 220.0)) < 40):
-            first_target_sample = start + hop
-            break
 
-    assert first_target_sample is not None
-    # A 92.9 ms window contains substantial pre-transition audio; this bound
-    # catches accidental additional smoothing or very slow transition settling.
-    assert (first_target_sample - transition_sample) / SAMPLE_RATE <= 0.09
+def test_dc_offset_input_ownership_and_amplitude_gate():
+    signal = tone(220.0) + 4.0
+    original = signal.copy()
+    estimated, _ = PitchEstimator(SAMPLE_RATE).estimate(signal)
+    assert abs(cents_error(estimated, 220.0)) < 12
+    np.testing.assert_array_equal(signal, original)
+    assert PitchEstimator(SAMPLE_RATE).estimate(tone(220, amplitude=0.0001)) == (0, 0)
+    estimated, _ = PitchEstimator(SAMPLE_RATE).estimate(tone(220, amplitude=1e300))
+    assert abs(cents_error(estimated, 220.0)) < 12
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"sample_rate": 0}, {"sample_rate": float("inf")},
+    {"sample_rate": float("nan")}, {"min_frequency": 0},
+    {"max_frequency": SAMPLE_RATE / 2}, {"min_frequency": float("nan")},
+    {"rms_threshold": -1}, {"rms_threshold": float("nan")},
+    {"trough_threshold": 0.5}, {"max_cmnd": 1.5},
+])
+def test_invalid_configuration_fails_early(kwargs):
+    with pytest.raises(ValueError):
+        PitchEstimator(**({"sample_rate": SAMPLE_RATE} | kwargs))
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_candidate_limit_must_be_positive(limit):
+    with pytest.raises(ValueError, match="max_candidates"):
+        PitchEstimator(SAMPLE_RATE).estimate_candidates(tone(220), limit)
 

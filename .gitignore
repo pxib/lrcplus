@@ -15,6 +15,7 @@ tests/
 !/tests/test_lyrics_share.py
 !/tests/test_all_romaji_word_spacing.py
 !/tests/test_pitch_estimator.py
+!/tests/test_pitch_tracker.py
 !/tests/test_karaoke_screen_microphone.py
 share/
 lrc_player_settings.json
