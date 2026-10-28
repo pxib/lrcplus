@@ -5,7 +5,6 @@ import numpy as np
 from PySide6.QtCore import QUrl
 from PySide6.QtMultimedia import (
     QAudioBufferOutput,
-    QAudioFormat,
     QAudioSink,
     QMediaPlayer,
 )
@@ -13,56 +12,17 @@ from PySide6.QtWidgets import QMessageBox
 
 from core.recent import add_to_recent_songs
 from core.settings import save_playback_settings
+from core.audio_dsp import (
+    volume_to_gain,
+    snap_volume_percentage,
+    apply_pcm_gain,
+    apply_pcm_gain_to_bytes,
+    apply_pcm_rate_to_bytes,
+    apply_pcm_pitch_to_bytes,
+    reset_pcm_pitch_state,
+)
 
 
-def volume_to_gain(volume_percent):
-    """Convert a UI percentage to the PCM gain multiplier used above 100%."""
-    try:
-        value = float(volume_percent)
-    except (TypeError, ValueError):
-        return 1.0
-    return max(0.0, min(3.0, value / 100.0))
-
-
-def snap_volume_percentage(value, threshold=5):
-    value = int(value)
-    return 100 if abs(value - 100) <= threshold else value
-
-
-def apply_pcm_gain(samples, gain):
-    """Apply the gain and clamp the resulting floating-point PCM to [-1.0, 1.0]."""
-    array = np.asarray(samples, dtype=np.float32)
-    gain = float(gain)
-    if not np.isfinite(gain):
-        gain = 1.0
-    boosted = np.clip(array * gain, -1.0, 1.0)
-    return boosted.astype(np.float32, copy=False)
-
-
-def apply_pcm_gain_to_bytes(data, sample_format, gain):
-    """Apply gain to interleaved Qt PCM bytes while preserving their sample format."""
-    if sample_format == QAudioFormat.SampleFormat.Float:
-        samples = np.frombuffer(data, dtype=np.float32)
-        return apply_pcm_gain(samples, gain).tobytes()
-
-    if sample_format == QAudioFormat.SampleFormat.Int16:
-        dtype, peak = np.int16, 32768.0
-    elif sample_format == QAudioFormat.SampleFormat.Int32:
-        dtype, peak = np.int32, 2147483648.0
-    elif sample_format == QAudioFormat.SampleFormat.UInt8:
-        samples = np.frombuffer(data, dtype=np.uint8).astype(np.float32)
-        normalized = (samples - 128.0) / 128.0
-        boosted = apply_pcm_gain(normalized, gain)
-        result = np.clip(np.rint(boosted * 128.0 + 128.0), 0, 255)
-        return result.astype(np.uint8).tobytes()
-    else:
-        raise ValueError(f"Unsupported PCM sample format: {sample_format}")
-
-    samples = np.frombuffer(data, dtype=dtype).astype(np.float64) / peak
-    boosted = np.clip(samples * float(gain), -1.0, 1.0)
-    limits = np.iinfo(dtype)
-    result = np.clip(np.rint(boosted * peak), limits.min, limits.max)
-    return result.astype(dtype).tobytes()
 
 class AudioController:
         def load_audio(self, path):
@@ -120,6 +80,7 @@ class AudioController:
                     str(audio_path)
                 )
             )
+            self._set_native_pitch_compensation()
 
             # Look for matching LRCX/LRC lyrics.
             lrc_path = self.find_lrc_for_audio(audio_path)
@@ -197,12 +158,17 @@ class AudioController:
                 return -1
 
 
-        def _album_key(self, path):
+        def _album_key(self, path, album_lookup=None):
             target = str(Path(path).resolve())
-            for track in getattr(self, "library_tracks", []):
-                if str(Path(track.path).resolve()) == target:
-                    return (track.album_artist or track.artist or "", track.album or Path(path).parent.name)
-            return ("", Path(path).parent.name)
+            if album_lookup is None:
+                album_lookup = {
+                    str(Path(track.path).resolve()): (
+                        track.album_artist or track.artist or "",
+                        track.album or Path(track.path).parent.name,
+                    )
+                    for track in getattr(self, "library_tracks", [])
+                }
+            return album_lookup.get(target, ("", Path(path).parent.name))
 
 
         def _choose_shuffle_index(self, paths, current, direction=1):
@@ -210,10 +176,18 @@ class AudioController:
                 return current if current >= 0 else 0
             mode = getattr(self, "playback_settings", {}).get("shuffle_mode", "tracks")
             if mode == "albums":
-                current_key = self._album_key(paths[current]) if current >= 0 else None
+                album_lookup = {
+                    str(Path(track.path).resolve()): (
+                        track.album_artist or track.artist or "",
+                        track.album or Path(track.path).parent.name,
+                    )
+                    for track in getattr(self, "library_tracks", [])
+                }
+                keys = [self._album_key(path, album_lookup) for path in paths]
+                current_key = keys[current] if current >= 0 else None
                 groups = {}
-                for i, path in enumerate(paths):
-                    groups.setdefault(self._album_key(path), []).append(i)
+                for i, key in enumerate(keys):
+                    groups.setdefault(key, []).append(i)
                 candidates = [key for key in groups if key != current_key] or list(groups)
                 chosen = random.choice(candidates)
                 return groups[chosen][-1 if direction < 0 else 0]
@@ -330,6 +304,7 @@ class AudioController:
         def _stop_pcm_sink(self):
             self._pcm_drain_timer.stop()
             self._pcm_pending.clear()
+            self._pcm_route_active = False
             sink = getattr(self, "_pcm_sink", None)
             if sink is not None:
                 sink.reset()
@@ -341,16 +316,47 @@ class AudioController:
 
         def _flush_pcm_output(self):
             self._stop_pcm_sink()
+            reset_pcm_pitch_state()
+            if hasattr(self, "volume_slider"):
+                self.audio_output.setVolume(self.volume_slider.value() / 100.0)
+
+
+        def _pcm_pitch_shift(self):
+            """Return the pitch adjustment after rate resampling the PCM stream."""
+            if getattr(self, "pitch_linked_to_speed", False):
+                # Linked mode uses speed for pitch and disables the manual offset.
+                return 0.0
+            pitch = float(getattr(self, "pitch_semitones", 0.0))
+            speed = max(0.01, float(getattr(self, "playback_speed", 1.0)))
+            speed_pitch = 12.0 * np.log2(speed)
+            # Cancel the resampling pitch change, then apply the chosen pitch.
+            return pitch - speed_pitch
+
+
+        def _displayed_pitch_semitones(self):
+            """Return the audible pitch shift represented by the current controls."""
+            pitch = float(getattr(self, "pitch_semitones", 0.0))
+            if not getattr(self, "pitch_linked_to_speed", False):
+                return pitch
+            speed = max(0.01, float(getattr(self, "playback_speed", 1.0)))
+            return 12.0 * np.log2(speed)
+
+
+        def _pcm_rate_active(self):
+            return abs(float(getattr(self, "playback_speed", 1.0)) - 1.0) >= 0.001
 
 
         def _configure_pcm_volume(self, value, refresh_format=False):
             value = int(value)
             self._current_pcm_gain = volume_to_gain(value)
-            if value <= 100:
+            pitch_active = abs(self._pcm_pitch_shift()) >= 0.001
+            rate_active = self._pcm_rate_active()
+            if value <= 100 and not pitch_active and not rate_active:
                 output = self._pcm_buffer_output
                 self.media_player.setAudioBufferOutput(None)
                 self._pcm_buffer_output = None
                 self._stop_pcm_sink()
+                reset_pcm_pitch_state()
                 if output is not None:
                     output.deleteLater()
                 self.audio_output.setVolume(value / 100.0)
@@ -370,11 +376,21 @@ class AudioController:
             if self.media_player.audioBufferOutput() is not output:
                 self.media_player.setAudioBufferOutput(output)
 
-            self.audio_output.setVolume(0.0)
+            # Keep the native player audible until the processed sink has
+            # successfully started. This avoids muting playback if Qt cannot
+            # provide a decoded buffer for the selected output device.
+            if self._pcm_sink is not None:
+                self._pcm_sink.setVolume(min(1.0, self._current_pcm_gain))
+            self.audio_output.setVolume(
+                0.0 if getattr(self, "_pcm_route_active", False)
+                else min(1.0, self._current_pcm_gain)
+            )
 
 
         def _write_pcm_buffer(self, buffer):
-            if self.volume_slider.value() <= 100 or not buffer.isValid():
+            if (self.volume_slider.value() <= 100
+                    and abs(self._pcm_pitch_shift()) < 0.001
+                    and not self._pcm_rate_active()) or not buffer.isValid():
                 return
 
             data = bytes(buffer.data())
@@ -383,25 +399,47 @@ class AudioController:
 
             audio_format = buffer.format()
             try:
-                pcm = apply_pcm_gain_to_bytes(
-                    data,
-                    audio_format.sampleFormat(),
-                    self._current_pcm_gain,
+                pcm = apply_pcm_rate_to_bytes(
+                    data, audio_format.sampleFormat(), audio_format.channelCount(),
+                    self.playback_speed,
                 )
+                pcm = apply_pcm_pitch_to_bytes(
+                    pcm, audio_format.sampleFormat(), audio_format.channelCount(),
+                    audio_format.sampleRate(),
+                    self._pcm_pitch_shift(),
+                )
+                if self.volume_slider.value() > 100:
+                    pcm = apply_pcm_gain_to_bytes(
+                        pcm, audio_format.sampleFormat(), self._current_pcm_gain,
+                    )
+                # Native playback covers the processor's initial context. Do
+                # not queue silence in the sink while waiting for that context.
+                if (abs(self._pcm_pitch_shift()) >= 0.001
+                        and not getattr(apply_pcm_pitch_to_bytes, "_started", False)):
+                    return
                 if self._pcm_sink is None or self._pcm_sink.format() != audio_format:
                     self._stop_pcm_sink()
                     self._pcm_sink = QAudioSink(
                         self.audio_output.device(), audio_format, self
                     )
-                    self._pcm_sink.setVolume(1.0)
+                    self._pcm_sink.setVolume(min(1.0, self._current_pcm_gain))
                     self._pcm_sink.setBufferSize(
-                        max(audio_format.bytesForDuration(200_000), audio_format.bytesPerFrame())
+                        max(audio_format.bytesForDuration(60_000), audio_format.bytesPerFrame())
                     )
                     self._pcm_sink_io = self._pcm_sink.start()
                     if self._pcm_sink_io is None:
                         raise RuntimeError("Qt could not start the PCM audio sink.")
 
                 self._pcm_pending.extend(pcm)
+                # Recover from a slow device or a burst of decoded callbacks
+                # without letting old audio accumulate seconds of delay. Keep
+                # at least one complete decoded block for large-buffer codecs.
+                frame_size = audio_format.bytesPerFrame()
+                pending_limit = max(audio_format.bytesForDuration(120_000), len(pcm))
+                pending_limit -= pending_limit % frame_size
+                excess = len(self._pcm_pending) - pending_limit
+                if excess > 0:
+                    del self._pcm_pending[:excess]
                 self._drain_pcm_pending()
                 if self.media_player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
                     self._pcm_sink.suspend()
@@ -417,6 +455,7 @@ class AudioController:
                 return
             if self.media_player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
                 sink.suspend()
+                self._pcm_drain_timer.stop()
                 return
 
             frame_size = sink.format().bytesPerFrame()
@@ -433,6 +472,9 @@ class AudioController:
                     self._pcm_output_failed("The PCM audio sink rejected audio data.")
                     return
                 del self._pcm_pending[:written]
+                if written > 0:
+                    self._pcm_route_active = True
+                    self.audio_output.setVolume(0.0)
 
             if self._pcm_pending:
                 if not self._pcm_drain_timer.isActive():
@@ -448,15 +490,17 @@ class AudioController:
             self.audio_output.setVolume(1.0)
             QMessageBox.warning(
                 self,
-                "Volume boost unavailable",
-                f"Could not process decoded audio for boosted playback:\n{error}",
+                "Audio processing unavailable",
+                f"Could not process decoded audio:\n{error}",
             )
 
 
         def _sync_pcm_sink_state(self, state):
             if (
                 state == QMediaPlayer.PlaybackState.PlayingState
-                and self.volume_slider.value() > 100
+                and (self.volume_slider.value() > 100
+                     or abs(self._pcm_pitch_shift()) >= 0.001
+                     or self._pcm_rate_active())
                 and self._pcm_buffer_output is not None
                 and self.media_player.audioBufferOutput()
                 is not self._pcm_buffer_output
@@ -464,14 +508,17 @@ class AudioController:
                 self.media_player.setAudioBufferOutput(self._pcm_buffer_output)
 
             sink = getattr(self, "_pcm_sink", None)
+            if state == QMediaPlayer.PlaybackState.StoppedState:
+                self._flush_pcm_output()
+                return
             if sink is None:
                 return
             if state == QMediaPlayer.PlaybackState.PlayingState:
                 sink.resume()
+                self._drain_pcm_pending()
             elif state == QMediaPlayer.PlaybackState.PausedState:
                 sink.suspend()
-            else:
-                self._stop_pcm_sink()
+                self._pcm_drain_timer.stop()
 
 
         def _warn_if_high_volume(self, value):
@@ -557,19 +604,78 @@ class AudioController:
 
 
         def handle_speed_change(self, value):
+            previous_speed = self.playback_speed
             # Snap to 100% if close enough (within 5 units)
             snap_threshold = 5
             if abs(value - 100) <= snap_threshold:
                 value = 100
                 # Update slider without triggering another signal
-                self.speed_slider.blockSignals(True)
-                self.speed_slider.setValue(100)
-                self.speed_slider.blockSignals(False)
-        
-            # Value ranges from 50 to 200, representing 50% to 200% speed
+            # The dialog slider ranges from 25% to 200%.
             self.playback_speed = value / 100.0
             self.media_player.setPlaybackRate(self.playback_speed)
-            self.speed_label.setText(f"{abs(value)}%")
+            self._set_native_pitch_compensation()
+            self.playback_settings["speed_percent"] = value
+            save_playback_settings(self.playback_settings)
+            self.pitch_status_label.setText(
+                f"{self._displayed_pitch_semitones():+.1f} st"
+            )
+            if abs(previous_speed - self.playback_speed) >= 0.001:
+                self._flush_pcm_output()
+            self._configure_pcm_volume(self.volume_slider.value())
+
+
+        def handle_pitch_link_change(self, linked):
+            previous_shift = self._pcm_pitch_shift()
+            self.pitch_linked_to_speed = bool(linked)
+            self.playback_settings["pitch_linked_to_speed"] = self.pitch_linked_to_speed
+            save_playback_settings(self.playback_settings)
+            self._set_native_pitch_compensation()
+            self.pitch_status_label.setText(
+                f"{self._displayed_pitch_semitones():+.1f} st"
+            )
+            if abs(previous_shift - self._pcm_pitch_shift()) >= 0.001:
+                self._flush_pcm_output()
+            self._configure_pcm_volume(self.volume_slider.value())
+
+
+        def _set_native_pitch_compensation(self):
+            """Keep Qt's direct-output fallback consistent with the link option."""
+            setter = getattr(self.media_player, "setPitchCompensation", None)
+            if setter is None:
+                return
+            try:
+                setter(not self.pitch_linked_to_speed)
+            except (RuntimeError, TypeError):
+                # Some backends expose the API but keep compensation always on.
+                pass
+
+
+        def handle_pitch_change(self, mode, value):
+            previous_shift = self._pcm_pitch_shift()
+            value = float(value)
+            if mode == "Octaves":
+                semitones = value * 12.0
+            elif mode == "Percent":
+                semitones = 12.0 * np.log2(max(0.01, value) / 100.0)
+            else:
+                semitones = value
+            self.pitch_semitones = max(-24.0, min(24.0, float(semitones)))
+            self.pitch_settings = {"mode": mode, "value": value}
+            self.playback_settings["pitch_mode"] = mode
+            self.playback_settings["pitch_value"] = value
+            save_playback_settings(self.playback_settings)
+            self.pitch_status_label.setText(
+                f"{self._displayed_pitch_semitones():+.1f} st"
+            )
+            # Clear old processed audio immediately when the shift changes.
+            # Native playback covers the new overlap buffer's short warmup.
+            if abs(previous_shift - self._pcm_pitch_shift()) >= 0.001:
+                self._flush_pcm_output()
+            # Keep the active Qt buffer output connected while the
+            # pitch processor warms its new setting. Recreating the output
+            # during playback can detach the decoded-buffer stream and leave
+            # native audio playing at the new displayed value but unchanged pitch.
+            self._configure_pcm_volume(self.volume_slider.value())
 
 
         def cycle_loop_mode(self):
@@ -643,7 +749,7 @@ class AudioController:
                 )
 
             self.current_time_label.setText(
-                self.format_time(position_ms)
+                self._format_position_time(position_ms)
             )
 
             if hasattr(self, "waveform_widget"):
@@ -668,6 +774,9 @@ class AudioController:
             self.duration_label.setText(
                 self.format_time(duration_ms)
             )
+            self.current_time_label.setText(
+                self._format_position_time(self.media_player.position())
+            )
 
             if hasattr(self, "waveform_widget"):
                 self.waveform_widget.set_duration(duration_ms)
@@ -685,4 +794,28 @@ class AudioController:
                 return f"{hours}:{minutes:02d}:{seconds:02d}"
 
             return f"{minutes}:{seconds:02d}"
+
+
+        def toggle_time_display(self):
+            self.show_remaining_time = not getattr(
+                self, "show_remaining_time", False
+            )
+            if hasattr(self, "current_time_label"):
+                remaining = self.show_remaining_time
+                self.current_time_label.setToolTip(
+                    "Click to show elapsed time" if remaining
+                    else "Click to show remaining time"
+                )
+                self.current_time_label.setText(
+                    self._format_position_time(self.media_player.position())
+                )
+
+
+        def _format_position_time(self, position_ms):
+            if getattr(self, "show_remaining_time", False):
+                remaining_ms = max(
+                    0, self.media_player.duration() - int(position_ms)
+                )
+                return f"-{self.format_time(remaining_ms)}"
+            return self.format_time(position_ms)
 
