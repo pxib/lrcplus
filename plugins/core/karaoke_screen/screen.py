@@ -1,7 +1,7 @@
-import math
+import time
 from bisect import bisect_left
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QProgressBar,
+    QSizePolicy,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -45,6 +46,9 @@ class PitchLane(QWidget):
         self.live_pitch_alpha = 0.0
         self.setMinimumHeight(180)
 
+    def sizeHint(self):
+        return QSize(640, min(360, self.maximumHeight()))
+
     def set_notes(self, notes):
         self.notes = sorted(
             (
@@ -67,6 +71,7 @@ class PitchLane(QWidget):
         )
         self._page_pitch_ranges.clear()
         self._notes_revision += 1
+        self._clear_pitch_trail()
         self._invalidate_chart()
         self.update()
 
@@ -76,6 +81,7 @@ class PitchLane(QWidget):
         old_section = self._section_start()
         self.position_seconds = position
         if self._section_start() != old_section:
+            self._clear_pitch_trail()
             self._invalidate_chart()
             self.update()
             return
@@ -108,36 +114,29 @@ class PitchLane(QWidget):
         return self._page_pitch_ranges[section_start]
 
     def set_live_pitch(self, midi_pitch=None, alpha=0.0, position=None):
-        self.live_pitch_alpha = max(0.0, min(1.0, float(alpha)))
         if midi_pitch is not None and position is not None:
             position = float(position)
-            if self.live_pitch_points and position < self.live_pitch_points[-1][0] - 1.0:
-                # A seek resets the trail before adding the first point at the
-                # new location, so the old position cannot affect this check.
-                self.live_pitch_points.clear()
-                self._live_pitch_was_valid = False
-            elif self.live_pitch_points and position <= self.live_pitch_points[-1][0]:
-                # Replace points at or after a slightly re-anchored clock value
-                # to keep the trail ordered without retaining stale future data.
-                self.live_pitch_points = [
-                    point for point in self.live_pitch_points if point[0] < position
-                ]
-            if not self._live_pitch_was_valid:
-                self.live_pitch_points.append((position, float(midi_pitch), time.monotonic()))
-            else:
-                self.live_pitch_points.append((position, float(midi_pitch), time.monotonic()))
+            section = self._section_start()
+            if not section <= position < section + self.WINDOW_SECONDS:
+                return
+            self.live_pitch_alpha = 1.0
+            self.live_pitch_points.append((position, float(midi_pitch), time.monotonic()))
             self._live_pitch_was_valid = True
-            cutoff = position - self.WINDOW_SECONDS
-            self.live_pitch_points = [point for point in self.live_pitch_points if point[0] >= cutoff]
         else:
+            # Silence, pause, and mic stop end input without hiding this page's trail.
             self._live_pitch_was_valid = False
         self.update()
+
+    def _clear_pitch_trail(self):
+        self.live_pitch_points.clear()
+        self.live_pitch_alpha = 0.0
+        self._live_pitch_was_valid = False
 
     def _section_start(self):
         return int(self.position_seconds // self.WINDOW_SECONDS) * self.WINDOW_SECONDS
 
     def _plot_geometry(self):
-        return 42.0, max(43.0, float(self.width() - 8)), 12.0, max(13.0, float(self.height() - 12))
+        return 42.0, max(43.0, float(self.width() - 8)), 24.0, max(25.0, float(self.height() - 26))
 
     def _playhead_x(self):
         if self.width() <= 0:
@@ -204,9 +203,9 @@ class PitchLane(QWidget):
             x = left + (second - start_time) / self.WINDOW_SECONDS * plot_width
             painter.setPen(QPen(QColor("#294854"), 1, Qt.PenStyle.DotLine))
             painter.drawLine(int(x), int(top), int(x), int(bottom))
-            if second % 2 == 0:
+            if second % 2 == 0 and second < end_time:
                 painter.setPen(QColor("#8ba7b0"))
-                painter.drawText(int(x + 2), int(bottom - 3), f"{second}s")
+                painter.drawText(int(x + 2), int(bottom + 18), f"{second}s")
 
         # Notes are sorted by start. Only inspect notes that can overlap this section.
         search_start = max(0.0, start_time - self.offset_seconds - self._max_note_duration)
@@ -306,11 +305,14 @@ class PitchLane(QWidget):
             path = QPainterPath()
             started = False
             previous_detected_at = None
+            previous_position = None
             for position, pitch, detected_at in self.live_pitch_points:
                 if (previous_detected_at is not None
-                        and detected_at - previous_detected_at > 0.14):
+                        and (detected_at - previous_detected_at > 0.14
+                             or position <= previous_position)):
                     started = False
                 previous_detected_at = detected_at
+                previous_position = position
                 if not (section_start <= position <= section_start + self.WINDOW_SECONDS
                         and low_pitch <= pitch <= high_pitch):
                     started = False
@@ -336,53 +338,87 @@ class PitchLane(QWidget):
 
 
 class KaraokeScreen(QDialog):
-    """Simple full-screen sing-along display with current and next lyrics."""
+    """Full-screen lyric stage with a compact, independent melody toolbar."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Karaoke Screen")
         self.setWindowFlag(Qt.WindowType.Window, True)
-        self.setStyleSheet(
-            "QDialog { background: #17111f; color: #fff; }"
-            "QLabel { background: transparent; border: none; }"
-        )
+        self.resize(1280, 800)
+        self.setMinimumSize(720, 540)
+        self.setStyleSheet("""
+            QDialog { background: #10171d; color: #edf5f3; }
+            QLabel { background: transparent; border: none; color: #edf5f3; }
+            QWidget#controls, QWidget#melody {
+                background: rgba(12, 24, 30, 180);
+                border: 1px solid rgba(173, 207, 210, 30); border-radius: 12px;
+            }
+            QPushButton, QComboBox, QDoubleSpinBox {
+                background: rgba(40, 60, 67, 190); color: #e6f1ef;
+                border: 1px solid rgba(173, 207, 210, 55);
+                border-radius: 7px; padding: 7px 10px; font-size: 12px;
+                min-height: 20px;
+            }
+            QPushButton:hover, QComboBox:hover, QDoubleSpinBox:hover {
+                background: #304b52; border-color: #75cbbb;
+            }
+            QPushButton:pressed { background: #203c42; }
+            QPushButton:focus, QComboBox:focus, QDoubleSpinBox:focus {
+                border-color: #91e5cf;
+            }
+            QPushButton#import { background: #91e5cf; color: #122e2a;
+                border-color: #91e5cf; font-weight: 600; }
+            QPushButton#import:hover { background: #b0f0df; }
+            QComboBox QAbstractItemView { background: #1b2d34; color: #edf5f3;
+                selection-background-color: #365d60; padding: 6px; }
+            QComboBox:disabled, QDoubleSpinBox:disabled { color: #71858a; }
+        """)
 
         self.background = ArtworkBackgroundWidget(parent=self)
-        self.background.set_blur_radius(0)
-        self.background.set_darkness(48)
+        self.background.set_blur_radius(10)
+        self.background.set_darkness(150)
         self.background.set_background_enabled(True)
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.addWidget(self.background)
+        self.content_layout = QVBoxLayout(self.background)
+        self.content_layout.setContentsMargins(32, 24, 32, 24)
+        self.content_layout.setSpacing(16)
+        layout = self.content_layout
 
-        content = QWidget()
-        content.setStyleSheet("background: transparent;")
-        background_layout = QVBoxLayout(self.background)
-        background_layout.setContentsMargins(0, 0, 0, 0)
-        background_layout.addWidget(content)
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(5)
+        header = QHBoxLayout()
+        title_column = QVBoxLayout()
+        title_column.setSpacing(5)
+        eyebrow = QLabel("K A R A O K E")
+        eyebrow.setStyleSheet("color: #91e5cf; font-size: 11px; font-weight: 600;")
+        self.track_label = QLabel("Your lyric stage")
+        self.track_label.setStyleSheet("font-size: 22px; font-weight: 600;")
+        self.track_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.track_label.setMinimumWidth(0)
+        title_column.addWidget(eyebrow)
+        title_column.addWidget(self.track_label)
+        header.addLayout(title_column, 1)
+        self.close_label = QPushButton("Close  \u00b7  Esc")
+        self.close_label.setToolTip("Close karaoke and return to the player (Esc)")
+        self.close_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_label.clicked.connect(self.close)
+        header.addWidget(self.close_label)
+        layout.addLayout(header)
 
-        top = QHBoxLayout()
-        self.track_label = QLabel("KARAOKE")
-        self.track_label.setStyleSheet(
-            "color: white; font-size: 18px; font-weight: 700;"
-            " background: rgba(15, 21, 28, 185); padding: 7px 12px;"
-            " border: 2px solid rgba(255,255,255,150); border-radius: 8px;"
-        )
-        self.midi_button = QPushButton("Import MIDI…")
-        self.midi_button.setStyleSheet(
-            "QPushButton { background: rgba(15, 21, 28, 190); color: white; border: 1px solid #a8c3cd;"
-            " padding: 6px 10px; border-radius: 6px; }"
-            "QPushButton:hover { background: rgba(38, 77, 94, 220); }"
-        )
+        controls = QWidget()
+        controls.setObjectName("controls")
+        self.controls_layout = QHBoxLayout(controls)
+        self.controls_layout.setContentsMargins(14, 10, 14, 10)
+        self.controls_layout.setSpacing(10)
+        self.midi_button = QPushButton("Import MIDI\u2026")
+        self.midi_button.setObjectName("import")
+        self.midi_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.track_combo = QComboBox()
-        self.track_combo.setMinimumWidth(190)
-        self.track_combo.setStyleSheet(
-            "QComboBox { background: rgba(15, 21, 28, 190); color: white; padding: 5px;"
-            " border: 1px solid #a8c3cd; border-radius: 6px; }"
-        )
+        self.track_combo.setPlaceholderText("Choose a melody track")
+        self.track_combo.setMinimumWidth(140)
+        self.track_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.track_combo.setToolTip("Melody track from the imported MIDI file")
+        self.track_combo.setAccessibleName("Melody track")
         self.offset_spin = QDoubleSpinBox()
         self.offset_spin.setRange(-30.0, 30.0)
         self.offset_spin.setDecimals(2)
@@ -390,112 +426,147 @@ class KaraokeScreen(QDialog):
         self.offset_spin.setSuffix(" s")
         self.offset_spin.setPrefix("Sync ")
         self.offset_spin.setToolTip("Shift MIDI notes earlier or later to match the recording")
-        self.offset_spin.setStyleSheet(
-            "QDoubleSpinBox { background: rgba(15, 21, 28, 190); color: white; padding: 5px;"
-            " border: 1px solid #a8c3cd; border-radius: 6px; }"
-        )
+        self.offset_spin.setAccessibleName("MIDI sync offset in seconds")
         self.transpose_spin = QDoubleSpinBox()
         self.transpose_spin.setRange(-24, 24)
         self.transpose_spin.setDecimals(0)
         self.transpose_spin.setSingleStep(1)
         self.transpose_spin.setSuffix(" st")
-        self.transpose_spin.setPrefix("Transpose ")
-        self.transpose_spin.setToolTip("Shift the MIDI melody and pitch targets by semitones")
-        self.transpose_spin.setStyleSheet(
-            "QDoubleSpinBox { background: rgba(15, 21, 28, 190); color: white; padding: 5px;"
-            " border: 1px solid #a8c3cd; border-radius: 6px; }"
-        )
-        self.close_label = QLabel("ESC  CLOSE")
-        self.close_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.close_label.setStyleSheet(
-            "color: white; font-size: 13px; background: rgba(15,21,28,185);"
-            " padding: 7px 10px; border-radius: 6px;"
-        )
-        top.addWidget(self.track_label)
-        top.addStretch(1)
-        top.addWidget(self.track_combo)
-        top.addWidget(self.offset_spin)
-        top.addWidget(self.transpose_spin)
-        self.mic_button = QPushButton("Start Mic")
-        self.mic_button.setToolTip("Show your live pitch and compare it with the selected MIDI melody")
+        self.transpose_spin.setPrefix("Key ")
+        self.transpose_spin.setToolTip("Transpose the MIDI melody by semitones")
+        self.transpose_spin.setAccessibleName("MIDI transposition in semitones")
+        for control in (self.midi_button, self.track_combo, self.offset_spin, self.transpose_spin):
+            self.controls_layout.addWidget(control)
+        layout.addWidget(controls)
+
+        melody = QWidget()
+        melody.setObjectName("melody")
+        melody_layout = QVBoxLayout(melody)
+        melody_layout.setContentsMargins(14, 12, 14, 10)
+        melody_layout.setSpacing(8)
+        melody_header = QHBoxLayout()
+        caption = QLabel("MELODY GUIDE")
+        caption.setStyleSheet("color: #9db6bb; font-size: 10px; font-weight: 600;")
+        melody_header.addWidget(caption)
+        melody_header.addStretch(1)
+        self.square_wave_status = QLabel("Import a MIDI file to follow the melody")
+        self.square_wave_status.setStyleSheet("color: #9db6bb; font-size: 11px;")
+        self.square_wave_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.square_wave_status.setAlignment(Qt.AlignmentFlag.AlignRight)
+        melody_header.addWidget(self.square_wave_status, 1)
+        self.mic_pitch_status = QLabel("Mic off")
+        self.mic_pitch_status.setStyleSheet("color: #c3d7d8; font-size: 12px;")
+        self.mic_pitch_status.setMinimumWidth(100)
+        self.mic_pitch_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        melody_header.addWidget(self.mic_pitch_status)
+        self.mic_button = QPushButton("Start mic")
+        self.mic_button.setCheckable(True)
+        self.mic_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.mic_button.setToolTip("Show your voice as a white pitch trail over the melody")
         self.mic_button.setStyleSheet(
-            "QPushButton { background: #294653; color: white; border: 1px solid #527381;"
-            " padding: 7px 12px; border-radius: 5px; }"
-            "QPushButton:hover { background: #356173; }"
+            "QPushButton:checked { background: #365d60; border-color: #91e5cf; }"
         )
-        self.mic_pitch_status = QLabel("Mic pitch: off")
-        self.mic_pitch_status.setMinimumWidth(190)
-        self.mic_pitch_status.setStyleSheet("color: #d6e6ea; font-size: 13px;")
-        top.addWidget(self.mic_button)
-        top.addWidget(self.mic_pitch_status)
-        top.addWidget(self.midi_button)
-        top.addWidget(self.close_label)
-        layout.addLayout(top)
-
-        self.progress = QProgressBar()
-        self.progress.setTextVisible(False)
-        self.progress.setFixedHeight(24)
-        self.progress.setStyleSheet(
-            "QProgressBar { background: rgba(8,25,39,185); border: 3px solid rgba(255,255,255,210); border-radius: 7px; }"
-            "QProgressBar::chunk { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #54dcff, stop:1 #0876b4); border-radius: 3px; }"
-        )
-        layout.addWidget(self.progress)
-        self.square_wave_status = QLabel("MIDI Player: waiting for audio")
-        self.square_wave_status.setStyleSheet("color: white; font-size: 12px; background: rgba(15,21,28,155); padding: 3px 7px;")
-        layout.addWidget(self.square_wave_status)
-        self.judgment_status = QLabel("Score 0  |  Combo 0  |  Ready")
-        self.judgment_status.setStyleSheet(
-            "color: #ffe47b; font-size: 16px; font-weight: 700; padding: 3px 7px;"
-            " background: rgba(15,21,28,160); border-radius: 5px;"
-        )
-        layout.addWidget(self.judgment_status)
-        self.judgment_counter = QLabel("AMAZING 0  PERFECT 0  GOOD 0  OK 0  BAD 0  ??? 0  MISS 0")
-        self.judgment_counter.setStyleSheet("color: white; font-size: 12px; padding: 3px 7px; background: rgba(15,21,28,150); border-radius: 5px;")
-        layout.addWidget(self.judgment_counter)
+        melody_header.addWidget(self.mic_button)
+        melody_layout.addLayout(melody_header)
         self.pitch_lane = PitchLane(self)
-        self.pitch_lane.setMinimumHeight(155)
-        self.pitch_lane.setMaximumHeight(245)
-        layout.addWidget(self.pitch_lane, 2)
-        layout.addStretch(1)
+        self.pitch_lane.setMinimumHeight(90)
+        self.pitch_lane.setMaximumHeight(280)
+        melody_layout.addWidget(self.pitch_lane)
+        layout.addWidget(melody)
 
+        # Keep the optional scoring interface available to callers.
+        self.judgment_status = QLabel("Score 0  |  Combo 0  |  Ready")
+        self.judgment_counter = QLabel("AMAZING 0  PERFECT 0  GOOD 0  OK 0  BAD 0  MISS 0")
+        for widget in (self.judgment_status, self.judgment_counter):
+            layout.addWidget(widget)
+            widget.hide()
+
+        layout.addStretch(1)
         self.current_lyric = FuriganaWidget()
-        self.current_lyric.setMinimumHeight(190)
+        self.current_lyric.setMinimumHeight(145)
         self.current_lyric.set_alignment("left")
-        self.current_lyric.set_font(size=64, ruby_size=34)
-        self.current_lyric.set_colors("#ffffff", "#ff42a1")
+        self.current_lyric.set_font(size=56, ruby_size=28)
+        self.current_lyric.set_colors("#ffffff", "#91e5cf")
         self.current_lyric.set_ruby_visible(True)
         self.current_lyric.set_reserve_ruby_space(True)
         self._add_lyric_outline(self.current_lyric)
         self.current_lyric.set_karaoke_sweep_style(
             get_karaoke_settings().get("sweep_style", "classic")
         )
-        layout.addWidget(self.current_lyric, 1)
+        layout.addWidget(self.current_lyric, 2)
 
         self.next_lyric = FuriganaWidget()
-        self.next_lyric.setMinimumHeight(150)
+        self.next_lyric.setMinimumHeight(110)
         self.next_lyric.set_alignment("right")
-        self.next_lyric.set_font(size=64, ruby_size=34)
-        self.next_lyric.set_colors("#ffffff", "#ff42a1")
+        self.next_lyric.set_font(size=44, ruby_size=23)
+        self.next_lyric.set_colors("#b8cccf", "#91e5cf")
         self.next_lyric.set_ruby_visible(True)
         self.next_lyric.set_reserve_ruby_space(True)
         self._add_lyric_outline(self.next_lyric)
         layout.addWidget(self.next_lyric, 1)
+        layout.addStretch(1)
+
+        footer = QHBoxLayout()
+        hint = QLabel("Sing along \u00b7 follow the highlighted words")
+        hint.setStyleSheet("color: #9db6bb; font-size: 11px;")
+        footer.addWidget(hint)
+        footer.addStretch(1)
+        self.time_label = QLabel("0:00 / 0:00")
+        self.time_label.setStyleSheet("color: #c3d7d8; font-size: 12px;")
+        footer.addWidget(self.time_label)
+        layout.addLayout(footer)
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(4)
+        self.progress.setStyleSheet(
+            "QProgressBar { background: rgba(173,207,210,40); border: none; border-radius: 2px; }"
+            "QProgressBar::chunk { background: #91e5cf; border-radius: 2px; }"
+        )
+        self.progress.valueChanged.connect(self._update_time_label)
+        layout.addWidget(self.progress)
+
+    def _update_time_label(self, _value=None):
+        def stamp(milliseconds):
+            seconds = max(0, int(milliseconds) // 1000)
+            return f"{seconds // 60}:{seconds % 60:02d}"
+        self.time_label.setText(f"{stamp(self.progress.value())} / {stamp(self.progress.maximum())}")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not hasattr(self, "next_lyric"):
+            return
+        compact = self.width() < 1000 or self.height() < 700
+        margin = 18 if compact else 32
+        self.content_layout.setContentsMargins(margin, 16 if compact else 24, margin, 16 if compact else 24)
+        self.content_layout.setSpacing(8 if compact else 16)
+        self.pitch_lane.setMinimumHeight(60 if self.height() < 600 else 90)
+        self.pitch_lane.setMaximumHeight(max(150, min(360, (self.height() - 240) // 2)))
+        sizes = (36, 19, 28, 15) if compact else (56, 28, 44, 23)
+        if self.height() < 700:
+            sizes = (30, 16, 24, 13)
+        if getattr(self, "_lyric_sizes", None) != sizes:
+            self._lyric_sizes = sizes
+            self.current_lyric.set_font(size=sizes[0], ruby_size=sizes[1])
+            self.next_lyric.set_font(size=sizes[2], ruby_size=sizes[3])
+            self.current_lyric.setMinimumHeight(90 if self.height() < 700 else 105 if compact else 145)
+            self.next_lyric.setMinimumHeight(72 if self.height() < 700 else 85 if compact else 110)
 
     @staticmethod
     def _add_lyric_outline(widget):
         outline = QGraphicsDropShadowEffect(widget)
-        outline.setBlurRadius(4)
-        outline.setOffset(0, 0)
-        outline.setColor(QColor(0, 0, 0, 240))
+        outline.setBlurRadius(8)
+        outline.setOffset(0, 2)
+        outline.setColor(QColor(0, 0, 0, 220))
         widget.setGraphicsEffect(outline)
 
     def set_background_pixmap(self, pixmap):
         if pixmap is not None and not pixmap.isNull():
             self.background.set_artwork_pixmap(pixmap)
+        else:
+            self.background.clear_artwork()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
             self.close()
             return
         super().keyPressEvent(event)
-

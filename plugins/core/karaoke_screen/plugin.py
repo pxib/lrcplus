@@ -7,7 +7,7 @@ import time
 import numpy as np
 import sounddevice as sd
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QObject, QTimer, Qt, Slot
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.settings import get_karaoke_settings
+from core.pitch_detector import PitchDetector
 from lyrics.widgets import FuriganaWidget
 from ui.artwork_background import ArtworkBackgroundWidget
 from plugins.core.karaoke_screen.midi import MidiImportError, load_midi
@@ -36,7 +37,7 @@ from plugins.core.karaoke_screen.screen import PitchLane, KaraokeScreen
 
 KARAOKE_LYRIC_PAIR_LOOKAHEAD_RATIO = 0.40
 
-class KaraokeScreenPlugin:
+class KaraokeScreenPlugin(QObject):
     name = "Karaoke Screen"
     version = "0.1.0"
     description = "Full-screen lyrics synced to the main player, with an optional MIDI pitch guide."
@@ -51,6 +52,7 @@ class KaraokeScreenPlugin:
         self.screen = None
         self.screen_timer = None
         self.pitch_timer = None
+        self._pitch_detector = None
         self.current_midi = None
         self.selected_midi_track = None
         self.square_wave_enabled = bool(
@@ -150,12 +152,9 @@ class KaraokeScreenPlugin:
             return
         self.screen = KaraokeScreen(self.window)
         self._apply_sweep_style()
-        # Mic scoring now lives in the standalone Karaoke Game plugin. Keep
-        # this screen focused on the song-synced lyrics and MIDI guide lane.
-        self.screen.mic_button.hide()
-        self.screen.mic_pitch_status.hide()
         self.screen.judgment_status.hide()
         self.screen.judgment_counter.hide()
+        self.screen.mic_button.clicked.connect(self._toggle_microphone)
         background = getattr(self.window, "lyrics_background", None)
         if background is not None:
             self.screen.set_background_pixmap(
@@ -506,6 +505,7 @@ class KaraokeScreenPlugin:
             self._synth_status_last_update = now
 
     def _screen_closed(self, *_args):
+        self._stop_microphone()
         self._stop_square_wave_stream()
         if self.screen_timer is not None:
             self.screen_timer.stop()
@@ -514,6 +514,81 @@ class KaraokeScreenPlugin:
         self.screen = None
         self.screen_timer = None
         self.pitch_timer = None
+
+    def _toggle_microphone(self, checked=False):
+        if self._pitch_detector is not None:
+            self._stop_microphone()
+            return
+        if self.screen is None:
+            return
+        detector = PitchDetector(self.window)
+        self._pitch_detector = detector
+        detector.pitch_detected.connect(self._on_microphone_pitch)
+        detector.status_changed.connect(self._on_microphone_status)
+        detector.finished.connect(self._microphone_finished)
+        detector.finished.connect(detector.deleteLater)
+        self.screen.mic_button.setChecked(True)
+        self.screen.mic_button.setText("Stop mic")
+        self.screen.mic_pitch_status.setText("Starting mic...")
+        self.screen.mic_pitch_status.setToolTip("")
+        detector.start()
+
+    def _reset_microphone_ui(self):
+        if self.screen is not None:
+            self.screen.mic_button.setChecked(False)
+            self.screen.mic_button.setText("Start mic")
+            self.screen.pitch_lane.set_live_pitch(None, 0.0)
+
+    def _stop_microphone(self):
+        detector = self._pitch_detector
+        self._pitch_detector = None
+        if detector is not None:
+            detector.stop()
+            # The audio loop checks stop after each small read. Keep the
+            # worker alive under the main window if a backend is slow to exit.
+            detector.wait(1000)
+        self._reset_microphone_ui()
+        if self.screen is not None:
+            self.screen.mic_pitch_status.setText("Mic off")
+            self.screen.mic_pitch_status.setToolTip("")
+
+    @Slot(str)
+    def _on_microphone_status(self, message):
+        if self.screen is None or self.sender() is not self._pitch_detector:
+            return
+        self.screen.mic_pitch_status.setToolTip(message)
+        self.screen.mic_pitch_status.setText(
+            "Listening..." if message == "Listening..." else "Mic unavailable"
+        )
+
+    @Slot()
+    def _microphone_finished(self):
+        if self.sender() is not self._pitch_detector:
+            return
+        self._pitch_detector = None
+        self._reset_microphone_ui()
+        if self.screen is not None and self.screen.mic_pitch_status.text() != "Mic unavailable":
+            self.screen.mic_pitch_status.setText("Mic off")
+
+    @Slot(float, float)
+    def _on_microphone_pitch(self, frequency, confidence):
+        if self.screen is None or self.sender() is not self._pitch_detector:
+            return
+        lane = self.screen.pitch_lane
+        if (not math.isfinite(frequency) or not math.isfinite(confidence)
+                or frequency <= 0 or confidence < PitchDetector.MIN_CONFIDENCE):
+            self.screen.mic_pitch_status.setText("Listening...")
+            lane.set_live_pitch(None, 0.0)
+            return
+        pitch = 69.0 + 12.0 * math.log2(frequency / 440.0)
+        note = round(pitch)
+        cents = round((pitch - note) * 100)
+        names = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+        self.screen.mic_pitch_status.setText(f"{names[note % 12]}{note // 12 - 1}  {cents:+d} ct")
+        if self.window.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            lane.set_live_pitch(pitch, confidence, self._estimated_position_seconds())
+        else:
+            lane.set_live_pitch(None, 0.0)
 
     def on_media_position_changed(self, position_ms):
         try:
@@ -710,6 +785,7 @@ class KaraokeScreenPlugin:
                 widget.set_karaoke_sweep_style(style)
 
     def on_unload(self, context):
+        self._stop_microphone()
         self._stop_square_wave_stream()
         if self.screen is not None:
             self.screen.close()
