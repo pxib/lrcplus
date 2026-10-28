@@ -192,7 +192,11 @@ def load_lrcx(path):
                     # boundary for the preceding chunk, allowing a real pause:
                     #   word<00:01.000><00:02.000>next
                     if not chunk and segments:
-                        segments[-1].end = timestamp
+                        # Multiple terminal boundaries can encode a segment
+                        # end followed by a later line end (a trailing pause).
+                        # Keep the first end on the segment itself.
+                        if segments[-1].end is None:
+                            segments[-1].end = timestamp
                         continue
 
                     instant = False
@@ -219,14 +223,12 @@ def load_lrcx(path):
             # A timestamp with no following lyric text is a terminal karaoke
             # boundary, not an empty segment. Preserve it as the line ending.
             explicit_end = None
-            if segments and getattr(segments[-1], "end", None) is not None:
-                explicit_end = segments[-1].end
-            elif segment_matches:
+            if segment_matches:
                 last_match = segment_matches[-1]
                 trailing = content[last_match.end():]
                 if not trailing:
                     explicit_end = _timestamp(last_match)
-                    if segments:
+                    if segments and segments[-1].end is None:
                         segments[-1].end = explicit_end
 
             lines.append(

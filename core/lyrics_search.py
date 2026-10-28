@@ -7,6 +7,16 @@ from core.settings import get_lyrics_attachment, load_lrc_search_folders
 
 class LyricsSearchMixin:
     @staticmethod
+    def _directory_signature(directories):
+        stamps = []
+        for directory in directories:
+            try:
+                stamps.append(directory.stat().st_mtime_ns)
+            except OSError:
+                stamps.append(None)
+        return tuple(stamps)
+
+    @staticmethod
     def _normalise_lyrics_name(value):
         """Normalise lyric/audio filenames for forgiving matching."""
         value = str(value).casefold()
@@ -168,16 +178,17 @@ class LyricsSearchMixin:
     def _get_lyrics_folder_index(cls, folder_path):
         """Return a cached index for one lyrics folder.
 
-        The expensive recursive walk and [attach:] file reads happen only the
-        first time a folder is encountered during this app session. Later song
-        changes use in-memory dictionaries and Path objects.
+        Directory timestamps detect additions, renames and removals, including
+        inside nested folders, without reopening every lyric on track changes.
         """
         folder_path = Path(folder_path)
         folder_key = cls._normalise_path_key(folder_path)
         cached = cls._lyrics_folder_index_cache.get(folder_key)
         if cached is not None:
-            return cached
+            if cached["signature"] == cls._directory_signature(cached["directories"]):
+                return cached
 
+        directories = [folder_path]
         entries = []
         by_name = {}
         by_title = {}
@@ -187,6 +198,9 @@ class LyricsSearchMixin:
         if folder_path.exists() and folder_path.is_dir():
             try:
                 for file_path in folder_path.rglob("*"):
+                    if file_path.is_dir():
+                        directories.append(file_path)
+                        continue
                     if not file_path.is_file() or file_path.suffix.casefold() not in {".lrc", ".lrcx"}:
                         continue
 
@@ -221,6 +235,8 @@ class LyricsSearchMixin:
                 pass
 
         index = {
+            "directories": directories,
+            "signature": cls._directory_signature(directories),
             "entries": entries,
             "by_name": by_name,
             "by_title": by_title,

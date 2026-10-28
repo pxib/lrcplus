@@ -9,14 +9,15 @@ Lib/
 uiwave/
 Include/
 Scripts/
-tests/
-!/tests/
+.venv/
+venv/
+*.bak
 /tests/*
-!/tests/test_lyrics_share.py
-!/tests/test_all_romaji_word_spacing.py
-!/tests/test_pitch_estimator.py
-!/tests/test_pitch_tracker.py
-!/tests/test_karaoke_screen_microphone.py
+!/tests/test_*.py
+!/tests/conftest.py
+# Local exploratory scripts execute demonstrations at import time.
+/tests/test_simple.py
+/tests/test_repetition.py
 share/
 lrc_player_settings.json
 pyvenv.cfg

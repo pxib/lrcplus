@@ -1,6 +1,7 @@
 from pathlib import Path
 from bisect import bisect_right
 import copy
+import json
 import os
 import tempfile
 import time
@@ -23,7 +24,11 @@ from PySide6.QtWidgets import (
 from lyrics.loader import load_lyrics, get_lyrics_generation_mode
 from lyrics.models import LyricLine, LyricSegment
 from lyrics.writer import format_timestamp, serialize_lrc, serialize_lrcx
+from lyrics.timing import parse_timestamp
+from lyrics.editor_source import extract_metadata, parse_editor_source
+from lyrics.karaoke_timing import next_lyric_start, segment_end
 from core.debug import debug_print
+from core.file_io import atomic_write_text
 from lyrics.lrcx_parser import get_lrcx_offset
 from lyrics.widgets import FuriganaWidget
 from lyrics.ass_parser import parse_ass
@@ -49,11 +54,15 @@ except Exception:
 
 from ui.lrc_editor_ui import LrcEditorUiMixin
 from ui.lrc_editor_controls import ClickableSlider, KaraokeSeparationWidget
+from ui.lyrics_timing_tools import LyricsTimingToolsMixin
+from ui.lyrics_editor_search import LyricsEditorSearchMixin
+from ui.karaoke_editor_tools import KaraokeEditorToolsMixin
 
-class LrcEditorDialog(LrcEditorUiMixin, QDialog):
+class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTimingToolsMixin, LrcEditorUiMixin, QDialog):
     # Emitted from background reading-generation workers. Qt delivers this
     # back to the dialog thread, so widget updates never happen off-thread.
     _reading_generation_finished = Signal(int, int, bool)
+    _parse_time = staticmethod(parse_timestamp)
 
     """Lyrics Editor 2.0.
 
@@ -108,6 +117,14 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         self.document_dirty = False
         self._source_dirty = False
         self._syncing_source = False
+        self._source_suffix = self.lrc_path.suffix.lower()
+        if self._source_suffix not in {".lrc", ".lrcx", ".txt"}:
+            self._source_suffix = ".lrcx"
+        self._pending_recovered_source = None
+        self._document_metadata = []
+        self._closed = False
+        self._saved_document_state = None
+        self._generation_mode = get_reading_mode() or "auto"
         self.preview_wants_playing = False
         self.current_playback_line = -1
         self.sidebar_sort_mode = "source"
@@ -118,6 +135,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         self._playback_line_rows = []
         self._preview_segments_line_index = None
         self._waveform_drag_row = -1
+        self._segment_preview_range = None
         # Cache expensive full-document language detection until lyric text changes.
         self._detected_language_cache_key = None
         self._detected_language_cache_value = None
@@ -129,8 +147,8 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         )
         self.lyrics_offset_ms = get_lrcx_offset(self.lrc_path) if self.lrc_path.suffix.lower() == ".lrcx" else 0.0
 
-        # History stores complete lyric-model snapshots. Keeping this at the
-        # data layer means every editor tool can participate in Undo/Redo.
+        # Model checkpoints support all editor tools; ordinary typing stores
+        # only its changed line, while bulk operations keep a full snapshot.
         self._undo_stack = []
         self._redo_stack = []
         self._history_limit = 100
@@ -156,6 +174,17 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         QApplication.instance().installEventFilter(self)
 
         self._build_ui()
+        for button in self.findChildren(QPushButton):
+            button.setAutoDefault(False)
+        if self._pending_recovered_source is not None:
+            text, suffix = self._pending_recovered_source
+            blocker = QSignalBlocker(self.source_editor)
+            self.source_editor.setPlainText(text)
+            del blocker
+            self._source_suffix = suffix
+            self._source_dirty = True
+            self.source_format_label.setText(f"{suffix[1:].upper()} source")
+            self.tabs.setCurrentWidget(self.source_editor.parentWidget())
         # Reading providers are plugins. Defer automatic provider generation until the
         # event loop starts so the plugin manager has a chance to register
         # Koroman before we ask build_furigana_segments() for Korean readings.
@@ -177,6 +206,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             )
             self._reset_history_baseline()
 
+        self._saved_document_state = None if self.document_dirty else self._document_state()
         self._refresh_lyrics_waveform()
 
         if self.player is not None and hasattr(self.player, "media_player"):
@@ -191,9 +221,6 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             self.preview_duration_changed(player.duration())
             self.preview_playback_state_changed(player.playbackState())
 
-        self.shortcut_play_pause = QShortcut(QKeySequence("Space"), self)
-        self.shortcut_play_pause.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        self.shortcut_play_pause.activated.connect(self.toggle_preview)
         # QTableWidget starts editing a cell when Space is pressed. In the
         # karaoke timing grid Space is reserved for playback, so intercept it
         # before the item view can enter edit mode.
@@ -206,85 +233,9 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         self.shortcut_redo = QShortcut(QKeySequence.StandardKey.Redo, self)
         self.shortcut_redo.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.shortcut_redo.activated.connect(self.redo)
-        if self.karaoke_enabled:
-            self.shortcut_mark = QShortcut(QKeySequence("Return"), self)
-            self.shortcut_mark.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            self.shortcut_mark.activated.connect(self.use_playback_time)
+        self.shortcut_save = QShortcut(QKeySequence.StandardKey.Save, self)
+        self.shortcut_save.activated.connect(self.save_document)
 
-    def eventFilter(self, watched, event):
-        # Delete the selected lyric/timestamp when focus is in the shared line
-        # list. Do not make this dialog-wide: Delete must remain available for
-        # normal text editing in lyric/timestamp fields.
-        if (
-            event.type() == event.Type.KeyPress
-            and event.key() == Qt.Key.Key_Delete
-            and event.modifiers() == Qt.KeyboardModifier.NoModifier
-            and watched in (
-                getattr(self, "line_list", None),
-                getattr(getattr(self, "line_list", None), "viewport", lambda: None)(),
-            )
-        ):
-            self.delete_line()
-            event.accept()
-            return True
-
-        # Karaoke shortcuts must win over an active inline TIMESTAMP editor.
-        # QTableWidget creates a QLineEdit on double-click; without consuming
-        # the event here, Q/E/A/D/F can be both a shortcut and IME/text input.
-        if (
-            self._karaoke_shortcut_active()
-            and event.type() == event.Type.KeyPress
-            and event.modifiers() == Qt.KeyboardModifier.NoModifier
-            and event.key() in (
-                Qt.Key.Key_Q,
-                Qt.Key.Key_E,
-                Qt.Key.Key_A,
-                Qt.Key.Key_D,
-                Qt.Key.Key_F,
-            )
-        ):
-            table = getattr(self, "segment_table", None)
-            is_timestamp_target = False
-            if table is not None and table.currentColumn() in (0, 1):
-                # The dialog is installed as an application-wide event filter.
-                # QTableWidget's temporary inline QLineEdit can receive the key
-                # directly, so use the actual focused widget rather than relying
-                # on the event receiver being the table itself.
-                focus = QApplication.focusWidget()
-                is_timestamp_target = (
-                    watched is table
-                    or watched is table.viewport()
-                    or table.hasFocus()
-                    or table.viewport().hasFocus()
-                    or focus is table
-                    or focus is table.viewport()
-                    or (focus is not None and table.isAncestorOf(focus))
-                )
-
-            if is_timestamp_target:
-                self._handle_karaoke_shortcut(event.key())
-                event.accept()
-                return True
-
-        if (
-            self.karaoke_enabled
-            and watched in (
-                getattr(self, "segment_table", None),
-                getattr(
-                    getattr(self, "segment_table", None),
-                    "viewport",
-                    lambda: None,
-                )(),
-            )
-            and event.type() == event.Type.KeyPress
-            and event.key() == Qt.Key.Key_Space
-        ):
-            # Consume Space here: it must never open an inline timestamp editor.
-            self.toggle_preview()
-            event.accept()
-            return True
-
-        return super().eventFilter(watched, event)
 
     # ------------------------------------------------------------------
     # Document / structured lyrics
@@ -292,39 +243,73 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
     # ------------------------------------------------------------------
     # Undo / Redo + crash recovery
     # ------------------------------------------------------------------
-    def _capture_state(self):
+    def _document_state(self):
         return {
-            "lines": copy.deepcopy(self.lines),
+            "lines": copy.deepcopy(self.lines), "offset": self.lyrics_offset_ms,
+            "mode": self._current_generation_mode(), "attachment": self.attached_song_path,
+            "metadata": list(self._document_metadata),
+        }
+
+    def _capture_state(self, line_index=None):
+        return {
+            # Ordinary typing changes one line. Bulk tools still capture the
+            # entire model, and history entries identify which kind they hold.
+            "lines": copy.deepcopy(self.lines if line_index is None else [self.lines[line_index]]),
+            "line_index": line_index,
             "offset": float(self.lyrics_offset_ms),
             "dirty": bool(self.document_dirty),
             "karaoke_dirty": bool(self.karaoke_dirty),
-            "selected_row": self.line_list.currentRow() if hasattr(self, "line_list") else 0,
+            "selected_line": self._current_line_index(),
+            "source": self.source_editor.toPlainText() if hasattr(self, "source_editor") else "",
+            "source_dirty": bool(self._source_dirty),
+            "attached_song_path": self.attached_song_path,
+            "source_suffix": self._source_suffix,
+            "generation_mode": self._current_generation_mode(),
+            "metadata": list(self._document_metadata),
         }
 
     def _restore_state(self, state):
         self._history_restoring = True
         self.loading = True
         try:
-            self.lines = copy.deepcopy(state["lines"])
+            if state.get("line_index") is None:
+                self.lines = copy.deepcopy(state["lines"])
+            else:
+                self.lines[state["line_index"]] = copy.deepcopy(state["lines"][0])
             self.lyrics_offset_ms = float(state["offset"])
             self.document_dirty = bool(state.get("dirty", True))
             self.karaoke_dirty = bool(state.get("karaoke_dirty", False))
+            self._source_dirty = bool(state.get("source_dirty", False))
+            self.attached_song_path = state.get("attached_song_path")
+            self._document_metadata = list(state.get("metadata", []))
+            self._source_suffix = state.get("source_suffix", self._source_suffix)
+            self.source_format_label.setText(f"{self._source_suffix[1:].upper()} source")
+            self._apply_generation_mode(state.get("generation_mode"))
+            if self._saved_document_state is not None:
+                self.document_dirty = self._source_dirty or self._document_state() != self._saved_document_state
+            if hasattr(self, "source_editor"):
+                blocker = QSignalBlocker(self.source_editor)
+                self.source_editor.setPlainText(state.get("source", ""))
+                del blocker
             if hasattr(self, "lyrics_offset"):
                 self.lyrics_offset.setValue(self.lyrics_offset_ms)
             self._populate_lines()
             row = min(
-                max(0, int(state.get("selected_row", 0))),
+                max(0, int(state.get("selected_line") or 0)),
                 max(0, len(self.lines) - 1),
             )
             if self.lines:
-                self.line_list.setCurrentRow(row)
-                self.load_selected_line(row)
+                self._select_line_index(row)
+                self.load_selected_line(self.line_list.currentRow())
             else:
                 self._clear_editor_views()
         finally:
             self.loading = False
             self._history_restoring = False
         self._update_history_actions()
+        self._update_save_button_state()
+        self._update_document_title()
+        self._update_song_association_ui()
 
     def _clear_editor_views(self):
         if hasattr(self, "line_text"):
@@ -335,16 +320,18 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             self.separator_widget.set_content("", set())
 
     def _reset_history_baseline(self):
-        self._undo_stack = [self._capture_state()]
+        self._undo_stack = []
         self._redo_stack = []
+        if not self.document_dirty:
+            self._saved_document_state = self._document_state()
         self._update_history_actions()
 
-    def _push_undo_state(self):
+    def _push_undo_state(self, line_index=None):
         if self.loading or self._history_restoring:
             return
         # This is called immediately before a mutation. Keep even an equal
         # snapshot: it is the explicit checkpoint Undo should return to.
-        state = self._capture_state()
+        state = self._capture_state(line_index)
         self._undo_stack.append(state)
         if len(self._undo_stack) > self._history_limit:
             self._undo_stack.pop(0)
@@ -352,28 +339,34 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         self._update_history_actions()
 
     def undo(self):
-        if len(self._undo_stack) <= 1:
+        if self._source_dirty and self.source_editor.hasFocus():
+            self.source_editor.undo()
             return
-        current = self._capture_state()
+        if not self._undo_stack:
+            return
+        current = self._capture_state(self._undo_stack[-1].get("line_index"))
         self._redo_stack.append(current)
-        self._undo_stack.pop()
-        self._restore_state(copy.deepcopy(self._undo_stack[-1]))
+        self._restore_state(self._undo_stack.pop())
 
     def redo(self):
+        if self._source_dirty and self.source_editor.hasFocus():
+            self.source_editor.redo()
+            return
         if not self._redo_stack:
             return
-        self._undo_stack.append(self._capture_state())
+        self._undo_stack.append(self._capture_state(self._redo_stack[-1].get("line_index")))
         state = self._redo_stack.pop()
-        self._undo_stack[-1] = copy.deepcopy(state)
-        self._restore_state(copy.deepcopy(state))
+        self._restore_state(state)
 
     def _update_history_actions(self):
         if hasattr(self, "undo_button"):
-            self.undo_button.setEnabled(len(self._undo_stack) > 1)
+            self.undo_button.setEnabled(bool(self._undo_stack))
         if hasattr(self, "redo_button"):
             self.redo_button.setEnabled(bool(self._redo_stack))
 
     def _current_generation_mode(self):
+        if hasattr(self, "_generation_mode"):
+            return self._generation_mode
         if hasattr(self, "reading_mode_combo"):
             return self.reading_mode_combo.currentData() or "auto"
         return get_reading_mode() or "auto"
@@ -381,6 +374,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
     def _apply_generation_mode(self, mode):
         if not mode:
             return
+        self._generation_mode = mode
         set_reading_mode(mode)
         if hasattr(self, "reading_mode_combo"):
             combo_index = self.reading_mode_combo.findData(mode)
@@ -392,11 +386,16 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
                     del blocker
 
     def _autosave_payload(self):
-        return serialize_lrcx(
-            self.lines,
-            offset_ms=self.lyrics_offset_ms,
+        structured = self._serialise_with_attachment(serialize_lrcx(
+            self.lines, offset_ms=self.lyrics_offset_ms,
             generation_mode=self._current_generation_mode(),
-        )
+        ))
+        return json.dumps({
+            "format": "LyricsPlusRecovery", "version": 1,
+            "structured": structured,
+            "source": self.source_editor.toPlainText() if self._source_dirty else None,
+            "source_suffix": self._source_suffix,
+        }, ensure_ascii=False)
 
     def _autosave_if_needed(self):
         if not self.document_dirty:
@@ -413,45 +412,40 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         if not self._autosave_path.exists():
             return
         try:
-            autosave_mtime = self._autosave_path.stat().st_mtime
             source_mtime = self.lrc_path.stat().st_mtime if self.lrc_path.exists() else 0
-            if autosave_mtime <= source_mtime:
+            if self._autosave_path.stat().st_mtime <= source_mtime:
                 self._autosave_path.unlink(missing_ok=True)
                 return
             answer = QMessageBox.question(
-                self,
-                "Recover Unsaved Lyrics?",
-                "A newer crash-recovery copy was found for this lyric file.\n\n"
-                "Restore those unsaved changes?",
+                self, "Recover Unsaved Lyrics?",
+                "A newer crash-recovery copy was found for this lyric file.\n\nRestore those unsaved changes?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
-            if answer == QMessageBox.StandardButton.Yes:
-                # Autosave payloads are always serialized as LRCX so karaoke
-                # timing, ruby, and explicit boundaries survive recovery.
-                # Parsing that payload with the original .lrc suffix silently
-                # discards the inline <timestamp> structure.
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".lrcx", encoding="utf-8", delete=False
-                ) as handle:
-                    handle.write(self._autosave_path.read_text(encoding="utf-8"))
-                    recovery_path = Path(handle.name)
-                try:
-                    recovery = load_lyrics(recovery_path)
-                    recovery_offset = get_lrcx_offset(recovery_path)
-                    recovery_mode = get_lyrics_generation_mode(recovery_path)
-                finally:
-                    recovery_path.unlink(missing_ok=True)
-                self.lines = recovery
-                self.lyrics_offset_ms = recovery_offset
-                self._apply_generation_mode(recovery_mode)
-                self.document_dirty = True
-                self.karaoke_dirty = any(
-                    getattr(line, "has_karaoke", False) for line in self.lines
-                )
-            else:
-                self._autosave_path.unlink(missing_ok=True)
-        except Exception as error:
+            if answer != QMessageBox.StandardButton.Yes:
+                self._discard_autosave()
+                return
+            contents = self._autosave_path.read_text(encoding="utf-8")
+            if contents.lstrip().startswith("{"):
+                payload = json.loads(contents)
+                if payload.get("format") != "LyricsPlusRecovery" or payload.get("version") != 1:
+                    raise ValueError("Unsupported recovery format")
+                recovered_source = payload.get("source")
+                suffix = payload.get("source_suffix", ".lrcx")
+                if recovered_source is not None:
+                    if not isinstance(recovered_source, str) or suffix not in {".lrc", ".lrcx", ".txt"}:
+                        raise ValueError("Invalid source recovery data")
+                    self._pending_recovered_source = (recovered_source, suffix)
+                contents = payload["structured"]
+            recovery = parse_editor_source(contents, ".lrcx")
+            self.lines = recovery.lines
+            self.lyrics_offset_ms = recovery.offset_ms
+            self.attached_song_path = recovery.attachment
+            self._document_metadata = recovery.metadata
+            self._apply_generation_mode(recovery.generation_mode)
+            self.document_dirty = True
+            self.karaoke_dirty = any(line.has_karaoke for line in self.lines)
+        except (OSError, ValueError, TypeError, KeyError) as error:
             debug_print(f"[Lyrics Editor] Recovery check failed: {error!r}")
 
     def _discard_autosave(self):
@@ -495,6 +489,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             line for line in str(contents).splitlines()
             if not re.match(r"(?i)^\[attach:.*\]\s*$", line)
         ]
+        lines = list(self._document_metadata) + lines
         if self.attached_song_path:
             lines.insert(0, f"[attach:{self.attached_song_path}]")
         return "\n".join(lines) + ("\n" if lines else "")
@@ -661,6 +656,8 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         try:
             self.attached_song_path = self._read_attached_song_path(self.lrc_path)
             self.lines = load_lyrics(self.lrc_path)
+            if self.lrc_path.suffix.lower() != ".txt":
+                self._document_metadata = extract_metadata(self.lrc_path.read_text(encoding="utf-8-sig"))
             persisted_mode = get_lyrics_generation_mode(self.lrc_path)
             self._apply_generation_mode(persisted_mode)
         except Exception as error:
@@ -708,6 +705,14 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
     def _tab_changed(self, index):
         # Source is intentionally a raw full-width workspace.
         source_index = self.tabs.indexOf(self.source_editor.parentWidget())
+        if index != source_index and self._source_dirty:
+            if not self._commit_pending_source():
+                blocker = QSignalBlocker(self.tabs)
+                self.tabs.setCurrentIndex(source_index)
+                del blocker
+                return
+        elif index == source_index and not self._source_dirty:
+            self.sync_source_from_model()
         # parentWidget() is the source page in this layout.
         # Source is a full-width raw workspace.  Hide the entire navigation
         # panel, including the oversized "Go to Current Lyric" button.
@@ -1030,6 +1035,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
 
         self._update_share_selection_status()
         self._refresh_lyrics_waveform_markers()
+        self._update_lyric_search()
 
     def _checked_share_line_indices(self):
         return {
@@ -1225,7 +1231,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
 
     def _start_background_reading_generation(self, texts, line_index=-1):
         """Warm reading-provider caches without blocking the editor UI."""
-        if build_furigana_segments is None:
+        if self._closed or build_furigana_segments is None:
             return
 
         texts = [str(text or "") for text in texts if str(text or "")]
@@ -1255,7 +1261,13 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
                     changed = any(part.get("reading") for part in tokens)
             except Exception as error:
                 debug_print(f"[Readings] Background generation failed: {error!r}")
-            self._reading_generation_finished.emit(token, line_index, changed)
+            if self._closed or token != self._reading_generation_epoch:
+                return
+            try:
+                self._reading_generation_finished.emit(token, line_index, changed)
+            except RuntimeError:
+                # The dialog can be deleted between the guard and this emit.
+                pass
 
         threading.Thread(
             target=worker,
@@ -1265,7 +1277,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
 
     def _on_reading_generation_finished(self, token, line_index, changed):
         """Apply background-generation results on the Qt main thread."""
-        if token != self._reading_generation_epoch:
+        if self._closed or token != self._reading_generation_epoch:
             return
         if not changed:
             return
@@ -1287,7 +1299,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
 
     def _refresh_auto_readings_for_line(self, line_index):
         """Warm the selected line asynchronously instead of freezing the UI."""
-        if self._current_generation_mode() != "auto":
+        if self._closed or self._current_generation_mode() != "auto":
             return
         if not (0 <= line_index < len(self.lines)):
             return
@@ -1299,6 +1311,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             self._start_background_reading_generation([text], line_index)
 
     def load_selected_line(self, row):
+        self._karaoke_bounds_warning = None
         if 0 <= row < len(self._view_line_indices):
             row = self._view_line_indices[row]
         else:
@@ -1331,6 +1344,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             self._update_overlap_warning(line)
             self._refresh_karaoke_waveform_editor()
         self.loading = False
+        self._update_lyric_search()
         if self.karaoke_enabled:
             self.refresh_separation_preview()
 
@@ -1437,7 +1451,9 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
     def reading_mode_changed(self, index):
         if self.loading or not hasattr(self, "reading_mode_combo"):
             return
+        self._push_undo_state()
         mode = self.reading_mode_combo.itemData(index) or "auto"
+        self._generation_mode = mode
         # Invalidate background workers started for the previous provider.
         self._reading_generation_epoch += 1
         set_reading_mode(mode)
@@ -1454,8 +1470,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             self._schedule_auto_reading_generation()
         # Generation mode is persisted as [g:...] and therefore changing it
         # is itself a document edit.
-        self.document_dirty = True
-        self._update_save_button_state()
+        self._mark_document_dirty()
         self._update_detected_language()
         _, line = self._current_line()
         if line is not None:
@@ -1622,7 +1637,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         # This used to loop over every lyric synchronously via QTimer.singleShot,
         # which still runs on the UI thread. A long Cantonese song could therefore
         # freeze the entire editor while PyCantonese analysed every line.
-        if build_furigana_segments is None or self._current_generation_mode() != "auto":
+        if self._closed or build_furigana_segments is None or self._current_generation_mode() != "auto":
             return
         self._start_background_reading_generation(
             [line.text for line in self.lines if line.text],
@@ -1743,7 +1758,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             return
         self._push_undo_state()
         self.lyrics_offset_ms = float(value)
-        self.document_dirty = True
+        self._mark_document_dirty()
 
     def _update_furigana_editor_availability(self, line):
         """Keep one furigana editor authoritative for each line.
@@ -1898,7 +1913,6 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
                 global_position = source_end
 
             line.has_karaoke = True
-            self._debug_furigana_segments("AFTER edit assignment (karaoke preserved)", line)
         else:
             # No karaoke structure exists, so ruby tokens may safely define the
             # ordinary display segments.
@@ -2117,8 +2131,8 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
 
         next_index = index + 1
         if next_index < len(self.lines):
-            self.line_list.setCurrentRow(next_index)
-            item = self.line_list.item(next_index)
+            self._select_line_index(next_index)
+            item = self.line_list.currentItem()
             if item is not None:
                 self.line_list.scrollToItem(
                     item, QListWidget.ScrollHint.PositionAtCenter
@@ -2130,9 +2144,15 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         index, line = self._current_line()
         if line is None:
             return
-        self._push_undo_state()
+        self._push_undo_state(line_index=index)
+        delta = self.line_time.value() - line.start
         line.start = self.line_time.value()
-        line.text = self.line_text.toPlainText().replace("\n", " ")
+        line.text = self.line_text.toPlainText()
+        if not line.has_karaoke:
+            for segment in line.segments:
+                segment.start += delta
+                if segment.end is not None:
+                    segment.end += delta
         # Text edits invalidate old segment boundaries rather than silently
         # leaving mismatched karaoke text behind.
         if line.segments and "".join(s.text for s in line.segments) != line.text:
@@ -2140,16 +2160,19 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             self._preview_segments_line_index = None
             line.has_karaoke = False
             self.loading = True
-            self._populate_segments(line)
+            if self.karaoke_enabled:
+                self._populate_segments(line)
             self.loading = False
         elif line.segments:
             # Keep line.start independent from segment 0 so a leading pause is valid.
             pass
         self._mark_document_dirty()
         self.refresh_line_label(index)
-        self.full_line_label.setText(line.text)
-        self._build_separator_buttons(line)
+        if self.karaoke_enabled:
+            self.full_line_label.setText(line.text)
+            self._build_separator_buttons(line)
         self._refresh_ruby_preview(line)
+        self._update_lyric_search()
 
         # Keep the waveform live with direct timestamp edits in the spin box.
         # A manual edit changes the model immediately, so the selected A/B
@@ -2162,6 +2185,8 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         self._refresh_karaoke_waveform_editor()
 
     def add_line(self):
+        if not self._commit_pending_source():
+            return
         self._push_undo_state()
         index, current = self._current_line()
         start = (current.start + 1.0) if current else 0.0
@@ -2173,6 +2198,8 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         self._mark_document_dirty()
 
     def delete_line(self):
+        if not self._commit_pending_source():
+            return
         index, _ = self._current_line()
         if index is None:
             return
@@ -2186,13 +2213,15 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         self._mark_document_dirty()
 
     def move_line(self, direction):
-        self._push_undo_state()
+        if not self._commit_pending_source():
+            return
         index, _ = self._current_line()
         if index is None:
             return
         target = index + direction
         if not (0 <= target < len(self.lines)):
             return
+        self._push_undo_state()
         self.lines[index], self.lines[target] = self.lines[target], self.lines[index]
         self._populate_lines()
         self._select_line_index(target)
@@ -2240,6 +2269,9 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             return []
         text = line.text
         boundaries = self.separator_widget.boundaries() if hasattr(self, "separator_widget") else set()
+        for index, char in enumerate(text):
+            if char == "\n":
+                boundaries.update({index, index + 1})
         parts, start = [], 0
         for boundary in sorted(boundaries):
             parts.append(text[start:boundary])
@@ -2249,25 +2281,28 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
 
     @staticmethod
     def _merge_whitespace_only_karaoke_parts(parts):
-        """Keep whitespace in the lyric text without giving it its own timing."""
+        """Keep structural newlines separate, attaching other spaces to text."""
         merged = []
         pending_prefix = ""
-        for part in parts:
-            part = str(part)
-            if not part:
-                continue
-            if part.strip() == "":
-                if merged:
-                    merged[-1] += part
+        for source_part in parts:
+            for part in re.split(r"(\n)", str(source_part)):
+                if not part:
+                    continue
+                if part == "\n":
+                    if pending_prefix:
+                        merged.append(pending_prefix)
+                        pending_prefix = ""
+                    merged.append(part)
+                elif not part.strip():
+                    if merged and merged[-1] != "\n":
+                        merged[-1] += part
+                    else:
+                        pending_prefix += part
                 else:
-                    pending_prefix += part
-                continue
-            merged.append(pending_prefix + part)
-            pending_prefix = ""
-
-        # Whitespace-only input is not a valid karaoke segmentation by itself.
+                    merged.append(pending_prefix + part)
+                    pending_prefix = ""
         if pending_prefix:
-            if merged:
+            if merged and merged[-1] != "\n":
                 merged[-1] += pending_prefix
             else:
                 merged.append(pending_prefix)
@@ -2350,13 +2385,18 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
 
             # Explicit end before its own start.
             if start is not None and end is not None and end < start:
-                problems.append(visible_index)
+                problems.append(i)
                 continue
 
-            if visible_index + 1 >= len(visible):
+            following = next(
+                ((row, item) for row, item in visible[visible_index + 1:]
+                 if item.visual_line == segment.visual_line),
+                None,
+            )
+            if following is None:
                 continue
 
-            _, next_segment = visible[visible_index + 1]
+            next_row, next_segment = following
             next_start = getattr(next_segment, "start", None)
 
             # Existing ordering check: later starts cannot go backwards.
@@ -2365,7 +2405,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
                 and next_start is not None
                 and next_start < start
             ):
-                problems.append(visible_index + 1)
+                problems.append(next_row)
 
             # This segment's explicit End cannot extend beyond the next
             # *visible* segment's Start. Hidden whitespace is ignored.
@@ -2374,7 +2414,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
                 and next_start is not None
                 and next_start < end
             ):
-                problems.append(visible_index + 1)
+                problems.append(next_row)
 
         bounds_warning = getattr(self, "_karaoke_bounds_warning", None)
         if bounds_warning:
@@ -2441,7 +2481,8 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
                 collapsed.ruby_source = "manual"
             line.segments = [collapsed]
             line.has_karaoke = False
-        self.karaoke_dirty = self.document_dirty = True
+        self.karaoke_dirty = True
+        self._mark_document_dirty()
         row = self.line_list.currentRow()
         if row >= 0:
             self.load_selected_line(row)
@@ -2457,7 +2498,6 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         if line is None:
             return
 
-        self._push_undo_state()
         parts = self._merge_whitespace_only_karaoke_parts(
             self._visual_parts()
         )
@@ -2467,6 +2507,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             )
             return
 
+        self._push_undo_state()
         old = list(line.segments) or [
             LyricSegment(line.start, line.text)
         ]
@@ -2516,11 +2557,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
 
         # Fresh splits must partition their parent's timing span instead of
         # giving every newly-created chunk the same start timestamp.
-        next_line_start = (
-            float(self.lines[index + 1].start)
-            if index + 1 < len(self.lines)
-            else None
-        )
+        next_line_start = next_lyric_start(self.lines, line)
 
         # LyricSegment is mutable/unhashable, so use its object identity as
         # the grouping key rather than putting the segment itself in a dict.
@@ -2557,6 +2594,10 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
                     if candidate > start_time:
                         end_time = candidate
 
+            if (end_time is None or end_time <= start_time) and line.end is not None:
+                if line.end > start_time:
+                    end_time = float(line.end)
+
             # Final original segment: its natural boundary is the next lyric.
             if (end_time is None or end_time <= start_time) and next_line_start is not None:
                 if next_line_start > start_time:
@@ -2565,21 +2606,16 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             if end_time is None or end_time <= start_time:
                 continue
 
-            weights = [max(1, b - a) for a, b in ranges]
-            total_weight = sum(weights)
+            source_a, source_b = source_range
             duration = end_time - start_time
-            cursor = start_time
-            allocations = {}
-
-            for split_index, ((a, b), weight) in enumerate(zip(ranges, weights)):
-                child_start = cursor
-                child_end = (
-                    end_time
-                    if split_index == len(ranges) - 1
-                    else cursor + duration * weight / total_weight
+            width = max(1, source_b - source_a)
+            allocations = {
+                (a, b): (
+                    start_time + duration * (a - source_a) / width,
+                    start_time + duration * (min(b, source_b) - source_a) / width,
                 )
-                allocations[(a, b)] = (child_start, child_end)
-                cursor = child_end
+                for a, b in ranges
+            }
 
             source_allocations[source_id] = allocations
 
@@ -2591,12 +2627,8 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             source = source_for(a)
             ruby, ruby_source = exact_ruby.get((a, b), (None, None))
 
-            # Preserve the source timing exactly, matching the last known
-            # working karaoke editor behavior.  Newly separated chunks begin
-            # with the parent timing and are assigned their real timings by
-            # Mark Playback Time / direct table edits.  Do not invent timing
-            # from the next lyric line: that caused automatic timestamps to
-            # be serialized as if they were deliberate karaoke timings.
+            # Interpolate new boundaries within the original timed span.
+            # Existing exact chunks retain their authored starts and ends.
             allocation = source_allocations.get(id(source), {}).get((a, b))
             child_start = (
                 allocation[0]
@@ -2614,21 +2646,25 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             # exact karaoke chunk. A newly split chunk is a normal timed span.
             exact_chunk = a == source_a and b == source_b
 
-            # IMPORTANT: a split chunk does NOT inherit the parent's explicit
-            # end.  That end often belongs to the whole original lyric span
-            # (typically the next lyric's timestamp).  Copying it onto every
-            # new chunk makes the serializer emit:
-            #
-            #   chunk <old-line-end><new-chunk-start> chunk ...
-            #
-            # which is exactly the "returns to default timestamps" corruption
-            # we observed.  New chunks have no explicit end until the user marks
-            # one; their effective end is derived from the next chunk start.
+            # A split child gets its allocated end, rather than inheriting the
+            # entire parent's end and overlapping every later child.
             child_end = (
                 getattr(source, "end", None)
                 if exact_chunk
                 else (allocation[1] if allocation is not None else None)
             )
+
+            tail_source = source_for(b - 1)
+            if tail_source is not source:
+                tail_a, tail_b, _ = next(
+                    entry for entry in old_ranges if entry[2] is tail_source
+                )
+                tail_index = next(i for i, segment in enumerate(old) if segment is tail_source)
+                tail_end = segment_end(line, tail_index, next_line_start)
+                if tail_end is not None and b < tail_b:
+                    child_end = tail_source.start + (tail_end - tail_source.start) * (b - tail_a) / max(1, tail_b - tail_a)
+                else:
+                    child_end = tail_end
 
             child = LyricSegment(
                 child_start,
@@ -2638,6 +2674,8 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
                 child_end,
                 ruby_source,
             )
+
+            child.visual_line = line.text[:a].count("\n")
 
             # Rebase every existing inline ruby span that overlaps this new
             # karaoke chunk. Splitting or re-separating karaoke must preserve
@@ -2675,11 +2713,10 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         # Do not derive line.start from the first karaoke chunk.
         # The line may intentionally begin before segment 0.
         line.segments = new
-        line.has_karaoke = len(new) > 1 or any(
-            segment.instant for segment in new
-        )
+        line.has_karaoke = True
 
-        self.karaoke_dirty = self.document_dirty = True
+        self.karaoke_dirty = True
+        self._mark_document_dirty()
         self.loading = True
         self.segment_table.setRowCount(0)
         self._populate_segments(line)
@@ -2717,8 +2754,8 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
                     pass
         if getattr(line, "end", None) is not None:
             return max(start_time, float(line.end))
-        line_index = self.line_list.currentRow()
-        if 0 <= line_index < len(self.lines) - 1:
+        line_index = self._current_line_index()
+        if line_index is not None and 0 <= line_index < len(self.lines) - 1:
             return max(start_time, float(self.lines[line_index + 1].start))
         if 0 <= row < len(line.segments):
             existing = getattr(line.segments[row], "end", None)
@@ -2755,15 +2792,24 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         )
         # Timing-only edits must preserve inline ruby spans.
         replacement.ruby_spans = list(getattr(old, "ruby_spans", []) or [])
+        replacement.visual_line = old.visual_line
         line.segments[row] = replacement
 
         # Segment 0 is independent from line.start. Moving its left edge can
         # create or adjust a leading pause without moving the lyric timestamp.
 
         if row == len(line.segments) - 1 and change_end:
-            line.end = new_end
+            if line.end is None or line.end == old.end or (new_end is not None and new_end > line.end):
+                line.end = new_end
 
         return line.segments[row]
+
+    def instant_changed(self, row, checked):
+        if self.loading:
+            return
+        item = self.segment_table.item(row, 2)
+        if item is not None:
+            self.segment_changed(item)
 
     def segment_changed(self, item):
         if self.loading:
@@ -2774,6 +2820,19 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         if line is None or not (0 <= row < len(line.segments)):
             return
 
+        if item.column() in (0, 1) and item.text().strip():
+            try:
+                value = self._parse_time(item.text())
+                if item.column() == 1 and value < line.segments[row].start:
+                    raise ValueError("The segment end cannot be before its start.")
+            except ValueError as error:
+                old_value = line.segments[row].start if item.column() == 0 else line.segments[row].end
+                blocker = QSignalBlocker(self.segment_table)
+                item.setText(format_timestamp(old_value) if old_value is not None else "")
+                del blocker
+                QMessageBox.warning(self, "Invalid Timestamp", str(error))
+                return
+        self._push_undo_state()
         # Timing edits and text/ruby edits both preserve the canonical segment
         # object. Only the column that was actually edited may change timing.
         old = line.segments[row]
@@ -2817,6 +2876,9 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
                 getattr(old, "ruby_source", None),
             )
             old_spans = list(getattr(old, "ruby_spans", []) or [])
+            replacement.visual_line = old.visual_line
+            if item.column() == 3:
+                replacement.ruby_source = "manual" if ruby else None
             if item.column() == 3 and len(old_spans) == 1:
                 # The Karaoke Ruby column edits the existing inline span without
                 # changing its text range (e.g. 描き -> {描|が}き).
@@ -2832,10 +2894,9 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
                 replacement.ruby_spans = old_spans
             line.segments[row] = replacement
 
-        self._push_undo_state()
         line.text = "".join(segment.text for segment in line.segments)
         line.has_karaoke = (
-            len(line.segments) > 1
+            line.has_karaoke or item.column() in (0, 1) or len(line.segments) > 1
             or any(segment.instant for segment in line.segments)
         )
         self.karaoke_dirty = True
@@ -2896,6 +2957,15 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         )
 
     def preview_position_changed(self, position_ms):
+        if self._segment_preview_range is not None:
+            start_ms, end_ms = self._segment_preview_range
+            if position_ms >= end_ms:
+                self._segment_preview_range = None
+                media = getattr(self.player, "media_player", None)
+                if media is not None:
+                    media.pause()
+            elif position_ms < start_ms - 100:
+                self._segment_preview_range = None
         # Re-anchor the smooth display clock to the authoritative media position.
         try:
             self._display_position_anchor_ms = float(position_ms)
@@ -3130,9 +3200,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         # The karaoke line's real right boundary is the NEXT LYRIC timestamp,
         # not the last karaoke segment's current end. That is the reference
         # boundary the editor needs to show and enforce.
-        next_line_start = None
-        if index + 1 < len(self.lines):
-            next_line_start = getattr(self.lines[index + 1], "start", None)
+        next_line_start = next_lyric_start(self.lines, line)
 
         if next_line_start is not None:
             line_end_ms = int(round(float(next_line_start) * 1000))
@@ -3150,9 +3218,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
 
         ranges = []
         for i, segment in enumerate(line.segments):
-            seg_end = getattr(segment, "end", None)
-            if seg_end is None:
-                seg_end = line.segments[i + 1].start if i + 1 < len(line.segments) else line_end_ms
+            seg_end = segment_end(line, i, line_end_ms / 1000.0)
             label = getattr(segment, "text", None)
             if label is None:
                 label = getattr(segment, "lyric", None)
@@ -3213,7 +3279,8 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         self.loading = False
         self.karaoke_dirty = self.document_dirty = True
         self.refresh_line_label(index)
-        self.load_selected_line(index)
+        self._select_line_index(index)
+        self.load_selected_line(self.line_list.currentRow())
         self._refresh_karaoke_preview()
         self._refresh_karaoke_waveform_editor()
 
@@ -3222,114 +3289,83 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             return
         row = self.segment_table.currentRow()
         index, line = self._current_line()
-        if line is None or not (0 <= row < len(line.segments)):
+        if line is None or not 0 <= row < len(line.segments):
             return
-        if self._waveform_drag_row != row:
-            self._waveform_drag_row = row
-            self._push_undo_state()
-
-        requested_value = max(0.0, float(value_ms) / 1000.0)
-        value = requested_value
-        self._karaoke_bounds_warning = None
+        if handle not in {"start", "end", "linked_start", "linked_end"}:
+            return
         old = line.segments[row]
-
-        # Karaoke segment boundaries are independent. Dragging one marker only
-        # changes that marker; adjacent segments are never resized implicitly.
-        # The waveform may snap visually to an adjacent boundary, but that is
-        # merely a convenience: users can drag away again and intentionally
-        # create a gap.
-        if handle in ("start", "linked_start"):
-            # Segment 0 is independent from the lyric timestamp. Its start is
-            # editable like every other segment, but cannot cross the lyric
-            # line's yellow start barrier.
-            if row == 0:
-                lyric_start = float(line.start)
-                if value < lyric_start:
-                    self._karaoke_bounds_warning = (
-                        "⚠ Out of bounds: First segment cannot start before the lyric timestamp."
-                    )
-                value = max(value, lyric_start)
-
-            current_end = getattr(old, "end", None)
-            if current_end is not None:
-                max_start = float(current_end) - 0.001
-                if value > max_start:
-                    self._karaoke_bounds_warning = (
-                        "⚠ Out of bounds: Segment start cannot move past its end."
-                    )
-                value = min(value, max_start)
-
+        hard_end = next_lyric_start(self.lines, line)
+        duration_ms = getattr(self.karaoke_waveform, "_duration_ms", 0)
+        if duration_ms > 0:
+            audio_end = duration_ms / 1000.0
+            hard_end = min(hard_end, audio_end) if hard_end is not None else audio_end
+        self._karaoke_bounds_warning = None
+        updates = []
+        if handle in {"start", "linked_start"}:
+            lower = max(0.0, float(line.start))
+            upper = segment_end(line, row, hard_end)
+            upper = None if upper is None else float(upper) - 0.001
             if handle == "linked_start":
+                if row == 0:
+                    return
                 previous = line.segments[row - 1]
-                value = max(value, float(previous.start) + 0.001)
-                # This operation is valid only while the two boundaries are
-                # genuinely connected in the canonical model.
-                if abs(float(getattr(previous, "end", -999999.0)) - float(old.start)) > 0.001:
+                previous_end = segment_end(line, row - 1, hard_end)
+                if previous_end is None or abs(previous_end - old.start) > 0.001:
                     return
-                self._set_segment_timing(
-                    row - 1, line, end_time=value, change_end=True
-                )
-                updates = ((row - 1, 1), (row, 0))
-            else:
-                updates = ((row, 0),)
-
-            value = max(0.0, value)
-            self._set_segment_timing(
-                row, line, start_time=value, change_start=True
-            )
-
-        elif handle in ("end", "linked_end"):
-            min_end = float(old.start) + 0.001
-            if value < min_end:
-                self._karaoke_bounds_warning = (
-                    "⚠ Out of bounds: Segment end cannot move before its start."
-                )
-            value = max(value, min_end)
-
-            if handle == "linked_end" and row + 1 < len(line.segments):
-                following = line.segments[row + 1]
-                following_end = getattr(following, "end", None)
-                if following_end is not None:
-                    value = min(value, float(following_end) - 0.001)
-                if abs(float(old.end) - float(following.start)) > 0.001:
-                    return
-                self._set_segment_timing(
-                    row + 1, line, start_time=value, change_start=True
-                )
-                updates = ((row, 1), (row + 1, 0))
-            else:
-                # Independent end drag: gaps remain allowed.
-                hard_end = None
-                if index + 1 < len(self.lines):
-                    hard_end = float(self.lines[index + 1].start)
-                elif getattr(self.karaoke_waveform, "_duration_ms", 0) > 0:
-                    hard_end = self.karaoke_waveform._duration_ms / 1000.0
-                if hard_end is not None:
-                    if value > hard_end:
-                        self._karaoke_bounds_warning = (
-                            "⚠ Out of bounds: Segment cannot extend beyond the lyric boundary."
-                        )
-                    value = min(value, hard_end)
-                updates = ((row, 1),)
-
-            self._set_segment_timing(
-                row, line, end_time=value, change_end=True
-            )
+                lower = max(lower, float(previous.start) + 0.001)
+            if upper is not None and upper < lower:
+                self._karaoke_bounds_warning = "No valid Start boundary: adjust the segment End first."
+                self._update_overlap_warning(line)
+                return
+            value = max(lower, float(value_ms) / 1000.0)
+            if upper is not None:
+                value = min(value, upper)
+            if handle == "linked_start":
+                updates.append((row - 1, 1, value))
+            updates.append((row, 0, value))
         else:
+            lower = max(0.0, float(old.start) + 0.001)
+            upper = hard_end
+            if handle == "linked_end":
+                if row + 1 >= len(line.segments):
+                    return
+                following = line.segments[row + 1]
+                old_end = segment_end(line, row, hard_end)
+                if old_end is None or abs(old_end - following.start) > 0.001:
+                    return
+                following_end = segment_end(line, row + 1, hard_end)
+                if following_end is not None:
+                    following_limit = float(following_end) - 0.001
+                    upper = min(upper, following_limit) if upper is not None else following_limit
+            if upper is not None and upper < lower:
+                self._karaoke_bounds_warning = "No valid End boundary: adjust the segment Start first."
+                self._update_overlap_warning(line)
+                return
+            value = max(lower, float(value_ms) / 1000.0)
+            if upper is not None:
+                value = min(value, upper)
+            updates.append((row, 1, value))
+            if handle == "linked_end":
+                updates.append((row + 1, 0, value))
+        if abs(value - float(value_ms) / 1000.0) > 0.0005:
+            self._karaoke_bounds_warning = "Timing was limited to the valid segment and lyric boundaries."
+        if all((line.segments[r].start if c == 0 else line.segments[r].end) == v for r, c, v in updates):
+            self._update_overlap_warning(line)
             return
-
-        blocker = QSignalBlocker(self.segment_table)
-        try:
-            for update_row, column in updates:
-                item = self.segment_table.item(update_row, column)
-                if item is not None:
-                    item.setText(format_timestamp(value))
-        finally:
-            del blocker
-
-        self.karaoke_dirty = self.document_dirty = True
-        self._update_save_button_state()
-        # Do not rebuild the waveform while the mouse is still down.
+        drag_key = (index, row, handle)
+        if self._waveform_drag_row != row or getattr(self, "_waveform_drag_key", None) != drag_key:
+            self._push_undo_state()
+            self._waveform_drag_row = row
+            self._waveform_drag_key = drag_key
+        for update_row, column, value in updates:
+            if column == 0:
+                self._set_segment_timing(update_row, line, start_time=value, change_start=True)
+            else:
+                self._set_segment_timing(update_row, line, end_time=value, change_end=True)
+        line.has_karaoke = True
+        self._update_karaoke_timing_cells(updates)
+        self.karaoke_dirty = True
+        self._mark_document_dirty()
         self.refresh_line_label(index)
         self._update_overlap_warning(line)
 
@@ -3404,6 +3440,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         self.lyrics_play_button.setText(text)
 
     def toggle_preview(self):
+        self._segment_preview_range = None
         if self.player is None or not hasattr(self.player, "media_player"):
             return
         media = self.player.media_player
@@ -3451,39 +3488,32 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         )
 
     def eventFilter(self, watched, event):
-        # Delete the selected lyric/timestamp when focus is in the shared line
-        # list. This is intentionally scoped to the list so Delete still works
-        # normally inside lyric and timestamp text fields.
-        if (
-            event.type() == QEvent.Type.KeyPress
-            and event.key() == Qt.Key.Key_Delete
-            and event.modifiers() == Qt.KeyboardModifier.NoModifier
-            and watched in (
-                getattr(self, "line_list", None),
-                getattr(getattr(self, "line_list", None), "viewport", lambda: None)(),
-            )
-        ):
+        if event.type() != QEvent.Type.KeyPress or event.modifiers() != Qt.KeyboardModifier.NoModifier:
+            return super().eventFilter(watched, event)
+        key = event.key()
+        line_list = getattr(self, "line_list", None)
+        if line_list is not None and watched in (line_list, line_list.viewport()) and key == Qt.Key.Key_Delete:
             self.delete_line()
             event.accept()
             return True
-
-        # QTableWidget's in-place timestamp editor receives the key before the
-        # dialog's keyPressEvent. Consume karaoke shortcut keys here so they
-        # cannot leak through and literally type Q/E/A/D/F into Start or End.
-        if event.type() == QEvent.Type.KeyPress and self._karaoke_shortcut_active():
-            key = event.key()
-            if key in {Qt.Key.Key_Q, Qt.Key.Key_E, Qt.Key.Key_A, Qt.Key.Key_D, Qt.Key.Key_F}:
-                if watched is getattr(self, "current_time", None) or watched is getattr(self, "segment_table", None) or watched is getattr(getattr(self, "segment_table", None), "viewport", lambda: None)():
-                    self._handle_karaoke_shortcut(key)
-                    return True
-                # Dynamic editors created by the table are descendants of its viewport.
-                parent = watched.parentWidget() if hasattr(watched, "parentWidget") else None
-                table = getattr(self, "segment_table", None)
-                while parent is not None:
-                    if parent is table or parent is getattr(table, "viewport", lambda: None)():
-                        self._handle_karaoke_shortcut(key)
-                        return True
-                    parent = parent.parentWidget()
+        if self._karaoke_shortcut_active():
+            table = getattr(self, "segment_table", None)
+            inside_table = table is not None and (
+                watched is table or (isinstance(watched, QWidget) and table.isAncestorOf(watched))
+            )
+            timestamp_target = inside_table and table.currentColumn() in (0, 1)
+            if watched is getattr(self, "current_time", None):
+                timestamp_target = True
+            if timestamp_target and key in {Qt.Key.Key_Q, Qt.Key.Key_E, Qt.Key.Key_A, Qt.Key.Key_D, Qt.Key.Key_F}:
+                self._handle_karaoke_shortcut(key)
+                event.accept()
+                return True
+            if key == Qt.Key.Key_Space and inside_table and (
+                timestamp_target or watched in (table, table.viewport())
+            ):
+                self.toggle_preview()
+                event.accept()
+                return True
         return super().eventFilter(watched, event)
 
     def _karaoke_shortcut_active(self):
@@ -3507,6 +3537,14 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             self.use_playback_time()
 
     def keyPressEvent(self, event):
+        if (
+            event.key() == Qt.Key.Key_Space
+            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+            and not self._focus_is_text_input()
+        ):
+            self.toggle_preview()
+            event.accept()
+            return
         # Delete removes the selected lyric/timestamp when focus is anywhere
         # inside the shared lyric list. Keep Delete untouched in text editors.
         if (
@@ -3564,13 +3602,18 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         """Seek to a clicked waveform segment and start playback."""
         if self.player is None or not hasattr(self.player, "media_player"):
             return
+        if end_ms <= start_ms:
+            return
         media_player = self.player.media_player
+        self._segment_preview_range = None
         media_player.setPosition(int(start_ms))
+        self._segment_preview_range = (int(start_ms), int(end_ms))
         play = getattr(media_player, "play", None)
         if callable(play):
             play()
 
     def seek_preview(self, position_ms):
+        self._segment_preview_range = None
         if self.player is not None and hasattr(self.player, "media_player"):
             self.player.media_player.setPosition(int(position_ms))
 
@@ -3579,7 +3622,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             return
         media = self.player.media_player
         target = media.position() + int(seconds * 1000)
-        media.setPosition(max(0, min(target, media.duration())))
+        self.seek_preview(max(0, min(target, media.duration())))
 
     def use_playback_time(self):
         if not self.karaoke_enabled:
@@ -3604,6 +3647,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         if line is None or not (0 <= row < len(line.segments)):
             return
 
+        self._push_undo_state()
         if column == 0:
             updated = self._set_segment_timing(
                 row, line, start_time=position, change_start=True
@@ -3649,11 +3693,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
                 )
 
         line.text = "".join(segment.text for segment in line.segments)
-        line.has_karaoke = (
-            len(line.segments) > 1
-            or any(segment.instant for segment in line.segments)
-        )
-        self.karaoke_dirty = self.document_dirty = True
+        line.has_karaoke = True
         self.karaoke_dirty = True
         self._mark_document_dirty()
         self.refresh_line_label(index)
@@ -3673,12 +3713,16 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
 
     def _serialized_for_current_format(self):
         mode = self._current_generation_mode()
-        if self.lrc_path.suffix.lower() == ".lrcx":
-            return serialize_lrcx(
-                self.lines,
-                offset_ms=self.lyrics_offset_ms,
-                generation_mode=mode,
-            )
+        suffix = self.lrc_path.suffix.lower()
+        if suffix != ".lrcx" and self._lrcx_only_features():
+            suffix = ".lrcx"
+        if suffix == ".txt" and self.document_dirty:
+            suffix = ".lrcx"
+        self._source_suffix = suffix if suffix in {".lrc", ".lrcx", ".txt"} else ".lrcx"
+        if self._source_suffix == ".txt":
+            return "\n".join(line.text for line in self.lines) + ("\n" if self.lines else "")
+        if self._source_suffix == ".lrcx":
+            return serialize_lrcx(self.lines, offset_ms=self.lyrics_offset_ms, generation_mode=mode)
         return serialize_lrc(self.lines, generation_mode=mode)
 
     @staticmethod
@@ -3734,7 +3778,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         if target.suffix.lower() != extension:
             target = target.with_suffix(extension)
         try:
-            target.write_text(contents, encoding="utf-8")
+            atomic_write_text(target, contents, backup=True)
         except OSError as error:
             QMessageBox.warning(
                 self,
@@ -3781,6 +3825,16 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         )
 
     def sync_source_from_model(self):
+        if self._source_dirty:
+            answer = QMessageBox.question(
+                self, "Replace Source Edits?",
+                "Replace the pending source edits with the structured lyrics?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self._push_undo_state()
         contents = self._serialized_for_current_format()
         self._syncing_source = True
         try:
@@ -3788,41 +3842,52 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             self.source_editor.setPlainText(self._serialise_with_attachment(contents))
             del blocker
             self._source_dirty = False
+            self.source_format_label.setText(f"{self._source_suffix[1:].upper()} source")
         finally:
             self._syncing_source = False
 
+    def _commit_pending_source(self):
+        if self._source_dirty:
+            self.reload_model_from_source()
+        return not self._source_dirty
+
     def reload_model_from_source(self):
-        self._push_undo_state()
-        import tempfile
-        suffix = self.lrc_path.suffix.lower()
-        if suffix not in {".lrc", ".lrcx", ".txt"}:
-            suffix = ".lrc"
+        text = self.source_editor.toPlainText()
+        suffix = self._source_suffix
+        if suffix == ".lrc" and (
+            re.search(r"(?mi)^\[format:LRCX\]", text)
+            or re.search(r"<\d+:\d+(?:\.\d+)?>|\{[^{}|]+\|[^{}]+\}", text)
+        ):
+            suffix = ".lrcx"
         try:
-            with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, encoding="utf-8", delete=False) as handle:
-                handle.write(self.source_editor.toPlainText())
-                temp_path = Path(handle.name)
-            try:
-                self.lines = load_lyrics(temp_path)
-                source_mode = get_lyrics_generation_mode(temp_path)
-                self.attached_song_path = self._read_attached_song_path(temp_path)
-            finally:
-                temp_path.unlink(missing_ok=True)
-        except Exception as error:
+            parsed = parse_editor_source(text, suffix)
+        except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Reload Source", f"Could not parse source:\n{error}")
-            return
-        self._populate_lines()
-        if self.lines:
-            self.line_list.setCurrentRow(0)
+            return False
+        self._push_undo_state()
+        self._reading_generation_epoch += 1
+        self.lines = parsed.lines
+        self.lyrics_offset_ms = parsed.offset_ms
+        self.attached_song_path = parsed.attachment
+        self._document_metadata = parsed.metadata
+        self._apply_generation_mode(parsed.generation_mode or "auto")
+        self._source_suffix = suffix
         self._source_dirty = False
+        blocker = QSignalBlocker(self.lyrics_offset)
+        self.lyrics_offset.setValue(self.lyrics_offset_ms)
+        del blocker
+        self.source_format_label.setText(f"{suffix[1:].upper()} source")
+        self._populate_lines(preserve_line_index=0)
+        self.karaoke_dirty = any(line.has_karaoke for line in self.lines)
+        self._update_song_association_ui()
         self._mark_document_dirty()
-        self.karaoke_dirty = any(
-            getattr(line, "has_karaoke", False)
-            for line in self.lines
-        )
+        return True
 
     def _lrcx_only_features(self):
         """Return human-readable LRCX-only features currently in the document."""
         features = []
+        if any("\n" in line.text for line in self.lines):
+            features.append("Multiline lyrics")
 
         if abs(float(getattr(self, "lyrics_offset_ms", 0.0))) > 0.0001:
             features.append("Lyric offset")
@@ -3938,7 +4003,7 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             return None
         return Path(path) if path else None
 
-    def save_and_close(self):
+    def save_document(self, close_after_save=False):
         # Source is a real editable view. Parse it back into the model before
         # saving so typing directly in the Source tab is never silently ignored.
         if getattr(self, "_source_dirty", False):
@@ -3946,6 +4011,11 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             if getattr(self, "_source_dirty", False):
                 # Parsing failed; reload_model_from_source showed the error.
                 return
+
+        if not self.document_dirty and self.lrc_path.is_file():
+            if close_after_save:
+                self.accept()
+            return True
 
         target = self.lrc_path
         if target.suffix.lower() == ".txt" and self.document_dirty:
@@ -3956,18 +4026,21 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
             target = self._choose_lrc_save()
             if target is None:
                 return
-        target.parent.mkdir(parents=True, exist_ok=True)
-        mode = self._current_generation_mode()
-        if target.suffix.lower() == ".lrcx":
-            contents = serialize_lrcx(
-                self.lines,
-                offset_ms=self.lyrics_offset_ms,
-                generation_mode=mode,
-            )
-        else:
-            contents = serialize_lrc(self.lines, generation_mode=mode)
-        contents = self._serialise_with_attachment(contents)
-        target.write_text(contents, encoding="utf-8")
+        try:
+            mode = self._current_generation_mode()
+            if target.suffix.lower() == ".lrcx":
+                contents = serialize_lrcx(
+                    self.lines,
+                    offset_ms=self.lyrics_offset_ms,
+                    generation_mode=mode,
+                )
+            else:
+                contents = serialize_lrc(self.lines, generation_mode=mode)
+            contents = self._serialise_with_attachment(contents)
+            atomic_write_text(target, contents, backup=True)
+        except (OSError, ValueError, TypeError) as error:
+            QMessageBox.warning(self, "Save Lyrics", f"Could not save lyrics:\n{error}")
+            return
         self.result_path = target
         self.lrc_path = Path(target)
         self.is_new_document = False
@@ -3975,7 +4048,13 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         # The final save target may differ after Save As. Point the persisted
         # association at the file that actually contains [attach:...].
         if self.attached_song_path:
-            set_lyrics_attachment(self.attached_song_path, target)
+            try:
+                set_lyrics_attachment(self.attached_song_path, target)
+            except OSError as error:
+                QMessageBox.warning(
+                    self, "Lyrics Association",
+                    f"Lyrics were saved, but the song association could not be stored:\n{error}",
+                )
         self.document_dirty = False
         self._source_dirty = False
         self._update_document_title()
@@ -3985,9 +4064,12 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
         # This is especially important when Save As changes .lrc -> .lrcx (or
         # when the editor was opened on an associated external lyrics file):
         # closing the editor must not leave the main lyrics view pointing at
-        # the old path. Defer until the dialog has finished closing so the
-        # parent can safely rebuild its lyrics widgets.
+        # the old path. Defer one event-loop turn so the save handler completes
+        # before the parent rebuilds its lyric widgets.
         parent = self.player
+        clear_index = getattr(parent, "clear_lyrics_search_index", None)
+        if callable(clear_index):
+            clear_index()
         loader = getattr(parent, "load_lrc_file", None) if parent is not None else None
         if callable(loader):
             def _refresh_saved_lyrics(path=target, owner=parent):
@@ -4002,27 +4084,67 @@ class LrcEditorDialog(LrcEditorUiMixin, QDialog):
 
             QTimer.singleShot(0, _refresh_saved_lyrics)
 
-        self.accept()
+        self._saved_document_state = self._document_state()
+        self._autosave_path = self.lrc_path.with_name(f".{self.lrc_path.name}.autosave")
+        self.sync_source_from_model()
+        if close_after_save:
+            self.accept()
+        return True
+
+    def save_and_close(self):
+        return self.save_document(close_after_save=True)
+
+    def _confirm_close(self):
+        if not self.document_dirty:
+            return True
+        answer = QMessageBox.question(
+            self, "Unsaved Lyric Changes", "Save your lyric edits before closing?",
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if answer == QMessageBox.StandardButton.Save:
+            return bool(self.save_document())
+        return answer == QMessageBox.StandardButton.Discard
+
+    def reject(self):
+        if self._confirm_close():
+            self._discard_autosave()
+            super().reject()
 
     def closeEvent(self, event):
-        if self.document_dirty:
-            answer = QMessageBox.question(
-                self,
-                "Discard Unsaved Changes?",
-                "You have unsaved lyric edits. Close without saving?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                event.ignore()
-                return
+        if not self._confirm_close():
+            event.ignore()
+            return
+        self._discard_autosave()
+        self.done(QDialog.DialogCode.Rejected)
+        event.accept()
 
-            # This is a deliberate, graceful discard. Do not turn it into a
-            # crash-recovery snapshot right before closing, otherwise reopening
-            # the editor asks to "recover" the exact changes the user discarded.
-            self._discard_autosave()
-        else:
-            # A clean close should never leave an old recovery file behind.
-            self._discard_autosave()
-
-        super().closeEvent(event)
+    def done(self, result):
+        self._closed = True
+        if self._segment_preview_range is not None:
+            media = getattr(self.player, "media_player", None)
+            if media is not None:
+                media.pause()
+            self._segment_preview_range = None
+        self._discard_autosave()
+        self._reading_generation_epoch += 1
+        self._autosave_timer.stop()
+        self._precise_display_timer.stop()
+        # The player deletes the closed dialog. Stop its decoder threads before
+        # Qt destroys their parent widgets and QThread objects.
+        for waveform in self.findChildren(WaveformWidget):
+            waveform._stop_worker()
+        QApplication.instance().removeEventFilter(self)
+        media = getattr(self.player, "media_player", None)
+        if media is not None:
+            for signal_name, callback in (
+                ("positionChanged", self.preview_position_changed),
+                ("durationChanged", self.preview_duration_changed),
+                ("playbackStateChanged", self.preview_playback_state_changed),
+                ("playbackStateChanged", self._update_precise_display_playback_state),
+            ):
+                try:
+                    getattr(media, signal_name).disconnect(callback)
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
+        super().done(result)

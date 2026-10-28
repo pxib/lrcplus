@@ -56,8 +56,15 @@ class ClickableTimeLabel(QLabel):
 class AlbumCoverDelegate(QStyledItemDelegate):
     """Paint embedded artwork strictly inside the current cover-column bounds."""
 
+    def __init__(self, parent=None, cover_cache=None):
+        super().__init__(parent)
+        self._cover_cache = cover_cache
+
     def paint(self, painter, option, index):
-        cover = index.data(Qt.ItemDataRole.DecorationRole)
+        if self._cover_cache is None:
+            cover = index.data(Qt.ItemDataRole.DecorationRole)
+        else:
+            cover = self._cover_cache.get(str(index.data(Qt.ItemDataRole.UserRole)))
         if isinstance(cover, QPixmap) and not cover.isNull():
             painter.save()
             # Keep a small margin and scale to whatever width the user gives this column.

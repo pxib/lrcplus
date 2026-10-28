@@ -1,12 +1,30 @@
 import json
+import os
 import re
+import sys
 import time
 import uuid
 from copy import deepcopy
 from pathlib import Path
 
 APP_ROOT = Path(__file__).resolve().parent.parent
-SETTINGS_PATH = APP_ROOT / "lrc_player_settings.json"
+LEGACY_SETTINGS_PATH = APP_ROOT / "lrc_player_settings.json"
+
+
+def _default_settings_path():
+    override = os.environ.get("LRCPLUS_SETTINGS_PATH")
+    if override:
+        return Path(override).expanduser()
+    if sys.platform == "win32":
+        root = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return root / "LyricsPlus" / "lrc_player_settings.json"
+
+
+SETTINGS_PATH = _default_settings_path()
 
 STARTUP_DEFAULTS = {
     "remember_window": True,
@@ -380,9 +398,15 @@ def save_appearance_settings(values):
 
 def load_all_settings():
     try:
-        if not SETTINGS_PATH.exists():
+        path = SETTINGS_PATH
+        # Read the original configuration until the first save migrates it.
+        # An explicit override is isolated (useful for portable installs/tests).
+        if not path.exists() and not os.environ.get("LRCPLUS_SETTINGS_PATH"):
+            path = LEGACY_SETTINGS_PATH
+        if not path.exists():
             return {}
-        return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
     except (OSError, ValueError, TypeError):
         return {}
 
@@ -394,6 +418,7 @@ def save_all_settings(payload):
         f"{SETTINGS_PATH.name}.{uuid.uuid4().hex}.tmp"
     )
     try:
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         temp_path.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False),
             encoding="utf-8",

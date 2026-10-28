@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_delvewheel_libs_directory
 
 
 PROJECT_ROOT = Path(SPEC).resolve().parent
@@ -28,6 +29,12 @@ datas = [
     (str(PROJECT_ROOT / "plugins"), "plugins"),
 ]
 
+# aubio-ledfx's Windows wheel carries the continuous Rubber Band R3 engine
+# and its native dependencies next to the aubio package.
+datas, binaries = collect_delvewheel_libs_directory(
+    "aubio", libdir_name="aubio_ledfx.libs", datas=datas,
+)
+
 
 # ---------------------------------------------------------------------------
 # PyInstaller analysis
@@ -40,7 +47,7 @@ a = Analysis(
         str(PROJECT_ROOT),
     ],
 
-    binaries=[],
+    binaries=binaries,
 
     datas=datas,
 

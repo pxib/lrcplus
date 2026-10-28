@@ -1,6 +1,7 @@
 import numpy as np
-from pedalboard import PitchShift
 from PySide6.QtMultimedia import QAudioFormat
+
+from core.pitch_stream import BLOCK_FRAMES, create_pitch_stream
 
 def volume_to_gain(volume_percent):
     """Convert a UI percentage to the PCM gain multiplier used above 100%."""
@@ -99,6 +100,7 @@ def apply_pcm_pitch_to_bytes(data, sample_format, channels, sample_rate, semiton
     """Shift decoded PCM pitch while preserving its playback duration."""
     shift = float(semitones)
     if abs(shift) < 0.001:
+        reset_pcm_pitch_state()
         return data
     if sample_format == QAudioFormat.SampleFormat.Float:
         dtype, floating = np.float32, True
@@ -111,65 +113,65 @@ def apply_pcm_pitch_to_bytes(data, sample_format, channels, sample_rate, semiton
     samples = np.frombuffer(data, dtype=dtype)
     channels = max(1, int(channels))
     frame_count = len(samples) // channels
-    if frame_count < 2:
+    if frame_count == 0:
         return data
     frames = samples[:frame_count * channels].reshape(frame_count, channels).astype(np.float32)
-    # Rubber Band needs a useful block of context. Qt emits small chunks, so
-    # accumulate them and pitch shift fixed blocks before draining output.
-    state = (channels, int(sample_rate), shift)
+    if not floating:
+        frames /= float(-np.iinfo(dtype).min)
+    state = (channels, int(sample_rate), sample_format, shift)
     reset_effect = getattr(apply_pcm_pitch_to_bytes, "_state", None) != state
     if reset_effect:
+        reset_pcm_pitch_state()
+        effect = create_pitch_stream(channels, int(sample_rate), shift)
         apply_pcm_pitch_to_bytes._state = state
         apply_pcm_pitch_to_bytes._input = np.empty((0, channels), dtype=np.float32)
         apply_pcm_pitch_to_bytes._pending = np.empty((0, channels), dtype=np.float32)
-        apply_pcm_pitch_to_bytes._tail = None
         apply_pcm_pitch_to_bytes._started = False
+        apply_pcm_pitch_to_bytes._effect = effect
+        apply_pcm_pitch_to_bytes._startup_remaining = effect.latency_frames
     input_buffer = np.concatenate((apply_pcm_pitch_to_bytes._input, frames), axis=0)
-    pending = apply_pcm_pitch_to_bytes._pending
-    block_frames = 16384
-    overlap_frames = 4096
-    hop_frames = block_frames - overlap_frames
-    while input_buffer.shape[0] >= block_frames:
-        block = input_buffer[:block_frames]
-        input_buffer = input_buffer[hop_frames:]
-        processed = PitchShift(semitones=shift)(block.T, sample_rate, reset=True).T
-        prior_tail = apply_pcm_pitch_to_bytes._tail
-        if prior_tail is None:
-            output_block = processed[:hop_frames]
-        else:
-            phase = np.linspace(0.0, np.pi / 2.0, overlap_frames, endpoint=True)
-            old_gain = np.cos(phase)[:, None]
-            new_gain = np.sin(phase)[:, None]
-            blended = prior_tail * old_gain + processed[:overlap_frames] * new_gain
-            output_block = np.concatenate(
-                (blended, processed[overlap_frames:hop_frames]), axis=0
-            )
-        pending = np.concatenate((pending, output_block), axis=0)
-        apply_pcm_pitch_to_bytes._tail = processed[hop_frames:block_frames]
+    output = [apply_pcm_pitch_to_bytes._pending]
+    # Fixed internal blocks make the result independent of Qt callback sizes.
+    # Keep the same processor alive: no repeated resets or synthetic joins.
+    consumed = len(input_buffer) - len(input_buffer) % BLOCK_FRAMES
+    for start in range(0, consumed, BLOCK_FRAMES):
+        output.append(apply_pcm_pitch_to_bytes._effect.process(
+            input_buffer[start:start + BLOCK_FRAMES],
+        ))
+    pending = np.concatenate(output, axis=0)
+    input_buffer = input_buffer[consumed:]
     apply_pcm_pitch_to_bytes._input = input_buffer
-    # Pad only the initial block latency; queued processed samples are never
-    # stretched or discarded.
+    # Preserve duration with one startup reserve, then drain every sample in
+    # order. The controller keeps native playback audible during startup.
     shifted = np.zeros_like(frames)
-    if not apply_pcm_pitch_to_bytes._started and pending.shape[0] >= block_frames * 2:
-        apply_pcm_pitch_to_bytes._started = True
-    if apply_pcm_pitch_to_bytes._started:
-        available = min(frame_count, pending.shape[0])
+    padding = min(frame_count, apply_pcm_pitch_to_bytes._startup_remaining)
+    apply_pcm_pitch_to_bytes._startup_remaining -= padding
+    if frame_count > padding:
+        available = min(frame_count - padding, pending.shape[0])
         if available:
-            shifted[:available] = pending[:available]
+            shifted[padding:padding + available] = pending[:available]
             pending = pending[available:]
+            apply_pcm_pitch_to_bytes._started = True
     apply_pcm_pitch_to_bytes._pending = pending
     if floating:
         result = np.clip(shifted, -1.0, 1.0).astype(dtype)
     else:
         limits = np.iinfo(dtype)
-        result = np.clip(np.rint(shifted), limits.min, limits.max).astype(dtype)
+        result = np.clip(
+            np.rint(shifted.astype(np.float64) * float(-limits.min)),
+            limits.min, limits.max,
+        ).astype(dtype)
     return result.tobytes()
 
 
 def reset_pcm_pitch_state():
     """Drop buffered samples so seeks and pitch changes cannot replay stale audio."""
+    effect = getattr(apply_pcm_pitch_to_bytes, "_effect", None)
+    if effect is not None:
+        effect.close()
     apply_pcm_pitch_to_bytes._state = None
     apply_pcm_pitch_to_bytes._input = np.empty((0, 0), dtype=np.float32)
     apply_pcm_pitch_to_bytes._pending = np.empty((0, 0), dtype=np.float32)
-    apply_pcm_pitch_to_bytes._tail = None
     apply_pcm_pitch_to_bytes._started = False
+    apply_pcm_pitch_to_bytes._effect = None
+    apply_pcm_pitch_to_bytes._startup_remaining = 0

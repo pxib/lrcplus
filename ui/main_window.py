@@ -50,6 +50,7 @@ from ui.playlist_dialog import PlaylistDialog
 from ui.artwork_background import ArtworkBackgroundWidget, extract_embedded_cover, load_embedded_cover_thumbnail
 from ui.player_dialogs import (ClickableSlider, ClickableTimeLabel, AlbumCoverDelegate, CoverPreviewView, CoverPreviewDialog, PitchChangerDialog, LibraryScanWorker)
 from core.booru_artwork import fetch_booru_artwork
+from core.file_io import atomic_write_text
 from core.theme import build_theme_palette
 
 
@@ -778,7 +779,11 @@ class Player(AudioController, LyricsController, QMainWindow):
             self.library_search = QLineEdit()
             self.library_search.setObjectName("librarySearch")
             self.library_search.setPlaceholderText("Search library...")
-            self.library_search.textChanged.connect(self._populate_library_view)
+            self._library_search_timer = QTimer(self)
+            self._library_search_timer.setSingleShot(True)
+            self._library_search_timer.setInterval(150)
+            self._library_search_timer.timeout.connect(self._filter_library_view)
+            self.library_search.textChanged.connect(lambda _text: self._library_search_timer.start())
             add_folder = QPushButton("Add Music Folder")
             add_folder.setObjectName("headerAction")
             add_folder.clicked.connect(self.add_music_folder)
@@ -824,7 +829,10 @@ class Player(AudioController, LyricsController, QMainWindow):
             header.customContextMenuRequested.connect(self._show_library_column_menu)
             self.library_table.setTreePosition(2)
             self.library_table.setIconSize(QSize(52, 52))
-            self.library_table.setItemDelegateForColumn(0, AlbumCoverDelegate(self.library_table))
+            self.library_table.setItemDelegateForColumn(0, AlbumCoverDelegate(
+                self.library_table,
+                cover_cache=self._library_cover_cache,
+            ))
             # Covers are loaded lazily for visible rows only. This prevents a
             # large library from decoding every embedded image at once.
             self.library_table.verticalScrollBar().valueChanged.connect(self._queue_visible_library_covers)
@@ -1118,13 +1126,10 @@ class Player(AudioController, LyricsController, QMainWindow):
         def _populate_library_view(self):
             if not hasattr(self, "library_table"):
                 return
-            query = self.library_search.text().casefold().strip() if hasattr(self, "library_search") else ""
+            self._library_filter_groups = []
             self.library_table.clear()
             grouped = {}
             for track in self.library_tracks:
-                haystack = " ".join([track.display_title, track.artist, track.album, track.album_artist, track.date, track.path]).casefold()
-                if query and query not in haystack:
-                    continue
                 group = (track.album_artist or track.artist or "Unknown artist", track.album or "Unknown album", track.date or "")
                 grouped.setdefault(group, []).append(track)
 
@@ -1146,6 +1151,8 @@ class Player(AudioController, LyricsController, QMainWindow):
                 parent.setData(0, Qt.ItemDataRole.UserRole, None)
                 self.library_table.addTopLevelItem(parent)
                 tracks.sort(key=lambda t: (self._library_track_number(t.track_number), t.display_title.casefold()))
+                filter_rows = []
+                self._library_filter_groups.append((parent, filter_rows))
                 for track in tracks:
                     item = QTreeWidgetItem([
                         "",
@@ -1162,6 +1169,8 @@ class Player(AudioController, LyricsController, QMainWindow):
                         __import__("datetime").datetime.fromtimestamp(track.modified).strftime("%Y-%m-%d %H:%M:%S") if track.modified else "",
                     ])
                     item.setData(0, Qt.ItemDataRole.UserRole, track.path)
+                    haystack = " ".join([track.display_title, track.artist, track.album, track.album_artist, track.date, track.path]).casefold()
+                    filter_rows.append((item, haystack))
                     # Artwork is intentionally deferred until the row is visible.
                     item.setSizeHint(0, QSize(0, 58))
                     parent.addChild(item)
@@ -1169,6 +1178,24 @@ class Player(AudioController, LyricsController, QMainWindow):
             folder_text = "; ".join(self.library_folders) if self.library_folders else "No music folders yet. Add a folder to build your library."
             self.library_folder_label.setText(f"Library folders: {folder_text}")
             # Do not auto-resize the cover column here: the user controls its width.
+            self._filter_library_view()
+
+        def _filter_library_view(self):
+            self._library_search_timer.stop()
+            query = self.library_search.text().casefold().strip()
+            self.library_table.setUpdatesEnabled(False)
+            try:
+                for parent, rows in self._library_filter_groups:
+                    any_visible = False
+                    for item, haystack in rows:
+                        visible = not query or query in haystack
+                        if item.isHidden() == visible:
+                            item.setHidden(not visible)
+                        any_visible |= visible
+                    if parent.isHidden() == any_visible:
+                        parent.setHidden(not any_visible)
+            finally:
+                self.library_table.setUpdatesEnabled(True)
             self._queue_visible_library_covers()
 
         def _queue_visible_library_covers(self, *_args):
@@ -1192,11 +1219,10 @@ class Player(AudioController, LyricsController, QMainWindow):
                 if rect.top() > y_limit:
                     break
                 path = current.data(0, Qt.ItemDataRole.UserRole)
-                if path and current.data(0, Qt.ItemDataRole.DecorationRole) is None:
-                    cover = self._library_cover_pixmap(path)
-                    if not cover.isNull():
-                        current.setData(0, Qt.ItemDataRole.DecorationRole, cover)
+                if path:
+                    self._library_cover_pixmap(path)
                 current = self.library_table.itemBelow(current)
+            self.library_table.viewport().update()
 
         def _library_cover_pixmap(self, path):
             """Return a thumbnail made directly from this track's embedded cover."""
@@ -1456,9 +1482,15 @@ class Player(AudioController, LyricsController, QMainWindow):
             )
 
 
+        def _invalidate_booru_request(self):
+            self._booru_request_id += 1
+            if self._booru_future is not None:
+                self._booru_future.cancel()
+                self._booru_future = None
+
         def _start_booru_fetch(self, audio_path, fallback_data=None):
             """Fetch Booru artwork without blocking song loading."""
-            self._booru_request_id += 1
+            self._invalidate_booru_request()
             request_id = self._booru_request_id
             tags = self.appearance_settings.get("booru_tags", "scenery")
 
@@ -1470,13 +1502,15 @@ class Player(AudioController, LyricsController, QMainWindow):
             self._booru_future = future
 
             def check_result():
+                # Stop polling and release fallback images as soon as a newer
+                # song supersedes this request, even if its download is active.
+                if request_id != self._booru_request_id:
+                    return
                 if not future.done():
                     QTimer.singleShot(50, check_result)
                     return
 
-                # Ignore stale results from a previous song.
-                if request_id != self._booru_request_id:
-                    return
+                self._booru_future = None
 
                 try:
                     data, info = future.result()
@@ -1510,6 +1544,7 @@ class Player(AudioController, LyricsController, QMainWindow):
 
         def update_background_for_audio(self, audio_path):
             """Choose embedded or Booru artwork according to Appearance."""
+            self._invalidate_booru_request()
             source = self.appearance_settings.get(
                 "artwork_source",
                 "album_first",
@@ -1518,9 +1553,6 @@ class Player(AudioController, LyricsController, QMainWindow):
             embedded = None
             if source != "booru_only":
                 embedded = extract_embedded_cover(audio_path)
-
-            # New song invalidates any pending result from the old one.
-            self._booru_request_id += 1
 
             if source == "album_only":
                 if embedded and self.lyrics_background.set_artwork_bytes(embedded):
@@ -1810,10 +1842,8 @@ class Player(AudioController, LyricsController, QMainWindow):
                     content = plain
 
                 try:
-                    destination.write_text(
-                        content.rstrip() + "\n",
-                        encoding="utf-8",
-                    )
+                    atomic_write_text(destination, content.rstrip() + "\n", backup=True)
+                    self.clear_lyrics_search_index()
                     self.load_lrc_file(str(destination))
                     self.current_lyrics_path = destination
                 except Exception as error:
@@ -1959,10 +1989,13 @@ class Player(AudioController, LyricsController, QMainWindow):
                 return
 
             dialog = LrcEditorDialog(lyrics_path, self)
-            if dialog.exec() == QDialog.DialogCode.Accepted:
-                saved_path = getattr(dialog, "result_path", lyrics_path)
-                self.load_lrc_file(str(saved_path))
-                self.current_lyrics_path = Path(saved_path)
+            try:
+                if dialog.exec() == QDialog.DialogCode.Accepted:
+                    saved_path = getattr(dialog, "result_path", lyrics_path)
+                    self.load_lrc_file(str(saved_path))
+                    self.current_lyrics_path = Path(saved_path)
+            finally:
+                dialog.deleteLater()
 
 
         def save_lyrics_as(self):
@@ -2146,6 +2179,7 @@ class Player(AudioController, LyricsController, QMainWindow):
 
         def closeEvent(self, event):
             if hasattr(self, "_booru_executor"):
+                self._invalidate_booru_request()
                 self._booru_executor.shutdown(wait=False, cancel_futures=True)
             self._save_startup_state()
 

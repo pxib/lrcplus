@@ -5,6 +5,7 @@ from pathlib import Path
 from lyrics.loader import load_lyrics
 from lyrics.furigana import build_furigana_segments
 from lyrics.models import LyricSegment
+from core.file_io import atomic_write_text
 
 
 def format_timestamp(seconds: float) -> str:
@@ -274,8 +275,7 @@ def save_lyrics(path, lines, manual_overrides=None, generation_mode=None) -> Non
             "Use .lrc or .lrcx."
         )
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(contents, encoding="utf-8")
+    atomic_write_text(path, contents, backup=True)
 
 
 def convert_lyrics(

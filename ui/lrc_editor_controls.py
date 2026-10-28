@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, QSize, Signal
+from PySide6.QtCore import Qt, QSize, Signal, QTextBoundaryFinder
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QSlider, QSizePolicy, QWidget
 
@@ -34,6 +34,9 @@ class KaraokeSeparationWidget(QWidget):
         super().__init__(parent)
         self._text = ""
         self._boundaries = set()
+        self._valid_boundaries = []
+        self._boundary_positions = {}
+        self._boundary_positions_key = None
         self._hover_boundary = None
         self._left_padding = 12
         self._right_padding = 12
@@ -55,7 +58,23 @@ class KaraokeSeparationWidget(QWidget):
 
     def set_content(self, text, boundaries=None):
         self._text = text or ""
-        valid = range(1, len(self._text))
+        # Qt reports UTF-16 positions; Python slices use Unicode code points.
+        # Map only whole grapheme boundaries so accents and emoji stay intact.
+        utf16_to_python = {0: 0}
+        offset = 0
+        for index, char in enumerate(self._text, 1):
+            offset += 2 if ord(char) > 0xFFFF else 1
+            utf16_to_python[offset] = index
+        finder = QTextBoundaryFinder(QTextBoundaryFinder.BoundaryType.Grapheme, self._text)
+        valid = set()
+        while True:
+            position = finder.toNextBoundary()
+            if position < 0:
+                break
+            boundary = utf16_to_python.get(position)
+            if boundary is not None and 0 < boundary < len(self._text):
+                valid.add(boundary)
+        self._valid_boundaries = sorted(valid)
         self._boundaries = {int(x) for x in (boundaries or set()) if int(x) in valid}
         self._hover_boundary = None
         self._update_geometry()
@@ -65,7 +84,7 @@ class KaraokeSeparationWidget(QWidget):
         # Cache per font: this is called for every boundary on every
         # mouse-move/paint, and QFontMetrics construction is not free.
         font = self.font()
-        key = (font.family(), font.pointSize(), font.weight(), font.italic())
+        key = font.key()
         if self._metrics_cache_key != key:
             self._metrics_cache = QFontMetrics(font)
             self._metrics_cache_key = key
@@ -74,23 +93,30 @@ class KaraokeSeparationWidget(QWidget):
     def _boundary_x(self, boundary):
         # Measuring the prefix gives the same position used by Qt when the
         # complete string is painted, including normal font shaping/spacing.
-        return self._left_padding + self._metrics().horizontalAdvance(self._text[:boundary])
+        key = (self._text, self.font().key())
+        if self._boundary_positions_key != key:
+            self._boundary_positions = {
+                index: self._left_padding + self._metrics().horizontalAdvance(self._text[:index].replace("\n", "\u21b5"))
+                for index in self._valid_boundaries
+            }
+            self._boundary_positions_key = key
+        return self._boundary_positions[boundary]
 
     def _update_geometry(self):
-        width = self._left_padding + self._metrics().horizontalAdvance(self._text) + self._right_padding
+        width = self._left_padding + self._metrics().horizontalAdvance(self._text.replace("\n", "\u21b5")) + self._right_padding
         height = max(48, self._metrics().height() + 24)
         self.setMinimumSize(max(1, width), height)
         self.resize(max(1, width), height)
         self.updateGeometry()
 
     def sizeHint(self):
-        width = self._left_padding + self._metrics().horizontalAdvance(self._text) + self._right_padding
+        width = self._left_padding + self._metrics().horizontalAdvance(self._text.replace("\n", "\u21b5")) + self._right_padding
         return QSize(max(1, width), max(48, self._metrics().height() + 24))
 
     def _nearest_boundary(self, x):
-        if len(self._text) < 2:
+        if not self._valid_boundaries:
             return None
-        nearest = min(range(1, len(self._text)), key=lambda b: abs(x - self._boundary_x(b)))
+        nearest = min(self._valid_boundaries, key=lambda b: abs(x - self._boundary_x(b)))
         return nearest if abs(x - self._boundary_x(nearest)) <= self._hit_radius else None
 
     def mouseMoveEvent(self, event):
@@ -126,21 +152,20 @@ class KaraokeSeparationWidget(QWidget):
         painter = QPainter(self)
         try:
             font = self.font()
-            font.setPointSize(28)
             painter.setFont(font)
 
             painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
             painter.setPen(self.palette().color(self.foregroundRole()))
             metrics = self._metrics()
             baseline = (self.height() - metrics.height()) // 2 + metrics.ascent()
-            painter.drawText(self._left_padding, baseline, self._text)
+            painter.drawText(self._left_padding, baseline, self._text.replace("\n", "\u21b5"))
 
             active_color = QColor(self.palette().color(self.foregroundRole()))
             active_color.setAlpha(220)
             hover_color = QColor(active_color)
             hover_color.setAlpha(110)
 
-            for boundary in range(1, len(self._text)):
+            for boundary in self._valid_boundaries:
                 x = self._boundary_x(boundary)
                 if boundary in self._boundaries:
                     painter.setPen(QPen(active_color, 2))

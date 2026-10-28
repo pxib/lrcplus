@@ -38,6 +38,23 @@ A segment can contain embedded ruby:
 
 A segment ends when the next segment begins. The final segment's end can later be resolved from the next lyric line by the karaoke renderer.
 
+An angle-bracket timestamp with no following text is an explicit end boundary.
+Two timestamps between chunks can preserve a pause:
+
+```text
+[00:01.000]First<00:02.000><00:03.000>second<00:04.000>
+```
+
+Here, `First` ends at 2 seconds, `second` starts at 3 seconds, and the line ends
+at 4 seconds. Two terminal boundaries preserve a trailing pause independently
+of the final segment's end:
+
+```text
+[00:01.000]Word<00:02.000><00:03.000>
+```
+
+The word ends at 2 seconds; the line remains active until 3 seconds.
+
 ## Compatibility
 
 - `.lrc` continues to work unchanged.

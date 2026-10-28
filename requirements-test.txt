@@ -1,0 +1,12 @@
+# Dependencies exercised by the automated suite; optional reading/plugin engines
+# are mocked and do not need dictionaries or running external services.
+pytest
+PySide6>=6.8
+numpy
+pedalboard>=0.9.17
+aubio-ledfx>=0.4.12
+requests
+mutagen
+Pillow
+pypinyin
+sounddevice>=0.5.0

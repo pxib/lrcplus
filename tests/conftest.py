@@ -1,0 +1,70 @@
+"""Keep UI tests headless and all preferences inside pytest's temporary folder."""
+
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
+
+collect_ignore = ["test_simple.py", "test_repetition.py"]
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path, monkeypatch):
+    import core.settings as settings
+
+    destination = tmp_path / "preferences" / "settings.json"
+    monkeypatch.setenv("LRCPLUS_SETTINGS_PATH", str(destination))
+    monkeypatch.setattr(settings, "SETTINGS_PATH", destination)
+    monkeypatch.setattr(settings, "LEGACY_SETTINGS_PATH", tmp_path / "legacy.json")
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
+@pytest.fixture
+def make_lyrics_editor(tmp_path, qapp, monkeypatch):
+    from ui.lrc_editor import LrcEditorDialog
+
+    monkeypatch.setattr(LrcEditorDialog, "_schedule_auto_reading_generation", lambda self: None)
+    monkeypatch.setattr(LrcEditorDialog, "_refresh_ruby_preview", lambda *args: None)
+    monkeypatch.setattr(LrcEditorDialog, "_start_background_reading_generation", lambda *args, **kwargs: None)
+    monkeypatch.setattr("lyrics.furigana_widget.get_cached_furigana_segments",
+                        lambda text: [{"text": text, "reading": None}])
+    dialogs = []
+
+    def make(*, karaoke=True, path=None, populate=True):
+        from lyrics.models import LyricLine, LyricSegment
+
+        class Editor(LrcEditorDialog):
+            def _build_ui(self):
+                self.karaoke_enabled = karaoke
+                super()._build_ui()
+
+        dialog = Editor(path or tmp_path / f"song-{len(dialogs)}.lrcx")
+        if populate:
+            dialog.lines = [
+                LyricLine(2, "Hello", [LyricSegment(2.2, "Hello", end=3.5)], end=4, has_karaoke=True),
+                LyricLine(5, "World", [LyricSegment(5, "World")]),
+            ]
+            dialog._populate_lines(preserve_line_index=0)
+            dialog._reset_history_baseline()
+        dialogs.append(dialog)
+        return dialog
+
+    yield make
+    for dialog in dialogs:
+        dialog.document_dirty = False
+        dialog.close()
+        dialog.deleteLater()
+    qapp.processEvents()
+
+
+@pytest.fixture
+def editor(make_lyrics_editor, tmp_path):
+    return make_lyrics_editor(path=tmp_path / "song.lrcx")

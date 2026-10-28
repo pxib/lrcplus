@@ -98,6 +98,17 @@ class LrcEditorUiMixin:
         offset_row.addStretch()
         lyrics_layout.addLayout(offset_row)
 
+        timing_tools = QHBoxLayout()
+        self.shift_timing_button = QPushButton("Shift Timing...")
+        self.shift_timing_button.setToolTip("Shift all lines or a source-order range, including karaoke timing.")
+        self.shift_timing_button.clicked.connect(self.show_timing_shift_dialog)
+        timing_tools.addWidget(self.shift_timing_button)
+        self.validate_timing_button = QPushButton("Validate Timing")
+        self.validate_timing_button.clicked.connect(self.show_timing_validation)
+        timing_tools.addWidget(self.validate_timing_button)
+        timing_tools.addStretch()
+        lyrics_layout.addLayout(timing_tools)
+
         # Precision transport: keep the familiar seekbar, but let the editor
         # switch to a waveform when timing lyrics.
         transport_mode_row = QHBoxLayout()
@@ -400,7 +411,12 @@ class LrcEditorUiMixin:
             self.separator_widget = KaraokeSeparationWidget()
             self.separator_widget.boundariesChanged.connect(self.refresh_separation_preview)
             self.separator_scroll.setWidget(self.separator_widget)
-            self.separator_scroll.setMinimumHeight(72)
+            self.separator_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.separator_scroll.setMinimumHeight(
+                self.separator_widget.sizeHint().height()
+                + self.separator_scroll.horizontalScrollBar().sizeHint().height()
+                + 2 * self.separator_scroll.frameWidth()
+            )
             separation_layout.addWidget(self.separator_scroll)
 
             separation_buttons = QHBoxLayout()
@@ -440,6 +456,7 @@ class LrcEditorUiMixin:
             self.segment_table.installEventFilter(self)
             self.segment_table.viewport().installEventFilter(self)
             karaoke_layout.addWidget(self.segment_table, 1)
+            self._build_karaoke_timing_tools(karaoke_layout)
 
             self.overlap_warning = QLabel("")
             self.overlap_warning.setWordWrap(True)
@@ -476,7 +493,9 @@ class LrcEditorUiMixin:
         # ----------------------------- Source --------------------------
         source_page = QWidget()
         source_layout = QVBoxLayout(source_page)
-        source_layout.addWidget(QLabel("Advanced source view. Use Reload from Source after editing raw syntax."))
+        source_layout.addWidget(QLabel("Edit raw syntax here. Source edits are applied when leaving this tab or saving."))
+        self.source_format_label = QLabel()
+        source_layout.addWidget(self.source_format_label)
         self.source_editor = QTextEdit()
         self.source_editor.setAcceptRichText(False)
         self.source_editor.textChanged.connect(self._source_text_changed)
@@ -609,6 +628,7 @@ class LrcEditorUiMixin:
         line_list_panel = self.line_list_panel
         line_list_layout = QVBoxLayout(line_list_panel)
         line_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._build_lyric_search(line_list_layout)
         line_list_layout.addWidget(self.sidebar_sort_combo)
 
         self.share_selection_controls = QWidget()
@@ -694,8 +714,11 @@ class LrcEditorUiMixin:
 
         self.save_button = QPushButton("Save")
         self.save_button.setEnabled(bool(self.document_dirty))
-        self.save_button.clicked.connect(self.save_and_close)
-        cancel_button = QPushButton("Cancel")
+        self.save_button.setToolTip("Save and keep editing (Ctrl+S).")
+        self.save_button.clicked.connect(self.save_document)
+        self.save_close_button = QPushButton("Save && Close")
+        self.save_close_button.clicked.connect(self.save_and_close)
+        cancel_button = QPushButton("Close")
         cancel_button.clicked.connect(self.reject)
 
         buttons = QHBoxLayout()
@@ -707,6 +730,7 @@ class LrcEditorUiMixin:
         buttons.addWidget(self.undo_button)
         buttons.addWidget(self.redo_button)
         buttons.addWidget(self.save_button)
+        buttons.addWidget(self.save_close_button)
         buttons.addWidget(cancel_button)
 
         layout = QVBoxLayout(self)
