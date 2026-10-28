@@ -88,16 +88,18 @@ class ArtworkBackgroundWidget(QWidget):
     """
     A reusable lyrics background.
 
-    It paints album artwork behind its child widgets using a cover-fill crop,
-    then applies a blur and dark overlay so foreground lyrics remain readable.
+    It lays out album artwork behind its child widgets, then applies a blur
+    and dark overlay so foreground lyrics remain readable.
     """
 
     def __init__(self, content=None, parent=None):
         super().__init__(parent)
         self._source_pixmap = QPixmap()
+        self._artwork_bytes = None
         self._cached_background = QPixmap()
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._background_enabled = True
+        self._background_layout = "fit"
         self._blur_mode = "quality"
         self._blur_bleed = False
         self._blur_radius = 12
@@ -113,6 +115,18 @@ class ArtworkBackgroundWidget(QWidget):
         content.raise_()
 
     def set_artwork_bytes(self, data):
+        pixmap = self._decode_artwork_bytes(data)
+        if not pixmap.isNull():
+            self._artwork_bytes = data
+            self._source_pixmap = pixmap
+            self._rebuild_background()
+            self.update()
+            return True
+
+        self.clear_artwork()
+        return False
+
+    def _decode_artwork_bytes(self, data):
         pixmap = QPixmap()
 
         if data:
@@ -126,11 +140,30 @@ class ArtworkBackgroundWidget(QWidget):
                     max(1, self.width() * 2),
                     max(1, self.height() * 2),
                 )
-                if original_size.isValid():
-                    scaled_size = original_size.scaled(
-                        max_size,
-                        Qt.AspectRatioMode.KeepAspectRatio,
+                if (
+                    original_size.isValid()
+                    and self._background_layout not in ("center", "tile")
+                    and (
+                        original_size.width() > max_size.width()
+                        or original_size.height() > max_size.height()
                     )
+                ):
+                    if self._background_layout == "stretch":
+                        scaled_size = QSize(
+                            min(original_size.width(), max_size.width()),
+                            min(original_size.height(), max_size.height()),
+                        )
+                    else:
+                        aspect_mode = (
+                            Qt.AspectRatioMode.KeepAspectRatioByExpanding
+                            if self._background_layout == "fill"
+                            else Qt.AspectRatioMode.KeepAspectRatio
+                        )
+                        scaled_size = original_size.scaled(max_size, aspect_mode)
+                        # Fill can request an upscale on the shorter side.
+                        # Keep the original rather than expanding during decode.
+                        if scaled_size.width() > original_size.width():
+                            scaled_size = original_size
                     if scaled_size.isValid() and scaled_size != original_size:
                         reader.setScaledSize(scaled_size)
                 image = reader.read()
@@ -138,21 +171,16 @@ class ArtworkBackgroundWidget(QWidget):
                 if not image.isNull():
                     pixmap = QPixmap.fromImage(image)
 
-        if not pixmap.isNull():
-            self._source_pixmap = pixmap
-            self._rebuild_background()
-            self.update()
-            return True
-
-        self.clear_artwork()
-        return False
+        return pixmap
 
     def set_artwork_pixmap(self, pixmap):
+        self._artwork_bytes = None
         self._source_pixmap = QPixmap(pixmap)
         self._rebuild_background()
         self.update()
 
     def clear_artwork(self):
+        self._artwork_bytes = None
         self._source_pixmap = QPixmap()
         self._cached_background = QPixmap()
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -162,6 +190,19 @@ class ArtworkBackgroundWidget(QWidget):
         self._background_enabled = bool(enabled)
         self._rebuild_background()
         self.update()
+
+    def set_background_layout(self, mode):
+        mode = str(mode or "fit").lower()
+        if mode not in ("center", "fill", "fit", "stretch", "tile"):
+            mode = "fit"
+        if self._background_layout != mode:
+            self._background_layout = mode
+            # Center and Tile need the image's original dimensions, even if
+            # it was previously decoded smaller for a scaled layout.
+            if self._artwork_bytes:
+                self._source_pixmap = self._decode_artwork_bytes(self._artwork_bytes)
+            self._rebuild_background()
+            self.update()
 
     def set_blur_mode(self, mode):
         mode = str(mode or "quality").lower()
@@ -203,7 +244,7 @@ class ArtworkBackgroundWidget(QWidget):
 
     def _rebuild_background(self):
         """
-        Build a ready-to-paint cover image once.
+        Build a ready-to-paint background image once.
 
         This is cached, so lyric repainting never rescales or processes the
         artwork. The previous multi-copy blur approximation is intentionally
@@ -214,13 +255,38 @@ class ArtworkBackgroundWidget(QWidget):
             self._cached_background = QPixmap()
             return
 
-        # Keep the entire cover visible. Unlike KeepAspectRatioByExpanding,
-        # this never crops or zooms into the artwork.
-        scaled = self._source_pixmap.scaled(
-            self.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
+        if self._background_layout == "center":
+            scaled = self._source_pixmap
+        elif self._background_layout in ("fill", "tile"):
+            # Render directly into a viewport-sized canvas to keep the cache
+            # bounded even when Fill crops an image with an extreme aspect ratio.
+            scaled = QPixmap(self.size())
+            scaled.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(scaled)
+            if self._background_layout == "tile":
+                painter.drawTiledPixmap(scaled.rect(), self._source_pixmap)
+            else:
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+                source = QRectF(self._source_pixmap.rect())
+                ratio = max(self.width() / source.width(), self.height() / source.height())
+                crop_width = self.width() / ratio
+                crop_height = self.height() / ratio
+                crop = QRectF(
+                    (source.width() - crop_width) / 2,
+                    (source.height() - crop_height) / 2,
+                    crop_width,
+                    crop_height,
+                )
+                painter.drawPixmap(QRectF(scaled.rect()), self._source_pixmap, crop)
+            painter.end()
+        else:
+            scaled = self._source_pixmap.scaled(
+                self.size(),
+                (Qt.AspectRatioMode.IgnoreAspectRatio
+                 if self._background_layout == "stretch"
+                 else Qt.AspectRatioMode.KeepAspectRatio),
+                Qt.TransformationMode.SmoothTransformation,
+            )
 
         # Blur exactly once while rebuilding the cached background.
         if self._blur_radius > 0:

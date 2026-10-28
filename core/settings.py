@@ -289,6 +289,7 @@ APPEARANCE_DEFAULTS = {
     "theme_mode": "light",
     "theme_color": "#3a9879",
     "background_enabled": True,
+    "background_layout": "fit",
     "background_blur_mode": "quality",
     "background_blur_bleed": False,
     "background_blur": 12,
@@ -335,6 +336,13 @@ def get_appearance_settings(payload=None):
             "low_quality"
             if values.get("background_blur_mode") == "low_quality"
             else "quality"
+        ),
+        "background_layout": (
+            values.get("background_layout")
+            if values.get("background_layout") in (
+                "center", "fill", "fit", "stretch", "tile",
+            )
+            else APPEARANCE_DEFAULTS["background_layout"]
         ),
         "background_blur_bleed": bool(
             values.get(

@@ -780,6 +780,7 @@ class Player(AudioController, LyricsController, QMainWindow):
             self.library_search.setObjectName("librarySearch")
             self.library_search.setPlaceholderText("Search library...")
             self._library_search_timer = QTimer(self)
+            self._library_expansion_before_search = None
             self._library_search_timer.setSingleShot(True)
             self._library_search_timer.setInterval(150)
             self._library_search_timer.timeout.connect(self._filter_library_view)
@@ -1149,6 +1150,7 @@ class Player(AudioController, LyricsController, QMainWindow):
                 parent.setFirstColumnSpanned(False)
                 parent.setExpanded(True)
                 parent.setData(0, Qt.ItemDataRole.UserRole, None)
+                parent.setData(0, Qt.ItemDataRole.UserRole + 1, (artist, album, date))
                 self.library_table.addTopLevelItem(parent)
                 tracks.sort(key=lambda t: (self._library_track_number(t.track_number), t.display_title.casefold()))
                 filter_rows = []
@@ -1183,9 +1185,18 @@ class Player(AudioController, LyricsController, QMainWindow):
         def _filter_library_view(self):
             self._library_search_timer.stop()
             query = self.library_search.text().casefold().strip()
+            expansion = self._library_expansion_before_search
+            if query and expansion is None:
+                # Keep one snapshot for the whole search, including query
+                # changes. Album keys survive scans that replace tree items.
+                expansion = {}
+                self._library_expansion_before_search = expansion
             self.library_table.setUpdatesEnabled(False)
             try:
                 for parent, rows in self._library_filter_groups:
+                    group = tuple(parent.data(0, Qt.ItemDataRole.UserRole + 1))
+                    if query:
+                        expansion.setdefault(group, parent.isExpanded())
                     any_visible = False
                     for item, haystack in rows:
                         visible = not query or query in haystack
@@ -1194,6 +1205,12 @@ class Player(AudioController, LyricsController, QMainWindow):
                         any_visible |= visible
                     if parent.isHidden() == any_visible:
                         parent.setHidden(not any_visible)
+                    if query and any_visible:
+                        parent.setExpanded(True)
+                    elif not query and expansion is not None:
+                        parent.setExpanded(expansion.get(group, parent.isExpanded()))
+                if not query:
+                    self._library_expansion_before_search = None
             finally:
                 self.library_table.setUpdatesEnabled(True)
             self._queue_visible_library_covers()
@@ -1467,6 +1484,9 @@ class Player(AudioController, LyricsController, QMainWindow):
             settings = self.appearance_settings
             self.lyrics_background.set_background_enabled(
                 settings.get("background_enabled", True)
+            )
+            self.lyrics_background.set_background_layout(
+                settings.get("background_layout", "fit")
             )
             self.lyrics_background.set_blur_mode(
                 settings.get("background_blur_mode", "quality")

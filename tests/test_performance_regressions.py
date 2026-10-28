@@ -147,6 +147,7 @@ def library(qapp):
     player = SimpleNamespace(
         library_table=tree, library_search=QLineEdit(window),
         _library_search_timer=QTimer(window), library_columns=list(range(12)),
+        _library_expansion_before_search=None,
         library_folder_label=QLabel(window), library_folders=[],
         library_tracks=[LibraryTrack(f"C:/music/{i}.mp3", f"Song {i}",
                                      artist="Artist", album=f"Album {i // 10}")
@@ -187,6 +188,58 @@ def test_library_filter_reuses_rows_and_hides_empty_albums(library):
     library.library_search.setText("")
     library._filter_library_view()
     assert not second.isHidden() and not first.child(1).isHidden()
+
+
+def test_library_search_expands_results_and_restores_previous_state(library):
+    first = library.library_table.topLevelItem(0)
+    second = library.library_table.topLevelItem(1)
+    third = library.library_table.topLevelItem(2)
+    first.setExpanded(False)
+    second.setExpanded(True)
+    third.setExpanded(False)
+
+    library.library_search.setText("song")
+    library._filter_library_view()
+    assert all(parent.isExpanded() for parent, _rows in library._library_filter_groups)
+
+    # Changing the query or expanding/collapsing results must not replace
+    # the state captured before the search began.
+    first.setExpanded(False)
+    library.library_search.setText("song 0")
+    library._filter_library_view()
+    assert first.isExpanded()
+    library.library_search.setText("no matching tracks")
+    library._filter_library_view()
+    assert all(parent.isHidden() for parent, _rows in library._library_filter_groups)
+
+    library.library_search.setText("   ")
+    library._filter_library_view()
+    assert not first.isExpanded()
+    assert second.isExpanded()
+    assert not third.isExpanded()
+    assert all(not parent.isHidden() for parent, _rows in library._library_filter_groups)
+
+    # A later search takes a fresh snapshot.
+    second.setExpanded(False)
+    library.library_search.setText("song 1")
+    library._filter_library_view()
+    assert second.isExpanded()
+    library.library_search.clear()
+    library._filter_library_view()
+    assert not second.isExpanded()
+
+
+def test_library_search_restores_expansion_after_rebuilding_rows(library):
+    library.library_table.topLevelItem(0).setExpanded(False)
+    library.library_table.topLevelItem(1).setExpanded(True)
+    library.library_search.setText("song")
+    library._filter_library_view()
+    Player._populate_library_view(library)
+    assert library.library_table.topLevelItem(0).isExpanded()
+    library.library_search.clear()
+    library._filter_library_view()
+    assert not library.library_table.topLevelItem(0).isExpanded()
+    assert library.library_table.topLevelItem(1).isExpanded()
 
 
 def test_scrolling_covers_stays_bounded_without_row_references(library, qapp, monkeypatch):

@@ -284,6 +284,31 @@ class SettingsDialog(QDialog):
         )
         appearance_layout.addWidget(self.background_enabled_checkbox)
 
+        background_layout_row = QHBoxLayout()
+        background_layout_row.addWidget(QLabel("Background layout"))
+        self.background_layout_combo = QComboBox()
+        for mode in ("center", "fill", "fit", "stretch", "tile"):
+            self.background_layout_combo.addItem(mode.title(), mode)
+        layout_index = self.background_layout_combo.findData(
+            self.appearance_settings.get("background_layout", "fit")
+        )
+        self.background_layout_combo.setCurrentIndex(
+            layout_index if layout_index >= 0 else self.background_layout_combo.findData("fit")
+        )
+        self.background_layout_combo.setToolTip(
+            "Center: original size, centered. Fill: cover the area with cropping.\n"
+            "Fit: show the whole image. Stretch: resize to the area.\n"
+            "Tile: repeat the image at its original size."
+        )
+        self.background_layout_combo.setEnabled(
+            self.background_enabled_checkbox.isChecked()
+        )
+        self.background_enabled_checkbox.toggled.connect(
+            self.background_layout_combo.setEnabled
+        )
+        background_layout_row.addWidget(self.background_layout_combo, 1)
+        appearance_layout.addLayout(background_layout_row)
+
         artwork_source_row = QHBoxLayout()
         artwork_source_row.addWidget(QLabel("Artwork source"))
         self.artwork_source_combo = QComboBox()
@@ -1599,6 +1624,7 @@ class SettingsDialog(QDialog):
             "theme_mode": self.theme_mode,
             "theme_color": self.theme_color,
             "background_enabled": self.background_enabled_checkbox.isChecked(),
+            "background_layout": self.background_layout_combo.currentData(),
             "artwork_source": self.artwork_source_combo.currentData(),
             "booru_tags": self.booru_tags_edit.text().strip() or "scenery",
             "background_blur_mode": self.background_blur_mode_combo.currentData(),
