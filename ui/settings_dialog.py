@@ -1649,7 +1649,10 @@ class SettingsDialog(QDialog):
         dialog = PluginSettingsDialog(
             self.plugin_manager, plugin_id, plugin_name, parent=self
         )
-        dialog.exec()
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
 
 
     def apply_plugin_settings(self):

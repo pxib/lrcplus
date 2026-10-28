@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2026-10-28.2]
 
-### Added
-- Center, Fill, Fit, Stretch, Tile under Settings > Appearance > Background layout. (Fit remains the default.)
-- Library searches automatically expand matching albums. Clearing search restores their previous expanded or collapsed states.
+### Changed
+- Bundled Noto Sans JP for library text, reducing Windows memory use when displaying Vietnamese and mixed Japanese/Vietnamese text.
+
+### Fixed
+- Settings and plugin settings dialogs now release their widgets on close, preventing memory growth when opened repeatedly.

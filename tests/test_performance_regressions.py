@@ -19,6 +19,7 @@ from core.music_library import LibraryTrack
 from ui.lrc_editor import LrcEditorDialog
 from ui.main_window import Player
 from ui.player_dialogs import AlbumCoverDelegate
+from ui.settings_dialog import PluginSettingsDialog, SettingsDialog
 
 
 def test_album_shuffle_resolves_paths_linearly(tmp_path, monkeypatch):
@@ -70,6 +71,74 @@ def test_editor_is_deleted_after_modal_result(tmp_path, qapp, monkeypatch):
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     assert parent.findChildren(LrcEditorDialog) == []
     parent.deleteLater()
+
+
+@pytest.mark.parametrize("outcome", ["accept", "reject", "exec_error", "apply_error"])
+def test_settings_are_deleted_after_every_open(qapp, monkeypatch, outcome):
+    window = Player()
+    qapp.processEvents()
+
+    def finish(dialog):
+        if outcome == "exec_error":
+            raise RuntimeError("settings execution failed")
+        if outcome == "reject":
+            dialog.reject()
+        else:
+            dialog.accept()
+        return dialog.result()
+
+    def apply_error(dialog):
+        raise RuntimeError("settings apply failed")
+
+    monkeypatch.setattr(SettingsDialog, "exec", finish)
+    if outcome == "apply_error":
+        monkeypatch.setattr(SettingsDialog, "get_startup_settings", apply_error)
+    try:
+        for _ in range(3):
+            if outcome.endswith("error"):
+                with pytest.raises(RuntimeError, match="settings .* failed"):
+                    window.open_settings()
+            else:
+                window.open_settings()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            assert window.findChildren(SettingsDialog) == []
+    finally:
+        window.close()
+        window.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+@pytest.mark.parametrize("outcome", ["accept", "reject", "error"])
+def test_plugin_settings_release_widgets_after_every_open(qapp, monkeypatch, outcome):
+    parent = QWidget()
+    saved = []
+    parent.plugin_manager = SimpleNamespace(get_settings_widgets=lambda: [{
+        "owner": "example", "widget_factory": lambda body: QLabel("Settings", body),
+        "apply": lambda widget: saved.append(widget.text()),
+    }])
+
+    def finish(dialog):
+        if outcome == "error":
+            raise RuntimeError("plugin settings failed")
+        if outcome == "accept":
+            dialog._save()
+        else:
+            dialog.reject()
+        return dialog.result()
+
+    monkeypatch.setattr(PluginSettingsDialog, "exec", finish)
+    try:
+        for _ in range(3):
+            if outcome == "error":
+                with pytest.raises(RuntimeError, match="plugin settings failed"):
+                    SettingsDialog._open_plugin_settings(parent, "example", "Example")
+            else:
+                SettingsDialog._open_plugin_settings(parent, "example", "Example")
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            assert parent.findChildren(PluginSettingsDialog) == []
+        assert saved == (["Settings"] * 3 if outcome == "accept" else [])
+    finally:
+        parent.deleteLater()
 
 
 def test_line_history_copies_only_changed_line_and_handles_bulk_edits(editor):

@@ -51,6 +51,7 @@ from ui.artwork_background import ArtworkBackgroundWidget, extract_embedded_cove
 from ui.player_dialogs import (ClickableSlider, ClickableTimeLabel, AlbumCoverDelegate, CoverPreviewView, CoverPreviewDialog, PitchChangerDialog, LibraryScanWorker)
 from core.booru_artwork import fetch_booru_artwork
 from core.file_io import atomic_write_text
+from core.fonts import library_font
 from core.theme import build_theme_palette
 
 
@@ -815,6 +816,7 @@ class Player(AudioController, LyricsController, QMainWindow):
             ]
             self.library_table = QTreeWidget()
             self.library_table.setObjectName("libraryTable")
+            self.library_table.setFont(library_font(self.library_table.font()))
             self.library_table.setColumnCount(len(self.library_columns))
             self.library_table.setHeaderLabels([label for _, label in self.library_columns])
             self.library_table.setRootIsDecorated(True)
@@ -1925,57 +1927,62 @@ class Player(AudioController, LyricsController, QMainWindow):
                 self,
             )
 
-            if dialog.exec() == QDialog.DialogCode.Accepted:
-                self.startup_settings = dialog.get_startup_settings()
-                save_startup_settings(self.startup_settings)
+            try:
+                if dialog.exec() == QDialog.DialogCode.Accepted:
+                    self.startup_settings = dialog.get_startup_settings()
+                    save_startup_settings(self.startup_settings)
 
-                self.appearance_settings = dialog.get_appearance_settings()
-                save_appearance_settings(self.appearance_settings)
-                self._apply_main_window_style()
-                self._apply_appearance_settings()
+                    self.appearance_settings = dialog.get_appearance_settings()
+                    save_appearance_settings(self.appearance_settings)
+                    self._apply_main_window_style()
+                    self._apply_appearance_settings()
 
-                self.playback_settings = dialog.get_playback_settings()
-                save_playback_settings(self.playback_settings)
-                self.waveform_widget.setVisible(
-                    self.playback_settings.get("show_waveform", True)
-                    and find_ffmpeg() is not None
-                )
-                self._apply_output_device(self.playback_settings)
-                self._update_shuffle_button_text()
+                    self.playback_settings = dialog.get_playback_settings()
+                    save_playback_settings(self.playback_settings)
+                    self.waveform_widget.setVisible(
+                        self.playback_settings.get("show_waveform", True)
+                        and find_ffmpeg() is not None
+                    )
+                    self._apply_output_device(self.playback_settings)
+                    self._update_shuffle_button_text()
 
-                self.karaoke_settings = dialog.get_karaoke_settings()
-                save_karaoke_settings(self.karaoke_settings)
+                    self.karaoke_settings = dialog.get_karaoke_settings()
+                    save_karaoke_settings(self.karaoke_settings)
 
-                self.lrc_search_paths = dialog.get_folders()
+                    self.lrc_search_paths = dialog.get_folders()
 
-                self.global_lyrics_settings = (
-                    dialog.get_global_lyrics_settings()
-                )
-                save_global_lyrics_settings(
-                    self.global_lyrics_settings
-                )
-
-                if self.current_audio_path:
-                    save_local_lyrics_overrides(
-                        self.current_audio_path,
-                        dialog.get_local_lyrics_overrides(),
+                    self.global_lyrics_settings = (
+                        dialog.get_global_lyrics_settings()
+                    )
+                    save_global_lyrics_settings(
+                        self.global_lyrics_settings
                     )
 
-                # Folder settings remain outside the lyric scope system.
-                payload = load_all_settings()
-                payload["lrc_folders"] = list(
-                    self.lrc_search_paths
-                )
-                save_all_settings(payload)
+                    if self.current_audio_path:
+                        save_local_lyrics_overrides(
+                            self.current_audio_path,
+                            dialog.get_local_lyrics_overrides(),
+                        )
 
-                dialog.apply_plugin_settings()
+                    # Folder settings remain outside the lyric scope system.
+                    payload = load_all_settings()
+                    payload["lrc_folders"] = list(
+                        self.lrc_search_paths
+                    )
+                    save_all_settings(payload)
 
-                if self.plugin_manager is not None:
-                    disabled_plugins = dialog.get_disabled_plugins()
-                    self.plugin_manager.disabled_plugins = set(disabled_plugins)
-                    save_disabled_plugins(disabled_plugins)
+                    dialog.apply_plugin_settings()
 
-                self.refresh_lyrics_settings_for_current_file()
+                    if self.plugin_manager is not None:
+                        disabled_plugins = dialog.get_disabled_plugins()
+                        self.plugin_manager.disabled_plugins = set(disabled_plugins)
+                        save_disabled_plugins(disabled_plugins)
+
+                    self.refresh_lyrics_settings_for_current_file()
+            finally:
+                # Modal dialogs are hidden on close; their parent otherwise
+                # retains the complete settings widget tree on every opening.
+                dialog.deleteLater()
 
 
         def get_current_lyrics_path(self):
