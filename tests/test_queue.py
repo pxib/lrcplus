@@ -1,7 +1,9 @@
 from pathlib import Path
+import threading
+import time
 
 import pytest
-from PySide6.QtCore import QModelIndex
+from PySide6.QtCore import QModelIndex, QTimer
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QInputDialog, QMessageBox
 
@@ -73,6 +75,153 @@ def tracks(tmp_path):
     for path in result:
         path.touch()
     return result
+
+
+def wait_for(qapp, condition):
+    deadline = time.monotonic() + 5
+    while not condition() and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
+    assert condition()
+
+
+def test_lyric_scan_keeps_playback_and_gui_responsive(queue_player, tracks, qapp, monkeypatch):
+    window = queue_player
+    audio = tracks[0]
+    lyric = audio.with_suffix(".lrc")
+    lyric.write_text("[00:01.000]Hello", encoding="utf-8")
+    entered, release = threading.Event(), threading.Event()
+    threads = []
+    original_index = window._get_lyrics_folder_index
+
+    def slow_index(folder):
+        threads.append(threading.get_ident())
+        entered.set()
+        assert release.wait(5)
+        return original_index(folder)
+
+    monkeypatch.setattr(window, "find_lrc_for_audio", Player.find_lrc_for_audio.__get__(window))
+    monkeypatch.setattr(window, "_get_lyrics_folder_index", slow_index)
+    applied = []
+    monkeypatch.setattr(window, "load_lrc_file", lambda path: applied.append((path, threading.get_ident())))
+    positions = []
+    monkeypatch.setattr(window, "update_lyrics", positions.append)
+    window.lyrics = [(0, "Previous track")]
+    window.lyrics_list_widget.addItem("Previous track")
+    try:
+        window.load_audio(audio)
+        window.media_player.play()
+        assert entered.wait(2)
+        assert window.media_player.isPlaying()
+        assert not window.lyrics
+        assert window.lyrics_list_widget.count() == 0
+        ticks = []
+        QTimer.singleShot(0, lambda: ticks.append(True))
+        qapp.processEvents()
+        assert ticks and not applied
+        assert threads[0] != threading.get_ident()
+        window.media_player.time = 12345
+        release.set()
+        wait_for(qapp, lambda: bool(applied))
+        assert applied == [(str(lyric), threading.get_ident())]
+        assert positions == [12345]
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("action", ["change_track", "clear_queue", "manual_lyrics", "close"])
+def test_late_lyric_search_cannot_replace_current_state(queue_player, tracks, qapp, monkeypatch, action):
+    window = queue_player
+    entered, release = threading.Event(), threading.Event()
+    lyric = tracks[0].with_suffix(".lrc")
+    lyric.write_text("[00:01.000]Hello", encoding="utf-8")
+    next_lyric = tracks[1].with_suffix(".lrc")
+    next_lyric.write_text("[00:02.000]Next", encoding="utf-8")
+
+    def slow_search(path):
+        entered.set()
+        assert release.wait(5)
+        return Path(path).with_suffix(".lrc")
+
+    monkeypatch.setattr(window, "find_lrc_for_audio", slow_search)
+    window.load_audio(tracks[0])
+    future = window._lyrics_search_job._future
+    applied = []
+    try:
+        assert entered.wait(2)
+        if action == "change_track":
+            window.load_audio(tracks[1])
+        elif action == "clear_queue":
+            window.clear_queue()
+        elif action == "manual_lyrics":
+            monkeypatch.setattr(window, "_start_furigana_prefetch", lambda: None)
+            window.load_lrc_file(str(lyric))
+            assert window.current_lyrics_path == lyric
+        else:
+            monkeypatch.setattr(window.media_player, "setAudioBufferOutput", lambda _: None, raising=False)
+            window.close()
+        monkeypatch.setattr(window, "load_lrc_file", applied.append)
+        release.set()
+        future.result(timeout=5)
+        if action == "change_track":
+            wait_for(qapp, lambda: bool(applied))
+            assert applied == [str(next_lyric)]
+            assert window.current_audio_path == tracks[1]
+        else:
+            window._lyrics_search_job._poll()
+            qapp.processEvents()
+            assert not applied
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_missing_or_failed_lyric_search_leaves_audio_ready(queue_player, tracks, qapp, monkeypatch, fails):
+    window = queue_player
+
+    def search(path):
+        if fails:
+            raise OSError("Folder unavailable")
+        return Path(path).with_suffix(".lrc")
+
+    monkeypatch.setattr(window, "find_lrc_for_audio", search)
+    window.load_audio(tracks[0])
+    window.media_player.play()
+    wait_for(qapp, lambda: window._lyrics_search_job._future is None)
+    assert window.media_player.isPlaying()
+    assert window.current_lyrics_path is None
+    assert not window.lyrics
+    if fails:
+        assert "Folder unavailable" in window.statusBar().currentMessage()
+
+
+def test_rapid_track_changes_skip_pending_searches(queue_player, tracks, qapp, monkeypatch):
+    window = queue_player
+    entered, release = threading.Event(), threading.Event()
+    searched, applied = [], []
+    for audio in tracks:
+        audio.with_suffix(".lrc").write_text("[00:01]Hello", encoding="utf-8")
+
+    def search(path):
+        searched.append(path)
+        if path == tracks[0]:
+            entered.set()
+            assert release.wait(5)
+        return path.with_suffix(".lrc")
+
+    monkeypatch.setattr(window, "find_lrc_for_audio", search)
+    monkeypatch.setattr(window, "load_lrc_file", applied.append)
+    try:
+        window.load_audio(tracks[0])
+        assert entered.wait(2)
+        window.load_audio(tracks[1])
+        window.load_audio(tracks[2])
+        release.set()
+        wait_for(qapp, lambda: bool(applied))
+        assert searched == [tracks[0], tracks[2]]
+        assert applied == [str(tracks[2].with_suffix(".lrc"))]
+    finally:
+        release.set()
 
 
 def test_duplicate_entries_advance_by_occurrence(queue_player, tracks):

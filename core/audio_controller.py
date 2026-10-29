@@ -11,6 +11,7 @@ from PySide6.QtMultimedia import (
 from PySide6.QtWidgets import QMessageBox
 
 from core.recent import add_to_recent_songs
+from core.background_job import BackgroundJob
 from core.settings import save_playback_settings
 from core.playlists import path_key
 from core.audio_dsp import (
@@ -32,6 +33,18 @@ class AudioController:
             self.media_player.stop()
 
             self.current_audio_path = audio_path
+
+            self._cancel_lyrics_search()
+            self.lyric_lines = []
+            self.lyrics = []
+            self.lyric_times = []
+            self._playback_line_indices = []
+            self.current_lyrics_path = None
+            self.plain_lyrics_mode = False
+            self._furigana_prefetch_id = getattr(self, "_furigana_prefetch_id", 0) + 1
+            self.scrolling_lyrics_widget.clear()
+            self.lyrics_list_widget.clear()
+            self.furigana_progress_bar.hide()
 
             if getattr(self, "plugin_manager", None) is not None:
                 self.plugin_manager.emit("track_changed", path=str(audio_path))
@@ -90,28 +103,10 @@ class AudioController:
             )
             self._set_native_pitch_compensation()
 
-            # Look for matching LRCX/LRC lyrics.
-            lrc_path = self.find_lrc_for_audio(audio_path)
-
-            if lrc_path.exists():
-                self.load_lrc_file(
-                    str(lrc_path)
-                )
-                add_to_recent_songs(audio_path, lrc_path)
-            else:
-                print(
-                    f"[Lyrics] No matching lyrics found "
-                    f"for: {audio_path.name}"
-                )
-
-                self.lyric_lines = []
-                self.lyrics = []
-                self.lyric_times = []
-                self.current_lyrics_path = None
-                self.scrolling_lyrics_widget.clear()
-                if hasattr(self, "waveform_widget"):
-                    self.waveform_widget.set_lyric_times([])
-                add_to_recent_songs(audio_path)
+            # Folder walks and lyric-file reads must not delay playback or PCM
+            # callbacks on the GUI thread. Only apply the current search result.
+            self._start_lyrics_search(audio_path)
+            add_to_recent_songs(audio_path)
 
             # Update UI.
             self.setWindowTitle(
@@ -123,6 +118,33 @@ class AudioController:
             else:
                 self.update_transport_buttons()
 
+
+        def _cancel_lyrics_search(self):
+            job = getattr(self, "_lyrics_search_job", None)
+            if job is not None:
+                job.cancel()
+
+        def _start_lyrics_search(self, audio_path):
+            if getattr(self, "_lyrics_search_job", None) is None:
+                self._lyrics_search_job = BackgroundJob(self, "lyrics-search")
+                self._lyrics_search_job.finished.connect(self._apply_lyrics_search_result)
+                self._lyrics_search_job.failed.connect(
+                    lambda error: self.statusBar().showMessage(f"Lyrics search failed: {error}", 5000)
+                )
+
+            def search():
+                path = self.find_lrc_for_audio(audio_path)
+                return audio_path, path if path.is_file() else None
+
+            self._lyrics_search_job.start(search)
+
+        def _apply_lyrics_search_result(self, result):
+            audio_path, lrc_path = result
+            if audio_path != self.current_audio_path or lrc_path is None:
+                return
+            self.load_lrc_file(str(lrc_path))
+            self.update_lyrics(self.media_player.position())
+            add_to_recent_songs(audio_path, lrc_path)
 
         def toggle_playback(self):
             if not self.current_audio_path:

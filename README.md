@@ -4,6 +4,14 @@ media player
 
 idk
 
+## Scrolling lyrics
+
+The scrolling view creates rows only around the visible area, so long lyric
+documents do not need a widget for every line. Seeking, continuous scrolling,
+vertical columns, readings, and karaoke highlighting use the complete lyric
+document. The existing 5,000-row import safeguard still rejects unusually dense
+subtitle conversions before playback.
+
 ## Queue and saved playlists
 
 - Open **Queue / Playlists** to manage the active queue. Drag tracks to reorder,

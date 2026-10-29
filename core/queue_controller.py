@@ -94,6 +94,7 @@ class QueueControllerMixin:
         self._notify_queue_changed()
 
     def clear_queue(self):
+        self._cancel_lyrics_search()
         self.playlist = []
         self.current_index = -1
         self._priority_queue_indices = []

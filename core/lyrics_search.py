@@ -1,11 +1,15 @@
 import os
 import re
 from pathlib import Path
+from threading import Lock
 
 from core.settings import get_lyrics_attachment, load_lrc_search_folders
 
 
 class LyricsSearchMixin:
+    _lyrics_index_lock = Lock()
+    _lyrics_index_generation = 0
+
     @staticmethod
     def _directory_signature(directories):
         stamps = []
@@ -183,7 +187,9 @@ class LyricsSearchMixin:
         """
         folder_path = Path(folder_path)
         folder_key = cls._normalise_path_key(folder_path)
-        cached = cls._lyrics_folder_index_cache.get(folder_key)
+        with cls._lyrics_index_lock:
+            generation = cls._lyrics_index_generation
+            cached = cls._lyrics_folder_index_cache.get(folder_key)
         if cached is not None:
             if cached["signature"] == cls._directory_signature(cached["directories"]):
                 return cached
@@ -243,7 +249,11 @@ class LyricsSearchMixin:
             "by_parts": by_parts,
             "attachments": attachments,
         }
-        cls._lyrics_folder_index_cache[folder_key] = index
+        with cls._lyrics_index_lock:
+            # An editor/save can invalidate indexes while a worker is scanning.
+            # Never publish the older scan over that invalidation.
+            if generation == cls._lyrics_index_generation:
+                cls._lyrics_folder_index_cache[folder_key] = index
         print(f"[Lyrics] Indexed {len(entries)} lyric files: {folder_path}")
         return index
 
@@ -254,7 +264,9 @@ class LyricsSearchMixin:
         Call this after changing lyrics files/folders at runtime if immediate
         rediscovery is needed without restarting the application.
         """
-        cls._lyrics_folder_index_cache.clear()
+        with cls._lyrics_index_lock:
+            cls._lyrics_index_generation += 1
+            cls._lyrics_folder_index_cache.clear()
         print("[Lyrics] Cleared lyric search index")
 
     def find_lrc_for_audio(self, audio_path):

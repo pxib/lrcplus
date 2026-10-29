@@ -43,3 +43,18 @@ def test_renamed_and_deleted_lyrics_are_removed_from_cached_index(tmp_path):
     renamed.unlink()
     changed_directory(tmp_path)
     assert Search._get_lyrics_folder_index(tmp_path)["entries"] == []
+
+
+def test_scan_started_before_invalidation_does_not_restore_stale_cache(tmp_path, monkeypatch):
+    Search._lyrics_folder_index_cache = {}
+    lyric = tmp_path / "song.lrc"
+    lyric.write_text("[00:00.000]Text", encoding="utf-8")
+    original_signature = Search._directory_signature
+
+    def invalidate_during_scan(directories):
+        Search.clear_lyrics_search_index()
+        return original_signature(directories)
+
+    monkeypatch.setattr(Search, "_directory_signature", invalidate_during_scan)
+    assert Search._get_lyrics_folder_index(tmp_path)["entries"]
+    assert not Search._lyrics_folder_index_cache

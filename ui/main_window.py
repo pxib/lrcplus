@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.audio_controller import AudioController, snap_volume_percentage
+from core.background_job import BackgroundJob
 from core.queue_controller import QueueControllerMixin
 from core.lyrics_controller import LyricsController, _FuriganaProgressBridge
 from core.settings import (
@@ -1459,7 +1460,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
 
                 if source_lines and (
                     not getattr(renderer, "rows", None)
-                    or len(renderer.rows) != len(source_lines)
+                    or renderer.lyric_count != len(source_lines)
                 ):
                     renderer.set_lyrics(source_lines)
 
@@ -1754,6 +1755,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
             layout.addLayout(buttons)
 
             records = []
+            search_job = BackgroundJob(dialog, "lrclib-search")
 
             def selected_record():
                 row_index = results.currentRow()
@@ -1780,6 +1782,8 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
                     )
 
             def run_search():
+                if not search_button.isEnabled():
+                    return
                 query = query_input.text().strip()
                 if not query:
                     status.setText(
@@ -1791,22 +1795,23 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
                 results.setRowCount(0)
                 preview.clear()
                 records.clear()
+                search_button.setEnabled(False)
+                search_job.start(fetch_results, query)
 
-                try:
-                    response = requests.get(
-                        "https://lrclib.net/api/search",
-                        params={"q": query},
-                        headers={
-                            "User-Agent": "LyricsPlus/1.0 (LRCLIB client)"
-                        },
-                        timeout=15,
-                    )
-                    response.raise_for_status()
-                    payload = response.json()
-                except Exception as error:
-                    status.setText(f"Search failed: {error}")
-                    return
+            def fetch_results(query):
+                response = requests.get(
+                    "https://lrclib.net/api/search",
+                    params={"q": query},
+                    headers={
+                        "User-Agent": "LyricsPlus/1.0 (LRCLIB client)"
+                    },
+                    timeout=15,
+                )
+                response.raise_for_status()
+                return response.json()
 
+            def show_results(payload):
+                search_button.setEnabled(True)
                 if not isinstance(payload, list):
                     payload = []
 
@@ -1841,6 +1846,10 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
                     )
                 else:
                     status.setText("No lyrics found.")
+
+            def search_failed(error):
+                search_button.setEnabled(True)
+                status.setText(f"Search failed: {error}")
 
             def use_selected():
                 item = selected_record()
@@ -1888,6 +1897,8 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
                 dialog.accept()
 
             search_button.clicked.connect(run_search)
+            search_job.finished.connect(show_results)
+            search_job.failed.connect(search_failed)
             query_input.returnPressed.connect(run_search)
             results.itemSelectionChanged.connect(update_preview)
             results.itemDoubleClicked.connect(
@@ -1896,7 +1907,11 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
             use_button.clicked.connect(use_selected)
             cancel_button.clicked.connect(dialog.reject)
 
-            dialog.exec()
+            try:
+                dialog.exec()
+            finally:
+                search_job.close()
+                dialog.deleteLater()
 
         def _apply_output_device(self, settings):
             """Apply a persisted Qt audio output device, falling back to default."""
@@ -2002,9 +2017,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
                 return Path(self.current_lyrics_path)
 
             if self.current_audio_path:
-                return self.find_lrc_for_audio(
-                    self.current_audio_path
-                )
+                return Path(self.current_audio_path).with_suffix(".lrc")
 
             return None
 
@@ -2149,6 +2162,8 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
             self._queue_visible_library_covers()
 
         def closeEvent(self, event):
+            if getattr(self, "_lyrics_search_job", None) is not None:
+                self._lyrics_search_job.close()
             if hasattr(self, "_booru_executor"):
                 self._invalidate_booru_request()
                 self._booru_executor.shutdown(wait=False, cancel_futures=True)

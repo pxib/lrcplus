@@ -1,11 +1,18 @@
-from PySide6.QtCore import Qt, QRectF, QPropertyAnimation, QEasingCurve, QTimer, QSize, QVariantAnimation, QObject, Signal
-from PySide6.QtGui import QFont, QFontMetrics, QColor, QPainter, QLinearGradient, QBrush, QPen
-from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QScrollArea, QInputDialog
-from lyrics.furigana import build_furigana_segments, get_cached_furigana_segments, split_reading_by_text_ranges, kana_to_romaji
+from bisect import bisect_right
+import math
+
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer, QEvent
+from PySide6.QtGui import QFont, QFontMetrics
+from PySide6.QtWidgets import QVBoxLayout, QWidget, QScrollArea
+from lyrics.furigana import get_cached_furigana_segments
 from lyrics.widgets import FuriganaWidget
 
 class ScrollingLyricsWidget(QWidget):
-    """Scrollable multi-line lyric display with the current line centered."""
+    """Scrollable lyrics with widgets allocated only around the viewport.
+
+    ``rows`` contains the mounted widgets, each with a stable ``_lyric_index``.
+    Text and timing for the complete document live separately in ``_lyrics``.
+    """
 
     SCROLL_ANIMATION_MS = 300
     BASE_HEIGHT = 54
@@ -65,37 +72,37 @@ class ScrollingLyricsWidget(QWidget):
         self.fade_in_readings = True
         self._continuous_last_position_ms = None
         self.rows = []
+        self._lyrics = []
+        self._mounted_rows = {}
+        self._extents = []
+        self._starts = [0]
+        self._geometry_signature = None
+        self._syncing_rows = False
+        self._placeholder_texts = {}
         self._row_height_refresh_pending = False
+        self._row_height_timer = QTimer(self)
+        self._row_height_timer.setSingleShot(True)
+        self._row_height_timer.timeout.connect(self._run_scheduled_row_height_refresh)
         self.current_line = -1
         self.scroll_animation = None
 
         self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setWidgetResizable(False)
         self.scroll_area.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
 
         self.container = QWidget()
 
-        # Build the correct layout for the initial direction. Previously we
-        # always started with QVBoxLayout and relied on set_direction() to
-        # rebuild it. If the widget was constructed already in vertical mode,
-        # set_direction("vertical") returned early and the first lyric load
-        # stayed in the wrong layout until the user toggled direction.
-        if self._is_vertical_layout():
-            self.layout = QHBoxLayout(self.container)
-            self.layout.setContentsMargins(self.padding, 0, self.padding, 0)
-            self.layout.setSpacing(self.padding)
-        else:
-            self.layout = QVBoxLayout(self.container)
-            self.layout.setContentsMargins(0, 90, 0, 90)
-            self.layout.setSpacing(0)
-
         self.scroll_area.setWidget(self.container)
+        self.scroll_area.viewport().installEventFilter(self)
 
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.addWidget(self.scroll_area)
+
+        self.scroll_area.verticalScrollBar().valueChanged.connect(self._sync_visible_rows)
+        self.scroll_area.horizontalScrollBar().valueChanged.connect(self._sync_visible_rows)
 
         # In continuous/plain-text mode there is no timestamp-driven current
         # line. Keep limited reading rendering tied to the lyric nearest the
@@ -110,52 +117,23 @@ class ScrollingLyricsWidget(QWidget):
     def _is_vertical_layout(self):
         return self.direction == "vertical"
 
+
+    @property
+    def lyric_count(self):
+        return len(self._lyrics)
+
     def _rebuild_scroll_layout(self):
-        # IMPORTANT: do not use deleteLater() here. A direction toggle can
-        # rebuild twice before the event loop destroys the old layout, leaving
-        # QWidget temporarily attached to the stale QBoxLayout. Detach and
-        # destroy the old layout synchronously before installing the new one.
-        old_layout = self.container.layout()
-        if old_layout is not None:
-            while old_layout.count():
-                item = old_layout.takeAt(0)
-                widget = item.widget()
-                if widget is not None:
-                    widget.setParent(None)
+        self._geometry_signature = None
+        self._refresh_row_heights()
 
-            holder = QWidget()
-            holder.setLayout(old_layout)
-            old_layout = None
-            holder.deleteLater()
-
-        if self._is_vertical_layout():
-            self.layout = QHBoxLayout()
-            self.layout.setContentsMargins(self.padding, 0, self.padding, 0)
-            self.layout.setSpacing(self.padding)
-        else:
-            self.layout = QVBoxLayout()
-            self.layout.setContentsMargins(0, 90, 0, 90)
-            self.layout.setSpacing(0)
-
-        self.container.setLayout(self.layout)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        layout_rows = list(self.rows)
-        if self._is_vertical_layout() and self.alignment == "right":
-            layout_rows.reverse()
-        for row in layout_rows:
-            self.layout.addWidget(row)
-
-        # Reparenting/layout changes are not final until Qt processes events.
-        # Refresh geometry after the new layout owns every row.
-        self.container.adjustSize()
-        QTimer.singleShot(0, self._refresh_row_heights)
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Resize:
+            self._schedule_row_height_refresh()
+        return super().eventFilter(watched, event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self._is_vertical_layout() and self.rows:
-            self._refresh_row_heights()
+        self._schedule_row_height_refresh()
 
     def _scroll_axis(self):
         return self.scroll_area.horizontalScrollBar() if self._is_vertical_layout() else self.scroll_area.verticalScrollBar()
@@ -164,98 +142,160 @@ class ScrollingLyricsWidget(QWidget):
         viewport = self.scroll_area.viewport()
         return viewport.width() if self._is_vertical_layout() else viewport.height()
 
-    def _row_axis_center(self, row):
-        return row.geometry().center().x() if self._is_vertical_layout() else row.geometry().center().y()
-
-    def _row_axis_start(self, row):
-        return row.geometry().left() if self._is_vertical_layout() else row.geometry().top()
-
-    def _row_axis_end(self, row):
-        return row.geometry().right() if self._is_vertical_layout() else row.geometry().bottom()
-
     def _schedule_row_height_refresh(self):
         if self._row_height_refresh_pending:
             return
         self._row_height_refresh_pending = True
-        QTimer.singleShot(0, self._run_scheduled_row_height_refresh)
+        self._row_height_timer.start(0)
 
     def _run_scheduled_row_height_refresh(self):
         self._row_height_refresh_pending = False
         self._refresh_row_heights()
 
-    def _refresh_row_heights(self):
-        if self._is_vertical_layout():
-            viewport_height = max(1, self.scroll_area.viewport().height())
 
-            # Use the actual font metrics. Previously this used rough font-size
-            # multipliers while the painter used font heights, so the parent
-            # could allocate a narrower widget than the painter required.
-            base_font = QFont()
-            if self.font_family:
-                base_font.setFamily(self.font_family)
-            base_font.setPointSize(max(1, int(self.font_size)))
-            base_metrics = QFontMetrics(base_font)
+    def _display_index(self, index):
+        if self._is_vertical_layout() and self.alignment == "right":
+            return self.lyric_count - 1 - index
+        return index
 
-            ruby_font = QFont()
-            if self.font_family:
-                ruby_font.setFamily(self.font_family)
-            ruby_font.setPointSize(max(1, int(self.ruby_font_size)))
-            ruby_metrics = QFontMetrics(ruby_font)
+    def _line_start(self, index):
+        return self._starts[self._display_index(index)]
 
-            char_step = max(1, base_metrics.height() + FuriganaWidget.PADDING)
-            drawable = max(
-                1,
-                viewport_height
-                - FuriganaWidget.TOP_MARGIN
-                - FuriganaWidget.BOTTOM_MARGIN
-                - (self.vertical_padding * 2),
-            )
-            chars_per_column = max(1, drawable // char_step)
+    def _line_center(self, index):
+        return self._line_start(index) + self._extents[index] / 2
 
-            for row in self.rows:
-                row.set_vertical_padding(self.vertical_padding)
-                # The row height is part of the actual wrapping calculation.
-                # Set it before asking which columns exist so the parent and the
-                # renderer use the same drawable vertical span.
-                row.setFixedHeight(viewport_height)
-                flags = row._vertical_column_ruby_flags(chars_per_column)
-                required_width = float(FuriganaWidget.PADDING)
-                # Use the same real glyph width as the painter. The old code
-                # used ruby font height here, which can be narrower than the
-                # actual vertical ruby glyph and leave the first ruby lane
-                # clipped at the row edge.
-                ruby_lane = row._vertical_ruby_lane_width() if row.show_ruby else 0
-                for has_ruby in flags:
-                    lane = ruby_lane if has_ruby else 0
-                    required_width += (
-                        lane
-                        + (row.ruby_padding if lane else 0)
-                        + base_metrics.height()
-                        + FuriganaWidget.PADDING
-                    )
-                row.setFixedWidth(max(1, int(required_width)))
+    def _rebuild_positions(self):
+        vertical = self._is_vertical_layout()
+        self._starts = [self.padding if vertical else 90]
+        spacing = self.padding if vertical else 0
+        indices = range(self.lyric_count)
+        if vertical and self.alignment == "right":
+            indices = reversed(indices)
+        for index in indices:
+            self._starts.append(self._starts[-1] + self._extents[index] + spacing)
+        tail = 0 if vertical else 90
+        total = self._starts[-1] + tail
+        viewport = self.scroll_area.viewport()
+        if vertical:
+            self.container.resize(max(viewport.width(), total), max(1, viewport.height()))
         else:
-            for row in self.rows:
-                height = row.minimumSizeHint().height() + self.padding
-                row.setMinimumWidth(1)
-                row.setMaximumWidth(16777215)
-                row.setFixedHeight(max(1, height))
+            self.container.resize(max(1, viewport.width()), max(viewport.height(), total))
 
-        self.container.adjustSize()
-        self.updateGeometry()
+    def _reset_estimates(self):
+        vertical = self._is_vertical_layout()
+        signature = (vertical, self.alignment, self.font_family, self.font_size,
+                     self.ruby_font_size, self.show_ruby, self.show_romaji,
+                     getattr(self, "all_romaji", False), self.ruby_position,
+                     self.ruby_padding, self.padding, self.vertical_padding,
+                     self.scroll_area.viewport().height() if vertical else 0)
+        if signature == self._geometry_signature:
+            return
+        self._geometry_signature = signature
+        font = QFont(self.font_family)
+        font.setPointSize(self.font_size)
+        base_height = QFontMetrics(font).height()
+        font.setPointSize(self.ruby_font_size)
+        reading_height = QFontMetrics(font).height() if self.show_ruby or self.show_romaji else 0
+        self._extents = []
+        for lyric in self._lyrics:
+            if vertical:
+                text = str(lyric.text if hasattr(lyric, "text") else lyric[1])
+                drawable = max(1, self.scroll_area.viewport().height()
+                               - FuriganaWidget.TOP_MARGIN - FuriganaWidget.BOTTOM_MARGIN
+                               - self.vertical_padding * 2)
+                columns = max(1, math.ceil(len(text) * (base_height + FuriganaWidget.PADDING) / drawable))
+                extent = FuriganaWidget.PADDING + columns * (base_height + FuriganaWidget.PADDING
+                         + (reading_height + self.ruby_padding if reading_height else 0))
+            else:
+                extent = (FuriganaWidget.TOP_MARGIN + base_height + FuriganaWidget.BOTTOM_MARGIN
+                          + self.padding + (reading_height + self.ruby_padding if reading_height else 0))
+            self._extents.append(max(1, extent))
+
+    def _measure_row(self, row):
+        if self._is_vertical_layout():
+            row.setFixedHeight(max(1, self.scroll_area.viewport().height()))
+            flags = row._vertical_column_ruby_flags()
+            base = QFontMetrics(row.base_font).height()
+            ruby = row._vertical_ruby_lane_width() if row.show_ruby else 0
+            width = FuriganaWidget.PADDING + sum(
+                base + FuriganaWidget.PADDING + (ruby + row.ruby_padding if has_ruby and ruby else 0)
+                for has_ruby in flags)
+            row.setFixedWidth(max(1, int(width)))
+            return row.width()
+        row.setMinimumWidth(1)
+        row.setMaximumWidth(16777215)
+        row.setFixedHeight(max(1, row.minimumSizeHint().height() + self.padding))
+        return row.height()
+
+    def _refresh_row_heights(self):
+        anchor = None
+        signature = self._geometry_signature
+        if self._lyrics and signature is not None and signature[:2] == (self._is_vertical_layout(), self.alignment):
+            display = max(0, min(self.lyric_count - 1, bisect_right(self._starts, self._scroll_axis().value()) - 1))
+            anchor = self._display_index(display)
+            offset = self._scroll_axis().value() - self._line_start(anchor)
+        self._reset_estimates()
+        self._syncing_rows = True
+        try:
+            self._rebuild_positions()
+            if anchor is not None:
+                self._scroll_axis().setValue(max(0, int(self._line_start(anchor) + offset)))
+        finally:
+            self._syncing_rows = False
+        self._sync_visible_rows()
 
     def refresh_layout_now(self):
-        """Force a geometry pass after this widget becomes visible.
-
-        Vertical rows may be created while the stacked page is hidden, where
-        the viewport can temporarily report a 0/1-pixel height.  A second pass
-        after the page is shown prevents the first-open empty/clipped state.
-        """
-        if self._is_vertical_layout() and self.rows:
-            self._refresh_row_heights()
-        self.container.adjustSize()
-        self.updateGeometry()
+        """Refresh viewport measurements after showing a hidden lyrics page."""
+        self._refresh_row_heights()
         self.update()
+
+    def _sync_visible_rows(self, _value=None):
+        if self._syncing_rows or not self._lyrics:
+            return
+        self._syncing_rows = True
+        try:
+            # Measured ruby/column widths can differ from the lightweight
+            # estimates. Preserve the visible source line and its pixel offset
+            # while replacing those estimates, including right-to-left columns.
+            for _pass in range(3):
+                scrollbar = self._scroll_axis()
+                value = scrollbar.value()
+                display_anchor = max(0, min(self.lyric_count - 1, bisect_right(self._starts, value) - 1))
+                anchor = self._display_index(display_anchor)
+                offset = value - self._line_start(anchor)
+                extent = max(1, self._viewport_extent())
+                overscan = max(180, extent // 2)
+                first = max(0, bisect_right(self._starts, value - overscan) - 1)
+                last = min(self.lyric_count, bisect_right(self._starts, value + extent + overscan))
+                wanted = {self._display_index(index) for index in range(first, last)}
+                for index in self._mounted_rows.keys() - wanted:
+                    row = self._mounted_rows.pop(index)
+                    self._discard_row(row)
+                for index in sorted(wanted - self._mounted_rows.keys()):
+                    self._mounted_rows[index] = self._create_row(self._lyrics[index], index)
+                self.rows = [self._mounted_rows[index] for index in sorted(self._mounted_rows)]
+                changed = False
+                for row in self.rows:
+                    index = row._lyric_index
+                    measured = self._measure_row(row)
+                    if measured != self._extents[index]:
+                        self._extents[index] = measured
+                        changed = True
+                if changed:
+                    self._rebuild_positions()
+                    scrollbar.setValue(max(0, int(self._line_start(anchor) + offset)))
+                for row in self.rows:
+                    start = self._line_start(row._lyric_index)
+                    if self._is_vertical_layout():
+                        row.move(start, 0)
+                    else:
+                        row.setGeometry(0, start, self.container.width(), row.height())
+                    row.show()
+                if not changed:
+                    break
+            self._update_reading_render_window(self.current_line, initial=True)
+        finally:
+            self._syncing_rows = False
 
     def set_vertical_padding(self, padding):
         padding = max(0, min(200, int(padding)))
@@ -273,13 +313,7 @@ class ScrollingLyricsWidget(QWidget):
             return
 
         self.padding = padding
-        if self._is_vertical_layout():
-            # Vertical lyrics scroll horizontally, so keep the outer padding
-            # and the spacing between lyric columns in sync with this setting.
-            self.layout.setContentsMargins(padding, 0, padding, 0)
-            self.layout.setSpacing(padding)
         self._refresh_row_heights()
-        self.container.adjustSize()
         self.updateGeometry()
         self.update()
 
@@ -339,19 +373,14 @@ class ScrollingLyricsWidget(QWidget):
             else "horizontal"
         )
         if self.direction == direction:
-            # The initial layout can be constructed before rows exist. Make
-            # sure a same-direction call still repairs a stale layout type.
-            expected = QHBoxLayout if direction == "vertical" else QVBoxLayout
-            if not isinstance(self.layout, expected):
-                self._rebuild_scroll_layout()
             return
         self.direction = direction
         if self._is_vertical_layout() and self.alignment == "center":
             self.alignment = "left"
-        self._rebuild_scroll_layout()
         for row in self.rows:
             row.set_direction(direction)
             row.set_alignment(self.alignment)
+        self._rebuild_scroll_layout()
         self._refresh_row_heights()
         self.update()
 
@@ -365,10 +394,10 @@ class ScrollingLyricsWidget(QWidget):
             alignment = "left"
         changed = self.alignment != alignment
         self.alignment = alignment
-        if self._is_vertical_layout() and changed:
-            self._rebuild_scroll_layout()
         for row in self.rows:
             row.set_alignment(alignment)
+        if self._is_vertical_layout() and changed:
+            self._rebuild_scroll_layout()
         self.update()
 
     def set_font(self, family="", size=32, ruby_size=18):
@@ -486,7 +515,7 @@ class ScrollingLyricsWidget(QWidget):
         if not self.continuous_scroll_nudge_current:
             self._continuous_nudge_index = -1
             return
-        if 0 <= index < len(self.rows):
+        if 0 <= index < self.lyric_count:
             self._continuous_nudge_index = index
 
 
@@ -572,11 +601,11 @@ class ScrollingLyricsWidget(QWidget):
             if (
                 not backward_seek
                 and self.continuous_scroll_nudge_current
-                and 0 <= index < len(self.rows)
+                and 0 <= index < self.lyric_count
             ):
                 extent = max(1.0, float(self._viewport_extent()))
                 viewport_center = target + extent / 2.0
-                row_center = float(self._row_axis_center(self.rows[index]))
+                row_center = float(self._line_center(index))
                 distance = row_center - viewport_center
                 dead_zone = max(8.0, extent * 0.08)
 
@@ -652,30 +681,16 @@ class ScrollingLyricsWidget(QWidget):
         if anchor >= 0:
             self._update_reading_render_window(anchor)
 
+
     def _visible_reading_anchor(self):
-        """Return the row nearest the center of the current viewport."""
-        if not self.rows:
+        """Return the source index nearest the viewport center, without widgets."""
+        if not self._lyrics:
             return -1
-
-        if self._is_vertical_layout():
-            scrollbar = self.scroll_area.horizontalScrollBar()
-            viewport_center = scrollbar.value() + self.scroll_area.viewport().width() / 2.0
-            centers = [
-                row.geometry().x() + row.geometry().width() / 2.0
-                for row in self.rows
-            ]
-        else:
-            scrollbar = self.scroll_area.verticalScrollBar()
-            viewport_center = scrollbar.value() + self.scroll_area.viewport().height() / 2.0
-            centers = [
-                row.geometry().y() + row.geometry().height() / 2.0
-                for row in self.rows
-            ]
-
-        return min(
-            range(len(self.rows)),
-            key=lambda row_index: abs(centers[row_index] - viewport_center),
-        )
+        center = self._scroll_axis().value() + self._viewport_extent() / 2
+        display = max(0, min(self.lyric_count - 1, bisect_right(self._starts, center) - 1))
+        candidates = range(max(0, display - 1), min(self.lyric_count, display + 2))
+        return min((self._display_index(i) for i in candidates),
+                   key=lambda index: abs(self._line_center(index) - center))
 
     def _update_reading_render_window(self, index, initial=False):
         if not self.rows:
@@ -700,8 +715,9 @@ class ScrollingLyricsWidget(QWidget):
                 return
 
         start = max(0, index - self.limited_reading_range)
-        end = min(len(self.rows), index + self.limited_reading_range + 1)
-        for row_index, row in enumerate(self.rows):
+        end = min(self.lyric_count, index + self.limited_reading_range + 1)
+        for row in self.rows:
+            row_index = getattr(row, "_lyric_index", 0)
             visible = start <= row_index < end
             changed = visible != row._reading_render_target_enabled
             row.set_reading_rendered(
@@ -713,94 +729,105 @@ class ScrollingLyricsWidget(QWidget):
                 ),
             )
 
+
     def clear(self):
         self.current_line = -1
+        self._row_height_timer.stop()
+        self._row_height_refresh_pending = False
         if self.scroll_animation is not None:
             self.scroll_animation.stop()
+            self.scroll_animation.deleteLater()
             self.scroll_animation = None
+        for row in self.rows:
+            self._discard_row(row)
+        self.rows = []
+        self._mounted_rows.clear()
+        self._lyrics = []
+        self._extents = []
+        self._starts = [0]
+        self._geometry_signature = None
+        self._placeholder_texts.clear()
+        self._karaoke_row_index = None
+        self._last_karaoke_position = None
+        self._karaoke_completed_before = -1
+        self._continuous_last_position_ms = None
+        self._continuous_nudge_index = -1
+        self._continuous_nudge_offset = 0.0
+        self._continuous_nudge_strength = 0.0
+        self.container.resize(self.scroll_area.viewport().size())
+        self._scroll_axis().setValue(0)
 
-        # Remove widgets from the active layout immediately as well as from
-        # the Python list. Otherwise stale layout items can survive until the
-        # event loop and poison the next direction rebuild.
-        while self.layout.count():
-            item = self.layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
-
-        self.rows.clear()
+    @staticmethod
+    def _discard_row(row):
+        # Pending providers may finish after their viewport row has gone away.
+        # Cancel queued work; running work can still populate the shared cache.
+        future = getattr(row, "_furigana_future", None)
+        row._reading_disposed = True
+        if future is not None:
+            future.cancel()
+        row.hide()
+        row.setParent(None)
+        row.deleteLater()
 
     def set_lyrics(self, lyrics):
         self.clear()
-        self._continuous_last_position_ms = None
+        self._lyrics = list(lyrics)
+        self._refresh_row_heights()
+        if self._lyrics:
+            self.set_current_line(0, animate=False)
 
-        for lyric in lyrics:
-            row = FuriganaWidget(self.manual_overrides)
-            row.set_direction(self.direction)
-            row.set_vertical_padding(self.vertical_padding)
-            row.set_alignment(self.alignment)
-            # Centered Slide mode may enter from either side. Pick once per
-            # row and keep it stable for the life of that lyric row.
-            row.set_slide_side(
-                "left" if (len(self.rows) % 2 == 0) else "right"
-            )
-            row.set_font(
-                self.font_family,
-                self.font_size,
-                self.ruby_font_size,
-            )
-            row.set_colors(self.lyrics_color, self.highlight_color)
-            row.set_highlight_current(self.highlight_current)
-            row.set_highlight_animation(
-                self.highlight_animation,
-                self.highlight_animation_duration,
-                self.highlight_animation_easing,
-                self.highlight_animation_out_duration,
-            )
-            row.set_karaoke_properties(
-                getattr(self, "karaoke_sweep_style", "classic"),
-                getattr(self, "karaoke_sweep_easing", "linear"),
-                getattr(self, "karaoke_softness", 8),
-                getattr(self, "karaoke_glow_intensity", 70),
-                getattr(self, "karaoke_glow_radius", 1),
-                getattr(self, "karaoke_shimmer_width", 10),
-                getattr(self, "karaoke_sweep_delay_ms", 100),
-                getattr(self, "karaoke_sweep_delay_percent", 10),
-            )
-            row.set_current_line(False)
-            row.set_ruby_visible(self.show_ruby)
-            row.set_romaji_visible(self.show_romaji)
-            row.set_ruby_position(self.ruby_position)
-            row.set_ruby_padding(self.ruby_padding)
-            row.set_active(False)
-            row.set_opacity(0.32)
+    def _create_row(self, lyric, index):
+        row = FuriganaWidget(self.manual_overrides)
+        row.set_direction(self.direction)
+        row.set_vertical_padding(self.vertical_padding)
+        row.set_alignment(self.alignment)
+        # Centered Slide mode may enter from either side. Pick once per
+        # row and keep it stable for the life of that lyric row.
+        row.set_slide_side(
+            "left" if (index % 2 == 0) else "right"
+        )
+        row.set_font(
+            self.font_family,
+            self.font_size,
+            self.ruby_font_size,
+        )
+        row.set_colors(self.lyrics_color, self.highlight_color)
+        row.set_highlight_current(self.highlight_current)
+        row.set_highlight_animation(
+            self.highlight_animation,
+            self.highlight_animation_duration,
+            self.highlight_animation_easing,
+            self.highlight_animation_out_duration,
+        )
+        row.set_karaoke_properties(
+            getattr(self, "karaoke_sweep_style", "classic"),
+            getattr(self, "karaoke_sweep_easing", "linear"),
+            getattr(self, "karaoke_softness", 8),
+            getattr(self, "karaoke_glow_intensity", 70),
+            getattr(self, "karaoke_glow_radius", 1),
+            getattr(self, "karaoke_shimmer_width", 10),
+            getattr(self, "karaoke_sweep_delay_ms", 100),
+            getattr(self, "karaoke_sweep_delay_percent", 10),
+        )
+        row.set_current_line(False)
+        row.set_ruby_visible(self.show_ruby)
+        row.set_romaji_visible(self.show_romaji)
+        row.set_all_romaji_visible(getattr(self, "all_romaji", False))
+        row.set_ruby_position(self.ruby_position)
+        row.set_ruby_padding(self.ruby_padding)
+        row.set_active(False)
+        row.set_opacity(0.32)
 
-            # LyricLine objects carry explicit LRCX ruby segments.
-            if hasattr(lyric, "segments"):
-                if lyric.segments:
-                    row.set_segments(
-                        lyric.text,
-                        lyric.segments,
-                        getattr(lyric, "end", None),
-                    )
-                else:
-                    source_text = str(lyric.text)
-                    display_text = (
-                        getattr(
-                            self,
-                            "_empty_timestamp_static_placeholder",
-                            "",
-                        )
-                        if not source_text.strip()
-                        else source_text
-                    )
-                    row.set_lyric(display_text, generate=False)
-                    if not source_text.strip():
-                        row._lyrics_plus_placeholder_source_empty = True
+        # LyricLine objects carry explicit LRCX ruby segments.
+        if hasattr(lyric, "segments"):
+            if lyric.segments:
+                row.set_segments(
+                    lyric.text,
+                    lyric.segments,
+                    getattr(lyric, "end", None),
+                )
             else:
-                _, text = lyric
-                source_text = str(text)
+                source_text = str(lyric.text)
                 display_text = (
                     getattr(
                         self,
@@ -813,41 +840,57 @@ class ScrollingLyricsWidget(QWidget):
                 row.set_lyric(display_text, generate=False)
                 if not source_text.strip():
                     row._lyrics_plus_placeholder_source_empty = True
-
-            # Horizontal mode uses a normal stacked row height. Vertical mode
-            # is fundamentally different: each lyric occupies the viewport
-            # height and its width is computed from the number of columns it
-            # needs. Do not apply the old horizontal fixed-height rule here.
-            if not self._is_vertical_layout():
-                row.setFixedHeight(
-                    row.minimumSizeHint().height() + self.padding
+        else:
+            _, text = lyric
+            source_text = str(text)
+            display_text = (
+                getattr(
+                    self,
+                    "_empty_timestamp_static_placeholder",
+                    "",
                 )
-            self.rows.append(row)
-            if self._is_vertical_layout() and self.alignment == "right":
-                self.layout.insertWidget(0, row)
-            else:
-                self.layout.addWidget(row)
+                if not source_text.strip()
+                else source_text
+            )
+            row.set_lyric(display_text, generate=False)
+            if not source_text.strip():
+                row._lyrics_plus_placeholder_source_empty = True
 
-        # This must happen after every row has been added. Previously the
-        # vertical dimensions were only refreshed when a later setting or
-        # resize event occurred, leaving the freshly loaded lyric list with
-        # the old horizontal geometry.
-        if self._is_vertical_layout() and self.rows:
-            self._refresh_row_heights()
-            # The viewport can still be 0/1 pixels during the first event
-            # loop pass. Refresh once more after Qt has laid out the scroll
-            # area so the initial left/right direction has real geometry.
-            QTimer.singleShot(0, self.refresh_layout_now)
-            # One more queued pass catches the case where the lyrics page is
-            # switched into a QStackedWidget during the same event turn.
-            QTimer.singleShot(1, self.refresh_layout_now)
+        row._lyric_index = index
+        row.setParent(self.container)
+        self._apply_row_state(row, index)
+        if index in self._placeholder_texts:
+            self._apply_placeholder(row, self._placeholder_texts[index])
+        self._restore_row_karaoke(row)
+        return row
 
-        if self.rows:
-            self.rows[0].set_active(True)
-            self.rows[0].set_opacity(1.0)
-            self._update_reading_render_window(0, initial=True)
+    def _apply_row_state(self, row, index):
+        current = self.current_line
+        distance = abs(index - current)
+        opacity = (1.0 if distance == 0 else 0.65 if distance == 1 else 0.48 if distance == 2 else 0.32)
+        row.set_active(index == current)
+        row.set_current_line(index == current)
+        row.set_slide_future(index > current)
+        row.set_opacity(opacity if current >= 0 else 0.32)
 
-        QTimer.singleShot(0, lambda: self._scroll_to_line(0, False))
+    def _restore_row_karaoke(self, row):
+        position = getattr(self, "_last_karaoke_position", None)
+        if position is not None and row._lyric_index < getattr(self, "_karaoke_completed_before", -1):
+            position = self._row_finish_position(row, position)
+        row.set_karaoke_position(position)
+
+    @staticmethod
+    def _row_finish_position(row, position):
+        finish = position
+        for segment in row.segments:
+            for key in ("end", "line_end", "start"):
+                value = segment.get(key)
+                if value is not None:
+                    try:
+                        finish = max(finish, float(value))
+                    except (TypeError, ValueError):
+                        pass
+        return finish + 1.0
 
     def set_karaoke_properties(
         self,
@@ -894,105 +937,28 @@ class ScrollingLyricsWidget(QWidget):
         self.update()
 
     def set_karaoke_position(self, position):
-        """Update karaoke while keeping past rows correct across seeks."""
-        if not self.rows:
-            self._karaoke_row_index = None
-            self._last_karaoke_position = None
-            return
-
-        # Stopping/unloading karaoke resets every row.
+        """Synchronize mounted rows and remember playback state for later mounts."""
+        previous_position = getattr(self, "_last_karaoke_position", None)
+        previous_index = getattr(self, "_karaoke_row_index", None)
         if position is None:
-            for row in self.rows:
-                if row.karaoke_position is not None:
-                    row.set_karaoke_position(None)
-            self._karaoke_row_index = None
-            self._last_karaoke_position = None
-            return
-
-        position = float(position)
-        last_position = getattr(self, "_last_karaoke_position", None)
-
-        # A backward seek, or a large forward jump, invalidates the frozen-row
-        # optimization. Re-sync every timed row once so past/current/future
-        # highlights immediately match the new playback position.
-        discontinuity = (
-            last_position is not None
-            and (
-                position < last_position - 0.050
-                or position > last_position + 0.500
-            )
-        )
-
-        if discontinuity:
-            for row in self.rows:
-                segments = getattr(row, "segments", ()) or ()
-                has_timing = any(
-                    isinstance(segment, dict)
-                    and (
-                        segment.get("karaoke_group") is not None
-                        or segment.get("start") is not None
-                    )
-                    for segment in segments
-                )
-                if has_timing:
-                    row.set_karaoke_position(position)
-
-        current = getattr(self, "current_line", -1)
-        if not (0 <= current < len(self.rows)):
-            current = None
-
-        previous = getattr(self, "_karaoke_row_index", None)
-
-        if (
-            not discontinuity
-            and previous is not None
-            and previous != current
-            and 0 <= previous < len(self.rows)
-        ):
-            # Finish the previous line rather than freezing it at the new
-            # line's timestamp. Adjacent/overlapping line timing can otherwise
-            # leave the last chunk only partially highlighted.
-            previous_row = self.rows[previous]
-            segments = getattr(previous_row, "segments", ()) or ()
-            finish_at = position
-            for segment in segments:
-                if not isinstance(segment, dict):
-                    continue
-                for key in ("end", "line_end", "start"):
-                    value = segment.get(key)
-                    if value is not None:
-                        try:
-                            finish_at = max(finish_at, float(value))
-                        except (TypeError, ValueError):
-                            pass
-            # Some files place the next lyric before the last segment's start
-            # (for example, a trailing segment at 55.800 after a line at
-            # 55.450). In that case the segment has no usable interval and
-            # falls back to a one-second sweep. Move past that fallback too,
-            # so the completed row is fully filled when playback advances.
-            previous_row.set_karaoke_position(finish_at + 1.0)
-
-        if current is not None:
-            row = self.rows[current]
-            segments = getattr(row, "segments", ()) or ()
-            has_timing = any(
-                isinstance(segment, dict)
-                and (
-                    segment.get("karaoke_group") is not None
-                    or segment.get("start") is not None
-                )
-                for segment in segments
-            )
-            if has_timing:
-                row.set_karaoke_position(position)
-
-        self._karaoke_row_index = current
+            self._karaoke_completed_before = -1
+        else:
+            position = float(position)
+            discontinuity = (previous_position is not None and
+                             (position < previous_position - 0.050 or position > previous_position + 0.500))
+            if discontinuity:
+                self._karaoke_completed_before = -1
+            elif previous_index is not None and 0 <= previous_index < self.current_line:
+                self._karaoke_completed_before = self.current_line
         self._last_karaoke_position = position
+        self._karaoke_row_index = self.current_line if self.current_line >= 0 else None
+        for row in self.rows:
+            self._restore_row_karaoke(row)
 
     def refresh_furigana_for_texts(self, texts=None):
         wanted = None if texts is None else {str(text).lstrip() for text in texts}
 
-        for row_index, row in enumerate(self.rows):
+        for row in self.rows:
             if wanted is None or row.lyric in wanted:
                 # Timed LRCX segments contain karaoke metadata. Replacing them
                 # with a plain full-line furigana cache destroys that metadata
@@ -1012,114 +978,65 @@ class ScrollingLyricsWidget(QWidget):
                     row._update_content_geometry()
                     row.update()
 
-    def set_placeholder_text(self, index, text):
-        """Update the display text for an empty timestamp row."""
-        if not (0 <= index < len(self.rows)):
-            return
 
-        row = self.rows[index]
-        if not getattr(row, "_lyrics_plus_placeholder_source_empty", False):
-            return
-
-        text = str(text)
-        if row.lyric == text:
-            return
-
-        row.lyric = text
-        row.segments = [{"text": text, "reading": None}]
-        row.loading_text = None
-        row.update()
-
-    def clear_placeholder_text(self, index):
-        """Restore the static placeholder after the active countdown."""
-        if not (0 <= index < len(self.rows)):
-            return
-
-        row = self.rows[index]
-        if not getattr(row, "_lyrics_plus_placeholder_source_empty", False):
-            return
-
-        static_text = str(
-            getattr(
-                self,
-                "_empty_timestamp_static_placeholder",
-                "♪",
-            )
-        )
-        if row.lyric != static_text:
-            row.lyric = static_text
-            row.segments = [{"text": static_text, "reading": None}]
+    @staticmethod
+    def _apply_placeholder(row, text):
+        if getattr(row, "_lyrics_plus_placeholder_source_empty", False) and row.lyric != text:
+            row.lyric = text
+            row.segments = [{"text": text, "reading": None}]
             row.loading_text = None
             row.update()
 
+    def set_placeholder_text(self, index, text):
+        """Store countdown text even when its empty timestamp is off screen."""
+        if not 0 <= index < self.lyric_count:
+            return
+        lyric = self._lyrics[index]
+        source_text = lyric.text if hasattr(lyric, "text") else lyric[1]
+        if str(source_text).strip():
+            return
+        self._placeholder_texts[index] = str(text)
+        row = self._mounted_rows.get(index)
+        if row is not None:
+            self._apply_placeholder(row, str(text))
+
+    def clear_placeholder_text(self, index):
+        """Restore the static placeholder after the active countdown."""
+        self.set_placeholder_text(index, str(getattr(self, "_empty_timestamp_static_placeholder", "♪")))
+
+
     def set_current_line(self, index, animate=True):
-        if not self.rows:
-            self.current_line = -1
-            return
-
-        if index < 0 or index >= len(self.rows):
-            # No current lyric means no row may retain the visual emphasis
-            # created during initial layout. TXT uses this state permanently
-            # because its synthetic line indices are not timestamps.
-            for row in self.rows:
-                row.set_active(False)
-                row.set_current_line(False)
-                row.set_slide_future(True)
-                row.set_opacity(0.32)
-            self.current_line = -1
-            self._update_reading_render_window(-1, initial=True)
-            return
-
+        if not 0 <= index < self.lyric_count:
+            index = -1
         if index == self.current_line and animate:
             return
-
-        for row_index, row in enumerate(self.rows):
-            distance = abs(row_index - index)
-            if distance == 0:
-                opacity = 1.0
-            elif distance == 1:
-                opacity = 0.65
-            elif distance == 2:
-                opacity = 0.48
-            else:
-                opacity = 0.32
-
-            row.set_active(row_index == index)
-            row.set_current_line(row_index == index)
-            row.set_slide_future(row_index > index)
-            row.set_opacity(opacity)
-
         self.current_line = index
+        for row in self.rows:
+            self._apply_row_state(row, row._lyric_index)
         self._update_reading_render_window(index)
-        if self.scrolling_mode == "automatic":
-            QTimer.singleShot(0, lambda: self._scroll_to_line(index, animate))
+        if index >= 0 and self.scrolling_mode == "automatic":
+            self._scroll_to_line(index, animate)
 
     def _scroll_to_line(self, index, animate=True):
-        if not (0 <= index < len(self.rows)):
+        if not (0 <= index < self.lyric_count):
             return
 
-        row = self.rows[index]
-        scrollbar = self._scroll_axis()
-        extent = self._viewport_extent()
         if self.scroll_behavior == "off":
             return
-
-        if self.scroll_behavior in {"ensure_visible", "focus_current"}:
-            target = (
-                self._row_axis_center(row) - extent / 2
-                if self.scroll_behavior == "focus_current"
-                else self._row_axis_start(row) - 20
-            )
-        else:
-            target = self._row_axis_center(row) - extent / 2
-
-        target = int(max(0, min(target, scrollbar.maximum())))
-        if not animate:
-            scrollbar.setValue(target)
-            return
-
+        scrollbar = self._scroll_axis()
+        target = self._scroll_target(index)
         if self.scroll_animation is not None:
             self.scroll_animation.stop()
+            self.scroll_animation.deleteLater()
+            self.scroll_animation = None
+        if not animate:
+            # Mounting the destination replaces estimated sizes with real
+            # measurements. Recalculate the target after that geometry pass.
+            for _ in range(3):
+                scrollbar.setValue(target)
+                self._sync_visible_rows()
+                target = self._scroll_target(index)
+            return
 
         animation = QPropertyAnimation(scrollbar, b"value", self)
         animation.setDuration(self.scroll_animation_ms)
@@ -1133,11 +1050,20 @@ class ScrollingLyricsWidget(QWidget):
             "out_cubic": QEasingCurve.Type.OutCubic,
         }
         animation.setEasingCurve(easing_map.get(self.scroll_animation_easing, QEasingCurve.Type.OutCubic))
-        animation.finished.connect(lambda: self._clear_animation(animation))
+        animation.finished.connect(lambda: self._clear_animation(animation, index))
         self.scroll_animation = animation
         animation.start()
 
-    def _clear_animation(self, animation):
+    def _scroll_target(self, index):
+        start = self._line_start(index)
+        center = self._line_center(index) - self._viewport_extent() / 2
+        target = start - 20 if self.scroll_behavior == "ensure_visible" else center
+        return int(max(0, min(target, self._scroll_axis().maximum())))
+
+    def _clear_animation(self, animation, index):
         if self.scroll_animation is animation:
             self.scroll_animation = None
+            if index == self.current_line and 0 <= index < self.lyric_count:
+                self._scroll_to_line(index, animate=False)
+        animation.deleteLater()
 

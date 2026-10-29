@@ -798,11 +798,8 @@ class FuriganaWidget(QWidget):
                 })
             offset += len(segment_text)
 
-        # IMPORTANT: set_lyrics() constructs one FuriganaWidget for every
-        # lyric line. Calling build_furigana_segments() here therefore meant
-        # opening a song synchronously romanized the *entire* song on the Qt
-        # thread. PyCantonese is particularly expensive and made first load
-        # freeze. Only consume an already-generated cached result here; the
+        # Reading generation must stay off the Qt thread, including when
+        # scrolling mounts new viewport rows. Consume cached results here; the
         # active lyric renderer generates missing readings lazily in its
         # background worker.
         whole_tokens = get_cached_furigana_segments(text) if text else []
@@ -836,6 +833,8 @@ class FuriganaWidget(QWidget):
                 self._furigana_future = future
 
                 def finished_karaoke(done):
+                    if done.cancelled() or getattr(self, "_reading_disposed", False):
+                        return
                     try:
                         result = done.result()
                     except Exception as error:
@@ -843,7 +842,7 @@ class FuriganaWidget(QWidget):
                             f"[Yomi] Karaoke worker failed for {text!r}: {error!r}"
                         )
                         result = [{"text": text, "reading": None}]
-                    self._furigana_bridge.ready.emit(
+                    self._emit_readings_ready(
                         text,
                         {"karaoke": original_segments, "segments": result, "line_end": line_end},
                     )
@@ -1077,14 +1076,24 @@ class FuriganaWidget(QWidget):
         self._furigana_future = future
 
         def finished(done):
+            if done.cancelled() or getattr(self, "_reading_disposed", False):
+                return
             try:
                 result = done.result()
             except Exception as error:
                 print(f"[Yomi] Worker failed for {text!r}: {error!r}")
                 result = [{"text": text, "reading": None}]
-            self._furigana_bridge.ready.emit(text, result)
+            self._emit_readings_ready(text, result)
 
         future.add_done_callback(finished)
+
+    def _emit_readings_ready(self, text, result):
+        try:
+            self._furigana_bridge.ready.emit(text, result)
+        except RuntimeError:
+            # The Qt row may be destroyed between the worker finishing and
+            # emitting its queued result (viewport eviction or window close).
+            pass
 
     def furigana_ready(self, text, segments):
         # Karaoke requests return a small envelope so the cached full-line

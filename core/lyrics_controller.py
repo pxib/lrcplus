@@ -283,7 +283,7 @@ class LyricsController(LyricsSearchMixin):
             if (
                 entering_scrolling
                 or not self.scrolling_lyrics_widget.rows
-                or len(self.scrolling_lyrics_widget.rows) != len(self.lyrics)
+                or self.scrolling_lyrics_widget.lyric_count != len(self.lyrics)
             ):
                 source_lines = getattr(self, "lyric_lines", None) or self.lyrics
                 self.scrolling_lyrics_widget.set_lyrics(source_lines)
@@ -431,6 +431,11 @@ class LyricsController(LyricsSearchMixin):
         print("[Furigana] Batch prefetch complete")
 
     def load_lrc_file(self, path):
+        # Manually opening/attaching lyrics takes precedence over an unfinished
+        # automatic search for this track.
+        cancel_search = getattr(self, "_cancel_lyrics_search", None)
+        if cancel_search is not None:
+            cancel_search()
         path = Path(path)
         self.current_lyrics_path = path
         self.lyrics_offset_seconds = (

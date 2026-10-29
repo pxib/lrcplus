@@ -4,9 +4,9 @@ from lyrics.lrcx_parser import load_lrcx, get_lrcx_generation_mode
 from lyrics.models import LyricLine
 from lyrics.parser import load_lrc, get_lrc_generation_mode
 
-# The player currently renders each scrolling row as a QWidget. Keep malformed
-# imports from allocating tens of thousands of widget/animation objects. Editors
-# can still read the complete document with load_lyrics().
+# Keep malformed subtitle imports from overwhelming the lyric list and reading
+# prefetch. The scrolling view separately bounds its widgets to the viewport.
+# Editors can still read the complete document with load_lyrics().
 PLAYER_LYRIC_LINE_LIMIT = 5000
 
 
