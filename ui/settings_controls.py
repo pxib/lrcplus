@@ -127,6 +127,10 @@ SETTINGS_DIALOG_STYLE = """
         color: @TEXT@;
         background-color: @WINDOW@;
     }
+    QDialog QLabel,
+    QDialog QCheckBox {
+        background-color: transparent;
+    }
     QDialog QTabWidget::pane {
         background: @SURFACE@;
         border: 1px solid @BORDER@;

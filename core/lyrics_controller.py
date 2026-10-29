@@ -430,6 +430,40 @@ class LyricsController(LyricsSearchMixin):
         self._refresh_current_lyric_furigana()
         print("[Furigana] Batch prefetch complete")
 
+    def _clear_loaded_lyrics(self):
+        self.lyric_lines = []
+        self.lyrics = []
+        self.lyric_times = []
+        self._playback_line_indices = []
+        self.current_line = -1
+        self.last_lyric_text = None
+        self.plain_lyrics_mode = False
+        self._furigana_prefetch_id = getattr(self, "_furigana_prefetch_id", 0) + 1
+        self.lyric_widget.set_lyric("")
+        self.scrolling_lyrics_widget.clear()
+        self.lyrics_list_widget.clear()
+        if hasattr(self, "waveform_widget"):
+            self.waveform_widget.set_lyric_times([])
+        if hasattr(self, "furigana_progress_bar"):
+            self.furigana_progress_bar.hide()
+
+    def reload_renderer(self, *, rediscover=False):
+        """Reload lyrics and their association without reopening the audio."""
+        self.clear_lyrics_search_index()
+        self._cancel_lyrics_search()
+        audio = self.current_audio_path
+        attached = get_lyrics_attachment(audio) if audio else None
+        if attached and Path(attached).is_file():
+            self.load_lrc_file(attached)
+        elif not rediscover and self.current_lyrics_path:
+            self.load_lrc_file(self.current_lyrics_path)
+        elif audio:
+            self.current_lyrics_path = None
+            self._clear_loaded_lyrics()
+            self._start_lyrics_search(audio)
+        else:
+            self.statusBar().showMessage("Open an audio or lyrics file first.", 5000)
+
     def load_lrc_file(self, path):
         # Manually opening/attaching lyrics takes precedence over an unfinished
         # automatic search for this track.
@@ -511,20 +545,7 @@ class LyricsController(LyricsSearchMixin):
 
         except (OSError, UnicodeError, ValueError) as error:
             print(f"[Lyrics] Failed to load {str(path)!r}: {error}")
-            self.lyric_lines = []
-            self.lyrics = []
-            self.lyric_times = []
-            self._playback_line_indices = []
-            self.current_line = -1
-            self.last_lyric_text = None
-            self._furigana_prefetch_id = getattr(self, "_furigana_prefetch_id", 0) + 1
-            self.lyric_widget.set_lyric("")
-            self.scrolling_lyrics_widget.clear()
-            self.lyrics_list_widget.clear()
-            if hasattr(self, "waveform_widget"):
-                self.waveform_widget.set_lyric_times([])
-            if hasattr(self, "furigana_progress_bar"):
-                self.furigana_progress_bar.hide()
+            self._clear_loaded_lyrics()
             self._lyrics_load_error = True
             self.statusBar().showMessage(f"Could not load lyrics: {error}")
             return
@@ -576,6 +597,9 @@ class LyricsController(LyricsSearchMixin):
                 self.scrolling_mode
             )
         self._start_furigana_prefetch()
+        # A paused player emits no positionChanged signal after an editor or
+        # manual reload. Render the active line at the existing position now.
+        self.update_lyrics(self.media_player.position())
 
         print(
             f"[Lyrics] Loaded {len(self.lyric_lines)} lines "

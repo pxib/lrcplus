@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 import json
 import os
+import re
 
 import requests
 
@@ -41,16 +42,30 @@ LYRIC_LINES_DEFAULT = 10
 LYRIC_UPDATE_COOLDOWN = 5.0
 
 DEFAULT_SETTINGS = {
+    "activity_type": "listening",
+    "details_template": "{title}",
+    "state_template": "{album_or_artist}{lyric_suffix}",
+    "large_text_template": "{artist}",
+    "show_timestamps": True,
+    "show_when_paused": True,
     "include_lyrics": True,
     "lyric_lines_per_update": LYRIC_LINES_DEFAULT,
     "lookup_online_artwork": True,
     "upload_embedded_artwork": True,
 }
 
+ACTIVITY_TYPES = {
+    "listening": "Listening to",
+    "playing": "Playing",
+    "watching": "Watching",
+    "competing": "Competing in",
+}
+TEMPLATE_KEYS = ("details_template", "state_template", "large_text_template")
+
 
 class DiscordRpcPlugin:
     name = "Discord Rich Presence"
-    version = "1.2.0"
+    version = "1.3.0"
     description = (
         "Show the current track on Discord with metadata and album artwork."
     )
@@ -95,12 +110,20 @@ class DiscordRpcPlugin:
                 self.settings["lyric_lines_per_update"]
             )
         )
+        if (
+            not isinstance(self.settings["activity_type"], str)
+            or self.settings["activity_type"] not in ACTIVITY_TYPES
+        ):
+            self.settings["activity_type"] = DEFAULT_SETTINGS["activity_type"]
+        for key in TEMPLATE_KEYS:
+            if not isinstance(self.settings[key], str):
+                self.settings[key] = DEFAULT_SETTINGS[key]
         context.on("app_ready", self.on_app_ready)
         context.api.register_settings_widget(
             "Discord Rich Presence",
             self.create_settings_widget,
             apply=self.apply_settings_widget,
-            description="Choose what LyricsPlus shares with Discord and which artwork sources it can use.",
+            description="Customize your activity text, playback display, lyrics, and artwork sources.",
             order=20,
         )
 
@@ -836,11 +859,53 @@ class DiscordRpcPlugin:
     # Presence
     # ------------------------------------------------------------------
 
+    def _presence_text(self, metadata, status, *, settings=None, lyric=None):
+        settings = self.settings if settings is None else settings
+        if lyric is None:
+            lyric = self._current_rpc_lyric
+        lyric = lyric if settings.get("include_lyrics", True) else None
+        artist = metadata.get("artist") or "Unknown artist"
+        album = metadata.get("album")
+        values = {
+            "title": metadata.get("title") or "Unknown title",
+            "artist": artist,
+            "album": album or "Unknown album",
+            "album_or_artist": album or artist,
+            "lyric": lyric or "",
+            "lyric_suffix": f" | {lyric}" if lyric else "",
+            "status": status,
+        }
+        result = {}
+        for key, field in zip(TEMPLATE_KEYS, ("details", "state", "large_text")):
+            template = settings.get(key, DEFAULT_SETTINGS[key])
+            if not isinstance(template, str):
+                template = DEFAULT_SETTINGS[key]
+            # Replace only named tokens; braces in lyrics or metadata remain
+            # literal, and user text is never evaluated as a format expression.
+            text = re.sub(
+                r"\{([a-z_]+)\}",
+                lambda match: str(values.get(match[1], match[0])),
+                template,
+            )
+            text = " ".join(text.split())[:128]
+            if text:
+                # Discord requires at least two characters for details/state.
+                # Invisible padding keeps single-character titles usable.
+                if field in {"details", "state"} and len(text) == 1:
+                    text += "\u200b"
+                result[field] = text
+        return result
+
     def create_settings_widget(self, parent):
+        from PySide6.QtCore import Qt
         from PySide6.QtWidgets import (
             QCheckBox,
+            QComboBox,
             QFormLayout,
+            QGroupBox,
             QLabel,
+            QLineEdit,
+            QPushButton,
             QSpinBox,
             QVBoxLayout,
             QWidget,
@@ -849,6 +914,50 @@ class DiscordRpcPlugin:
         widget = QWidget(parent)
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
+
+        display = QGroupBox("Activity display")
+        display_form = QFormLayout(display)
+        display_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        widget.activity_type = QComboBox()
+        for value, label in ACTIVITY_TYPES.items():
+            widget.activity_type.addItem(label, value)
+        widget.activity_type.setCurrentIndex(
+            max(0, widget.activity_type.findData(self.settings["activity_type"]))
+        )
+        display_form.addRow("Activity type:", widget.activity_type)
+        for key, label in zip(
+            TEMPLATE_KEYS, ("Details:", "State:", "Artwork hover text:")
+        ):
+            editor = QLineEdit(self.settings[key])
+            editor.setToolTip("Leave empty to hide this text. Text is limited to 128 characters after substitution.")
+            setattr(widget, key, editor)
+            display_form.addRow(label, editor)
+        help_text = QLabel(
+            "Use {title}, {artist}, {album}, {lyric}, or {status} (Playing, Paused, Stopped). "
+            "{album_or_artist} uses the artist when no album is available. "
+            "{lyric_suffix} adds ' | lyric' only when lyrics are available. "
+            "Unknown placeholders are shown literally."
+        )
+        help_text.setWordWrap(True)
+        display_form.addRow(help_text)
+        widget.show_timestamps = QCheckBox("Show playback progress")
+        widget.show_timestamps.setChecked(self.settings["show_timestamps"])
+        display_form.addRow(widget.show_timestamps)
+        widget.show_when_paused = QCheckBox("Keep activity visible while paused or stopped")
+        widget.show_when_paused.setChecked(self.settings["show_when_paused"])
+        display_form.addRow(widget.show_when_paused)
+        layout.addWidget(display)
+
+        preview_box = QGroupBox("Text preview")
+        preview_layout = QVBoxLayout(preview_box)
+        preview_note = QLabel("Uses the current track when available, otherwise sample text. Artwork hover text appears only with artwork.")
+        preview_note.setWordWrap(True)
+        preview_layout.addWidget(preview_note)
+        widget.text_preview = QLabel()
+        widget.text_preview.setTextFormat(Qt.TextFormat.PlainText)
+        widget.text_preview.setWordWrap(True)
+        preview_layout.addWidget(widget.text_preview)
+        layout.addWidget(preview_box)
 
         widget.include_lyrics = QCheckBox(
             "Include current lyrics in Discord activity"
@@ -919,11 +1028,61 @@ class DiscordRpcPlugin:
             "Uploads artwork embedded in the audio file to Litterbox. The link expires after 12 hours."
         )
         layout.addWidget(widget.upload_embedded_artwork)
+
+        def update_preview():
+            settings = {
+                key: getattr(widget, key).text() for key in TEMPLATE_KEYS
+            }
+            settings["include_lyrics"] = widget.include_lyrics.isChecked()
+            path = self._audio_path()
+            metadata = self._local_metadata(path) if path else {
+                "title": "Song title", "artist": "Artist", "album": "Album"
+            }
+            status = "Playing"
+            player = getattr(self.window, "media_player", None)
+            if player is not None:
+                status = self._playback_status(player)
+            fields = self._presence_text(
+                metadata, status, settings=settings,
+                lyric=self._current_rpc_lyric if path else "Current lyric line",
+            )
+            widget.text_preview.setText(
+                f"{widget.activity_type.currentText()} LyricsPlus\n"
+                f"Details: {fields.get('details', '(hidden)')}\n"
+                f"State: {fields.get('state', '(hidden)')}\n"
+                f"Artwork hover: {fields.get('large_text', '(hidden)')}"
+            )
+
+        for key in TEMPLATE_KEYS:
+            getattr(widget, key).textChanged.connect(update_preview)
+        widget.activity_type.currentIndexChanged.connect(update_preview)
+        widget.include_lyrics.toggled.connect(update_preview)
+        update_preview()
+
+        def restore_defaults():
+            widget.activity_type.setCurrentIndex(
+                widget.activity_type.findData(DEFAULT_SETTINGS["activity_type"])
+            )
+            for key in TEMPLATE_KEYS:
+                getattr(widget, key).setText(DEFAULT_SETTINGS[key])
+            for key in (
+                "show_timestamps", "show_when_paused", "include_lyrics",
+                "lookup_online_artwork", "upload_embedded_artwork",
+            ):
+                getattr(widget, key).setChecked(DEFAULT_SETTINGS[key])
+            widget.lyric_lines_per_update.setValue(LYRIC_LINES_DEFAULT)
+
+        widget.restore_defaults = QPushButton("Restore defaults")
+        widget.restore_defaults.clicked.connect(restore_defaults)
+        layout.addWidget(widget.restore_defaults)
         layout.addStretch()
         return widget
 
     def apply_settings_widget(self, widget):
         values = {
+            "activity_type": widget.activity_type.currentData(),
+            "show_timestamps": widget.show_timestamps.isChecked(),
+            "show_when_paused": widget.show_when_paused.isChecked(),
             "include_lyrics": widget.include_lyrics.isChecked(),
             "lyric_lines_per_update": (
                 self._normalize_lyric_lines_per_update(
@@ -933,6 +1092,7 @@ class DiscordRpcPlugin:
             "lookup_online_artwork": widget.lookup_online_artwork.isChecked(),
             "upload_embedded_artwork": widget.upload_embedded_artwork.isChecked(),
         }
+        values.update({key: getattr(widget, key).text() for key in TEMPLATE_KEYS})
         lyrics_changed = values["include_lyrics"] != self.settings.get(
             "include_lyrics", True
         )
@@ -958,6 +1118,15 @@ class DiscordRpcPlugin:
         if self.window is not None:
             self.update_presence(force=True)
 
+    @staticmethod
+    def _playback_status(player):
+        state = player.playbackState()
+        if state == player.PlaybackState.PlayingState:
+            return "Playing"
+        if state == player.PlaybackState.PausedState:
+            return "Paused"
+        return "Stopped"
+
     def update_presence(self, force=False):
         path = self._audio_path()
 
@@ -978,39 +1147,19 @@ class DiscordRpcPlugin:
 
         self.current_path = path
 
+        status = self._playback_status(player)
+        is_playing = status == "Playing"
+        if not is_playing and not self.settings.get("show_when_paused", True):
+            self.clear_presence()
+            return
+
         metadata = self._local_metadata(path)
-        title = metadata["title"]
-        artist = metadata.get("artist") or "Unknown artist"
-        album = metadata.get("album")
-
-        is_playing = (
-            player.playbackState()
-            == player.PlaybackState.PlayingState
-        )
-
-        # Discord layout:
-        #   details      -> Title
-        #   state        -> Album | Current lyric
-        #   large_text   -> Artist (shown when hovering the artwork)
-        #
-        # The artist remains part of the track metadata while the visible
-        # state line is reserved for the album and periodically updated lyric.
-        if (
-            self.settings.get("include_lyrics", True)
-            and self._current_rpc_lyric
-        ):
-            context_text = album or "Unknown album"
-            presence_state = f"{context_text} | {self._current_rpc_lyric}"
-        else:
-            presence_state = album or artist
-
-        payload = {
-            "details": title,
-            "state": presence_state,
-        }
+        payload = self._presence_text(metadata, status)
+        hover_text = payload.pop("large_text", None)
 
         if ActivityType is not None:
-            payload["activity_type"] = ActivityType.LISTENING
+            activity = self.settings.get("activity_type", "listening").upper()
+            payload["activity_type"] = getattr(ActivityType, activity, ActivityType.LISTENING)
 
         # Never perform MusicBrainz, Cover Art Archive, or Litterbox network
         # requests on the UI thread. Publish the track immediately, then let a
@@ -1022,11 +1171,12 @@ class DiscordRpcPlugin:
 
         if cover_url:
             payload["large_image"] = cover_url
-            payload["large_text"] = artist
+            if hover_text:
+                payload["large_text"] = hover_text
 
         # Discord advances the timestamp itself while playing. When paused we
         # deliberately omit it so Discord does not pretend playback continues.
-        if is_playing:
+        if is_playing and self.settings.get("show_timestamps", True):
             position_ms = max(0, int(player.position()))
             duration_ms = max(0, int(player.duration()))
             now = time.time()

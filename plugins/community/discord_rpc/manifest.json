@@ -1,7 +1,7 @@
 {
   "name": "Discord Rich Presence",
-  "version": "1.2.0",
-  "description": "Show the current track in Discord.",
+  "version": "1.3.0",
+  "description": "Customize Discord activity with track metadata, lyrics, and album artwork.",
   "api_version": 2,
   "dependencies": [
     {"requirement": "pypresence>=4.6,<5", "import_name": "pypresence"},

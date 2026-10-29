@@ -435,11 +435,14 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
 
             self.lyrics_menu.addAction(edit_lyrics_action)
             self.lyrics_menu.addAction(save_as_action)
+            reload_renderer_action = QAction("Reload Renderer", self)
+            reload_renderer_action.setToolTip("Reload lyrics without restarting playback")
+            reload_renderer_action.triggered.connect(self.reload_renderer)
+            self.lyrics_menu.addAction(reload_renderer_action)
             self.lyrics_menu.addSeparator()
             search_lyrics_action = QAction("Search Lyrics", self)
             search_lyrics_action.triggered.connect(self.search_lrclib_lyrics)
             self.lyrics_menu.addAction(search_lyrics_action)
-            self.lyrics_button.setMenu(self.lyrics_menu)
             self.lyrics_button.setMenu(self.lyrics_menu)
 
             self.recent_button = QPushButton(
@@ -2041,7 +2044,10 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
 
             dialog = LrcEditorDialog(lyrics_path, self)
             try:
-                if dialog.exec() == QDialog.DialogCode.Accepted:
+                # Association edits refresh through save_document; loading the
+                # editor's old file here would undo a newly selected target.
+                if (dialog.exec() == QDialog.DialogCode.Accepted
+                        and getattr(dialog, "_association_changed_song", None) is None):
                     saved_path = getattr(dialog, "result_path", lyrics_path)
                     self.load_lrc_file(str(saved_path))
                     self.current_lyrics_path = Path(saved_path)

@@ -501,6 +501,200 @@ def test_plugin_lyric_attachment_refreshes_lyrics_without_restarting_audio(queue
     assert original.read_text(encoding="utf-8") == "[00:00.000]Authored"
 
 
+@pytest.mark.parametrize("action", ["force", "choose", "remove"])
+def test_editor_association_refreshes_paused_renderer(
+    queue_player, tracks, tmp_path, make_lyrics_editor, qapp, monkeypatch, action,
+):
+    from core.settings import get_lyrics_attachment, set_lyrics_attachment
+
+    window = queue_player
+    monkeypatch.setattr(window, "_start_furigana_prefetch", lambda: None)
+    monkeypatch.setattr(window, "find_lrc_for_audio", Player.find_lrc_for_audio.__get__(window))
+    automatic = tracks[0].with_suffix(".lrc")
+    automatic.write_text("[00:01.000]Automatic\n", encoding="utf-8")
+    external = tmp_path / "external.lrcx"
+    external.write_text("[format:LRCX]\n[00:01.000]External\n", encoding="utf-8")
+    window.current_audio_path = tracks[0]
+    window.media_player.time = 12345
+    window.load_lrc_file(external if action == "remove" else automatic)
+    editor = make_lyrics_editor(path=external, populate=False)
+    editor.player = window
+    if action == "remove":
+        set_lyrics_attachment(tracks[0], external)
+    if action == "choose":
+        monkeypatch.setattr("ui.lrc_editor.QFileDialog.getOpenFileName",
+                            lambda *args: (str(external), ""))
+        editor.choose_lyrics_file_for_current_song()
+    else:
+        editor.toggle_song_association()
+    expected = automatic if action == "remove" else external
+    wait_for(qapp, lambda: window.current_lyrics_path == expected and window.current_line == 0)
+    assert window.lyric_widget.lyric == ("Automatic" if action == "remove" else "External")
+    assert window.scrolling_lyrics_widget.lyric_count == 1
+    assert get_lyrics_attachment(tracks[0]) == (None if action == "remove" else str(external))
+    assert window.media_player.time == 12345
+    assert not window.media_player.isPlaying()
+    assert window.media_player.loads == []
+
+
+@pytest.mark.parametrize("playing", [False, True])
+def test_reload_renderer_menu_rereads_active_file_without_restarting_audio(
+    queue_player, tracks, monkeypatch, playing,
+):
+    window = queue_player
+    monkeypatch.setattr(window, "_start_furigana_prefetch", lambda: None)
+    path = tracks[0].with_suffix(".lrc")
+    path.write_text("[00:01.000]Before\n", encoding="utf-8")
+    window.current_audio_path = tracks[0]
+    window.media_player.time = 12345
+    window.media_player.playing = playing
+    window.load_lrc_file(path)
+    path.write_text("[00:01.000]After\n", encoding="utf-8")
+    action = next(action for action in window.lyrics_menu.actions()
+                  if action.text() == "Reload Renderer")
+    action.trigger()
+    assert window.current_lyrics_path == path
+    assert window.lyric_widget.lyric == "After"
+    assert window.lyrics_list_widget.item(0).text().endswith("After")
+    assert window.current_line == 0
+    assert window.media_player.time == 12345
+    assert window.media_player.isPlaying() == playing
+    assert window.media_player.loads == []
+
+
+def test_reload_renderer_uses_new_association_and_supports_lyrics_without_audio(
+    queue_player, tracks, tmp_path, monkeypatch,
+):
+    from core.settings import set_lyrics_attachment
+
+    window = queue_player
+    monkeypatch.setattr(window, "_start_furigana_prefetch", lambda: None)
+    original = tmp_path / "original.lrc"
+    original.write_text("[00:01.000]Original\n", encoding="utf-8")
+    selected = tmp_path / "selected.lrc"
+    selected.write_text("[00:01.000]Selected\n", encoding="utf-8")
+    window.media_player.time = 12345
+    window.load_lrc_file(original)
+    original.write_text("[00:01.000]Updated standalone lyrics\n", encoding="utf-8")
+    window.reload_renderer()
+    assert window.lyric_widget.lyric == "Updated standalone lyrics"
+    window.current_audio_path = tracks[0]
+    set_lyrics_attachment(tracks[0], selected)
+    window.reload_renderer()
+    assert window.current_lyrics_path == selected
+    assert window.lyric_widget.lyric == "Selected"
+    assert window.media_player.time == 12345
+    assert window.media_player.loads == []
+
+
+def test_removing_association_with_no_match_clears_old_lyrics(
+    queue_player, tracks, tmp_path, make_lyrics_editor, qapp, monkeypatch,
+):
+    from core.settings import set_lyrics_attachment
+
+    window = queue_player
+    monkeypatch.setattr(window, "_start_furigana_prefetch", lambda: None)
+    original = tmp_path / "unrelated.lrcx"
+    original.write_text("[format:LRCX]\n[00:01.000]Old lyrics\n", encoding="utf-8")
+    window.current_audio_path = tracks[0]
+    window.media_player.time = 12345
+    window.load_lrc_file(original)
+    set_lyrics_attachment(tracks[0], original)
+    editor = make_lyrics_editor(path=original, populate=False)
+    editor.player = window
+    editor.toggle_song_association()
+    wait_for(qapp, lambda: window.current_lyrics_path is None)
+    wait_for(qapp, lambda: window._lyrics_search_job._future is None)
+    assert window.lyrics == []
+    assert window.lyric_widget.lyric == ""
+    assert window.scrolling_lyrics_widget.lyric_count == 0
+    assert window.lyrics_list_widget.count() == 0
+    assert window.media_player.time == 12345
+    assert window.media_player.loads == []
+
+
+def test_queued_editor_association_cannot_replace_next_song(
+    queue_player, tracks, tmp_path, make_lyrics_editor, qapp, monkeypatch,
+):
+    window = queue_player
+    external = tmp_path / "external.lrcx"
+    external.write_text("[format:LRCX]\n[00:01.000]Previous song\n", encoding="utf-8")
+    editor = make_lyrics_editor(path=external, populate=False)
+    editor.player = window
+    window.current_audio_path = tracks[0]
+    editor.toggle_song_association()
+    window.current_audio_path = tracks[1]
+    loaded = []
+    monkeypatch.setattr(window, "load_lrc_file", loaded.append)
+    qapp.processEvents()
+    assert not loaded
+
+
+def test_new_draft_association_waits_for_save(
+    queue_player, tracks, tmp_path, make_lyrics_editor, qapp, monkeypatch,
+):
+    from core.settings import get_lyrics_attachment
+
+    window = queue_player
+    editor = make_lyrics_editor(path=tmp_path / "draft.lrcx")
+    editor.player = window
+    window.current_audio_path = tracks[0]
+    loaded = []
+    monkeypatch.setattr(window, "load_lrc_file", loaded.append)
+    editor.toggle_song_association()
+    qapp.processEvents()
+    assert not get_lyrics_attachment(tracks[0])
+    assert not loaded and not editor.lrc_path.exists()
+    assert editor.save_document()
+    qapp.processEvents()
+    assert get_lyrics_attachment(tracks[0]) == str(editor.lrc_path)
+    assert loaded == [str(editor.lrc_path)]
+
+
+@pytest.mark.parametrize("action", ["choose", "remove"])
+def test_saving_and_closing_editor_preserves_changed_association(
+    queue_player, tracks, tmp_path, make_lyrics_editor, qapp, monkeypatch, action,
+):
+    from core.settings import get_lyrics_attachment, set_lyrics_attachment
+
+    window = queue_player
+    monkeypatch.setattr(window, "_start_furigana_prefetch", lambda: None)
+    monkeypatch.setattr(window, "find_lrc_for_audio", Player.find_lrc_for_audio.__get__(window))
+    automatic = tracks[0].with_suffix(".lrc")
+    automatic.write_text("[00:01.000]Automatic\n", encoding="utf-8")
+    original = tmp_path / "original.lrcx"
+    original.write_text(f"[format:LRCX]\n[attach:{tracks[0]}]\n[00:01.000]Original\n", encoding="utf-8")
+    selected = tmp_path / "selected.lrcx"
+    selected.write_text("[format:LRCX]\n[00:01.000]Selected\n", encoding="utf-8")
+    set_lyrics_attachment(tracks[0], original)
+    window.current_audio_path = tracks[0]
+    window.media_player.time = 12345
+    window.load_lrc_file(original)
+    editor = make_lyrics_editor(path=original, populate=False)
+    editor.player = window
+    monkeypatch.setattr("ui.main_window.LrcEditorDialog", lambda *args: editor)
+
+    def finish():
+        if action == "choose":
+            monkeypatch.setattr("ui.lrc_editor.QFileDialog.getOpenFileName",
+                                lambda *args: (str(selected), ""))
+            editor.choose_lyrics_file_for_current_song()
+        else:
+            editor.toggle_song_association()
+        assert editor.save_document(close_after_save=True)
+        return editor.result()
+
+    monkeypatch.setattr(editor, "exec", finish)
+    window.edit_current_lyrics()
+    expected = selected if action == "choose" else automatic
+    wait_for(qapp, lambda: window.current_lyrics_path == expected and window.current_line == 0)
+    assert window.lyric_widget.lyric == ("Selected" if action == "choose" else "Automatic")
+    assert get_lyrics_attachment(tracks[0]) == (str(selected) if action == "choose" else None)
+    assert "[attach:" not in original.read_text(encoding="utf-8")
+    assert window.media_player.time == 12345
+    assert window.media_player.loads == []
+
+
 def test_oversized_lyric_file_is_rejected_before_allocating_scrolling_widgets(queue_player, tmp_path, monkeypatch):
     from lyrics.models import LyricLine
 

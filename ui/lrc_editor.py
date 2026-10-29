@@ -536,12 +536,14 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
 
     def toggle_song_association(self):
         current_song = self._current_song_path()
+        affected_song = current_song
         if current_song is not None and get_lyrics_attachment(current_song):
             set_lyrics_attachment(current_song, None)
             if self.attached_song_path and self._normalise_song_path(self.attached_song_path) == self._normalise_song_path(current_song):
                 self.attached_song_path = None
         elif self.attached_song_path:
             previous_song = self.attached_song_path
+            affected_song = previous_song
             self.attached_song_path = None
             set_lyrics_attachment(previous_song, None)
         else:
@@ -563,9 +565,32 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         # The metadata remains portable/source-visible; the index allows the
         # player to find this lyrics file even when it sits outside lyric search folders.
         self._mark_document_dirty()
+        self._association_changed_song = affected_song
         self._update_song_association_ui()
         if hasattr(self, "source_editor"):
             self.sync_source_from_model()
+        if not self.is_new_document or not self.attached_song_path:
+            self._refresh_player_song_association(affected_song)
+
+    def _refresh_player_song_association(self, song):
+        """Apply a persisted association after the editor action completes."""
+        parent = self.player
+        reload_renderer = getattr(parent, "reload_renderer", None)
+        if song is None or not callable(reload_renderer):
+            return
+        clear_index = getattr(parent, "clear_lyrics_search_index", None)
+        if callable(clear_index):
+            clear_index()
+
+        def refresh():
+            # Playback can advance while the editor is open. A queued action
+            # for the previous song must never replace the new song's lyrics.
+            current = getattr(parent, "current_audio_path", None)
+            if self._normalise_song_path(current) != self._normalise_song_path(song):
+                return
+            reload_renderer(rediscover=True)
+
+        QTimer.singleShot(0, refresh)
 
     def _update_document_title(self):
         """Reflect real-file vs new-draft state in the editor title bar."""
@@ -621,33 +646,20 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         # authoritative, so we do not modify a document the user did not open.
         if lyrics_path == self.lrc_path.resolve():
             self.attached_song_path = str(Path(song).resolve())
-            if hasattr(self, "source_editor"):
-                self.sync_source_from_model()
+        elif self._normalise_song_path(self.attached_song_path) == self._normalise_song_path(song):
+            # Saving the old document must not restore its former association
+            # over the external file the user just selected.
+            self.attached_song_path = None
+        if hasattr(self, "source_editor"):
+            self.sync_source_from_model()
 
         # The association is persisted immediately, but this is still an editor
         # action and Save must become available rather than appearing inert.
         self._mark_document_dirty()
+        self._association_changed_song = song
         self._update_song_association_ui()
 
-        # UX: an association should take effect immediately.  The main lyrics
-        # view used to keep showing the old file until the editor was saved and
-        # closed, which made a successful association feel like it did nothing.
-        # Defer one event-loop turn so the file dialog/action can finish cleanly
-        # before asking the parent player to reload the selected lyrics.
-        parent = self.player
-        loader = getattr(parent, "load_lrc_file", None) if parent is not None else None
-        if callable(loader):
-            def _refresh_associated_lyrics(path=lyrics_path, owner=parent):
-                try:
-                    owner.load_lrc_file(str(path))
-                    owner.current_lyrics_path = Path(path)
-                except Exception as error:
-                    debug_print(
-                        f"[Lyrics Editor] Could not refresh associated lyrics "
-                        f"{path!s}: {error!r}"
-                    )
-
-            QTimer.singleShot(0, _refresh_associated_lyrics)
+        self._refresh_player_song_association(song)
 
     def _load_document(self):
         if not self.lrc_path.exists():
@@ -4071,7 +4083,10 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         if callable(clear_index):
             clear_index()
         loader = getattr(parent, "load_lrc_file", None) if parent is not None else None
-        if callable(loader):
+        changed_song = getattr(self, "_association_changed_song", None)
+        if changed_song is not None:
+            self._refresh_player_song_association(changed_song)
+        elif callable(loader):
             def _refresh_saved_lyrics(path=target, owner=parent):
                 try:
                     owner.load_lrc_file(str(path))
