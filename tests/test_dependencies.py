@@ -18,12 +18,13 @@ def _plugin(name, requirement=None, module=None):
     }
 
 
-def _wheel(folder, name, *, requires=(), code="VALUE = 42\n"):
+def _wheel(folder, name, *, requires=(), extras=(), code="VALUE = 42\n"):
     module = name.replace("-", "_")
     metadata = f"{module}-1.0.dist-info"
     files = {
         f"{module}/__init__.py": code,
         f"{metadata}/METADATA": "Metadata-Version: 2.1\n" + f"Name: {name}\nVersion: 1.0\n"
+        + "".join(f"Provides-Extra: {item}\n" for item in extras)
         + "".join(f"Requires-Dist: {item}\n" for item in requires) + "\n",
         f"{metadata}/WHEEL": "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
     }
@@ -46,6 +47,8 @@ def offline_manager(tmp_path, monkeypatch):
     _wheel(wheels, "lp-test-conflict", requires=["lp-test-shared>=2"])
     _wheel(wheels, "lp-test-support")
     _wheel(wheels, "lp-test-undeclared", code="import lp_test_support\n")
+    _wheel(wheels, "lp-test-extra", requires=["lp-test-support>=1; extra == 'default'"],
+           extras=["default"], code="import lp_test_support\n")
     manager = DependencyManager(tmp_path / "dependencies")
     manager.configure([_plugin(name) for name in (
         "lp-test-alpha", "lp-test-beta", "lp-test-broken", "lp-test-conflict",
@@ -70,6 +73,16 @@ def test_explicit_supporting_requirements_are_installed(offline_manager):
     state = offline_manager.install("lp-test-undeclared")
     assert "lp-test-support<2,>=1" in state["requirements"]["lp-test-undeclared"]
     offline_manager.check("lp-test-undeclared")
+
+
+def test_optional_extras_install_without_putting_extras_in_pip_constraints(offline_manager):
+    plugin = _plugin("lp-test-extra", requirement="lp-test-extra[default]>=1")
+    offline_manager.configure([plugin])
+    state = offline_manager.install("lp-test-extra")
+    site = dependencies._site_path(offline_manager.root, state)
+    assert (site / "lp_test_support").is_dir()
+    assert state["requirements"]["lp-test-extra"] == ["lp-test-extra[default]>=1"]
+    offline_manager.check("lp-test-extra")
 
 
 def test_install_remove_preserves_shared_dependencies_and_requires_restart(offline_manager):

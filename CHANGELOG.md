@@ -4,13 +4,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2026-10-29]
+## [2026-10-29.2]
 
 ### Added
-- Dependency Manager in Settings to install, repair, check, and remove optional plugin libraries.
-- Setup notices for enabled plugins with missing or incompatible dependencies.
-- Automatic private Python runtime setup for Windows builds, with libraries stored in the user's application data folder (Windows: %LOCALAPPDATA%\LyricsPlus)
-- Dependency changes take effect after restarting LyricsPlus; failed installations preserve the previous working environment.
+- Inline ASS/SSA subtitle warnings, including qualified warnings for VTT captions with ASS-style effect markers.
+- Subtitle language/source selection in yt-dlp Audio Import, original VTT/SRT downloads, optional LRC conversion, and subtitle-only imports for existing audio.
+- Plugin API lyric attachments that refresh the current track without restarting playback or replacing authored lyric files.
+- Optional yt-dlp Audio Import plugin with URL previews, M4A/MP3 downloads, metadata/artwork, cancellation, retries, and remembered source URLs.
+- Plugin API v4 local audio import method for library/queue integration, and optional dependency extras support for matching yt-dlp components.
+- Queue manager with drag-and-drop and multi-track reordering, Play next, Add to queue, and library context-menu actions.
+- Named saved playlists with load, append, update, rename, and delete controls, plus local M3U/M3U8 import and export.
 
 ### Fixed
-- Cantonese readings in packaged Windows builds now use the private Python runtime for their worker processes.
+- Styled subtitle conversion now collapses repeated outline/color redraws, joins vertical CJK character columns, and handles consecutive cues without blank separators.
+- Oversized lyric imports are rejected before creating scrolling widgets, preventing malformed subtitle conversions from freezing playback.
+- Repeated queue entries retain their own playback position, including when restoring a session with missing files.

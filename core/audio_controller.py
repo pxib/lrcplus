@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from core.recent import add_to_recent_songs
 from core.settings import save_playback_settings
+from core.playlists import path_key
 from core.audio_dsp import (
     volume_to_gain,
     snap_volume_percentage,
@@ -26,7 +27,7 @@ from core.audio_dsp import (
 
 class AudioController:
         def load_audio(self, path):
-            audio_path = Path(path)
+            audio_path = Path(path).expanduser().resolve()
 
             self.media_player.stop()
 
@@ -51,9 +52,16 @@ class AudioController:
             # Local (File) lyric settings are resolved whenever the track changes.
             self.refresh_lyrics_settings_for_current_file()
 
-            if audio_path not in self.playlist:
-                self.playlist.append(audio_path)
-            self.current_index = self.playlist.index(audio_path)
+            current = self.current_index
+            if not (0 <= current < len(self.playlist)
+                    and path_key(self.playlist[current]) == path_key(audio_path)):
+                self.current_index = next((i for i, entry in enumerate(self.playlist)
+                                           if path_key(entry) == path_key(audio_path)), -1)
+                if self.current_index < 0:
+                    self.playlist.append(audio_path)
+                    self.current_index = len(self.playlist) - 1
+            self._priority_queue_indices = [i for i in getattr(self, "_priority_queue_indices", [])
+                                            if i != self.current_index]
 
             self.current_line = -1
             self.last_lyric_text = None
@@ -110,7 +118,10 @@ class AudioController:
                 f"LRC+ — {audio_path.name}"
             )
 
-            self.update_transport_buttons()
+            if hasattr(self, "_notify_queue_changed"):
+                self._notify_queue_changed()
+            else:
+                self.update_transport_buttons()
 
 
         def toggle_playback(self):
@@ -152,8 +163,13 @@ class AudioController:
             if not paths or not getattr(self, "current_audio_path", None):
                 return -1
             try:
+                index = getattr(self, "current_index", -1)
+                if (getattr(self, "playback_settings", {}).get("play_mode", "playlist") == "playlist"
+                        and 0 <= index < len(paths)
+                        and path_key(paths[index]) == path_key(self.current_audio_path)):
+                    return index
                 current = str(Path(self.current_audio_path).resolve())
-                return next(i for i, path in enumerate(paths) if str(Path(path).resolve()) == current)
+                return next(i for i, path in enumerate(paths) if path_key(path) == path_key(current))
             except (OSError, StopIteration):
                 return -1
 
@@ -200,6 +216,7 @@ class AudioController:
                 return False
             if getattr(self, "playback_settings", {}).get("play_mode", "playlist") == "playlist":
                 self.current_index = index
+                self._priority_queue_indices = [i for i in getattr(self, "_priority_queue_indices", []) if i != index]
             self.load_audio(str(paths[index]))
             self.media_player.play()
             return True
@@ -234,7 +251,11 @@ class AudioController:
             current = self._active_index(paths)
             if current < 0:
                 current = -1
-            if getattr(self, "shuffle_enabled", False):
+            priority = getattr(self, "_priority_queue_indices", [])
+            if (getattr(self, "playback_settings", {}).get("play_mode", "playlist") == "playlist"
+                    and priority):
+                target = priority.pop(0)
+            elif getattr(self, "shuffle_enabled", False):
                 target = self._choose_shuffle_index(paths, current, 1)
             else:
                 target = current + 1
@@ -250,7 +271,9 @@ class AudioController:
                 button.setEnabled(has_track)
             paths = self._playback_paths()
             current = self._active_index(paths)
-            can_next = has_track and (self.shuffle_enabled and len(paths) > 1 or current + 1 < len(paths))
+            priority = (getattr(self, "playback_settings", {}).get("play_mode", "playlist") == "playlist"
+                        and bool(getattr(self, "_priority_queue_indices", [])))
+            can_next = has_track and (priority or self.shuffle_enabled and len(paths) > 1 or current + 1 < len(paths))
             self.next_button.setEnabled(can_next)
 
 
@@ -267,23 +290,6 @@ class AudioController:
                 return
             mode = getattr(self, "playback_settings", {}).get("shuffle_mode", "tracks")
             self.shuffle_button.setText(f"Shuffle: {mode.title()}")
-
-
-        def handle_media_status(self, status):
-            if status == QMediaPlayer.MediaStatus.EndOfMedia:
-                if self.loop_mode == 2:
-                    self.media_player.setPosition(0)
-                    self.media_player.play()
-                else:
-                    paths = self._playback_paths()
-                    current = self._active_index(paths)
-                    if self.loop_mode == 1 or (current >= 0 and current + 1 < len(paths)) or getattr(self, "shuffle_enabled", False):
-                        if self.loop_mode == 1 and not getattr(self, "shuffle_enabled", False) and current + 1 >= len(paths):
-                            self._load_playback_index(paths, 0)
-                        else:
-                            self.next_track()
-
-
 
 
         def start_seeking(self):
@@ -719,6 +725,13 @@ class AudioController:
                 return
 
             current = self._active_index(paths)
+
+            # An explicit Play next request also takes precedence over shuffle
+            # and can point earlier in the list after a manual reorder.
+            if (getattr(self, "playback_settings", {}).get("play_mode", "playlist") == "playlist"
+                    and getattr(self, "_priority_queue_indices", [])):
+                self.next_track()
+                return
 
             # Shuffle always selects another item when possible.
             if getattr(self, "shuffle_enabled", False):

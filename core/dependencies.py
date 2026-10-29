@@ -135,8 +135,8 @@ def parse_dependencies(value):
         try:
             requirement = Requirement(entry["requirement"])
             name = entry["import_name"]
-            if requirement.url or requirement.extras or requirement.marker:
-                raise ValueError("use a package name with optional version constraints")
+            if requirement.url or requirement.marker:
+                raise ValueError("use a package name with optional extras and version constraints")
             if not isinstance(name, str) or not name.isidentifier():
                 raise ValueError("import_name must be a top-level module name")
             support = entry.get("requires", [])
@@ -432,7 +432,14 @@ class DependencyManager:
                     constraints = directory / "constraints.txt"
                     # Protect app-provided libraries, including transitively required ones.
                     pins = [f"{key}=={value}" for key, value in sorted(self.base_versions.items())]
-                    pins.extend(value for entry in self.catalog.values() for item in entry["dependencies"] for value in (item.requirement, *item.requires))
+                    for entry in self.catalog.values():
+                        for item in entry["dependencies"]:
+                            for value in (item.requirement, *item.requires):
+                                constraint = Requirement(value)
+                                # pip accepts extras in install requests, but
+                                # constraints must name distributions alone.
+                                constraint.extras = set()
+                                pins.append(str(constraint))
                     constraints.write_text("\n".join(pins) + "\n", encoding="utf-8")
                     python = ensure_installer(log)
                     log("Resolving and installing dependencies. This can take a few minutes.")

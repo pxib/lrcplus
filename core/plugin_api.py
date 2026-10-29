@@ -1,16 +1,17 @@
-"""Public LyricsPlus Plugin API v3.
+"""Public LyricsPlus Plugin API v4.
 
 The API deliberately exposes stable capabilities instead of requiring plugins
 to import internal LyricsPlus modules or poke at the main window directly.
 Version 3 keeps earlier capabilities and adds main-window buttons and lyric
 word analysis alongside events, services, settings, menu actions and playback.
+Version 4 adds local audio imports and lyric attachments without restarting playback.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable
 
-PLUGIN_API_VERSION = 3
+PLUGIN_API_VERSION = 4
 MIN_PLUGIN_API_VERSION = 1
 
 
@@ -164,6 +165,20 @@ class LyricsPlusAPI:
     # ----------------------------- player ------------------------------
     def get_current_track(self) -> str | None:
         return self._manager.get_current_track()
+
+    def import_audio_files(self, paths: list[str], *, add_to_queue: bool = True) -> list[str]:
+        """Import existing local audio into the library, optionally enqueueing.
+
+        Call on the GUI thread. Playback continues uninterrupted. Missing or
+        unsupported files raise ValueError before the library/queue changes.
+        """
+        return self._manager.import_audio_files(paths, add_to_queue=add_to_queue)
+
+    def attach_lyrics(self, audio_path: str, lyrics_path: str) -> None:
+        """Associate local lyrics with audio, refreshing the current track's
+        lyrics without restarting playback. Call on the GUI thread.
+        """
+        self._manager.attach_lyrics(audio_path, lyrics_path)
 
     def get_current_lyrics(self) -> list[dict[str, Any]]:
         """Return a detached snapshot of the current lyric lines."""

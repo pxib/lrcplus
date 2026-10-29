@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.audio_controller import AudioController, snap_volume_percentage
+from core.queue_controller import QueueControllerMixin
 from core.lyrics_controller import LyricsController, _FuriganaProgressBridge
 from core.settings import (
     load_all_settings,
@@ -46,7 +47,7 @@ from lyrics.waveform import WaveformWidget, find_ffmpeg
 from lyrics.writer import convert_lyrics
 from ui.settings_dialog import SettingsDialog
 from ui.lrc_editor import LrcEditorDialog
-from ui.playlist_dialog import PlaylistDialog
+from ui.queue_actions import QueueActionsMixin
 from ui.artwork_background import ArtworkBackgroundWidget, extract_embedded_cover, load_embedded_cover_thumbnail
 from ui.player_dialogs import (ClickableSlider, ClickableTimeLabel, AlbumCoverDelegate, CoverPreviewView, CoverPreviewDialog, PitchChangerDialog, LibraryScanWorker)
 from core.booru_artwork import fetch_booru_artwork
@@ -71,7 +72,9 @@ def _lyrics_search_query(audio_path):
     return audio_path.stem
 
 
-class Player(AudioController, LyricsController, QMainWindow):
+class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsController, QMainWindow):
+        queue_changed = Signal()
+
         def __init__(self, plugin_manager=None):
             super().__init__()
 
@@ -114,6 +117,7 @@ class Player(AudioController, LyricsController, QMainWindow):
             self.current_audio_path = None
             self.playlist = []
             self.current_index = -1
+            self._priority_queue_indices = []
             self.lrc_search_paths = load_lrc_search_folders()
             # Persistent music library. Playback controls remain separate from
             # the library; the library is the primary workspace.
@@ -371,6 +375,11 @@ class Player(AudioController, LyricsController, QMainWindow):
             )
             self.open_menu.addAction(open_audio_action)
 
+            add_queue_action = QAction("Add to Queue…", self)
+            add_queue_action.setShortcut(QKeySequence("Ctrl+Shift+O"))
+            add_queue_action.triggered.connect(self.add_files_to_queue)
+            self.open_menu.addAction(add_queue_action)
+
             open_lrc_action = QAction(
                 "Open Lyrics...",
                 self,
@@ -440,7 +449,7 @@ class Player(AudioController, LyricsController, QMainWindow):
             )
 
             self.playlist_button = QPushButton(
-                "Playlist"
+                "Queue / Playlists"
             )
             self.playlist_button.clicked.connect(
                 self.show_playlist
@@ -821,7 +830,9 @@ class Player(AudioController, LyricsController, QMainWindow):
             self.library_table.setHeaderLabels([label for _, label in self.library_columns])
             self.library_table.setRootIsDecorated(True)
             self.library_table.setAlternatingRowColors(True)
-            self.library_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+            self.library_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+            self.library_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            self.library_table.customContextMenuRequested.connect(self._show_library_queue_menu)
             self.library_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             self.library_table.itemDoubleClicked.connect(self._play_library_item)
             self.library_table.itemClicked.connect(self._open_library_cover_preview)
@@ -1357,25 +1368,32 @@ class Player(AudioController, LyricsController, QMainWindow):
                 if not isinstance(paths, list):
                     return
 
-                restored = [
-                    Path(item)
-                    for item in paths
-                    if isinstance(item, str) and Path(item).is_file()
-                ]
-
-                if not restored:
-                    return
-
-                self.playlist = restored
-
                 try:
                     index = int(playlist_state.get("current_index", 0))
                 except (TypeError, ValueError):
                     index = 0
 
-                index = max(0, min(index, len(self.playlist) - 1))
-                self.current_index = index
-                self.load_audio(str(self.playlist[index]))
+                restored = []
+                original_indices = []
+                for original, item in enumerate(paths):
+                    if not isinstance(item, str):
+                        continue
+                    try:
+                        path = Path(item)
+                        if path.is_file():
+                            restored.append(path)
+                            original_indices.append(original)
+                    except (OSError, ValueError):
+                        continue
+                if not restored:
+                    return
+
+                self.playlist = restored
+                # Missing entries before the active occurrence must not shift
+                # restoration to a different song (or a different repeat).
+                self.current_index = next((i for i, original in enumerate(original_indices)
+                                           if original >= index), len(restored) - 1)
+                self.load_audio(str(self.playlist[self.current_index]))
 
 
         def _save_startup_state(self):
@@ -1629,20 +1647,8 @@ class Player(AudioController, LyricsController, QMainWindow):
 
             self.playlist = [Path(path) for path in paths]
             self.current_index = 0
-            known = {track.path for track in self.library_tracks}
-            changed = False
-            for path in self.playlist:
-                resolved = str(path.resolve())
-                if resolved not in known:
-                    try:
-                        self.library_tracks.append(read_track(path))
-                        known.add(resolved)
-                        changed = True
-                    except (OSError, ValueError):
-                        pass
-            if changed:
-                save_music_library(self.library_folders, [track.to_dict() for track in self.library_tracks], self.library_column_state)
-                self._populate_library_view()
+            self._priority_queue_indices = []
+            self._register_queue_paths(self.playlist)
             self.load_audio(str(self.playlist[self.current_index]))
 
 
@@ -2081,78 +2087,6 @@ class Player(AudioController, LyricsController, QMainWindow):
 
             self.current_lyrics_path = destination_path
             self.load_lrc_file(str(destination_path))
-
-
-        def show_playlist(self):
-            dialog = PlaylistDialog(
-                self.playlist,
-                self.current_index,
-                self,
-            )
-
-            def refresh_dialog():
-                dialog.set_playlist(
-                    self.playlist,
-                    self.current_index,
-                )
-
-            def load_track(index):
-                if not 0 <= index < len(self.playlist):
-                    return
-
-                self.current_index = index
-                self.load_audio(
-                    str(self.playlist[index])
-                )
-                self.media_player.play()
-                refresh_dialog()
-
-            def remove_track(index):
-                if not 0 <= index < len(self.playlist):
-                    return
-
-                removing_current = (
-                    index == self.current_index
-                )
-
-                del self.playlist[index]
-
-                if not self.playlist:
-                    self.current_index = -1
-
-                    if removing_current:
-                        self.stop_playback()
-                        self.current_audio_path = None
-
-                elif index < self.current_index:
-                    self.current_index -= 1
-
-                elif removing_current:
-                    if index >= len(self.playlist):
-                        self.current_index = len(self.playlist) - 1
-
-                    self.load_audio(
-                        str(self.playlist[self.current_index])
-                    )
-                    self.media_player.play()
-
-                refresh_dialog()
-                self.update_transport_buttons()
-
-            def clear_playlist():
-                self.playlist.clear()
-                self.current_index = -1
-                self.stop_playback()
-                self.current_audio_path = None
-                self.setWindowTitle("LRC+")
-                refresh_dialog()
-                self.update_transport_buttons()
-
-            dialog.track_requested.connect(load_track)
-            dialog.remove_requested.connect(remove_track)
-            dialog.clear_requested.connect(clear_playlist)
-
-            dialog.exec()
 
 
         def show_recent_songs(self):

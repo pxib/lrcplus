@@ -1,0 +1,10 @@
+{
+  "name": "yt-dlp Audio Import",
+  "version": "1.1.2",
+  "description": "Import audio and subtitles from a URL, with optional synced lyric conversion.",
+  "api_version": 4,
+  "dependencies": [
+    {"requirement": "yt-dlp[default]>=2026.3.3", "import_name": "yt_dlp"},
+    {"requirement": "mutagen>=1,<2", "import_name": "mutagen"}
+  ]
+}

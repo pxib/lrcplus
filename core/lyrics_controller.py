@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from PySide6.QtCore import Qt, QObject, Signal, QTimer
 from PySide6.QtWidgets import QListWidget, QListWidgetItem, QMessageBox, QCheckBox
 
-from lyrics.loader import load_lyrics, get_lyrics_generation_mode
+from lyrics.loader import load_lyrics, get_lyrics_generation_mode, PLAYER_LYRIC_LINE_LIMIT
 from lyrics.furigana import (
     prefetch_furigana_batches,
     set_active_parser,
@@ -451,6 +451,12 @@ class LyricsController(LyricsSearchMixin):
             persisted_generation_mode = get_lyrics_generation_mode(path) or "auto"
             set_reading_mode(persisted_generation_mode)
             self.lyric_lines = load_lyrics(path)
+            if len(self.lyric_lines) > PLAYER_LYRIC_LINE_LIMIT:
+                raise ValueError(
+                    f"This file contains {len(self.lyric_lines):,} lyric rows; "
+                    f"the player limit is {PLAYER_LYRIC_LINE_LIMIT:,}. "
+                    "Review or reconvert its subtitles before loading it."
+                )
 
             # PyCantonese can make the first render of a long lyric file
             # noticeably heavy. Let the user choose whether to generate now,
@@ -503,7 +509,24 @@ class LyricsController(LyricsSearchMixin):
             self.lyric_lines = []
             self.lyrics = []
             self.lyric_times = []
+            self._playback_line_indices = []
+            self.current_line = -1
+            self.last_lyric_text = None
+            self._furigana_prefetch_id = getattr(self, "_furigana_prefetch_id", 0) + 1
+            self.lyric_widget.set_lyric("")
+            self.scrolling_lyrics_widget.clear()
+            self.lyrics_list_widget.clear()
+            if hasattr(self, "waveform_widget"):
+                self.waveform_widget.set_lyric_times([])
+            if hasattr(self, "furigana_progress_bar"):
+                self.furigana_progress_bar.hide()
+            self._lyrics_load_error = True
+            self.statusBar().showMessage(f"Could not load lyrics: {error}")
             return
+
+        if getattr(self, "_lyrics_load_error", False):
+            self.statusBar().clearMessage()
+            self._lyrics_load_error = False
 
         # Compatibility layer for the existing displays.
         self.lyrics = [

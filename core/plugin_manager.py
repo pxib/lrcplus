@@ -226,6 +226,46 @@ class PluginManager:
         path = getattr(player, "current_audio_path", None) if player is not None else None
         return str(path) if path else None
 
+    def import_audio_files(self, paths, *, add_to_queue=True) -> list[str]:
+        from core.playlists import available_tracks
+
+        player = self._player()
+        if player is None:
+            raise RuntimeError("The player is not ready to import audio.")
+        result = available_tracks(paths)
+        if result.unavailable:
+            raise ValueError("Missing or unsupported audio: " + ", ".join(result.unavailable))
+        if not result.paths:
+            return []
+        player._register_queue_paths(result.paths)
+        if add_to_queue:
+            player.enqueue_tracks(result.paths)
+        return [str(path) for path in result.paths]
+
+    def attach_lyrics(self, audio_path, lyrics_path) -> None:
+        from core.playlists import available_tracks, path_key
+        from core.settings import set_lyrics_attachment
+        from lyrics.loader import load_lyrics, PLAYER_LYRIC_LINE_LIMIT
+
+        player = self._player()
+        if player is None:
+            raise RuntimeError("The player is not ready to attach lyrics.")
+        audio = available_tracks([audio_path])
+        if audio.unavailable:
+            raise ValueError("Missing or unsupported audio: " + str(audio_path))
+        lyrics = Path(lyrics_path).expanduser().resolve()
+        lines = load_lyrics(lyrics)
+        if not lines:
+            raise ValueError("The lyrics file contains no readable lyric lines.")
+        if len(lines) > PLAYER_LYRIC_LINE_LIMIT:
+            raise ValueError(f"The lyrics file contains {len(lines):,} rows; "
+                             f"the player limit is {PLAYER_LYRIC_LINE_LIMIT:,}.")
+        set_lyrics_attachment(audio.paths[0], lyrics)
+        player.clear_lyrics_search_index()
+        current = getattr(player, "current_audio_path", None)
+        if current and path_key(current) == path_key(audio.paths[0]):
+            player.load_lrc_file(str(lyrics))
+
     def get_current_lyrics(self) -> list[dict[str, Any]]:
         player = self._player()
         lines = getattr(player, "lyric_lines", []) if player is not None else []

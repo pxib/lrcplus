@@ -805,14 +805,15 @@ class SettingsDialog(QDialog):
         )
 
         self.play_mode_combo = QComboBox()
-        self.play_mode_combo.addItem("Playlist", "playlist")
+        self.play_mode_combo.addItem("Queue", "playlist")
         self.play_mode_combo.addItem("Library", "library")
         play_mode = self.playback_settings.get("play_mode", "playlist")
         index = self.play_mode_combo.findData(play_mode)
         self.play_mode_combo.setCurrentIndex(index if index >= 0 else 0)
         self._add_labeled(layout, "Play Mode:", self.play_mode_combo)
         self.play_mode_combo.setToolTip(
-            "Choose whether previous/next playback follows the current playlist or the full music library."
+            "Choose whether previous/next playback follows the current queue or the full music library. "
+            "Adding tracks to the queue or loading a saved playlist selects Queue mode."
         )
 
         self.shuffle_mode_combo = QComboBox()

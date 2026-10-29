@@ -1,7 +1,7 @@
 # LyricsPlus Plugin API
 
-> **Current API version:** 3
-> **Supported plugin API versions:** 1–3
+> **Current API version:** 4
+> **Supported plugin API versions:** 1–4
 
 The LyricsPlus Plugin API lets plugins integrate with the player without importing internal UI or manager code.
 
@@ -684,6 +684,36 @@ path = context.api.get_current_track()
 
 Returns a string path or `None`.
 
+## Import local audio (v4)
+
+```python
+imported_paths = context.api.import_audio_files(
+    ["C:/Music/downloaded.m4a"], add_to_queue=True,
+)
+```
+
+Call this on the GUI thread after a plugin finishes creating/downloading audio.
+All paths must be existing local files with a supported audio extension; an
+invalid entry raises `ValueError` before the library or queue changes. The
+method adds tracks to the library and optionally appends them to the queue,
+returning normalized absolute paths. Existing playback continues. Enqueueing
+selects Queue playback mode. Use `add_to_queue=False` for a library-only import.
+An unavailable host raises `RuntimeError`; filesystem/settings errors propagate
+to the plugin. Existing plugins using API v1–v3 remain supported.
+
+## Attach lyrics (v4)
+
+```python
+context.api.attach_lyrics("C:/Music/song.m4a", "C:/Music/song.en.manual.lrc")
+```
+
+Call on the GUI thread to persist an explicit audio-to-lyrics association. The
+audio must exist and use a supported extension; lyrics must be a readable,
+nonempty `.lrc`, `.lrcx`, or `.txt` file. The current track's lyrics refresh
+immediately without restarting playback or changing its position. Other
+tracks use the association when they are next loaded. Existing lyric files
+are preserved. Invalid input raises before the association is changed.
+
 ## Current lyrics
 
 ```python
@@ -790,9 +820,12 @@ can identify, install, check, and remove them:
 ]
 ```
 
-`requirement` is a PyPI distribution name with optional version constraints.
+`requirement` is a PyPI distribution name with optional extras and version constraints,
+for example `yt-dlp[default]>=2026.3.3`. Extras are included in installation requests
+and omitted from pip's constraints file, so upstream optional dependencies resolve together.
 `import_name` is its top-level Python import name; these names may differ.
-Direct URLs, extras, and environment markers are currently unsupported.
+Direct URLs and environment markers are unsupported. Supporting `requires` entries
+accept package names and version constraints, without extras.
 An entry can also declare `"requires": ["setuptools>=65,<82"]` for supporting
 libraries not correctly declared by an upstream package. These are installed and
 resolved with the selected dependency. Cantonese Readings uses this for the legacy
@@ -841,7 +874,7 @@ A plugin requesting an unsupported API version is not loaded.
 For new plugins, use:
 
 ```json
-"api_version": 3
+"api_version": 4
 ```
 
 Older v1 plugins remain supported by the current API.
