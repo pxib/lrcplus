@@ -6,6 +6,7 @@ numpy
 pedalboard>=0.9.17
 aubio-ledfx>=0.4.12
 requests
+packaging>=24
 mutagen
 Pillow
 pypinyin

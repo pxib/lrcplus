@@ -19,7 +19,7 @@ class KoreanRomanizationPlugin:
             from koroman import romanize
         except Exception as error:
             context.api.log(f"Koroman unavailable: {error}")
-            return
+            raise
 
         def build(text):
             """Return ruby-compatible segments.

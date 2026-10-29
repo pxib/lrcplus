@@ -779,6 +779,55 @@ my_plugin
 
 The manifest's `plugin_id` is not used to override the folder name.
 
+## Optional Python dependencies
+
+Declare optional libraries in the plugin manifest so **Settings > Dependencies**
+can identify, install, check, and remove them:
+
+```json
+"dependencies": [
+  {"requirement": "koroman>=1,<2", "import_name": "koroman"}
+]
+```
+
+`requirement` is a PyPI distribution name with optional version constraints.
+`import_name` is its top-level Python import name; these names may differ.
+Direct URLs, extras, and environment markers are currently unsupported.
+An entry can also declare `"requires": ["setuptools>=65,<82"]` for supporting
+libraries not correctly declared by an upstream package. These are installed and
+resolved with the selected dependency. Cantonese Readings uses this for the legacy
+`pkg_resources` import in Wordseg.
+The manager resolves a shared environment against all declared version constraints
+and preserves the versions of app-provided libraries. App-provided libraries
+cannot be replaced or removed through this UI.
+
+On Windows, downloaded libraries are stored beneath
+`%LOCALAPPDATA%/LyricsPlus/dependencies/<python-and-platform>/environments/`.
+macOS uses `~/Library/Application Support/LyricsPlus`; Linux uses
+`$XDG_DATA_HOME/LyricsPlus` (default `~/.local/share/LyricsPlus`).
+`LRCPLUS_DATA_DIR` can override the application data directory.
+
+Install/remove operations are immediate and take effect after restarting the app,
+even if the Settings dialog is cancelled. Each successful operation activates a
+new environment; failed installation or import checks preserve the previous one.
+Previous environments are retained so a running app can continue using its loaded
+libraries. Removing an explicit dependency rebuilds the remaining environment,
+retaining libraries still required transitively.
+
+Source runs use the current Python interpreter's pip. Windows frozen releases
+download a full private Python runtime of the matching minor version, ABI and
+architecture from the official Python runtime index, verifying its SHA-256 before
+extraction. This runtime lives in the app data `runtime/` directory and does not
+register a system Python installation. Only binary wheels are accepted; packages
+needing a local compiler are reported as unsupported by the installer. Runtime
+downloads and package installation require internet access.
+The private runtime also supplies standard-library modules and native extensions
+that PyInstaller did not include in the base application.
+
+Missing or incompatible declared dependencies prevent the affected plugin from
+loading, with an aggregated setup notice for enabled plugins. Import checks run
+in a separate process so even a native-library crash cannot terminate the player.
+
 ## API compatibility
 
 LyricsPlus currently supports:

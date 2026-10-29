@@ -13,6 +13,7 @@ from core.plugin_api import (
     LyricsPlusAPI, PLUGIN_API_VERSION, MIN_PLUGIN_API_VERSION,
 )
 from core.settings import load_all_settings, save_all_settings
+from core.dependencies import DependencyError, DependencyManager
 from lyrics.reading_providers import (
     register_reading_provider as _register_reading_provider,
     unregister_reading_provider as _unregister_reading_provider,
@@ -67,6 +68,8 @@ class PluginManager:
         self.disabled_plugins = {str(plugin_id) for plugin_id in (disabled_plugins or set())}
         self.plugins_dir: Path | None = None
         self.load_errors: dict[str, str] = {}
+        self.dependency_errors: dict[str, str] = {}
+        self.dependency_manager = DependencyManager()
 
     def log(self, plugin_id: str, message: str) -> None:
         print(f"[Plugin:{plugin_id}] {message}")
@@ -313,7 +316,7 @@ class PluginManager:
                 }
                 manifest = self._manifest_metadata(child)
                 if manifest is not None:
-                    metadata.update({k: v for k, v in manifest.items() if k in {"plugin_id", "name", "version", "description", "api_version"}})
+                    metadata.update({k: v for k, v in manifest.items() if k in {"plugin_id", "name", "version", "description", "api_version", "dependencies"}})
                     metadata["plugin_id"] = child.name
                 else:
                     try:
@@ -337,7 +340,9 @@ class PluginManager:
 
     def discover_and_load(self, plugins_dir: Path) -> None:
         self.plugins_dir = Path(plugins_dir)
-        for metadata in self.discover_plugins(self.plugins_dir):
+        catalog = self.discover_plugins(self.plugins_dir)
+        self.dependency_manager.configure(catalog)
+        for metadata in catalog:
             plugin_id = str(metadata["plugin_id"])
             if (
                 plugin_id in self.disabled_plugins
@@ -358,9 +363,20 @@ class PluginManager:
                 self.log(plugin_id, self.load_errors[plugin_id])
                 continue
             try:
+                problems = self.dependency_manager.plugin_problems(metadata)
+            except DependencyError as error:
+                problems = [str(error)]
+            if problems:
+                self.dependency_errors[plugin_id] = "; ".join(problems)
+                self.load_errors[plugin_id] = self.dependency_errors[plugin_id]
+                self.log(plugin_id, self.load_errors[plugin_id])
+                continue
+            try:
                 self.load_from_file(plugin_id, metadata["plugin_dir"] / "plugin.py", metadata)
             except Exception as error:
                 self.load_errors[plugin_id] = f"{type(error).__name__}: {error}"
+                if metadata.get("dependencies") and isinstance(error, (ImportError, OSError)):
+                    self.dependency_errors[plugin_id] = self.load_errors[plugin_id]
                 self.log(plugin_id, f"failed to load: {self.load_errors[plugin_id]}")
                 traceback.print_exc()
 

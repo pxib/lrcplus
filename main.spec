@@ -1,7 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_delvewheel_libs_directory
+from PyInstaller.utils.hooks import collect_delvewheel_libs_directory, copy_metadata
+from packaging.requirements import Requirement
 
 
 PROJECT_ROOT = Path(SPEC).resolve().parent
@@ -27,7 +28,15 @@ PROJECT_ROOT = Path(SPEC).resolve().parent
 datas = [
     (str(PROJECT_ROOT / "assets"), "assets"),
     (str(PROJECT_ROOT / "plugins"), "plugins"),
+    (str(PROJECT_ROOT / "core" / "dependency_probe.py"), "core"),
 ]
+
+# Preserve versions so the dependency manager can protect app-provided libraries.
+for line in (PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines():
+    if line.strip() and not line.lstrip().startswith("#"):
+        name = Requirement(line).name
+        if name not in {"pytest", "pypresence"}:
+            datas += copy_metadata(name, recursive=True)
 
 # aubio-ledfx's Windows wheel carries the continuous Rubber Band R3 engine
 # and its native dependencies next to the aubio package.
@@ -62,6 +71,10 @@ a = Analysis(
     # Keeping them out helps reduce the distribution size considerably,
     # especially with PySide6.
     excludes=[
+        # Optional plugin engines are installed through Settings > Dependencies.
+        "koroman",
+        "pycantonese",
+        "pypresence",
         "PySide6.QtQml",
         "PySide6.QtQuick",
         "PySide6.QtQuickWidgets",

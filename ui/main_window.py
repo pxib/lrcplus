@@ -1218,13 +1218,16 @@ class Player(AudioController, LyricsController, QMainWindow):
             self._queue_visible_library_covers()
 
         def _queue_visible_library_covers(self, *_args):
-            if self._library_cover_load_pending:
+            if not self.library_table.isVisible() or self._library_cover_load_pending:
                 return
             self._library_cover_load_pending = True
             QTimer.singleShot(0, self._load_visible_library_covers)
 
         def _load_visible_library_covers(self):
             self._library_cover_load_pending = False
+            # A queued callback can outlive a switch to the Lyrics page.
+            if not self.library_table.isVisible():
+                return
             viewport = self.library_table.viewport().rect()
             item = self.library_table.itemAt(viewport.topLeft())
             if item is None:
@@ -1408,12 +1411,14 @@ class Player(AudioController, LyricsController, QMainWindow):
 
 
         def _handle_workspace_changed(self, index):
-            """Refresh the lyrics renderer after returning to the Lyrics page."""
+            """Resume visible-page work when switching workspaces."""
             if not hasattr(self, "workspace_stack"):
                 return
             current_page = self.workspace_stack.widget(index)
             self.library_button.setChecked(current_page is self.library_page)
             self.lyrics_view_button.setChecked(current_page is self.lyrics_page)
+            if current_page is self.library_page:
+                self._queue_visible_library_covers()
             if current_page is not self.lyrics_page:
                 return
 
@@ -2203,6 +2208,11 @@ class Player(AudioController, LyricsController, QMainWindow):
             dialog.setLayout(layout)
             dialog.exec()
 
+
+        def showEvent(self, event):
+            super().showEvent(event)
+            # Initial construction happens before the library is visible.
+            self._queue_visible_library_covers()
 
         def closeEvent(self, event):
             if hasattr(self, "_booru_executor"):

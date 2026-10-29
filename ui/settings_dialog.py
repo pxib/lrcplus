@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 from core.settings import APPEARANCE_DEFAULTS
 from core.theme import build_theme_palette
+from ui.dependency_settings import DependencyManagerWidget
 from ui.settings_controls import (
     ThemedSpinBox,
     ThemedComboBox,
@@ -576,6 +577,7 @@ class SettingsDialog(QDialog):
             catalog = self.plugin_manager.discover_plugins(
                 self.plugin_manager.plugins_dir
             )
+            self.plugin_manager.dependency_manager.configure(catalog)
 
         if catalog:
             disabled = set(self.plugin_manager.disabled_plugins)
@@ -594,6 +596,18 @@ class SettingsDialog(QDialog):
                 description.setWordWrap(True)
                 description.setStyleSheet("color: #A0A0A0;")
                 details.addWidget(description)
+                problem = self.plugin_manager.load_errors.get(plugin["plugin_id"])
+                if problem:
+                    failure = QLabel(problem)
+                    failure.setTextFormat(Qt.TextFormat.PlainText)
+                    failure.setWordWrap(True)
+                    details.addWidget(failure)
+                if plugin.get("dependencies"):
+                    dependencies_button = QPushButton("Dependencies")
+                    dependencies_button.clicked.connect(
+                        lambda _checked=False: tabs.setCurrentWidget(self.dependencies_tab)
+                    )
+                    row.addWidget(dependencies_button)
                 row.addLayout(details, 1)
 
                 plugin_id = plugin['plugin_id']
@@ -655,6 +669,8 @@ class SettingsDialog(QDialog):
         tabs.addTab(lyrics_tab, "Lyrics")
         tabs.addTab(files_tab, "Files")
         tabs.addTab(plugins_tab, "Plugins")
+        self.dependencies_tab = DependencyManagerWidget(self.plugin_manager, self)
+        tabs.addTab(self.dependencies_tab, "Dependencies")
 
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -666,6 +682,14 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(tabs)
         layout.addWidget(button_box)
+
+    def done(self, result):
+        if hasattr(self, "dependencies_tab") and self.dependencies_tab.busy:
+            self.dependencies_tab.status.setText(
+                "Please wait for the dependency operation to finish before closing Settings."
+            )
+            return
+        super().done(result)
 
     def _make_scroll_tab(self, heading, builder):
         page = QWidget()

@@ -11,6 +11,14 @@ import contextlib
 import io
 import json
 import traceback
+import os
+import sys
+
+
+# A source-mode helper does not go through main.py's environment activation.
+_dependency_site = os.environ.get("LRCPLUS_DEPENDENCY_SITE")
+if _dependency_site and _dependency_site not in sys.path:
+    sys.path.append(_dependency_site)
 
 
 def convert_words(text, style):

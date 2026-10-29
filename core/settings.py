@@ -11,6 +11,20 @@ APP_ROOT = Path(__file__).resolve().parent.parent
 LEGACY_SETTINGS_PATH = APP_ROOT / "lrc_player_settings.json"
 
 
+def get_app_data_dir():
+    """Writable application data, independent of the installation directory."""
+    override = os.environ.get("LRCPLUS_DATA_DIR")
+    if override:
+        return Path(override).expanduser()
+    if sys.platform == "win32":
+        root = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return root / "LyricsPlus"
+
+
 def _default_settings_path():
     override = os.environ.get("LRCPLUS_SETTINGS_PATH")
     if override:

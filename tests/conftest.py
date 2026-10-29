@@ -15,6 +15,7 @@ def isolated_settings(tmp_path, monkeypatch):
 
     destination = tmp_path / "preferences" / "settings.json"
     monkeypatch.setenv("LRCPLUS_SETTINGS_PATH", str(destination))
+    monkeypatch.setenv("LRCPLUS_DATA_DIR", str(tmp_path / "app-data"))
     monkeypatch.setattr(settings, "SETTINGS_PATH", destination)
     monkeypatch.setattr(settings, "LEGACY_SETTINGS_PATH", tmp_path / "legacy.json")
 

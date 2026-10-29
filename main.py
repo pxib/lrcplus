@@ -1,6 +1,17 @@
 import sys
 from pathlib import Path
 
+# Worker dispatch must precede GUI and third-party imports in frozen releases.
+from core.dependencies import activate_dependencies
+
+if __name__ == "__main__" and "--lyricsplus-dependency-probe" in sys.argv:
+    sys.argv.remove("--lyricsplus-dependency-probe")
+    from core.dependency_probe import main as probe_main
+    raise SystemExit(probe_main())
+
+activate_dependencies()
+
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
 
@@ -33,6 +44,8 @@ def main() -> int:
     plugin_manager.set_host_window(window)
     plugin_manager.emit("app_ready", window=window)
     window.show()
+    from ui.dependency_settings import show_dependency_notice
+    QTimer.singleShot(0, lambda: show_dependency_notice(plugin_manager, window))
 
     exit_code = app.exec()
     plugin_manager.unload_all()

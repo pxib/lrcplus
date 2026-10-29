@@ -39,7 +39,7 @@ def _isolated_convert(texts, style, timeout=120.0):
         raise RuntimeError("Cantonese reading worker is missing")
 
     env = os.environ.copy()
-    project_root = str(worker.parents[2])
+    project_root = str(worker.parents[3])
     old_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (
         project_root + os.pathsep + old_pythonpath
@@ -64,11 +64,14 @@ def _isolated_convert(texts, style, timeout=120.0):
             output_path = handle.name
 
         try:
+            python = sys.executable
+            if getattr(sys, "frozen", False):
+                python = env.get("LRCPLUS_DEPENDENCY_PYTHON")
+                if not python or not Path(python).is_file():
+                    raise RuntimeError("Install Cantonese dependencies and restart LyricsPlus to prepare its private Python runtime")
+            command = [python, "-I", "-u", str(worker)]
             completed = subprocess.run(
-                [
-                    sys.executable,
-                    "-u",
-                    str(worker),
+                command + [
                     "--input",
                     input_path,
                     "--output",
@@ -81,6 +84,7 @@ def _isolated_convert(texts, style, timeout=120.0):
                 cwd=project_root,
                 env=env,
                 check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except (OSError, subprocess.SubprocessError) as error:
             raise RuntimeError(f"Could not start Cantonese worker: {error}") from error
