@@ -3,6 +3,7 @@ import math
 import random
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from time import monotonic
 import requests
 
 from PySide6.QtCore import Qt, QUrl, QTimer, Signal, QThread, QSize, QRect
@@ -1759,6 +1760,25 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
 
             records = []
             search_job = BackgroundJob(dialog, "lrclib-search")
+            search_in_progress = False
+            cooldown_timer = QTimer(dialog)
+            cooldown_timer.setInterval(100)
+
+            def update_search_button():
+                remaining = math.ceil(max(
+                    0, getattr(self, "_lrclib_search_ready_at", 0) - monotonic()
+                ))
+                search_button.setEnabled(not search_in_progress and remaining == 0)
+                search_button.setText(
+                    f"Search ({remaining}s)" if remaining else "Search"
+                )
+                if remaining:
+                    cooldown_timer.start()
+                else:
+                    cooldown_timer.stop()
+
+            cooldown_timer.timeout.connect(update_search_button)
+            update_search_button()
 
             def selected_record():
                 row_index = results.currentRow()
@@ -1785,6 +1805,8 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
                     )
 
             def run_search():
+                nonlocal search_in_progress
+                update_search_button()
                 if not search_button.isEnabled():
                     return
                 query = query_input.text().strip()
@@ -1798,7 +1820,9 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
                 results.setRowCount(0)
                 preview.clear()
                 records.clear()
-                search_button.setEnabled(False)
+                search_in_progress = True
+                self._lrclib_search_ready_at = monotonic() + 5
+                update_search_button()
                 search_job.start(fetch_results, query)
 
             def fetch_results(query):
@@ -1806,7 +1830,8 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
                     "https://lrclib.net/api/search",
                     params={"q": query},
                     headers={
-                        "User-Agent": "LyricsPlus/1.0 (LRCLIB client)"
+                        "User-Agent": "LRCPlus/1.0 (https://github.com/pxib/lrcplus)",
+                        "Lrclib-App-Id": "zTywhWzql6kFvrFMcWui-xuV0qYCVO3FzKQKPwZGf7U",
                     },
                     timeout=15,
                 )
@@ -1814,7 +1839,9 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
                 return response.json()
 
             def show_results(payload):
-                search_button.setEnabled(True)
+                nonlocal search_in_progress
+                search_in_progress = False
+                update_search_button()
                 if not isinstance(payload, list):
                     payload = []
 
@@ -1851,7 +1878,9 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
                     status.setText("No lyrics found.")
 
             def search_failed(error):
-                search_button.setEnabled(True)
+                nonlocal search_in_progress
+                search_in_progress = False
+                update_search_button()
                 status.setText(f"Search failed: {error}")
 
             def use_selected():
@@ -1913,6 +1942,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
             try:
                 dialog.exec()
             finally:
+                cooldown_timer.stop()
                 search_job.close()
                 dialog.deleteLater()
 

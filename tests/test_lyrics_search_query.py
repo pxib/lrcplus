@@ -59,6 +59,8 @@ def test_lyrics_search_query_falls_back_when_metadata_cannot_be_read(
 @pytest.mark.parametrize("outcome", ["results", "error", "cancel"])
 def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
     entered, release = threading.Event(), threading.Event()
+    now = [100.0]
+    monkeypatch.setattr(main_window, "monotonic", lambda: now[0])
     worker_threads = []
     parent = QWidget()
     parent.current_audio_path = None
@@ -94,16 +96,35 @@ def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
             return 0
         release.set()
         deadline = time.monotonic() + 5
-        while not button.isEnabled() and time.monotonic() < deadline:
+        while not any(
+            label.text() == "1 result(s). Select one to inspect the lyrics."
+            or "Search failed:" in label.text()
+            for label in dialog.findChildren(QLabel)
+        ) and time.monotonic() < deadline:
             qapp.processEvents()
             time.sleep(0.005)
-        assert button.isEnabled()
+        assert not button.isEnabled()
+        assert button.text() == "Search (5s)"
+        query.returnPressed.emit()
+        assert len(worker_threads) == 1
         if outcome == "results":
             assert table.rowCount() == 1
             assert table.item(0, 0).text() == "Song"
         else:
             assert any("Search failed: Network unavailable" in label.text()
                        for label in dialog.findChildren(QLabel))
+        now[0] += 4.9
+        query.returnPressed.emit()
+        assert not button.isEnabled()
+        assert button.text() == "Search (1s)"
+        assert len(worker_threads) == 1
+        now[0] += 0.1
+        deadline = time.monotonic() + 2
+        while not button.isEnabled() and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.005)
+        assert button.isEnabled()
+        assert button.text() == "Search"
         return 0
 
     monkeypatch.setattr(main_window.requests, "get", get)
