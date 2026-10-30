@@ -416,6 +416,9 @@ class AudioController:
 
 
         def _write_pcm_buffer(self, buffer):
+            if (getattr(self, "_audio_output_unavailable", False)
+                    or getattr(self, "_audio_device_dialog", None) is not None):
+                return
             if (self.volume_slider.value() <= 100
                     and abs(self._pcm_pitch_shift()) < 0.001
                     and not self._pcm_rate_active()) or not buffer.isValid():
@@ -512,6 +515,9 @@ class AudioController:
 
 
         def _pcm_output_failed(self, error):
+            recover = getattr(self, "_recover_disconnected_output", None)
+            if recover is not None and recover():
+                return
             self._stop_pcm_sink()
             self.media_player.setAudioBufferOutput(None)
             self._pcm_buffer_output = None
@@ -715,6 +721,12 @@ class AudioController:
 
 
         def update_play_button(self, state):
+            if state == QMediaPlayer.PlaybackState.PlayingState and (
+                getattr(self, "_audio_output_unavailable", False)
+                or getattr(self, "_audio_device_dialog", None) is not None
+            ):
+                self.media_player.pause()
+                return
             self._sync_pcm_sink_state(state)
             if state == QMediaPlayer.PlaybackState.PlayingState:
                 self.play_button.setText("Pause")

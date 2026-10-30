@@ -8,7 +8,7 @@ import requests
 
 from PySide6.QtCore import Qt, QUrl, QTimer, Signal, QThread, QSize, QRect
 from PySide6.QtGui import QAction, QKeySequence, QShortcut, QPixmap, QPainter
-from PySide6.QtMultimedia import QAudioOutput, QMediaDevices, QMediaPlayer
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QButtonGroup, QComboBox, QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
     QInputDialog, QMainWindow, QScrollArea, QStackedWidget, QLineEdit, QDoubleSpinBox,
@@ -50,6 +50,7 @@ from lyrics.writer import convert_lyrics
 from ui.settings_dialog import SettingsDialog
 from ui.lrc_editor import LrcEditorDialog
 from ui.queue_actions import QueueActionsMixin
+from ui.audio_devices import AudioDeviceControllerMixin
 from ui.artwork_background import ArtworkBackgroundWidget, extract_embedded_cover, load_embedded_cover_thumbnail
 from ui.player_dialogs import (ClickableSlider, ClickableTimeLabel, AlbumCoverDelegate, CoverPreviewView, CoverPreviewDialog, PitchChangerDialog, LibraryScanWorker)
 from core.booru_artwork import fetch_booru_artwork
@@ -75,7 +76,7 @@ def _lyrics_search_query(audio_path):
     return audio_path.stem
 
 
-class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsController, QMainWindow):
+class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin, AudioController, LyricsController, QMainWindow):
         queue_changed = Signal()
 
         def __init__(self, plugin_manager=None):
@@ -738,6 +739,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
             )
 
             self._configure_pcm_volume(self.last_volume)
+            self._watch_audio_devices()
 
             self.shortcut_play_pause = QShortcut(
                 QKeySequence("Space"),
@@ -1949,26 +1951,6 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
                 search_job.close()
                 dialog.deleteLater()
 
-        def _apply_output_device(self, settings):
-            """Apply a persisted Qt audio output device, falling back to default."""
-            device_id = str((settings or {}).get("output_device", "") or "")
-            selected = None
-            if device_id:
-                for device in QMediaDevices.audioOutputs():
-                    if bytes(device.id()).hex() == device_id:
-                        selected = device
-                        break
-
-            # Empty ID means Qt/system default.
-            if selected is None:
-                self.audio_output.setDevice(QMediaDevices.defaultAudioOutput())
-            else:
-                self.audio_output.setDevice(selected)
-            if hasattr(self, "volume_slider") and self.volume_slider.value() > 100:
-                self._configure_pcm_volume(
-                    self.volume_slider.value(), refresh_format=True
-                )
-
         def open_settings(self):
             local_overrides = get_local_lyrics_overrides(
                 self.current_audio_path
@@ -2212,6 +2194,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
 
             self.lyric_widget.stop_workers()
 
+            self._close_audio_device_dialog()
             self.media_player.stop()
             self.playback_settings["volume"] = self.volume_slider.value()
             save_playback_settings(self.playback_settings)

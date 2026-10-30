@@ -7,7 +7,9 @@ import time
 from pathlib import Path
 import json
 import os
+import random
 import re
+import unicodedata
 
 import requests
 from PIL import Image, ImageOps
@@ -72,8 +74,9 @@ ACTIVITY_TYPES = {
 }
 PLACEHOLDER_LANGUAGES = {
     "auto": "Auto (from lyrics)", "jp": "Japanese", "kr": "Korean",
-    "zh": "Chinese", "hk": "Cantonese",
+    "zh": "Chinese", "hk": "Cantonese", "vi": "Vietnamese",
 }
+CLASSICAL_CHINESE_CHANCE = 0.1
 PLACEHOLDER_URLS = {
     # Use the PNG files themselves; the share links return HTML viewer pages.
     "playing": {
@@ -81,22 +84,34 @@ PLACEHOLDER_URLS = {
         "kr": "https://cdn.nest.rip/uploads/3767537a-97af-4218-b13b-9795ecd2df17.png",
         "zh": "https://cdn.nest.rip/uploads/b68f16c5-60bf-4627-aaf8-49b10f178278.png",
         "hk": "https://cdn.nest.rip/uploads/d33d7b42-954a-486d-bf88-f09407d80651.png",
+        "vi": "https://cdn.nest.rip/uploads/f8c0989b-b820-4b24-b340-6e82df92dee5.png",
+        "lzh": "https://cdn.nest.rip/uploads/7e0eea83-ffeb-4e8f-bde2-bf81185c04f3.png",
     },
     "paused": {
         "jp": "https://cdn.nest.rip/uploads/1e846fcc-350a-4cba-a78e-d1352b16493d.png",
         "kr": "https://cdn.nest.rip/uploads/ddf02f86-59e0-470c-a59d-4461898d5bdd.png",
         "zh": "https://cdn.nest.rip/uploads/41af192b-6eb8-4ee1-ac22-9c1c3c111caf.png",
-        "hk": "https://cdn.nest.rip/uploads/ed1c4bf4-fd83-4952-9f21-35432739ab9e.png",
+        "hk": "https://cdn.nest.rip/uploads/eef908ba-0db8-4e46-8bc9-81f17e7cf0c7.png",
+        "vi": "https://cdn.nest.rip/uploads/ed6bcecd-a8ac-4c30-ae20-4331fb097cb8.png",
+        "lzh": "https://cdn.nest.rip/uploads/f2109380-2839-4af2-9813-1b9cacc2cb71.png",
     },
     "idle": {
         "jp": "https://cdn.nest.rip/uploads/eb89a75f-d175-4f2b-a0a2-ad6806410623.png",
         "kr": "https://cdn.nest.rip/uploads/3e764aaa-7fdb-4b6a-87a7-c47614029e89.png",
         "zh": "https://cdn.nest.rip/uploads/437c2f60-6b80-4c2f-81c1-bbd4436054f6.png",
         "hk": "https://cdn.nest.rip/uploads/0c0465d2-f5b8-4fc8-b8f2-2a664e472297.png",
+        "vi": "https://cdn.nest.rip/uploads/d3240dac-f982-485e-9b7f-374e6334fa38.png",
+        "lzh": "https://cdn.nest.rip/uploads/145d4baa-7d93-4aa2-998a-02f5c30da20b.png",
     },
 }
 _HANGUL = re.compile(r"[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff]")
-_CANTONESE_MARKERS = frozenset("嘅咗唔喺啲佢哋咁嚟乜咩冇畀嗰")
+_VIETNAMESE = re.compile(r"[ăâđêôơư\u1ea0-\u1ef9]", re.IGNORECASE)
+_CANTONESE_MARKERS = frozenset_CANTONESE_MARKERS = frozenset(
+    "嘅咗唔喺啲佢哋咁嚟乜咩冇畀嗰俾啱噉喎嗱"
+    "睇搵攞嘢瞓嚿𠵱"
+    "咪囉囖嘞啩噃㗎㖭"
+    "𨳊㞗閪"
+    )
 TEMPLATE_KEYS = ("details_template", "state_template", "large_text_template")
 
 
@@ -125,6 +140,8 @@ class DiscordRpcPlugin:
         self._placeholder_detection_key = None
         self._placeholder_lyrics = None
         self._detected_placeholder_language = "jp"
+        self._placeholder_easter_egg_track = None
+        self._classical_chinese_easter_egg = None
 
         # Per-session caches. No repeated lookups or uploads for the same file.
         self._metadata_cache = {}
@@ -1008,6 +1025,8 @@ class DiscordRpcPlugin:
                     language = "zh"
                 else:
                     language = "hk" if _CANTONESE_MARKERS.intersection(text) else "zh"
+            elif _VIETNAMESE.search(unicodedata.normalize("NFC", text)):
+                language = "vi"
             else:
                 language = "jp"
 
@@ -1020,7 +1039,20 @@ class DiscordRpcPlugin:
 
     def _placeholder_image(self, status):
         state = {"Playing": "playing", "Paused": "paused"}.get(status, "idle")
-        return PLACEHOLDER_URLS[state][self._placeholder_language()]
+        language = self._placeholder_language()
+        if self.current_path != self._placeholder_easter_egg_track:
+            self._placeholder_easter_egg_track = self.current_path
+            self._classical_chinese_easter_egg = None
+        if language in {"zh", "hk"} and self.current_path is not None:
+            # Roll once when the track first has a Chinese/Cantonese fallback.
+            # Lyric reloads, presence updates, and pause/resume keep the result.
+            if self._classical_chinese_easter_egg is None:
+                self._classical_chinese_easter_egg = (
+                    random.random() < CLASSICAL_CHINESE_CHANCE
+                )
+            if self._classical_chinese_easter_egg:
+                return PLACEHOLDER_URLS[state]["lzh"]
+        return PLACEHOLDER_URLS[state][language]
 
     def _presence_text(self, metadata, status, *, settings=None, lyric=None):
         settings = self.settings if settings is None else settings
@@ -1309,6 +1341,8 @@ class DiscordRpcPlugin:
 
         if path is None:
             self.current_path = None
+            self._placeholder_easter_egg_track = None
+            self._classical_chinese_easter_egg = None
             self.clear_presence()
             return
 
@@ -1318,6 +1352,8 @@ class DiscordRpcPlugin:
 
         path_changed = self.current_path != path
         if path_changed:
+            self._placeholder_easter_egg_track = None
+            self._classical_chinese_easter_egg = None
             self._lyric_bucket = None
             self._current_rpc_lyric = None
             self._last_lyric_rpc_update = 0.0

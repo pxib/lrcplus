@@ -19,6 +19,7 @@ def plugin(tmp_path, monkeypatch):
     monkeypatch.setattr(DiscordRpcPlugin, "_load_persistent_cover_cache", lambda self: {})
     monkeypatch.setattr(rpc_module, "ActivityType", ActivityType)
     monkeypatch.setattr(rpc_module, "get_reading_mode", lambda: "auto")
+    monkeypatch.setattr(rpc_module.random, "random", lambda: 0.5)
     instance = DiscordRpcPlugin()
     path = tmp_path / "track.mp3"
     path.touch()
@@ -228,7 +229,7 @@ def test_artwork_sources_take_priority_over_placeholder(plugin, monkeypatch, onl
     assert visited == calls
 
 
-@pytest.mark.parametrize("language", ["jp", "hk", "kr", "zh"])
+@pytest.mark.parametrize("language", ["jp", "hk", "kr", "zh", "vi"])
 @pytest.mark.parametrize("state,prefix", [(1, "playing"), (2, "paused"), (0, "idle")])
 def test_placeholder_matches_playback_state_without_network(plugin, monkeypatch, language, state, prefix):
     monkeypatch.delattr(plugin, "_cached_cover")
@@ -270,6 +271,7 @@ def test_background_cover_replaces_placeholder_without_lyric_updates(plugin, mon
     (["君の声が聞こえる"], "jyutping", "jp"),
     (["Hello world"], "auto", "jp"),
     (["Привет мир"], "auto", "jp"),
+    (["Anh đang ở đâu?"], "auto", "vi"),
     (["♪", ""], "auto", "jp"),
     ([], "jyutping", "jp"),
 ])
@@ -332,6 +334,86 @@ def test_newly_loaded_lyrics_refresh_placeholder_without_sharing_lyrics(plugin, 
     assert len(plugin.tasks) == 2
     plugin.on_position_changed(32_000)
     assert len(plugin.tasks) == 2
+
+
+@pytest.mark.parametrize("text", [
+    "Anh đang ở đâu?", "Em yêu anh", "ĐÂY LÀ ƯỚC MƠ",
+    "Anh \u0111ang o\u031b\u0309 \u0111a\u0302u?",
+])
+def test_auto_placeholder_detects_vietnamese(plugin, text):
+    plugin.window.lyrics = [(0, text)]
+    assert plugin._placeholder_language() == "vi"
+
+
+def test_vietnamese_setting_persists_and_uses_each_state(qapp, plugin):
+    stored = {}
+    load_settings(plugin, stored)
+    widget = plugin.create_settings_widget(None)
+    try:
+        widget.placeholder_language.setCurrentIndex(widget.placeholder_language.findData("vi"))
+        plugin.apply_settings_widget(widget)
+        assert stored["placeholder_language"] == "vi"
+        load_settings(plugin, stored)
+        for status, state in (("Playing", "playing"), ("Paused", "paused"), ("Stopped", "idle")):
+            assert plugin._placeholder_image(status) == rpc_module.PLACEHOLDER_URLS[state]["vi"]
+    finally:
+        widget.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("text", ["我聽見你的聲音", "我哋喺呢度等你"])
+@pytest.mark.parametrize("roll,chosen", [(0.0, True), (0.099999, True), (0.1, False), (0.9, False)])
+def test_classical_chinese_chance_is_ten_percent_and_stable(plugin, monkeypatch, text, roll, chosen):
+    plugin.window.lyrics = [(0, text)]
+    calls = []
+
+    def random():
+        calls.append(True)
+        return roll
+
+    monkeypatch.setattr(rpc_module.random, "random", random)
+    language = plugin._placeholder_language()
+    for status, state in (("Playing", "playing"), ("Paused", "paused"), ("Stopped", "idle")):
+        url = rpc_module.PLACEHOLDER_URLS[state]["lzh"]
+        expected = url if chosen else rpc_module.PLACEHOLDER_URLS[state][language]
+        assert plugin._placeholder_image(status) == expected
+        # A fresh lyric collection must not roll again for the same song.
+        plugin.window.lyrics = [(0, text)]
+        assert plugin._placeholder_image(status) == expected
+    assert len(calls) == 1
+    assert "lzh" not in rpc_module.PLACEHOLDER_LANGUAGES
+
+
+def test_classical_chinese_roll_waits_for_eligible_lyrics_and_resets_on_track_change(plugin, monkeypatch, tmp_path):
+    rolls = iter([0.01, 0.9])
+    monkeypatch.setattr(rpc_module.random, "random", lambda: next(rolls))
+    url = rpc_module.PLACEHOLDER_URLS["playing"]["lzh"]
+    for text in ("", "君の声が聞こえる", "너를 사랑해", "Anh đang ở đâu?"):
+        plugin.window.lyrics = [(0, text)]
+        assert plugin._placeholder_image("Playing") != url
+    plugin.window.lyrics = [(0, "我聽見你的聲音")]
+    assert plugin._placeholder_image("Playing") == url
+    plugin.current_path = tmp_path / "next.mp3"
+    assert plugin._placeholder_image("Playing") == rpc_module.PLACEHOLDER_URLS["playing"]["zh"]
+
+
+def test_classical_chinese_roll_resets_even_if_intervening_track_has_cover(plugin, monkeypatch, tmp_path):
+    monkeypatch.setattr(plugin, "_cached_cover", lambda path: None)
+    monkeypatch.setattr(plugin, "_start_cover_resolution", lambda *args: None)
+    rolls = iter([0.01, 0.9])
+    monkeypatch.setattr(rpc_module.random, "random", lambda: next(rolls))
+    url = rpc_module.PLACEHOLDER_URLS["playing"]["lzh"]
+    plugin.window.lyrics = [(0, "我聽見你的聲音")]
+    first_track = plugin.current_path
+    assert payload(plugin)["large_image"] == url
+    next_track = tmp_path / "next.mp3"
+    next_track.touch()
+    plugin.window.current_audio_path = next_track
+    monkeypatch.setattr(plugin, "_cached_cover", lambda path: "https://example.com/cover.jpg")
+    assert payload(plugin)["large_image"] == "https://example.com/cover.jpg"
+    plugin.window.current_audio_path = first_track
+    monkeypatch.setattr(plugin, "_cached_cover", lambda path: None)
+    assert payload(plugin)["large_image"] == rpc_module.PLACEHOLDER_URLS["playing"]["zh"]
 
 
 def test_preview_without_a_track_uses_sample_text(qapp, plugin):

@@ -8,7 +8,7 @@ activity. Changes take effect when you save; restarting the plugin is unnecessar
 - Show or hide playback progress and activity while paused or stopped.
 - Control lyric sharing, lines between lyric updates, and artwork sources.
 - Detect fallback artwork language from lyrics, or choose Japanese, Korean,
-  Chinese, or Cantonese manually.
+  Chinese, Cantonese, or Vietnamese manually.
 - Check the text preview before saving, or use Restore defaults to reset the form.
   Cancel discards edits, including a reset.
 
@@ -43,14 +43,20 @@ When neither source provides a cover (or both are disabled), the activity uses
 the playing, paused, or idle album placeholder through its direct CDN image URL
 (share-page links return HTML and cannot be displayed as Discord artwork).
 **Fallback artwork language** defaults to **Auto (from lyrics)**: kana selects
-Japanese, Hangul selects Korean, and Han characters select Chinese. Cantonese
-reading modes (Jyutping/Yale) or distinctive Cantonese characters select the
+Japanese, Hangul selects Korean, Han characters select Chinese, and Vietnamese
+diacritics select Vietnamese. Cantonese reading modes (Jyutping/Yale) or
+distinctive Cantonese characters select the
 Cantonese variant; Furigana/Pinyin modes help resolve Han-only lyrics. Unknown,
 unsupported, and missing lyrics use Japanese. A manual language choice is also
 available for ambiguous lyrics.
 
+Chinese and Cantonese fallback artwork has a 10% chance per track to use a hidden
+Classical Chinese variant. The result stays the same through presence updates,
+lyric reloads, and pause/resume; switching tracks allows a new roll. Classical
+Chinese is an easter egg and is not listed in the language selector.
+
 A placeholder also appears while artwork resolves in the background, then gives
 way to the real cover. The language refreshes when lyrics arrive during playback,
 even with lyric sharing disabled. Failed Litterbox uploads are remembered for the
-session to avoid repeated attempts. The twelve placeholder URLs work independently
+session to avoid repeated attempts. The placeholder URLs work independently
 of MusicBrainz and Litterbox and require no Discord application asset uploads.
