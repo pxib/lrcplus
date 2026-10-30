@@ -3,7 +3,7 @@ import json
 
 import pytest
 from PySide6.QtCore import QEvent, QSignalBlocker, Qt
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QKeyEvent, QTextCursor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLineEdit, QMessageBox
 
@@ -35,6 +35,62 @@ def test_changing_timestamp_preserves_multiline_text(editor):
     assert editor.lines[0].text == "First\nSecond"
     assert editor.lines[0].segments[0].start == 3
     assert "Multiline lyrics" in editor._lrcx_only_features()
+
+
+@pytest.mark.parametrize("karaoke", [True, False])
+def test_insert_newline_at_cursor_is_undoable_and_survives_save(make_lyrics_editor, karaoke):
+    from lyrics.lrcx_parser import load_lrcx
+
+    editor = make_lyrics_editor(karaoke=karaoke)
+    cursor = editor.line_text.textCursor()
+    cursor.setPosition(2)
+    editor.line_text.setTextCursor(cursor)
+    editor.insert_newline_button.click()
+
+    assert editor.line_text.toPlainText() == r"He{\n}llo"
+    assert editor.line_text.textCursor().position() == 6
+    assert editor.lines[0].text == "He\nllo"
+    assert editor.lines[0].start == 2
+    assert len(editor.lines) == 2
+    assert editor.document_dirty
+    editor.undo()
+    assert editor.lines[0].text == "Hello"
+    editor.redo()
+    assert editor.line_text.toPlainText() == r"He{\n}llo"
+
+    assert editor.save_document()
+    assert r"He{\n}llo" in editor.lrc_path.read_text(encoding="utf-8")
+    assert load_lrcx(editor.lrc_path)[0].text == "He\nllo"
+    editor._select_line_index(1)
+    editor._select_line_index(0)
+    assert editor.line_text.toPlainText() == r"He{\n}llo"
+
+
+def test_insert_newline_replaces_lyric_selection(editor):
+    cursor = editor.line_text.textCursor()
+    cursor.setPosition(1)
+    cursor.setPosition(4, QTextCursor.MoveMode.KeepAnchor)
+    editor.line_text.setTextCursor(cursor)
+    editor.insert_newline_button.click()
+    assert editor.line_text.toPlainText() == r"H{\n}o"
+    assert editor.lines[0].text == "H\no"
+
+
+def test_typed_newline_markers_reach_preview_as_line_breaks(editor, monkeypatch):
+    preview_texts = []
+    monkeypatch.setattr(editor, "_refresh_ruby_preview", lambda line: preview_texts.append(line.text))
+    editor.line_text.setPlainText("First{\\n}{\\n}Second\nThird")
+    assert editor.lines[0].text == "First\n\nSecond\nThird"
+    assert preview_texts[-1] == "First\n\nSecond\nThird"
+
+
+def test_newline_button_is_disabled_without_a_selected_lyric(editor):
+    editor.line_list.setCurrentRow(-1)
+    before = deepcopy(editor.lines)
+    assert not editor.insert_newline_button.isEnabled()
+    editor.insert_lyric_newline()
+    assert editor.lines == before
+    assert not editor.document_dirty
 
 
 @pytest.mark.parametrize("action", ["button", "escape", "title_bar"])

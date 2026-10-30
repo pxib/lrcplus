@@ -209,6 +209,8 @@ class ScrollingLyricsWidget(QWidget):
             else:
                 extent = (FuriganaWidget.TOP_MARGIN + base_height + FuriganaWidget.BOTTOM_MARGIN
                           + self.padding + (reading_height + self.ruby_padding if reading_height else 0))
+                text = str(lyric.text if hasattr(lyric, "text") else lyric[1])
+                extent = (extent - self.padding) * (text.count("\n") + 1) + self.padding
             self._extents.append(max(1, extent))
 
     def _measure_row(self, row):
@@ -220,6 +222,7 @@ class ScrollingLyricsWidget(QWidget):
             width = FuriganaWidget.PADDING + sum(
                 base + FuriganaWidget.PADDING + (ruby + row.ruby_padding if has_ruby and ruby else 0)
                 for has_ruby in flags)
+            width += row._quote_indent()
             row.setFixedWidth(max(1, int(width)))
             return row.width()
         row.setMinimumWidth(1)
@@ -825,6 +828,8 @@ class ScrollingLyricsWidget(QWidget):
                     lyric.text,
                     lyric.segments,
                     getattr(lyric, "end", None),
+                    style_spans=lyric.style_spans,
+                    is_blockquote=lyric.is_blockquote,
                 )
             else:
                 source_text = str(lyric.text)
@@ -837,7 +842,8 @@ class ScrollingLyricsWidget(QWidget):
                     if not source_text.strip()
                     else source_text
                 )
-                row.set_lyric(display_text, generate=False)
+                row.set_lyric(display_text, generate=False,
+                              style_spans=lyric.style_spans, is_blockquote=lyric.is_blockquote)
                 if not source_text.strip():
                     row._lyrics_plus_placeholder_source_empty = True
         else:

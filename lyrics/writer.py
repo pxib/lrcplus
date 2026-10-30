@@ -5,6 +5,7 @@ from pathlib import Path
 from lyrics.loader import load_lyrics
 from lyrics.furigana import build_furigana_segments
 from lyrics.models import LyricSegment
+from lyrics.formatting import format_emphasis
 from core.file_io import atomic_write_text
 
 
@@ -154,6 +155,8 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
 
     for line in lines:
         prefix = f"[{format_timestamp(line.start)}]"
+        if line.is_blockquote:
+            prefix += "> "
         segments = _manual_segments(
             line,
             manual_overrides,
@@ -161,6 +164,7 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
 
         parts = []
         active_timestamp = line.start
+        text_offset = 0
 
         # Karaoke is an explicit document property. In particular, automatic
         # separation may create several chunks that initially share the same
@@ -180,24 +184,13 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
             # Inline ruby spans are independent from karaoke timing. Serialize
             # them inside this chunk without creating another timestamp boundary.
             ruby_spans = list(getattr(segment, "ruby_spans", []) or [])
-            if ruby_spans:
-                rendered = []
-                cursor = 0
-                for span_start, span_end, reading in sorted(ruby_spans):
-                    span_start = max(cursor, int(span_start))
-                    span_end = min(len(text), int(span_end))
-                    if span_start >= span_end:
-                        continue
-                    rendered.append(text[cursor:span_start])
-                    rendered.append(f"{{{text[span_start:span_end]}|{reading}}}")
-                    cursor = span_end
-                rendered.append(text[cursor:])
-                text = "".join(rendered)
-            elif (
+            if not ruby_spans and (
                 segment.ruby
                 and getattr(segment, "ruby_source", None) != "generated"
             ):
-                text = f"{{{text}|{segment.ruby}}}"
+                ruby_spans = [(0, len(text), segment.ruby)]
+            text = format_emphasis(text, line.style_spans, text_offset, ruby_spans)
+            text_offset += len(segment.text)
 
             # Structural visual newlines are represented by the literal
             # LRCX marker {\n}; they are not timestamp boundaries.

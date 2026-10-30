@@ -1,6 +1,7 @@
 import re
 
 from lyrics.models import LyricLine, LyricSegment
+from lyrics.formatting import parse_emphasis, parse_quote_prefix
 from lyrics.parser import GENERATION_MODE_RE, normalize_generation_mode
 
 
@@ -154,6 +155,7 @@ def load_lrcx(path):
 
             line_start = _timestamp(line_matches[0])
             content = line[line_matches[-1].end():]
+            content, is_blockquote = parse_quote_prefix(content)
             segment_matches = list(SEGMENT_TIMESTAMP_RE.finditer(content))
             # Karaoke is explicit in LRCX: segment timestamps or instant tags.
             has_karaoke = bool(segment_matches) or INSTANT_TAG in content
@@ -219,10 +221,37 @@ def load_lrcx(path):
                     visual_line += 1
 
             text = "".join(segment.text for segment in segments)
+            boundaries = []
+            boundary = 0
+            for segment in segments:
+                boundary += len(segment.text)
+                boundaries.append(boundary)
+            text, style_spans, offsets = parse_emphasis(text, boundaries)
+            source_offset = 0
+            visible_segments = []
+            formatting_end = None
+            for segment in segments:
+                source_end = source_offset + len(segment.text)
+                start = offsets[source_offset]
+                segment.text = text[start:offsets[source_end]]
+                segment.ruby_spans = [
+                    (offsets[source_offset + a] - start, offsets[source_offset + b] - start, reading)
+                    for a, b, reading in segment.ruby_spans
+                    if offsets[source_offset + a] < offsets[source_offset + b]
+                ]
+                source_offset = source_end
+                if segment.text:
+                    visible_segments.append(segment)
+                    formatting_end = None
+                elif visible_segments:
+                    if visible_segments[-1].end is None:
+                        visible_segments[-1].end = segment.start
+                    formatting_end = segment.start
+            segments = visible_segments
 
             # A timestamp with no following lyric text is a terminal karaoke
             # boundary, not an empty segment. Preserve it as the line ending.
-            explicit_end = None
+            explicit_end = formatting_end
             if segment_matches:
                 last_match = segment_matches[-1]
                 trailing = content[last_match.end():]
@@ -238,6 +267,8 @@ def load_lrcx(path):
                     segments=segments,
                     end=explicit_end,
                     has_karaoke=has_karaoke,
+                    style_spans=style_spans,
+                    is_blockquote=is_blockquote,
                 )
             )
 

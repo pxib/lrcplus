@@ -29,3 +29,8 @@ class LyricLine:
     end: Optional[float] = None
     # Explicit karaoke state. Do not infer this later from mutable segment data.
     has_karaoke: bool = False
+    # Formatting is indexed into visible text, independently of timed chunks.
+    # Each tuple is (start_offset, end_offset, bold, italic, strike, underline).
+    style_spans: list[tuple[int, int, bool, bool, bool, bool]] = field(default_factory=list)
+    # A single quote level applies to the whole timestamp, including newlines.
+    is_blockquote: bool = False

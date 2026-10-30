@@ -95,19 +95,16 @@ class LrcEditorUiMixin:
         reset_offset = QPushButton("Reset Offset")
         reset_offset.clicked.connect(lambda: self.lyrics_offset.setValue(0))
         offset_row.addWidget(reset_offset)
-        offset_row.addStretch()
-        lyrics_layout.addLayout(offset_row)
 
-        timing_tools = QHBoxLayout()
         self.shift_timing_button = QPushButton("Shift Timing...")
         self.shift_timing_button.setToolTip("Shift all lines or a source-order range, including karaoke timing.")
         self.shift_timing_button.clicked.connect(self.show_timing_shift_dialog)
-        timing_tools.addWidget(self.shift_timing_button)
+        offset_row.addWidget(self.shift_timing_button)
         self.validate_timing_button = QPushButton("Validate Timing")
         self.validate_timing_button.clicked.connect(self.show_timing_validation)
-        timing_tools.addWidget(self.validate_timing_button)
-        timing_tools.addStretch()
-        lyrics_layout.addLayout(timing_tools)
+        offset_row.addWidget(self.validate_timing_button)
+        offset_row.addStretch()
+        lyrics_layout.addLayout(offset_row)
 
         # Precision transport: keep the familiar seekbar, but let the editor
         # switch to a waveform when timing lyrics.
@@ -200,8 +197,59 @@ class LrcEditorUiMixin:
         self.line_text = QTextEdit()
         self.line_text.setAcceptRichText(False)
         self.line_text.setPlaceholderText("Lyric text")
+        self.line_text.setToolTip(
+            r"Use **bold**, *italic*, ~~strikethrough~~, <u>underline</u>, > at the start for a quote, and {\n} for a line break."
+        )
         self.line_text.textChanged.connect(self.line_details_changed)
-        form.addRow("Lyric:", self.line_text)
+        self.insert_newline_button = QPushButton(r"Insert Newline {\n}")
+        self.insert_newline_button.setAutoDefault(False)
+        self.insert_newline_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.insert_newline_button.setToolTip(
+            "Insert a line break at the lyric cursor, keeping the same lyric timestamp."
+        )
+        self.insert_newline_button.clicked.connect(self.insert_lyric_newline)
+        lyric_tools = QHBoxLayout()
+        lyric_tools.addWidget(self.insert_newline_button)
+        self.lyric_style_buttons = []
+        self.lyric_style_shortcuts = []
+        for label, marker, closing, key in (
+            ("Bold", "**", "**", "Ctrl+B"),
+            ("Italic", "*", "*", "Ctrl+I"),
+            ("Strikethrough", "~~", "~~", "Ctrl+Shift+X"),
+            ("Underline", "<u>", "</u>", "Ctrl+U"),
+        ):
+            button = QPushButton(label)
+            button.setAutoDefault(False)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setToolTip(f"Wrap the selected lyric text in {marker} ({key}).")
+            font = button.font()
+            font.setBold(marker == "**")
+            font.setItalic(marker == "*")
+            font.setStrikeOut(marker == "~~")
+            font.setUnderline(marker == "<u>")
+            button.setFont(font)
+            button.clicked.connect(lambda checked=False, token=marker, end=closing: self.insert_lyric_emphasis(token, end))
+            shortcut = QShortcut(QKeySequence(key), self.line_text)
+            shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+            shortcut.activated.connect(lambda token=marker, end=closing: self.insert_lyric_emphasis(token, end))
+            self.lyric_style_buttons.append(button)
+            self.lyric_style_shortcuts.append(shortcut)
+            lyric_tools.addWidget(button)
+        self.quote_button = QPushButton("Quote")
+        self.quote_button.setCheckable(True)
+        self.quote_button.setAutoDefault(False)
+        self.quote_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.quote_button.setToolTip("Toggle a blockquote for this whole lyric timestamp using > at the start.")
+        self.quote_button.clicked.connect(self.toggle_lyric_quote)
+        self.lyric_style_buttons.append(self.quote_button)
+        lyric_tools.addWidget(self.quote_button)
+        lyric_tools.addStretch()
+        lyric_field = QWidget()
+        lyric_layout = QVBoxLayout(lyric_field)
+        lyric_layout.setContentsMargins(0, 0, 0, 0)
+        lyric_layout.addLayout(lyric_tools)
+        lyric_layout.addWidget(self.line_text)
+        form.addRow("Lyric:", lyric_field)
         detail_layout.addLayout(form)
 
         ruby_box = QFrame()

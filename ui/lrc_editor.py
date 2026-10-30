@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from lyrics.loader import load_lyrics, get_lyrics_generation_mode
 from lyrics.models import LyricLine, LyricSegment
+from lyrics.formatting import format_emphasis, parse_emphasis, parse_quote_prefix
 from lyrics.writer import format_timestamp, serialize_lrc, serialize_lrcx
 from lyrics.timing import parse_timestamp
 from lyrics.editor_source import extract_metadata, parse_editor_source
@@ -314,6 +315,10 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
     def _clear_editor_views(self):
         if hasattr(self, "line_text"):
             self.line_text.clear()
+            self.insert_newline_button.setEnabled(False)
+            self.quote_button.setChecked(False)
+            for button in self.lyric_style_buttons:
+                button.setEnabled(False)
         if hasattr(self, "segment_table"):
             self.segment_table.setRowCount(0)
         if hasattr(self, "separator_widget"):
@@ -1328,6 +1333,9 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             row = self._view_line_indices[row]
         else:
             row = -1
+        self.insert_newline_button.setEnabled(0 <= row < len(self.lines))
+        for button in self.lyric_style_buttons:
+            button.setEnabled(0 <= row < len(self.lines))
         self.loading = True
         if self.karaoke_enabled:
             self.segment_table.setRowCount(0)
@@ -1335,6 +1343,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             self.separation_preview.clear()
             self._clear_separator_buttons()
         if not (0 <= row < len(self.lines)):
+            self.quote_button.setChecked(False)
             self.line_time.setValue(0)
             self.line_text.clear()
             if hasattr(self, "lyrics_waveform"):
@@ -1344,7 +1353,9 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         line = self.lines[row]
         self._update_detected_language()
         self.line_time.setValue(line.start)
-        self.line_text.setPlainText(line.text)
+        markup = format_emphasis(line.text, line.style_spans).replace("\n", r"{\n}")
+        self.line_text.setPlainText(("> " if line.is_blockquote else "") + markup)
+        self.quote_button.setChecked(line.is_blockquote)
         if self.karaoke_enabled:
             self.full_line_label.setText(line.text)
             self._build_separator_buttons(line)
@@ -2150,6 +2161,44 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
                     item, QListWidget.ScrollHint.PositionAtCenter
                 )
 
+    def insert_lyric_newline(self):
+        if self.loading or self._current_line()[1] is None:
+            return
+        self.line_text.insertPlainText(r"{\n}")
+        self.line_text.setFocus()
+
+    def insert_lyric_emphasis(self, marker, closing_marker=None):
+        if self.loading or self._current_line()[1] is None:
+            return
+        cursor = self.line_text.textCursor()
+        start, end = cursor.selectionStart(), cursor.selectionEnd()
+        selected = cursor.selectedText().replace("\u2029", "\n")
+        cursor.insertText(marker + selected + (closing_marker or marker))
+        cursor.setPosition(start + len(marker))
+        if selected:
+            cursor.setPosition(end + len(marker), cursor.MoveMode.KeepAnchor)
+        self.line_text.setTextCursor(cursor)
+        self.line_text.setFocus()
+
+    def toggle_lyric_quote(self):
+        if self.loading or self._current_line()[1] is None:
+            return
+        cursor = self.line_text.textCursor()
+        anchor, position = cursor.anchor(), cursor.position()
+        editing = self.line_text.textCursor()
+        editing.setPosition(0)
+        if self.line_text.toPlainText().startswith("> "):
+            editing.setPosition(2, editing.MoveMode.KeepAnchor)
+            editing.removeSelectedText()
+            delta = -2
+        else:
+            editing.insertText("> ")
+            delta = 2
+        cursor.setPosition(max(0, anchor + delta))
+        cursor.setPosition(max(0, position + delta), cursor.MoveMode.KeepAnchor)
+        self.line_text.setTextCursor(cursor)
+        self.line_text.setFocus()
+
     def line_details_changed(self):
         if self.loading:
             return
@@ -2159,7 +2208,9 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         self._push_undo_state(line_index=index)
         delta = self.line_time.value() - line.start
         line.start = self.line_time.value()
-        line.text = self.line_text.toPlainText()
+        markup, line.is_blockquote = parse_quote_prefix(self.line_text.toPlainText())
+        line.text, line.style_spans, _offsets = parse_emphasis(markup.replace(r"{\n}", "\n"))
+        self.quote_button.setChecked(line.is_blockquote)
         if not line.has_karaoke:
             for segment in line.segments:
                 segment.start += delta
@@ -2185,6 +2236,8 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             self._build_separator_buttons(line)
         self._refresh_ruby_preview(line)
         self._update_lyric_search()
+        if self.karaoke_enabled:
+            self._refresh_karaoke_preview()
 
         # Keep the waveform live with direct timestamp edits in the spin box.
         # A manual edit changes the model immediately, so the selected A/B
@@ -2955,6 +3008,8 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
                 line.text,
                 line.segments,
                 line_end,
+                style_spans=line.style_spans,
+                is_blockquote=line.is_blockquote,
             )
             self._preview_segments_line_index = index
 
@@ -3900,6 +3955,10 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         features = []
         if any("\n" in line.text for line in self.lines):
             features.append("Multiline lyrics")
+        if any(line.style_spans for line in self.lines):
+            features.append("Text formatting")
+        if any(line.is_blockquote for line in self.lines):
+            features.append("Blockquotes")
 
         if abs(float(getattr(self, "lyrics_offset_ms", 0.0))) > 0.0001:
             features.append("Lyric offset")

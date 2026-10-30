@@ -894,8 +894,22 @@ def prefetch_furigana_batches(lines, batch_size=10, progress_callback=None, shou
             if should_continue and not should_continue(): break
             batch=japanese[start:start+size]; combined="\n".join(batch); words=_analyze(combined)
             if words:
-                split=_split_segments_by_lines(_build_segments_from_words(combined, words, should_continue),len(batch))
-                for text,segments in zip(batch,split): _cache_furigana_segments(text,segments or _fallback(text))
+                # A timed lyric may itself contain visual newlines. Split the
+                # analyzer's physical rows, then reassemble each original lyric
+                # before caching so later lyrics and suffixes keep their owner.
+                counts = [text.count("\n") + 1 for text in batch]
+                split = _split_segments_by_lines(
+                    _build_segments_from_words(combined, words, should_continue), sum(counts)
+                )
+                cursor = 0
+                for text, count in zip(batch, counts):
+                    segments = []
+                    for row_index in range(count):
+                        if row_index:
+                            segments.append({"text": "\n", "reading": None})
+                        segments.extend(split[cursor + row_index])
+                    cursor += count
+                    _cache_furigana_segments(text, segments or _fallback(text))
             else:
                 for text in batch: _cache_furigana_segments(text,_fallback(text))
             completed += len(batch)

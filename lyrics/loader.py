@@ -18,6 +18,15 @@ def load_lyrics(path):
         return load_lrcx(path)
 
     if path.suffix.lower() == ".lrc":
+        # Respect the declared document format even when an LRCX document was
+        # saved with the older .lrc extension.
+        with path.open("r", encoding="utf-8-sig") as file:
+            for raw_line in file:
+                header = raw_line.strip()
+                if header.lower() == "[format:lrcx]":
+                    return load_lrcx(path)
+                if header and not (header.startswith("[") and header[1:2].isalpha()):
+                    break
         return [LyricLine(start=timestamp, text=text) for timestamp, text in load_lrc(path)]
 
     if path.suffix.lower() == ".txt":

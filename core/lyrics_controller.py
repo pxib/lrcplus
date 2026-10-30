@@ -19,6 +19,8 @@ from lyrics.furigana import (
     get_cached_furigana_segments,
     get_reading_mode,
     set_automatic_readings_enabled,
+    set_auto_language_context,
+    detect_lyrics_collection_language,
 )
 from lyrics.models import LyricSegment
 from core.settings import (
@@ -70,10 +72,14 @@ class LyricsController(LyricsSearchMixin):
                 line.text,
                 line.segments,
                 line_end,
+                style_spans=line.style_spans,
+                is_blockquote=line.is_blockquote,
             )
         else:
             self.lyric_widget.set_lyric(
-                self.lyric_widget.lyric, generate=False
+                self.lyric_widget.lyric, generate=False,
+                style_spans=getattr(self.lyric_widget, "style_spans", []),
+                is_blockquote=getattr(self.lyric_widget, "is_blockquote", False),
             )
 
     def refresh_lyrics_settings_for_current_file(self):
@@ -347,9 +353,12 @@ class LyricsController(LyricsSearchMixin):
                         line.text,
                         line.segments,
                         line_end,
+                        style_spans=line.style_spans,
+                        is_blockquote=line.is_blockquote,
                     )
                 else:
-                    self.lyric_widget.set_lyric(current_text)
+                    self.lyric_widget.set_lyric(current_text, style_spans=getattr(line, "style_spans", []),
+                                                is_blockquote=getattr(line, "is_blockquote", False))
 
             self.highlight_current_lyric()
 
@@ -362,8 +371,14 @@ class LyricsController(LyricsSearchMixin):
         lines = [
             line.text
             for line in self.lyric_lines
-            if not getattr(line, "segments", None)
+            if str(line.text).strip()
         ]
+        # LRCX always has content segments, even without karaoke. Their
+        # existence says nothing about whether automatic readings are cached.
+        # Resolve Auto context before mounting rows: changing it afterwards
+        # would invalidate readings just generated for the first visible lines.
+        if get_reading_mode() == "auto":
+            set_auto_language_context(detect_lyrics_collection_language(lines))
 
         if not lines:
             self._set_furigana_progress(0, 0, request_id)
@@ -587,6 +602,7 @@ class LyricsController(LyricsSearchMixin):
             .replace("  ", " ")
             .strip()
         )
+        self._start_furigana_prefetch()
         self.scrolling_lyrics_widget.set_lyrics(self.lyric_lines)
         if self.plain_lyrics_mode:
             self.scrolling_lyrics_widget.set_scrolling_mode("continuous")
@@ -596,7 +612,6 @@ class LyricsController(LyricsSearchMixin):
             self.scrolling_lyrics_widget.set_scrolling_mode(
                 self.scrolling_mode
             )
-        self._start_furigana_prefetch()
         # A paused player emits no positionChanged signal after an editor or
         # manual reload. Render the active line at the existing position now.
         self.update_lyrics(self.media_player.position())
@@ -611,7 +626,8 @@ class LyricsController(LyricsSearchMixin):
                 len(line.segments)
                 for line in self.lyric_lines
             )
-            print(f"[LRCX] Ready: {segment_count} timed segments")
+            karaoke_lines = sum(bool(line.has_karaoke) for line in self.lyric_lines)
+            print(f"[LRCX] Ready: {segment_count} content segments; {karaoke_lines} karaoke lines")
 
     def update_lyrics(self, position_ms):
         if not self.lyrics:
@@ -824,9 +840,11 @@ class LyricsController(LyricsSearchMixin):
                     line.text,
                     line.segments,
                     line_end,
+                    style_spans=line.style_spans,
+                    is_blockquote=line.is_blockquote,
                 )
             else:
-                self.lyric_widget.set_lyric(text)
+                self.lyric_widget.set_lyric(text, style_spans=line.style_spans, is_blockquote=line.is_blockquote)
 
             self.lyric_widget.set_current_line(True)
             self.highlight_current_lyric()

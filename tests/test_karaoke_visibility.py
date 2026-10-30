@@ -151,3 +151,26 @@ def test_untimed_lyrics_do_not_run_karaoke_timer(karaoke, qapp):
     window.media_player.positionChanged.emit(1000)
     assert not plugin.timer.isActive()
     assert window.lyric_widget.positions[-1] is None
+
+
+def test_plain_lrcx_segments_and_readings_do_not_activate_karaoke(karaoke, qapp, tmp_path):
+    from lyrics.loader import load_lyrics
+
+    path = tmp_path / "plain.lrcx"
+    path.write_text(
+        "[format:LRCX]\n[version:1]\n[g:auto]\n"
+        "[00:00.650]**{超最強|ちょうさいきょう}**{\\n}LOL!\n"
+        "[00:03.050]超最強 な～んです\n", encoding="utf-8",
+    )
+    window, plugin = karaoke
+    window.current_lyrics_path = path
+    window.lyric_lines = load_lyrics(path)
+    assert window.lyric_lines[0].segments
+    assert window.lyric_lines[0].style_spans
+    assert not any(line.has_karaoke for line in window.lyric_lines)
+    window.workspace_stack.setCurrentWidget(window.lyrics_page)
+    window.show()
+    window.media_player.play()
+    qapp.processEvents()
+    assert not plugin.timer.isActive()
+    assert window.lyric_widget.positions[-1] is None
