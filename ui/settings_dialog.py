@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from core.settings import APPEARANCE_DEFAULTS
 from core.theme import build_theme_palette
 from ui.dependency_settings import DependencyManagerWidget
+from ui.about_tab import AboutTab
 from ui.settings_controls import (
     ThemedSpinBox,
     ThemedComboBox,
@@ -671,6 +672,8 @@ class SettingsDialog(QDialog):
         tabs.addTab(plugins_tab, "Plugins")
         self.dependencies_tab = DependencyManagerWidget(self.plugin_manager, self)
         tabs.addTab(self.dependencies_tab, "Dependencies")
+        self.about_tab = AboutTab(self.plugin_manager, self)
+        tabs.addTab(self.about_tab, "About")
 
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok

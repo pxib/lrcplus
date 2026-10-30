@@ -26,6 +26,7 @@ PROJECT_ROOT = Path(SPEC).resolve().parent
 # at runtime.
 
 datas = [
+    (str(PROJECT_ROOT / "LICENSE.txt"), "."),
     (str(PROJECT_ROOT / "assets"), "assets"),
     (str(PROJECT_ROOT / "plugins"), "plugins"),
     (str(PROJECT_ROOT / "core" / "dependency_probe.py"), "core"),

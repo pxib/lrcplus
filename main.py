@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
 
 from core.plugin_manager import PluginManager
+from core.app_info import APP_NAME, APP_VERSION
 from core.settings import get_disabled_plugins
 from lyrics.furigana import katakana_to_hiragana, token_to_furigana_segments
 from ui.main_window import Player
@@ -29,6 +30,8 @@ __all__ = [
 
 def main() -> int:
     app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
 
     app.setWindowIcon(
         QIcon(str(Path(__file__).resolve().parent / "assets" / "ico.png")
