@@ -56,6 +56,7 @@ from core.booru_artwork import fetch_booru_artwork
 from core.file_io import atomic_write_text
 from core.fonts import library_font
 from core.theme import build_theme_palette
+from ui.easter_eggs import BudgetBrandLabel, CatSeekTrack, EasterEggs
 
 
 def _lyrics_search_query(audio_path):
@@ -543,7 +544,8 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
             seek_layout.setContentsMargins(0, 0, 0, 0)
             seek_layout.setSpacing(10)
             seek_layout.addWidget(self.current_time_label)
-            seek_layout.addWidget(self.seek_slider, 1)
+            self.seek_track = CatSeekTrack(self.seek_slider, self.media_player)
+            seek_layout.addWidget(self.seek_track, 1)
             seek_layout.addWidget(self.duration_label)
 
             volume_layout = QHBoxLayout()
@@ -584,7 +586,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
             header_layout = QHBoxLayout(header)
             header_layout.setContentsMargins(0, 0, 0, 10)
             header_layout.setSpacing(8)
-            brand_label = QLabel("LRCPlus")
+            self.brand_label = brand_label = BudgetBrandLabel()
             brand_label.setObjectName("brandLabel")
             header_layout.addWidget(brand_label)
             header_layout.addSpacing(12)
@@ -769,6 +771,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
                 self.toggle_mute
             )
 
+            self.easter_eggs = EasterEggs(self)
             self._restore_startup_state()
 
 
@@ -2198,6 +2201,8 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
             self._queue_visible_library_covers()
 
         def closeEvent(self, event):
+            # Save the full player's geometry even when closing the budget mode.
+            self.easter_eggs.return_to_plus()
             if getattr(self, "_lyrics_search_job", None) is not None:
                 self._lyrics_search_job.close()
             if hasattr(self, "_booru_executor"):
