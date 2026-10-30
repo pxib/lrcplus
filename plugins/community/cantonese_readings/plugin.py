@@ -2,7 +2,7 @@
 
 PyCantonese is deliberately isolated in a helper process.  Some versions of
 its tokenizer stack can terminate the Python interpreter instead of raising a
-normal exception.  Keeping that native-risky work outside LyricsPlus means a
+normal exception.  Keeping that native-risky work outside LRCPlus means a
 bad lyric/provider call cannot bring down the UI process.
 """
 from __future__ import annotations
@@ -68,7 +68,7 @@ def _isolated_convert(texts, style, timeout=120.0):
             if getattr(sys, "frozen", False):
                 python = env.get("LRCPLUS_DEPENDENCY_PYTHON")
                 if not python or not Path(python).is_file():
-                    raise RuntimeError("Install Cantonese dependencies and restart LyricsPlus to prepare its private Python runtime")
+                    raise RuntimeError("Install Cantonese dependencies and restart LRCPlus to prepare its private Python runtime")
             command = [python, "-I", "-u", str(worker)]
             completed = subprocess.run(
                 command + [

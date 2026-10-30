@@ -1,9 +1,9 @@
-# LyricsPlus Plugin API
+# LRCPlus Plugin API
 
 > **Current API version:** 4
 > **Supported plugin API versions:** 1–4
 
-The LyricsPlus Plugin API lets plugins integrate with the player without importing internal UI or manager code.
+The LRCPlus Plugin API lets plugins integrate with the player without importing internal UI or manager code.
 
 Plugins can currently:
 
@@ -27,7 +27,7 @@ A plugin lives in its own folder:
 
 ```text
 plugins/
-├── core/                    # Official LyricsPlus plugins
+├── core/                    # Official LRCPlus plugins
 │   └── my_plugin/
 │       ├── plugin.py
 │       └── manifest.json    # optional, recommended
@@ -47,7 +47,7 @@ A minimal plugin:
 class MyPlugin:
     name = "My Plugin"
     version = "1.0.0"
-    description = "My first LyricsPlus plugin."
+    description = "My first LRCPlus plugin."
 
     def on_load(self, context):
         context.api.log("Hello from My Plugin!")
@@ -266,7 +266,7 @@ def on_playback_state_changed(state):
 
 ## Event errors
 
-If a listener raises an exception, LyricsPlus catches the exception and logs it under the owning plugin instead of letting one plugin crash the event dispatcher.
+If a listener raises an exception, LRCPlus catches the exception and logs it under the owning plugin instead of letting one plugin crash the event dispatcher.
 
 ---
 
@@ -579,7 +579,7 @@ The matcher receives the lyric text and may also receive a keyword argument:
 language
 ```
 
-For compatibility, LyricsPlus also supports matchers that only accept:
+For compatibility, LRCPlus also supports matchers that only accept:
 
 ```python
 def can_handle(text):
@@ -624,7 +624,7 @@ Reading providers are owned by the plugin that registered them.
 
 When the plugin unloads, its providers are automatically removed.
 
-LyricsPlus also clears cached reading segments when a provider is registered so previously cached fallback results do not continue hiding a newly available provider.
+LRCPlus also clears cached reading segments when a provider is registered so previously cached fallback results do not continue hiding a newly available provider.
 
 ---
 
@@ -655,7 +655,7 @@ def on_load(self, context):
 
 If the main window is not ready yet, the action is queued and added after the host window becomes available.
 
-If the named menu does not already exist, LyricsPlus creates it.
+If the named menu does not already exist, LRCPlus creates it.
 
 Plugin-owned actions are automatically removed when the plugin unloads.
 
@@ -835,9 +835,9 @@ and preserves the versions of app-provided libraries. App-provided libraries
 cannot be replaced or removed through this UI.
 
 On Windows, downloaded libraries are stored beneath
-`%LOCALAPPDATA%/LyricsPlus/dependencies/<python-and-platform>/environments/`.
-macOS uses `~/Library/Application Support/LyricsPlus`; Linux uses
-`$XDG_DATA_HOME/LyricsPlus` (default `~/.local/share/LyricsPlus`).
+`%LOCALAPPDATA%/LRCPlus/dependencies/<python-and-platform>/environments/`.
+macOS uses `~/Library/Application Support/LRCPlus`; Linux uses
+`$XDG_DATA_HOME/LRCPlus` (default `~/.local/share/LRCPlus`).
 `LRCPLUS_DATA_DIR` can override the application data directory.
 
 Install/remove operations are immediate and take effect after restarting the app,
@@ -863,7 +863,7 @@ in a separate process so even a native-library crash cannot terminate the player
 
 ## API compatibility
 
-LyricsPlus currently supports:
+LRCPlus currently supports:
 
 ```text
 Plugin API v1 through v3
@@ -890,7 +890,7 @@ from __future__ import annotations
 class ExampleReadingsPlugin:
     name = "Example Readings"
     version = "1.0.0"
-    description = "An example LyricsPlus reading provider."
+    description = "An example LRCPlus reading provider."
 
     def on_load(self, context):
         def can_handle(text, *, language=None):
@@ -938,7 +938,7 @@ Suggested `manifest.json`:
 {
   "name": "Example Readings",
   "version": "1.0.0",
-  "description": "An example LyricsPlus reading provider.",
+  "description": "An example LRCPlus reading provider.",
     "api_version": 3
 }
 ```
@@ -992,7 +992,7 @@ from core.plugin_manager import PluginManager
 from ui.main_window import Player
 ```
 
-unless you are modifying LyricsPlus itself rather than writing a plugin.
+unless you are modifying LRCPlus itself rather than writing a plugin.
 
 ### Namespace your identifiers
 

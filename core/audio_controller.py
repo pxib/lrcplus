@@ -110,7 +110,7 @@ class AudioController:
 
             # Update UI.
             self.setWindowTitle(
-                f"LRC+ — {audio_path.name}"
+                f"LRCPlus — {audio_path.name}"
             )
 
             if hasattr(self, "_notify_queue_changed"):
@@ -575,7 +575,8 @@ class AudioController:
                 self.volume_slider.setValue(value)
                 self.volume_slider.blockSignals(False)
 
-            self.last_volume = value
+            if value > 0:
+                self.last_volume = value
             self.playback_settings["volume"] = value
             self.volume_percentage_label.setText(f"{value}%")
             self._configure_pcm_volume(value)

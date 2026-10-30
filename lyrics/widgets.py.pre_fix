@@ -15,7 +15,7 @@ from lyrics.furigana import (
     split_reading_by_text_ranges,
 )
 
-_FURIGANA_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="LyricsPlus-Yomi")
+_FURIGANA_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="LRCPlus-Yomi")
 
 
 

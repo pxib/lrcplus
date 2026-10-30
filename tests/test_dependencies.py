@@ -235,7 +235,7 @@ def test_runtime_archive_cannot_escape_destination(tmp_path):
 
 
 @pytest.mark.parametrize("flag, payload, expected", [
-    ("--lyricsplus-dependency-probe", {"imports": ["json"], "paths": []}, {"json": None}),
+    ("--lrcplus-dependency-probe", {"imports": ["json"], "paths": []}, {"json": None}),
 ])
 def test_application_dispatches_helpers_before_gui_startup(tmp_path, flag, payload, expected):
     import subprocess

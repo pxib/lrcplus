@@ -3,7 +3,7 @@ from pathlib import Path
 import shutil
 
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFormLayout, QHBoxLayout,
+    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
@@ -11,16 +11,17 @@ from plugins.community.ytdlp_import.dialog import ImportDialog
 
 
 DEFAULTS = {
-    "download_folder": str(Path.home() / "Music" / "LyricsPlus"),
+    "download_folder": str(Path.home() / "Music" / "LRCPlus"),
     "codec": "m4a", "add_to_queue": True,
     "ffmpeg_location": "", "js_runtime": "auto", "js_path": "",
     "subtitle_language": "", "subtitle_kind": "manual", "subtitles_as_lyrics": True,
+    "use_musicbrainz_cover": False,
 }
 
 
 class YtdlpImportPlugin:
     name = "yt-dlp Audio Import"
-    version = "1.1.2"
+    version = "1.2.0"
     description = "Import URL audio and subtitles, with optional synced lyrics."
 
     def __init__(self):
@@ -93,6 +94,9 @@ class YtdlpImportPlugin:
         widget.codec.addItem("MP3 (192 kbps)", "mp3")
         widget.codec.setCurrentIndex(max(0, widget.codec.findData(values["codec"])))
         form.addRow("Default format:", widget.codec)
+        widget.use_musicbrainz_cover = QCheckBox("Use MusicBrainz for album cover")
+        widget.use_musicbrainz_cover.setChecked(bool(values["use_musicbrainz_cover"]))
+        form.addRow(widget.use_musicbrainz_cover)
         widget.ffmpeg = QLineEdit(str(values["ffmpeg_location"]))
         widget.ffmpeg.setPlaceholderText("Auto-detect from PATH, or enter the FFmpeg folder")
         form.addRow("FFmpeg folder or executable:", widget.ffmpeg)
@@ -128,6 +132,7 @@ class YtdlpImportPlugin:
         values = {
             "download_folder": widget.folder.text().strip() or DEFAULTS["download_folder"],
             "codec": widget.codec.currentData(),
+            "use_musicbrainz_cover": widget.use_musicbrainz_cover.isChecked(),
             "ffmpeg_location": widget.ffmpeg.text().strip(),
             "js_runtime": widget.runtime.currentData(), "js_path": widget.runtime_path.text().strip(),
         }

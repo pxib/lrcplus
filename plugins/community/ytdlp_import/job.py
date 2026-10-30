@@ -74,7 +74,7 @@ def worker_command():
     if getattr(sys, "frozen", False):
         python = os.environ.get("LRCPLUS_DEPENDENCY_PYTHON")
         if not python or not Path(python).is_file():
-            raise RuntimeError("Install the plugin dependencies and restart LyricsPlus to prepare its private Python runtime.")
+            raise RuntimeError("Install the plugin dependencies and restart LRCPlus to prepare its private Python runtime.")
     return [python, "-I", "-u", str(Path(__file__).with_name("worker.py"))]
 
 
@@ -110,7 +110,7 @@ class ImportJob(QObject):
             if self.request["action"] in {"download", "subtitles"}:
                 folder = Path(self.request["folder"]).expanduser().resolve()
                 folder.mkdir(parents=True, exist_ok=True)
-                self.stage = Path(tempfile.mkdtemp(prefix=".lyricsplus-import-", dir=folder))
+                self.stage = Path(tempfile.mkdtemp(prefix=".lrcplus-import-", dir=folder))
                 self.request.update(folder=str(folder), stage=str(self.stage))
             self.process.start(command[0], command[1:])
         except (OSError, RuntimeError) as error:
@@ -193,7 +193,7 @@ class ImportJob(QObject):
         if self.stage is not None:
             stage = self.stage.resolve()
             folder = Path(self.request["folder"]).resolve()
-            if stage.parent == folder and stage.name.startswith(".lyricsplus-import-"):
+            if stage.parent == folder and stage.name.startswith(".lrcplus-import-"):
                 shutil.rmtree(stage, ignore_errors=True)
             self.stage = None
 

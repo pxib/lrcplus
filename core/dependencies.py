@@ -191,7 +191,7 @@ def _run(command, *, payload=None, timeout=900):
 
 def probe_imports(imports, site, paths, *, python=None):
     if python is None and getattr(sys, "frozen", False):
-        command = [sys.executable, "--lyricsplus-dependency-probe"]
+        command = [sys.executable, "--lrcplus-dependency-probe"]
     else:
         command = [python or sys.executable, "-I", Path(__file__).with_name("dependency_probe.py")]
     cache = get_app_data_dir() / "cache" / "checks"
@@ -480,5 +480,5 @@ class DependencyManager:
                     if directory.resolve().is_relative_to((self.root / "environments").resolve()):
                         shutil.rmtree(directory, ignore_errors=True)
                 raise
-            log("Dependencies updated. Restart LyricsPlus to apply the changes.")
+            log("Dependencies updated. Restart LRCPlus to apply the changes.")
             return updated

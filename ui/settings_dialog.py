@@ -559,7 +559,7 @@ class SettingsDialog(QDialog):
         plugins_layout = QVBoxLayout(plugins_tab)
         plugins_layout.addWidget(QLabel("Installed plugins"))
         plugins_notice = QLabel(
-            "Plugin changes are saved immediately when Settings is accepted and take effect after restarting LRC+."
+            "Plugin changes are saved immediately when Settings is accepted and take effect after restarting LRCPlus    ."
         )
         plugins_notice.setWordWrap(True)
         plugins_notice.setStyleSheet("color: #A0A0A0; font-style: italic;")
@@ -854,7 +854,7 @@ class SettingsDialog(QDialog):
         )
         self._add_labeled(layout, "Output device:", self.output_device_combo)
         self.output_device_combo.setToolTip(
-            "Choose which Windows audio output device LyricsPlus uses for playback."
+            "Choose which Windows audio output device LRCPlus uses for playback."
         )
 
     def _create_lyrics_controls(

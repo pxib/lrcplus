@@ -1,6 +1,6 @@
 # yt-dlp Audio Import
 
-An optional LyricsPlus plugin for importing one online video/audio track at a
+An optional LRCPlus plugin for importing one online video/audio track at a
 time. Downloaded files become regular local library tracks. The downloader UI,
 worker, settings, and download history all live in this plugin.
 
@@ -8,7 +8,7 @@ worker, settings, and download history all live in this plugin.
 
 1. In **Settings > Dependencies**, install/repair **yt-dlp** and **mutagen**.
    The yt-dlp requirement includes its `default` extras, including matching
-   YouTube challenge scripts. Restart LyricsPlus after installation or updates.
+   YouTube challenge scripts. Restart LRCPlus after installation or updates.
 2. Install **FFmpeg and ffprobe**, and put them on PATH or enter their folder in
    **Settings > Plugins > yt-dlp Audio Import**.
 3. For YouTube, install a supported JavaScript runtime. Auto-detection tries
@@ -30,12 +30,41 @@ downloader, FFmpeg, and runtime. Paste a URL and select **Preview** to see the
 title, creator, duration, and artwork when supplied by the source. Choose a
 download folder and M4A or MP3, then select **Download**.
 
+The preview also shows the album and full release date when available, falling
+back to a clearly labeled upload date. Dates follow the operating system's
+regional short-date format. Source audio codec, bitrate, and sample rate appear
+when supplied; they update when switching between M4A and MP3. These describe
+the source stream before conversion. Missing metadata stays hidden.
+An estimated source download size appears beside **Download**, using the
+reported stream size or its bitrate and duration. It updates with the audio
+format and stays hidden when unknown or reusing an existing file. Conversion,
+artwork, and subtitles can change the final size.
+
 The completed audio includes metadata and artwork when available. Files always
 enter the library; **Also add to the playback queue** controls enqueueing.
 Existing playback continues. Adding to the queue selects Queue playback mode.
 Downloaded sources are remembered per media identity and audio format, including
 their source URL. If the file is still present, **Add existing** imports it again
 without another download. **Download again** creates a separate file.
+
+## Album covers from MusicBrainz
+
+Enable **Use MusicBrainz for album cover** before selecting **Preview** to look
+up a release by track title and artist (and album, when the source supplies it).
+Matching front covers come from the [Cover Art Archive](https://musicbrainz.org/doc/Cover_Art_Archive/API).
+When a source lists several artists, the primary artist is used if the uploader
+confirms that name; auto-generated YouTube credits can also list composers.
+The preview shows the cover and release name; that same image is embedded in
+new M4A/MP3 downloads. Official albums are preferred when no album is supplied.
+Lookup failures, missing covers, and uncertain matches fall back to source
+artwork. The option is off by default and is remembered when downloading; its
+default can also be changed in the plugin settings. No additional dependency
+or account is required.
+
+Changing the option requires another **Preview**. **Add existing** and **Get
+subtitles** preserve the existing audio file and its cover; choose **Download
+again** to create a new file with different artwork. Matching depends on the
+source metadata, so some video titles and channel names will not match.
 
 ## Subtitles and synced lyrics
 

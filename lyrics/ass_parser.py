@@ -1,4 +1,4 @@
-"""Basic ASS/SSA subtitle karaoke importer for LyricsPlus."""
+"""Basic ASS/SSA subtitle karaoke importer for LRCPlus."""
 from pathlib import Path
 import re
 

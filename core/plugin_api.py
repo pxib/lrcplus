@@ -1,7 +1,7 @@
-"""Public LyricsPlus Plugin API v4.
+"""Public LRCPlus Plugin API v4.
 
 The API deliberately exposes stable capabilities instead of requiring plugins
-to import internal LyricsPlus modules or poke at the main window directly.
+to import internal LRCPlus modules or poke at the main window directly.
 Version 3 keeps earlier capabilities and adds main-window buttons and lyric
 word analysis alongside events, services, settings, menu actions and playback.
 Version 4 adds local audio imports and lyric attachments without restarting playback.
@@ -22,7 +22,7 @@ class ReadingProviderInfo:
     description: str = ""
 
 
-class LyricsPlusAPI:
+class LRCPlusAPI:
     def __init__(self, manager: Any, plugin_id: str) -> None:
         self._manager = manager
         self.plugin_id = plugin_id

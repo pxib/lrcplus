@@ -32,7 +32,7 @@ def test_completed_download_is_published_without_overwriting(tmp_path):
     folder.mkdir()
     original = folder / "song.m4a"
     original.write_bytes(b"original")
-    stage = folder / ".lyricsplus-import-test"
+    stage = folder / ".lrcplus-import-test"
     stage.mkdir()
     source = stage / "song.m4a"
     source.write_bytes(b"downloaded")
@@ -96,7 +96,7 @@ def test_failed_job_cleans_only_its_own_staging_directory(qapp, tmp_path, monkey
     folder.mkdir()
     existing = folder / "keep.mp3"
     existing.write_bytes(b"keep")
-    unrelated = folder / ".lyricsplus-import-other"
+    unrelated = folder / ".lrcplus-import-other"
     unrelated.mkdir()
     job = ImportJob({"action": "download", "folder": str(folder)})
     failed = QSignalSpy(job.failed)
@@ -122,7 +122,7 @@ def test_cancellation_stops_converter_child_and_never_imports(qapp, tmp_path, mo
         "if os.name != 'nt': os.setsid()\n"
         "json.load(sys.stdin)\n"
         f"subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
-        "print('LYRICSPLUS_YTDLP {\"event\": \"child_started\"}', flush=True)\n"
+        "print('LRCPLUS_YTDLP {\"event\": \"child_started\"}', flush=True)\n"
         "time.sleep(30)\n", encoding="utf-8",
     )
     monkeypatch.setattr("plugins.community.ytdlp_import.job.worker_command", lambda: [sys.executable, "-u", str(helper)])

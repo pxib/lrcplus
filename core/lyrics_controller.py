@@ -41,7 +41,7 @@ class _FuriganaProgressBridge(QObject):
 
 
 _FURIGANA_PREFETCH_EXECUTOR = ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="LyricsPlus-FuriganaPrefetch"
+    max_workers=1, thread_name_prefix="LRCPlus-FuriganaPrefetch"
 )
 
 class LyricsController(LyricsSearchMixin):
@@ -128,7 +128,7 @@ class LyricsController(LyricsSearchMixin):
                 QMessageBox.information(
                     self,
                     "Install MeCab",
-                    "Run this in the same Python environment as LyricsPlus:\n\n"
+                    "Run this in the same Python environment as LRCPlus:\n\n"
                     "python -m pip install fugashi unidic-lite"
                 )
             # Do not silently fall back in the setting itself. Keep the global

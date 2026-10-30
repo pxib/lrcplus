@@ -22,7 +22,7 @@ def get_app_data_dir():
         root = Path.home() / "Library" / "Application Support"
     else:
         root = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
-    return root / "LyricsPlus"
+    return root / "LRCPlus"
 
 
 def _default_settings_path():
@@ -35,7 +35,7 @@ def _default_settings_path():
         root = Path.home() / "Library" / "Application Support"
     else:
         root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    return root / "LyricsPlus" / "lrc_player_settings.json"
+    return root / "LRCPlus" / "lrc_player_settings.json"
 
 
 SETTINGS_PATH = _default_settings_path()

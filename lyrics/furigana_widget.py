@@ -18,8 +18,9 @@ from lyrics.furigana import (
     split_reading_by_text_ranges,
     kana_to_romaji,
 )
+from lyrics.karaoke_layout import annotate_next_timed_starts
 
-_FURIGANA_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="LyricsPlus-Yomi")
+_FURIGANA_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="LRCPlus-Yomi")
 
 
 
@@ -188,6 +189,8 @@ class FuriganaWidget(QWidget):
         self._furigana_bridge.ready.connect(self.furigana_ready)
         self._furigana_future = None
         self._karaoke_furigana_pending = None
+        self._prepared_layout_key = None
+        self._prepared_layout = []
 
         # Reading rendering can be limited independently from the base lyric.
         # This keeps long scrolling lyrics responsive without hiding the lyrics
@@ -624,7 +627,9 @@ class FuriganaWidget(QWidget):
 
         # Legacy / ordinary LRCX segments have no explicit end, so they still
         # sweep until the next timed karaoke group begins.
-        if end is None:
+        if end is None and "_next_timed_start" in segment:
+            end = segment["_next_timed_start"]
+        elif end is None:
             for later in segments:
                 later_group = later.get(
                     "timing_group", later.get("karaoke_group")
@@ -1649,6 +1654,36 @@ class FuriganaWidget(QWidget):
         return True
 
     def _prepare_segments(self):
+        # Playback, fades and highlight animations only change paint state.
+        # Keep one layout per mounted row, rebuilding when content or geometry
+        # changes. Snapshot dictionaries because plugins can edit them in place.
+        key = (
+            self.lyric, [dict(segment) for segment in self.segments],
+            self.base_font.key(), self.reading_font.key(),
+            self.width(), self.height(), self.direction, self.alignment,
+            self.show_ruby, self.show_romaji, self.all_romaji,
+            self.ruby_position, self.ruby_padding, self.reserve_ruby_space,
+            self.wrap_text, self.wrap_max_lines,
+            getattr(self, "vertical_padding", 0),
+            self.PADDING, self.TOP_MARGIN, self.BOTTOM_MARGIN,
+        )
+        if key != self._prepared_layout_key:
+            prepared = self._build_prepared_segments()
+            annotate_next_timed_starts(prepared)
+            reading_metrics = QFontMetrics(self.reading_font)
+            for piece in prepared:
+                reading = self._reading_text_for_display(piece.get("reading"))
+                piece["_display_reading"] = reading
+                piece["_display_reading_width"] = (
+                    reading_metrics.horizontalAdvance(reading) if reading else 0
+                )
+            self._prepared_layout = prepared
+            self._prepared_layout_key = key
+        # Floating lyrics adjust these positions for panning. Give callers
+        # their own dictionaries so offsets cannot accumulate in the cache.
+        return [dict(piece) for piece in self._prepared_layout]
+
+    def _build_prepared_segments(self):
         if not self.lyric:
             return []
 
@@ -2190,6 +2225,14 @@ class FuriganaWidget(QWidget):
         if romaji_x_scale < 1.0 and self.direction != "vertical":
             painter.scale(romaji_x_scale, 1.0)
 
+        # Qt clips pixels, but shaping and drawing offscreen text still costs
+        # CPU time. Map the viewport through animation transforms before
+        # culling, with space for glyph overhangs and the karaoke glow.
+        visible_rect = painter.worldTransform().inverted()[0].mapRect(
+            QRectF(self.rect())
+        )
+        paint_margin = base_metrics.height() + reading_metrics.height() + 8
+
         # Build visual karaoke geometry per timed group. Horizontal lyrics
         # sweep across X; vertical lyrics sweep DOWN the visual piece sequence.
         # A timed source word may be split into multiple display characters or
@@ -2248,6 +2291,15 @@ class FuriganaWidget(QWidget):
                 segment["x"]
                 + (width - segment["base_width"]) / 2
             )
+            reading_width = segment["_display_reading_width"]
+            reading_x = segment.get(
+                "reading_x", segment["x"] + (width - reading_width) / 2
+            )
+            left = min(base_x, reading_x)
+            right = max(base_x + segment["base_width"], reading_x + reading_width)
+            if (right < visible_rect.left() - paint_margin
+                    or left > visible_rect.right() + paint_margin):
+                continue
 
             painter.setFont(self.base_font)
 
@@ -2258,10 +2310,10 @@ class FuriganaWidget(QWidget):
             timing_group = segment.get(
                 "timing_group", segment.get("karaoke_group")
             )
-            progress = group_progress.get(
-                timing_group,
-                self._segment_progress(segment, prepared),
-            )
+            if timing_group in group_progress:
+                progress = group_progress[timing_group]
+            else:
+                progress = self._segment_progress(segment, prepared)
 
             normal_highlight = (
                 self.is_current_line
@@ -2653,7 +2705,7 @@ class FuriganaWidget(QWidget):
             # lyric sources/plugins, and a malformed segment should not abort
             # the entire QPainter pass after some text has already been drawn.
             reading = segment.get("reading")
-            display_reading = self._reading_text_for_display(reading)
+            display_reading = segment["_display_reading"]
 
             if (
                 (self.show_ruby or self.show_romaji)
@@ -2668,7 +2720,7 @@ class FuriganaWidget(QWidget):
                     segment["x"]
                     + (
                         width
-                        - QFontMetrics(self.reading_font).horizontalAdvance(display_reading)
+                        - segment["_display_reading_width"]
                     )
                     / 2
                 )
@@ -2696,7 +2748,7 @@ class FuriganaWidget(QWidget):
                     cursor_y = reading_y
                     for reading_char in reading:
                         painter.drawText(int(reading_x), int(cursor_y), reading_char)
-                        cursor_y += segment.get("reading_step", QFontMetrics(self.reading_font).height())
+                        cursor_y += segment.get("reading_step", reading_metrics.height())
                 else:
                     if self.show_romaji:
                         romaji_y = segment.get("romaji_y")

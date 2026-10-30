@@ -391,7 +391,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             generation_mode=self._current_generation_mode(),
         ))
         return json.dumps({
-            "format": "LyricsPlusRecovery", "version": 1,
+            "format": "LRCPlusRecovery", "version": 1,
             "structured": structured,
             "source": self.source_editor.toPlainText() if self._source_dirty else None,
             "source_suffix": self._source_suffix,
@@ -428,7 +428,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             contents = self._autosave_path.read_text(encoding="utf-8")
             if contents.lstrip().startswith("{"):
                 payload = json.loads(contents)
-                if payload.get("format") != "LyricsPlusRecovery" or payload.get("version") != 1:
+                if payload.get("format") != "LRCPlusRecovery" or payload.get("version") != 1:
                     raise ValueError("Unsupported recovery format")
                 recovered_source = payload.get("source")
                 suffix = payload.get("source_suffix", ".lrcx")
@@ -1283,7 +1283,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
 
         threading.Thread(
             target=worker,
-            name="LyricsPlusReadingGeneration",
+            name="LRCPlusReadingGeneration",
             daemon=True,
         ).start()
 

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.plugin_api import (
-    LyricsPlusAPI, PLUGIN_API_VERSION, MIN_PLUGIN_API_VERSION,
+    LRCPlusAPI, PLUGIN_API_VERSION, MIN_PLUGIN_API_VERSION,
 )
 from core.settings import load_all_settings, save_all_settings
 from core.dependencies import DependencyError, DependencyManager
@@ -27,7 +27,7 @@ class PluginContext:
     plugin_id: str
 
     @property
-    def api(self) -> LyricsPlusAPI:
+    def api(self) -> LRCPlusAPI:
         return self.manager.get_api(self.plugin_id)
 
     # Compatibility helpers for existing plugins.
@@ -74,8 +74,8 @@ class PluginManager:
     def log(self, plugin_id: str, message: str) -> None:
         print(f"[Plugin:{plugin_id}] {message}")
 
-    def get_api(self, plugin_id: str) -> LyricsPlusAPI:
-        return LyricsPlusAPI(self, plugin_id)
+    def get_api(self, plugin_id: str) -> LRCPlusAPI:
+        return LRCPlusAPI(self, plugin_id)
 
 
     # ---------------------------- host/UI ----------------------------
@@ -423,7 +423,7 @@ class PluginManager:
     def load_from_file(self, plugin_id: str, plugin_file: Path, metadata: dict[str, Any] | None = None) -> None:
         if plugin_id in self.plugins:
             raise ValueError(f"Plugin already loaded: {plugin_id}")
-        module_name = f"_lyricsplus_plugin_{plugin_id}"
+        module_name = f"_lrcplus_plugin_{plugin_id}"
         spec = importlib.util.spec_from_file_location(module_name, plugin_file)
         if spec is None or spec.loader is None:
             raise RuntimeError(f"Cannot load plugin: {plugin_file}")

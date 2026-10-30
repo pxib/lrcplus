@@ -1,1 +1,1 @@
-"""Community plugins installed alongside LyricsPlus."""
+"""Community plugins installed alongside LRCPlus."""

@@ -106,7 +106,7 @@ class QueueControllerMixin:
         self.lyric_times = []
         self.scrolling_lyrics_widget.clear()
         self.waveform_widget.set_lyric_times([])
-        self.setWindowTitle("LyricsPlus")
+        self.setWindowTitle("LRCPlus")
         self._notify_queue_changed()
 
     def replace_queue(self, paths):

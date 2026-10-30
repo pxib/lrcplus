@@ -4,8 +4,8 @@ from pathlib import Path
 # Worker dispatch must precede GUI and third-party imports in frozen releases.
 from core.dependencies import activate_dependencies
 
-if __name__ == "__main__" and "--lyricsplus-dependency-probe" in sys.argv:
-    sys.argv.remove("--lyricsplus-dependency-probe")
+if __name__ == "__main__" and "--lrcplus-dependency-probe" in sys.argv:
+    sys.argv.remove("--lrcplus-dependency-probe")
     from core.dependency_probe import main as probe_main
     raise SystemExit(probe_main())
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from io import BytesIO
 import threading
 import time
 from pathlib import Path
@@ -9,6 +10,9 @@ import os
 import re
 
 import requests
+from PIL import Image, ImageOps
+
+from lyrics.furigana import detect_lyrics_collection_language, get_reading_mode
 
 try:
     from pypresence import Presence
@@ -29,9 +33,14 @@ LITTERBOX_UPLOAD_URL = "https://litterbox.catbox.moe/resources/internals/api.php
 LITTERBOX_EXPIRY = "12h"
 LITTERBOX_EXPIRY_SECONDS = 12 * 60 * 60
 LITTERBOX_CACHE_SAFETY_SECONDS = 10 * 60
+LITTERBOX_MAX_COVER_EDGE = 512
+LITTERBOX_MAX_UPLOAD_BYTES = 1_000_000
+# Bound decoding work independently of the much smaller upload limits.
+LITTERBOX_MAX_INPUT_BYTES = 20_000_000
+LITTERBOX_MAX_INPUT_PIXELS = 25_000_000
 
 MUSICBRAINZ_API = "https://musicbrainz.org/ws/2"
-MUSICBRAINZ_USER_AGENT = "LyricsPlus/1.0 (Discord Rich Presence plugin)"
+MUSICBRAINZ_USER_AGENT = "LRCPlus/1.0 (Discord Rich Presence plugin)"
 MUSICBRAINZ_MIN_SCORE = 80
 
 # Lyrics are intentionally batched so Discord RPC is not updated for every
@@ -52,6 +61,7 @@ DEFAULT_SETTINGS = {
     "lyric_lines_per_update": LYRIC_LINES_DEFAULT,
     "lookup_online_artwork": True,
     "upload_embedded_artwork": True,
+    "placeholder_language": "auto",
 }
 
 ACTIVITY_TYPES = {
@@ -60,6 +70,33 @@ ACTIVITY_TYPES = {
     "watching": "Watching",
     "competing": "Competing in",
 }
+PLACEHOLDER_LANGUAGES = {
+    "auto": "Auto (from lyrics)", "jp": "Japanese", "kr": "Korean",
+    "zh": "Chinese", "hk": "Cantonese",
+}
+PLACEHOLDER_URLS = {
+    # Use the PNG files themselves; the share links return HTML viewer pages.
+    "playing": {
+        "jp": "https://cdn.nest.rip/uploads/a4e5f6dc-d3a2-432f-84fa-1ce25d603aeb.png",
+        "kr": "https://cdn.nest.rip/uploads/3767537a-97af-4218-b13b-9795ecd2df17.png",
+        "zh": "https://cdn.nest.rip/uploads/b68f16c5-60bf-4627-aaf8-49b10f178278.png",
+        "hk": "https://cdn.nest.rip/uploads/d33d7b42-954a-486d-bf88-f09407d80651.png",
+    },
+    "paused": {
+        "jp": "https://cdn.nest.rip/uploads/1e846fcc-350a-4cba-a78e-d1352b16493d.png",
+        "kr": "https://cdn.nest.rip/uploads/ddf02f86-59e0-470c-a59d-4461898d5bdd.png",
+        "zh": "https://cdn.nest.rip/uploads/41af192b-6eb8-4ee1-ac22-9c1c3c111caf.png",
+        "hk": "https://cdn.nest.rip/uploads/ed1c4bf4-fd83-4952-9f21-35432739ab9e.png",
+    },
+    "idle": {
+        "jp": "https://cdn.nest.rip/uploads/eb89a75f-d175-4f2b-a0a2-ad6806410623.png",
+        "kr": "https://cdn.nest.rip/uploads/3e764aaa-7fdb-4b6a-87a7-c47614029e89.png",
+        "zh": "https://cdn.nest.rip/uploads/437c2f60-6b80-4c2f-81c1-bbd4436054f6.png",
+        "hk": "https://cdn.nest.rip/uploads/0c0465d2-f5b8-4fc8-b8f2-2a664e472297.png",
+    },
+}
+_HANGUL = re.compile(r"[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff]")
+_CANTONESE_MARKERS = frozenset("嘅咗唔喺啲佢哋咁嚟乜咩冇畀嗰")
 TEMPLATE_KEYS = ("details_template", "state_template", "large_text_template")
 
 
@@ -84,6 +121,10 @@ class DiscordRpcPlugin:
 
         self.current_path = None
         self._last_payload = None
+        self._last_cover = None
+        self._placeholder_detection_key = None
+        self._placeholder_lyrics = None
+        self._detected_placeholder_language = "jp"
 
         # Per-session caches. No repeated lookups or uploads for the same file.
         self._metadata_cache = {}
@@ -118,6 +159,7 @@ class DiscordRpcPlugin:
         for key in TEMPLATE_KEYS:
             if not isinstance(self.settings[key], str):
                 self.settings[key] = DEFAULT_SETTINGS[key]
+        self.settings["placeholder_language"] = self._placeholder_language_setting()
         context.on("app_ready", self.on_app_ready)
         context.api.register_settings_widget(
             "Discord Rich Presence",
@@ -271,6 +313,16 @@ class DiscordRpcPlugin:
             self._current_rpc_lyric = None
             self._last_lyric_rpc_update = 0.0
             self.update_presence(force=True)
+        elif self.current_path:
+            player = getattr(self.window, "media_player", None)
+            if player is not None:
+                image = self._cached_cover(self.current_path) or self._placeholder_image(
+                    self._playback_status(player)
+                )
+                # Refresh for background artwork or newly loaded lyrics even
+                # when lyric sharing is disabled.
+                if image != self._last_cover:
+                    self.update_presence()
 
         self._maybe_publish_lyric()
 
@@ -675,9 +727,54 @@ class DiscordRpcPlugin:
     # Litterbox fallback
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _prepare_cover_upload(image_data):
+        """Validate artwork and prepare a bounded copy without changing tags."""
+        if len(image_data) > LITTERBOX_MAX_INPUT_BYTES:
+            raise ValueError("Embedded cover exceeds the 20 MB input limit.")
+
+        with Image.open(BytesIO(image_data), formats=("JPEG", "PNG")) as source:
+            if source.width * source.height > LITTERBOX_MAX_INPUT_PIXELS:
+                raise ValueError("Embedded cover exceeds the 25 megapixel input limit.")
+
+            # Validate even small images before passing their original bytes on.
+            source.load()
+            extension = ".png" if source.format == "PNG" else ".jpg"
+            if (max(source.size) <= LITTERBOX_MAX_COVER_EDGE
+                    and len(image_data) <= LITTERBOX_MAX_UPLOAD_BYTES):
+                return image_data, extension
+
+            image = ImageOps.exif_transpose(source)
+            image.thumbnail(
+                (LITTERBOX_MAX_COVER_EDGE, LITTERBOX_MAX_COVER_EDGE),
+                Image.Resampling.LANCZOS,
+            )
+            if extension == ".png":
+                output = BytesIO()
+                image.save(output, format="PNG", optimize=True)
+                if output.tell() <= LITTERBOX_MAX_UPLOAD_BYTES:
+                    return output.getvalue(), ".png"
+
+            # JPEG is a smaller fallback for PNGs that exceed the byte limit.
+            # Composite transparency onto white instead of producing black edges.
+            if "A" in image.getbands() or "transparency" in image.info:
+                rgba = image.convert("RGBA")
+                image = Image.new("RGB", image.size, "white")
+                image.paste(rgba, mask=rgba.getchannel("A"))
+            else:
+                image = image.convert("RGB")
+
+            for quality in (85, 70, 55):
+                output = BytesIO()
+                image.save(output, format="JPEG", quality=quality, optimize=True)
+                if output.tell() <= LITTERBOX_MAX_UPLOAD_BYTES:
+                    return output.getvalue(), ".jpg"
+
+        raise ValueError("Prepared cover exceeds the 1 MB upload limit.")
+
     def _persistent_cover_cache_path(self):
         base = Path(os.getenv("APPDATA") or Path.home())
-        return base / "LyricsPlus" / "cover_cache.json"
+        return base / "LRCPlus" / "cover_cache.json"
 
     def _load_persistent_cover_cache(self):
         path = self._persistent_cover_cache_path()
@@ -728,8 +825,14 @@ class DiscordRpcPlugin:
             self._cover_cache[key] = None
             return None
 
-        image_data, extension = extracted
-        filename = f"lyricsplus-cover{extension}"
+        try:
+            image_data, extension = self._prepare_cover_upload(extracted[0])
+        except Exception as error:
+            self.log(f"Skipping embedded album cover upload: {error!r}")
+            self._cover_cache[key] = None
+            return None
+
+        filename = f"lrcplus-cover{extension}"
         mime = "image/png" if extension == ".png" else "image/jpeg"
 
         try:
@@ -744,7 +847,7 @@ class DiscordRpcPlugin:
                     )
                 },
                 headers={
-                    "User-Agent": "LyricsPlus/1.0 Discord-RPC-Plugin"
+                    "User-Agent": "LRCPlus/1.0 Discord-RPC-Plugin"
                 },
                 timeout=30,
             )
@@ -775,6 +878,7 @@ class DiscordRpcPlugin:
 
         except Exception as error:
             self.log(f"Album cover upload failed: {error!r}")
+            self._cover_cache[key] = None
             return None
 
     def _resolve_cover(self, path: Path, metadata):
@@ -858,6 +962,65 @@ class DiscordRpcPlugin:
     # ------------------------------------------------------------------
     # Presence
     # ------------------------------------------------------------------
+
+    def _placeholder_language_setting(self):
+        language = self.settings.get("placeholder_language")
+        if isinstance(language, str) and language in PLACEHOLDER_LANGUAGES:
+            return language
+        return DEFAULT_SETTINGS["placeholder_language"]
+
+    def _placeholder_language(self):
+        language = self._placeholder_language_setting()
+        if language != "auto":
+            return language
+
+        lines = getattr(self.window, "lyric_lines", None)
+        if not lines:
+            lines = getattr(self.window, "lyrics", ())
+        if not lines:
+            return "jp"
+
+        mode = get_reading_mode()
+        key = (self.current_path, id(lines), len(lines), mode)
+        if key != self._placeholder_detection_key:
+            texts = []
+            for line in lines:
+                if isinstance(line, (tuple, list)):
+                    text = line[1] if len(line) > 1 else ""
+                elif isinstance(line, str):
+                    text = line
+                else:
+                    text = getattr(line, "text", "")
+                texts.append(str(text or ""))
+
+            text = "\n".join(texts)
+            detected = detect_lyrics_collection_language(texts)
+            if detected == "japanese":
+                language = "jp"
+            elif _HANGUL.search(text):
+                language = "kr"
+            elif detected == "chinese":
+                if mode == "furigana":
+                    language = "jp"
+                elif mode in {"jyutping", "yale"}:
+                    language = "hk"
+                elif mode == "pinyin":
+                    language = "zh"
+                else:
+                    language = "hk" if _CANTONESE_MARKERS.intersection(text) else "zh"
+            else:
+                language = "jp"
+
+            self._placeholder_detection_key = key
+            # Keep the collection alive so its id cannot be reused by a later
+            # track while the cached detection still refers to it.
+            self._placeholder_lyrics = lines
+            self._detected_placeholder_language = language
+        return self._detected_placeholder_language
+
+    def _placeholder_image(self, status):
+        state = {"Playing": "playing", "Paused": "paused"}.get(status, "idle")
+        return PLACEHOLDER_URLS[state][self._placeholder_language()]
 
     def _presence_text(self, metadata, status, *, settings=None, lyric=None):
         settings = self.settings if settings is None else settings
@@ -1029,6 +1192,16 @@ class DiscordRpcPlugin:
         )
         layout.addWidget(widget.upload_embedded_artwork)
 
+        widget.placeholder_language = QComboBox()
+        for value, label in PLACEHOLDER_LANGUAGES.items():
+            widget.placeholder_language.addItem(label, value)
+        widget.placeholder_language.setCurrentIndex(
+            widget.placeholder_language.findData(self._placeholder_language_setting())
+        )
+        placeholder_form = QFormLayout()
+        placeholder_form.addRow("Fallback artwork language:", widget.placeholder_language)
+        layout.addLayout(placeholder_form)
+
         def update_preview():
             settings = {
                 key: getattr(widget, key).text() for key in TEMPLATE_KEYS
@@ -1047,7 +1220,7 @@ class DiscordRpcPlugin:
                 lyric=self._current_rpc_lyric if path else "Current lyric line",
             )
             widget.text_preview.setText(
-                f"{widget.activity_type.currentText()} LyricsPlus\n"
+                f"{widget.activity_type.currentText()} LRCPlus\n"
                 f"Details: {fields.get('details', '(hidden)')}\n"
                 f"State: {fields.get('state', '(hidden)')}\n"
                 f"Artwork hover: {fields.get('large_text', '(hidden)')}"
@@ -1071,6 +1244,9 @@ class DiscordRpcPlugin:
             ):
                 getattr(widget, key).setChecked(DEFAULT_SETTINGS[key])
             widget.lyric_lines_per_update.setValue(LYRIC_LINES_DEFAULT)
+            widget.placeholder_language.setCurrentIndex(
+                widget.placeholder_language.findData(DEFAULT_SETTINGS["placeholder_language"])
+            )
 
         widget.restore_defaults = QPushButton("Restore defaults")
         widget.restore_defaults.clicked.connect(restore_defaults)
@@ -1091,6 +1267,7 @@ class DiscordRpcPlugin:
             ),
             "lookup_online_artwork": widget.lookup_online_artwork.isChecked(),
             "upload_embedded_artwork": widget.upload_embedded_artwork.isChecked(),
+            "placeholder_language": widget.placeholder_language.currentData(),
         }
         values.update({key: getattr(widget, key).text() for key in TEMPLATE_KEYS})
         lyrics_changed = values["include_lyrics"] != self.settings.get(
@@ -1169,10 +1346,10 @@ class DiscordRpcPlugin:
         if (path_changed or force) and not cover_url:
             self._start_cover_resolution(path, metadata)
 
-        if cover_url:
-            payload["large_image"] = cover_url
-            if hover_text:
-                payload["large_text"] = hover_text
+        payload["large_image"] = cover_url or self._placeholder_image(status)
+        self._last_cover = payload["large_image"]
+        if hover_text:
+            payload["large_text"] = hover_text
 
         # Discord advances the timestamp itself while playing. When paused we
         # deliberately omit it so Discord does not pretend playback continues.

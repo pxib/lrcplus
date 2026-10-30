@@ -18,6 +18,7 @@ class ActivityType(IntEnum):
 def plugin(tmp_path, monkeypatch):
     monkeypatch.setattr(DiscordRpcPlugin, "_load_persistent_cover_cache", lambda self: {})
     monkeypatch.setattr(rpc_module, "ActivityType", ActivityType)
+    monkeypatch.setattr(rpc_module, "get_reading_mode", lambda: "auto")
     instance = DiscordRpcPlugin()
     path = tmp_path / "track.mp3"
     path.touch()
@@ -98,8 +99,8 @@ def test_missing_metadata_and_artwork_are_handled(plugin, monkeypatch):
     monkeypatch.setattr(plugin, "_start_cover_resolution", lambda *args: None)
     values = payload(plugin)
     assert values["state"] == "Unknown artist"
-    assert "large_image" not in values
-    assert "large_text" not in values
+    assert values["large_image"] == rpc_module.PLACEHOLDER_URLS["playing"]["jp"]
+    assert values["large_text"] == "Unknown artist"
 
 
 def test_single_character_templates_meet_discord_minimum_length(plugin):
@@ -151,11 +152,13 @@ def load_settings(plugin, stored):
 
 def test_older_and_malformed_settings_fall_back_to_defaults(plugin):
     load_settings(plugin, {"include_lyrics": False, "activity_type": [],
-                           "details_template": None, "lyric_lines_per_update": "bad"})
+                           "details_template": None, "lyric_lines_per_update": "bad",
+                           "placeholder_language": []})
     assert plugin.settings["include_lyrics"] is False
     assert plugin.settings["details_template"] == "{title}"
     assert plugin.settings["activity_type"] == "listening"
     assert plugin.settings["lyric_lines_per_update"] == 10
+    assert plugin.settings["placeholder_language"] == "auto"
 
 
 def test_settings_preview_save_reload_and_reset(qapp, plugin, monkeypatch):
@@ -173,16 +176,19 @@ def test_settings_preview_save_reload_and_reset(qapp, plugin, monkeypatch):
         widget.lyric_lines_per_update.setValue(4)
         widget.lookup_online_artwork.setChecked(False)
         widget.upload_embedded_artwork.setChecked(False)
+        widget.placeholder_language.setCurrentIndex(widget.placeholder_language.findData("hk"))
         assert "An artist / A song" in widget.text_preview.text()
-        assert "Competing in LyricsPlus" in widget.text_preview.text()
+        assert "Competing in LRCPlus" in widget.text_preview.text()
         assert stored == {}
         assert plugin.tasks == []
         plugin.apply_settings_widget(widget)
         assert stored["details_template"] == "{artist} / {title}"
         assert stored["activity_type"] == "competing"
         assert stored["lyric_lines_per_update"] == 4
+        assert stored["placeholder_language"] == "hk"
         assert plugin.tasks[-1][0] == "update"
         load_settings(plugin, stored)
+        assert plugin._placeholder_image("Paused") == rpc_module.PLACEHOLDER_URLS["paused"]["hk"]
         assert payload(plugin)["activity_type"] == ActivityType.COMPETING
         assert "start" not in payload(plugin)
         widget.restore_defaults.click()
@@ -193,6 +199,139 @@ def test_settings_preview_save_reload_and_reset(qapp, plugin, monkeypatch):
     finally:
         widget.deleteLater()
         qapp.processEvents()
+
+
+@pytest.mark.parametrize("online,embedded,expected,calls", [
+    ("https://example.com/online.jpg", None, "https://example.com/online.jpg", ["online"]),
+    (None, "https://example.com/upload.jpg", "https://example.com/upload.jpg", ["online", "embedded"]),
+    (None, None, rpc_module.PLACEHOLDER_URLS["playing"]["jp"], ["online", "embedded"]),
+])
+def test_artwork_sources_take_priority_over_placeholder(plugin, monkeypatch, online, embedded, expected, calls):
+    monkeypatch.delattr(plugin, "_cached_cover")
+    key = plugin._file_key(plugin.current_path)
+    visited = []
+
+    def lookup(path, metadata):
+        visited.append("online")
+        plugin._cover_cache[f"mb:{key}"] = online
+        return online
+
+    def upload(path):
+        visited.append("embedded")
+        plugin._cover_cache[f"litterbox:{key}"] = embedded
+        return embedded
+
+    monkeypatch.setattr(plugin, "_musicbrainz_cover", lookup)
+    monkeypatch.setattr(plugin, "_upload_embedded_cover", upload)
+    plugin._resolve_cover(plugin.current_path, plugin.metadata)
+    assert payload(plugin)["large_image"] == expected
+    assert visited == calls
+
+
+@pytest.mark.parametrize("language", ["jp", "hk", "kr", "zh"])
+@pytest.mark.parametrize("state,prefix", [(1, "playing"), (2, "paused"), (0, "idle")])
+def test_placeholder_matches_playback_state_without_network(plugin, monkeypatch, language, state, prefix):
+    monkeypatch.delattr(plugin, "_cached_cover")
+    plugin.settings.update(lookup_online_artwork=False, upload_embedded_artwork=False,
+                           placeholder_language=language)
+    monkeypatch.setattr(rpc_module.requests, "get", lambda *args, **kwargs: pytest.fail("Placeholder lookup"))
+    monkeypatch.setattr(rpc_module.requests, "post", lambda *args, **kwargs: pytest.fail("Placeholder upload"))
+    plugin.player_state = state
+    assert payload(plugin)["large_image"] == rpc_module.PLACEHOLDER_URLS[prefix][language]
+
+
+def test_background_cover_replaces_placeholder_without_lyric_updates(plugin, monkeypatch):
+    cached = [None]
+    monkeypatch.setattr(plugin, "_cached_cover", lambda path: cached[0])
+    monkeypatch.setattr(plugin, "_start_cover_resolution", lambda *args: None)
+    plugin.settings["include_lyrics"] = False
+    assert payload(plugin)["large_image"] == rpc_module.PLACEHOLDER_URLS["playing"]["jp"]
+    cached[0] = "https://example.com/resolved.jpg"
+    plugin.on_position_changed(31_000)
+    assert plugin.tasks[-1][1][0]["large_image"] == cached[0]
+    assert len(plugin.tasks) == 2
+    plugin.on_position_changed(32_000)
+    assert len(plugin.tasks) == 2
+
+
+@pytest.mark.parametrize("texts,mode,language", [
+    (["君の声が聞こえる", "世界"], "auto", "jp"),
+    (["世界", "君の声が聞こえる"], "auto", "jp"),
+    (["너의 목소리가 들려", "Hello world"], "auto", "kr"),
+    (["나는"], "auto", "kr"),
+    (["我听见你的声音"], "auto", "zh"),
+    (["我聽見你的聲音"], "auto", "zh"),
+    (["我哋喺呢度等你", "你嘅聲音"], "auto", "hk"),
+    (["我聽見你的聲音"], "jyutping", "hk"),
+    (["我聽見你的聲音"], "yale", "hk"),
+    (["世界"], "furigana", "jp"),
+    (["我哋喺呢度等你"], "pinyin", "zh"),
+    (["너를 사랑해"], "furigana", "kr"),
+    (["君の声が聞こえる"], "jyutping", "jp"),
+    (["Hello world"], "auto", "jp"),
+    (["Привет мир"], "auto", "jp"),
+    (["♪", ""], "auto", "jp"),
+    ([], "jyutping", "jp"),
+])
+def test_auto_placeholder_detects_lyrics_with_japanese_default(plugin, monkeypatch, texts, mode, language):
+    plugin.window.lyrics = list(enumerate(texts))
+    monkeypatch.setattr(rpc_module, "get_reading_mode", lambda: mode)
+    assert plugin._placeholder_image("Playing") == rpc_module.PLACEHOLDER_URLS["playing"][language]
+
+
+def test_auto_placeholder_reads_lyric_models_and_all_states(plugin):
+    from lyrics.models import LyricLine
+
+    plugin.window.lyric_lines = [LyricLine(0, "너를 사랑해")]
+    for status, state in (("Playing", "playing"), ("Paused", "paused"), ("Stopped", "idle")):
+        assert plugin._placeholder_image(status) == rpc_module.PLACEHOLDER_URLS[state]["kr"]
+
+
+def test_manual_language_overrides_detection(plugin):
+    plugin.window.lyrics = [(0, "너를 사랑해")]
+    plugin.settings["placeholder_language"] = "zh"
+    assert plugin._placeholder_image("Playing") == rpc_module.PLACEHOLDER_URLS["playing"]["zh"]
+
+
+def test_detection_cache_refreshes_for_new_lyrics_track_and_reading_mode(plugin, monkeypatch, tmp_path):
+    detector = rpc_module.detect_lyrics_collection_language
+    calls = []
+
+    def detect(texts):
+        calls.append(texts)
+        return detector(texts)
+
+    monkeypatch.setattr(rpc_module, "detect_lyrics_collection_language", detect)
+    plugin.window.lyrics = [(0, "我聽見你的聲音")]
+    assert plugin._placeholder_language() == "zh"
+    assert plugin._placeholder_language() == "zh"
+    assert len(calls) == 1
+    monkeypatch.setattr(rpc_module, "get_reading_mode", lambda: "jyutping")
+    assert plugin._placeholder_language() == "hk"
+    assert len(calls) == 2
+    plugin.window.lyrics = [(0, "너를 사랑해")]
+    assert plugin._placeholder_language() == "kr"
+    assert len(calls) == 3
+    plugin.current_path = tmp_path / "next.mp3"
+    assert plugin._placeholder_language() == "kr"
+    assert len(calls) == 4
+    plugin.window.lyrics = []
+    assert plugin._placeholder_language() == "jp"
+
+
+def test_newly_loaded_lyrics_refresh_placeholder_without_sharing_lyrics(plugin, monkeypatch):
+    monkeypatch.setattr(plugin, "_cached_cover", lambda path: None)
+    monkeypatch.setattr(plugin, "_start_cover_resolution", lambda *args: None)
+    plugin.settings["include_lyrics"] = False
+    assert payload(plugin)["large_image"] == rpc_module.PLACEHOLDER_URLS["playing"]["jp"]
+    plugin.window.lyrics = [(0, "너를 사랑해")]
+    plugin.on_position_changed(31_000)
+    values = plugin.tasks[-1][1][0]
+    assert values["large_image"] == rpc_module.PLACEHOLDER_URLS["playing"]["kr"]
+    assert values["state"] == "An album"
+    assert len(plugin.tasks) == 2
+    plugin.on_position_changed(32_000)
+    assert len(plugin.tasks) == 2
 
 
 def test_preview_without_a_track_uses_sample_text(qapp, plugin):

@@ -12,14 +12,16 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-PREFIX = "LYRICSPLUS_YTDLP "
+PREFIX = "LRCPLUS_YTDLP "
 
 if __package__:
     from .captions import convert_caption_file, caption_style_warning
+    from .artwork import find_cover, embed_cover
 else:
     # Isolated Python excludes the script directory from its import path.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from captions import convert_caption_file, caption_style_warning
+    from artwork import find_cover, embed_cover
 
 
 def emit(event, **values):
@@ -113,7 +115,24 @@ def metadata(info):
         "identity": identity(info), "title": str(info.get("title") or info.get("id")),
         "artist": str(info.get("artist") or info.get("uploader") or ""),
         "duration": info.get("duration"), "url": str(info.get("webpage_url") or ""),
+        "album": str(info.get("album") or ""),
+        "release_date": info.get("release_date"), "upload_date": info.get("upload_date"),
     }
+
+
+def preview_audio_formats(info):
+    """Mirror m4a/bestaudio/best and bestaudio/best using yt-dlp's sorted formats."""
+    formats = info.get("formats") or info.get("requested_formats") or [info]
+    audible = [item for item in formats if item.get("acodec") and item["acodec"] != "none"]
+    audio_only = [item for item in audible if item.get("vcodec") == "none"]
+    m4a = [item for item in audible if item.get("ext") == "m4a"]
+    combined = [item for item in audible if item.get("vcodec") not in {None, "none"}]
+    result = {}
+    for codec, candidates in (("m4a", m4a or audio_only or combined), ("mp3", audio_only or combined)):
+        if candidates:
+            result[codec] = {key: candidates[-1].get(key) for key in
+                             ("acodec", "abr", "asr", "tbr", "filesize", "filesize_approx")}
+    return result
 
 
 def subtitle_tracks(info):
@@ -153,14 +172,28 @@ def validate_subtitle(info, request):
         raise ValueError("The selected subtitles are no longer available. Preview the URL again.")
 
 
-def preview(url, config):
+def preview(url, config, *, musicbrainz_not_before=0):
     from yt_dlp import YoutubeDL
 
     with YoutubeDL(options(config)) as ydl:
         info = single_track(ydl.extract_info(validate_url(url), download=False))
         result = metadata(info)
+        result["audio_formats"] = preview_audio_formats(info)
         result["subtitle_tracks"] = subtitle_tracks(info)
         result["ass_subtitle_tracks"] = ass_subtitle_tracks(info)
+        if config.get("use_musicbrainz_cover", False):
+            emit("processing", message="Looking for an album cover on MusicBrainz…")
+            try:
+                time.sleep(max(0, min(1.1, musicbrainz_not_before - time.time())))
+                cover = find_cover(info)
+                if cover:
+                    result["thumbnail"] = cover.pop("data")
+                    result["musicbrainz_cover"] = cover
+                    return result
+                result["artwork_message"] = "No reliable MusicBrainz cover found; using source artwork."
+            except Exception as error:
+                result["artwork_message"] = "MusicBrainz artwork unavailable; using source artwork."
+                emit("log", message="MusicBrainz artwork lookup failed: " + str(error)[:500])
         thumbnail = info.get("thumbnail")
         if thumbnail and urlsplit(thumbnail).scheme in {"http", "https"}:
             try:
@@ -260,7 +293,7 @@ def subtitle_result(result, published, *, prefix=""):
 def checked_stage(request):
     stage = Path(request["stage"]).resolve()
     destination = Path(request["folder"]).expanduser().resolve()
-    if stage.parent != destination or not stage.name.startswith(".lyricsplus-import-") or not stage.is_dir():
+    if stage.parent != destination or not stage.name.startswith(".lrcplus-import-") or not stage.is_dir():
         raise ValueError("Invalid download staging directory.")
     return stage, destination
 
@@ -350,6 +383,15 @@ def download(request):
     if not source.is_relative_to(stage) or not source.is_file() or source.suffix != "." + codec:
         raise ValueError("The downloader returned an invalid audio file.")
     caption_files, details = collect_subtitles(captured[0], request, stage)
+    cover = request.get("musicbrainz_cover") if config.get("use_musicbrainz_cover", False) else None
+    if cover:
+        try:
+            embed_cover(source, cover)
+            details["musicbrainz_cover"] = {key: cover[key] for key in ("release_id", "album")}
+        except Exception as error:
+            warning = "Could not embed MusicBrainz cover; kept source artwork: " + str(error)[:500]
+            details["warning"] = "\n".join(filter(None, (details.get("warning"), warning)))
+            emit("log", message=warning)
     prefix = caption_suffix(request["subtitle"]) if request.get("subtitle") else ""
     # Publish sidecars before the audio; audio becomes visible only when all
     # selected outputs have been written. Collisions keep a shared basename.
@@ -397,7 +439,8 @@ def main():
         request = json.load(sys.stdin)
         action = request["action"]
         if action == "preview":
-            result = preview(request["url"], request["config"])
+            result = preview(request["url"], request["config"],
+                             musicbrainz_not_before=request.get("musicbrainz_not_before", 0))
         elif action == "download":
             result = download(request)
         elif action == "subtitles":

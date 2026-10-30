@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 
 _FURIGANA_EXECUTOR = ThreadPoolExecutor(
     max_workers=2,
-    thread_name_prefix="LyricsPlus-Yomi",
+    thread_name_prefix="LRCPlus-Yomi",
 )
 _FURIGANA_SHUTTING_DOWN = False
 

@@ -48,7 +48,7 @@ class DependencyManagerWidget(QWidget):
         layout = QVBoxLayout(self)
         notice = QLabel(
             "Install optional libraries used by plugins. Installations and removals "
-            "are saved immediately; restart LyricsPlus to apply them. "
+            "are saved immediately; restart LRCPlus to apply them. "
             "The first installation in a Windows release also downloads a private Python runtime."
         )
         notice.setWordWrap(True)
@@ -189,7 +189,7 @@ class DependencyManagerWidget(QWidget):
             self.status.setText(f"{name}: import check passed.")
         else:
             self._checks.clear()
-            self.status.setText("Dependencies updated. Restart LyricsPlus to apply the changes.")
+            self.status.setText("Dependencies updated. Restart LRCPlus to apply the changes.")
 
     def _finished(self):
         job = self._job

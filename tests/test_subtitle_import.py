@@ -131,6 +131,57 @@ Hello world
     assert captions_to_lrc(text).count("Next line") == 2  # Authored captions remain intact.
 
 
+def test_automatic_youtube_captions_merge_touching_rollups_and_short_hold_cues():
+    text = """WEBVTT
+
+00:00:43.640 --> 00:00:45.870 align:start position:0%
+on<00:00:43.760><c> a skateboard in Modern Warfare 2, or</c>
+
+00:00:45.870 --> 00:00:45.880 align:start position:0%
+on a skateboard in Modern Warfare 2, or
+
+00:00:45.880 --> 00:00:48.310 align:start position:0%
+on a skateboard in Modern Warfare 2, or
+play<00:00:46.160><c> a hardcore Tarkov-style extraction</c>
+
+00:00:48.310 --> 00:00:48.320 align:start position:0%
+play a hardcore Tarkov-style extraction
+
+00:00:48.320 --> 00:00:50.870 align:start position:0%
+play a hardcore Tarkov-style extraction
+shooter<00:00:48.960><c> in the world of Skyrim.</c>
+
+00:00:50.870 --> 00:00:50.880 align:start position:0%
+shooter in the world of Skyrim.
+
+00:00:51.000 --> 00:00:52.000
+shooter in the world of Skyrim.
+"""
+    assert captions_to_lrc(text, automatic=True).splitlines() == [
+        "[00:43.640]on a skateboard in Modern Warfare 2, or",
+        "[00:45.880]play a hardcore Tarkov-style extraction",
+        "[00:48.320]shooter in the world of Skyrim.",
+        "[00:50.880]",
+        "[00:51.000]shooter in the world of Skyrim.",
+        "[00:52.000]",
+    ]
+    assert captions_to_lrc(text).count("play a hardcore Tarkov-style extraction") == 3
+
+
+def test_automatic_touching_partial_captions_form_one_line():
+    text = """WEBVTT
+
+00:00:01.000 --> 00:00:02.000
+Hello
+
+00:00:02.000 --> 00:00:03.000
+Hello world
+"""
+    assert captions_to_lrc(text, automatic=True).splitlines() == [
+        "[00:01.000]Hello world", "[00:03.000]",
+    ]
+
+
 @pytest.mark.parametrize("text", ["WEBVTT\n\n", "not subtitles", "00:00:02.000 --> 00:00:01.000\nbackwards",
                                        "00:99:00.000 --> 01:00:00.000\ninvalid"])
 def test_invalid_caption_conversion_reports_a_clear_error(text):
@@ -241,7 +292,7 @@ def fake_downloader(tmp_path, monkeypatch):
 
 
 def subtitle_request(tmp_path, **values):
-    stage = tmp_path / ".lyricsplus-import-test"
+    stage = tmp_path / ".lrcplus-import-test"
     stage.mkdir(exist_ok=True)
     return dict(config={}, stage=str(stage), folder=str(tmp_path), url="https://example.com/song",
                 codec="m4a", identity="Test:song", subtitle={"language": "en", "kind": "manual"},
@@ -295,6 +346,31 @@ def test_conversion_failure_keeps_audio_and_original_subtitles(tmp_path, fake_do
     assert Path(result["subtitle_path"]).exists()
     assert "lyrics_path" not in result
     assert "could not be created" in result["warning"]
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_audio_download_embeds_previewed_cover_without_another_lookup(tmp_path, fake_downloader, monkeypatch, fails):
+    request = subtitle_request(tmp_path)
+    request["config"]["use_musicbrainz_cover"] = True
+    request["musicbrainz_cover"] = {"release_id": "release", "album": "Album", "data": "cached image"}
+    calls = []
+
+    def embed(path, cover):
+        calls.append((path, cover))
+        if fails:
+            raise OSError("Cannot write artwork")
+
+    monkeypatch.setattr(worker, "embed_cover", embed)
+    monkeypatch.setattr(worker, "find_cover", lambda info: pytest.fail("Must reuse previewed cover"))
+    result = worker.download(request)
+    assert Path(result["path"]).read_bytes() == b"audio bytes"
+    assert Path(result["lyrics_path"]).is_file()
+    assert calls[0][1] == request["musicbrainz_cover"]
+    if fails:
+        assert "kept source artwork" in result["warning"]
+        assert "musicbrainz_cover" not in result
+    else:
+        assert result["musicbrainz_cover"] == {"release_id": "release", "album": "Album"}
 
 
 class CaptionAPI:

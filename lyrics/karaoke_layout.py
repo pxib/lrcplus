@@ -7,6 +7,45 @@ be regression-tested independently of the GUI.
 from lyrics.furigana import split_reading_by_text_ranges
 
 
+def annotate_next_timed_starts(pieces):
+    """Cache the first later-starting piece outside each piece's timing group.
+
+    Keep source-order lookup semantics, even for unsorted timestamps. Walking
+    starts backwards lets us retain only the earliest two source indices with
+    different groups, instead of scanning the whole line for every glyph.
+    """
+    timed = []
+    for index, piece in enumerate(pieces):
+        piece["_next_timed_start"] = None
+        if piece.get("start") is not None:
+            timed.append((float(piece["start"]), index))
+    timed.sort(reverse=True)
+    candidates = []
+    cursor = 0
+    while cursor < len(timed):
+        end = cursor + 1
+        start = timed[cursor][0]
+        while end < len(timed) and timed[end][0] == start:
+            end += 1
+        batch = []
+        for _, index in timed[cursor:end]:
+            piece = pieces[index]
+            group = piece.get("timing_group", piece.get("karaoke_group"))
+            for _, candidate_group, candidate_start in candidates:
+                if candidate_group != group:
+                    piece["_next_timed_start"] = candidate_start
+                    break
+            batch.append((index, group, start))
+        earliest = []
+        for candidate in sorted(candidates + batch, key=lambda item: item[0]):
+            if not earliest or candidate[1] != earliest[0][1]:
+                earliest.append(candidate)
+                if len(earliest) == 2:
+                    break
+        candidates = earliest
+        cursor = end
+
+
 def build_karaoke_render_pieces(text, normalized, whole_tokens, line_end=None):
     """Map furigana annotations onto authoritative timed lyric chunks.
 

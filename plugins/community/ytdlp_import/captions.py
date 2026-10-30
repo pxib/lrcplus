@@ -107,7 +107,9 @@ def coalesce_caption_redraws(cues):
 def clean_rolling_captions(cues):
     result = []
     for cue in cues:
-        if result and cue.start < result[-1].end:
+        # YouTube's rolling captions often touch exactly, with a short cue
+        # retaining the previous line before the next two-line update.
+        if result and cue.start <= result[-1].end:
             previous = result[-1]
             if cue.text == previous.text:
                 result[-1] = replace(previous, end=max(previous.end, cue.end))

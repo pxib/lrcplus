@@ -88,9 +88,9 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
             self._booru_future = None
             self._booru_request_id = 0
 
-            self.setWindowTitle("LyricsPlus")
+            self.setWindowTitle("LRCPlus")
             self.resize(1180, 760)
-            self.setObjectName("lyricsPlusWindow")
+            self.setObjectName("lrcPlusWindow")
 
             self.startup_settings = get_startup_settings()
             self.appearance_settings = get_appearance_settings()
@@ -584,7 +584,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
             header_layout = QHBoxLayout(header)
             header_layout.setContentsMargins(0, 0, 0, 10)
             header_layout.setSpacing(8)
-            brand_label = QLabel("LyricsPlus")
+            brand_label = QLabel("LRCPlus")
             brand_label.setObjectName("brandLabel")
             header_layout.addWidget(brand_label)
             header_layout.addSpacing(12)
@@ -938,7 +938,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioController, LyricsCon
                 self.appearance_settings.get("theme_color", "#3a9879"),
             )
             style = """
-                QMainWindow#lyricsPlusWindow,
+                QMainWindow#lrcPlusWindow,
                 QWidget#mainSurface {
                     background: @WINDOW@;
                     color: @TEXT@;

@@ -1,4 +1,4 @@
-"""Isolated PyCantonese worker for LyricsPlus.
+"""Isolated PyCantonese worker for LRCPlus.
 
 The worker communicates through files rather than stdout. This is intentional:
 PyCantonese/wordseg versions can emit diagnostic text, and a crashed or noisy
