@@ -5,10 +5,17 @@ Versions uses dates with optional revisions.
 
 ### Added
 - Added a search filter (Lyrics). You can now search for lyrics in songs.
+- Add Normal and Lunatic modes to Scarlet Refrain, with separate high scores.
+- Add fairy entrance animations, expanding death rings with feathered edges, and larger translucent red hit particles with a wider spread and a half-second fade.
 
 ### Changed
 - Overhaul Scarlet Refrain's Flandre encounter with ten distinct spell mechanics, eight intervening non-spells, phase-owned hazards, spell capture tracking, and developer practice controls. Original timing and choreography approximations are documented in `assets/scarlet/flandre-encounter.md`.
+- Keep the extra-stage theme playing through the warm-up, boss entrance, and opening dialogue until the boss theme starts at its dialogue cue. Keep the boss theme playing through the post-fight conversation until it finishes or is skipped.
 - like i said bro dont click... oh no... is that reimu begging for donations GET THE FUCK OUT I DONT HAVE MONEY
+
+### Fixes
+- Remove Reimu's projectiles when they leave the playfield so homing shots cannot return from off screen.
+- Prepare MIDI playback before the warm-up to reduce music startup delay.
 
 ## [2026-10-31.4]
 
