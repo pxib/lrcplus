@@ -62,7 +62,7 @@ def tool_paths(config, *, require=False):
     else:
         ffmpeg, ffprobe = shutil.which("ffmpeg"), shutil.which("ffprobe")
     if require and (not ffmpeg or not ffprobe):
-        raise ValueError("FFmpeg and ffprobe are required. Install them or select their folder in the plugin settings.")
+        raise ValueError("FFmpeg and ffprobe are required. Install FFmpeg + ffprobe in Settings > Dependencies, or select their folder in the plugin settings.")
     runtime = str(config.get("js_runtime", "auto"))
     if runtime not in {"auto", "deno", "node", "quickjs"}:
         raise ValueError("Select Auto, Deno, Node, or QuickJS in the plugin settings.")
@@ -415,7 +415,7 @@ def check_setup(config):
             if result.returncode:
                 raise ValueError(f"{name} could not run. Check its installation.")
     if not tools["js_runtimes"]:
-        lines.append("JavaScript runtime: not found. YouTube needs a supported Deno, Node, or QuickJS runtime.")
+        lines.append("JavaScript runtime: not found. Install Deno in Settings > Dependencies for YouTube support.")
     for name, value in tools["js_runtimes"].items():
         result = subprocess.run([value["path"], "--version"], capture_output=True, timeout=8,
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))

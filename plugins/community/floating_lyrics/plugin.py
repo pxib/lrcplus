@@ -503,7 +503,7 @@ class FloatingLyricsPlugin:
         "click_through": False,
         "remember_position": True,
         "hide_on_pause": False,
-        "enabled": True,
+        "enabled": False,
         "window_x": None,
         "window_y": None,
     }
@@ -560,7 +560,7 @@ class FloatingLyricsPlugin:
     def _show_after_main_window(self):
         if self.window is None:
             return
-        if not self.settings.get("enabled", True):
+        if not self.settings.get("enabled", False):
             self._set_menu_checked(False)
             return
 
@@ -639,7 +639,7 @@ class FloatingLyricsPlugin:
             self._remember_position()
             self.floating.hide()
         elif "playing" in state or "play" == state:
-            if not self.settings.get("enabled", True):
+            if not self.settings.get("enabled", False):
                 return
             self.floating.show()
             self.floating.raise_()

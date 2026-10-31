@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.dependencies import DependencyError
+from core.external_tools import ExternalToolManager, TOOLS
 from core.settings import load_all_settings, save_all_settings
 from ui.settings_controls import _apply_settings_dialog_style
 
@@ -20,15 +21,16 @@ class _DependencyJob(QThread):
     succeeded = Signal()
     failed = Signal(str)
 
-    def __init__(self, manager, action, name, parent=None):
+    def __init__(self, manager, action, name, parent=None, kind="library"):
         super().__init__(parent)
         self.manager, self.action, self.name = manager, action, name
+        self.kind = kind
 
     def run(self):
         try:
             if self.action == "check":
-                self.manager.check(self.name)
-                self.message.emit(f"{self.name}: import check passed.")
+                result = self.manager.check(self.name)
+                self.message.emit(result if self.kind == "tool" else f"{self.name}: import check passed.")
             else:
                 getattr(self.manager, self.action)(self.name, self.message.emit)
         except Exception as error:
@@ -42,19 +44,20 @@ class DependencyManagerWidget(QWidget):
         super().__init__(parent)
         self.plugin_manager = plugin_manager
         self.manager = plugin_manager.dependency_manager if plugin_manager else None
+        self.tools = ExternalToolManager()
         self._job = None
         self._checks = {}
         self._buttons = {}
         layout = QVBoxLayout(self)
         notice = QLabel(
-            "Manage optional libraries for plugins and local MeCab readings. Installations and removals "
-            "are saved immediately; restart LRCPlus to apply them. "
-            "The first installation in a Windows release also downloads a private Python runtime."
+            "Manage optional libraries and tools. FFmpeg includes ffprobe; Deno provides JavaScript for YouTube. "
+            "Tool installs are private to LRCPlus and work for new imports immediately. "
+            "Restart after changing Python libraries. Their first installation also downloads a private Python runtime."
         )
         notice.setWordWrap(True)
         layout.addWidget(notice)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Library", "Used by", "Status"])
+        self.tree.setHeaderLabels(["Library or tool", "Used by", "Status"])
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
         self.tree.header().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -102,35 +105,47 @@ class DependencyManagerWidget(QWidget):
     def refresh(self):
         current = self.tree.currentItem()
         selected = current.data(0, Qt.ItemDataRole.UserRole) if current else None
+        selected_kind = current.data(0, Qt.ItemDataRole.UserRole + 1) if current else None
         self.tree.clear()
-        if self.manager is None:
-            self.status.setText("No plugin manager is available.")
-            self._update_buttons()
-            return
-        self.storage.setText(f"Storage: {self.manager.root}")
+        self.storage.setText(
+            (f"Libraries: {self.manager.root}\n" if self.manager else "") + f"Tools: {self.tools.root}"
+        )
         try:
-            state = self.manager.state()
-            for name, entry in sorted(self.manager.catalog.items()):
+            state = self.manager.state() if self.manager else None
+            for name, entry in sorted(self.manager.catalog.items() if self.manager else []):
                 status = self.manager.status(name, state=state)
-                check = self._checks.get(name)
+                check = self._checks.get(("library", name))
                 text = status["text"]
                 if check:
                     text += "; " + ("Import check passed" if check == "ok" else "Import failed — see details")
                 requirements = ", ".join(sorted({item.requirement for item in entry["dependencies"]}))
                 item = QTreeWidgetItem([requirements, ", ".join(sorted(set(entry["plugins"]))), text])
                 item.setData(0, Qt.ItemDataRole.UserRole, name)
+                item.setData(0, Qt.ItemDataRole.UserRole + 1, "library")
                 support = sorted({value for dep in entry["dependencies"] for value in dep.requires})
                 item.setToolTip(0, requirements + ("\nAlso installs: " + ", ".join(support) if support else ""))
                 self.tree.addTopLevelItem(item)
                 item.setToolTip(2, check if check and check != "ok" else status["text"])
-                if name == selected:
+                if name == selected and selected_kind == "library":
                     self.tree.setCurrentItem(item)
-            if not self.manager.catalog:
-                self.status.setText("Installed plugins do not declare any optional libraries.")
-            if self.tree.currentItem() is None and self.tree.topLevelItemCount():
-                self.tree.setCurrentItem(self.tree.topLevelItem(0))
         except DependencyError as error:
             self.status.setText(str(error))
+        for name, tool in TOOLS.items():
+            status = self.tools.status(name)
+            check = self._checks.get(("tool", name))
+            text = status["text"]
+            if check:
+                text += "; " + ("Check passed" if check == "ok" else "Check failed — see details")
+            item = QTreeWidgetItem([tool["label"], tool["used_by"], text])
+            item.setData(0, Qt.ItemDataRole.UserRole, name)
+            item.setData(0, Qt.ItemDataRole.UserRole + 1, "tool")
+            item.setToolTip(0, f"Download source: https://github.com/{tool['repo']}")
+            item.setToolTip(2, check if check and check != "ok" else status["text"])
+            self.tree.addTopLevelItem(item)
+            if name == selected and selected_kind == "tool":
+                self.tree.setCurrentItem(item)
+        if self.tree.currentItem() is None and self.tree.topLevelItemCount():
+            self.tree.setCurrentItem(self.tree.topLevelItem(0))
         self._update_buttons()
 
     def _update_buttons(self, *_args):
@@ -138,9 +153,25 @@ class DependencyManagerWidget(QWidget):
         for button in self._buttons.values():
             button.setEnabled(False)
         item = self.tree.currentItem()
-        if self.busy or self.manager is None or item is None:
+        if self.busy or item is None:
             return
         name = item.data(0, Qt.ItemDataRole.UserRole)
+        if item.data(0, Qt.ItemDataRole.UserRole + 1) == "tool":
+            status = self.tools.status(name)
+            self._buttons["install"].setEnabled(self.tools.supported(name))
+            self._buttons["install"].setToolTip("Download the latest verified release for LRCPlus.")
+            self._buttons["check"].setEnabled(True)
+            self._buttons["remove"].setEnabled(status["managed"])
+            self._buttons["remove"].setToolTip("Remove only the copy installed by LRCPlus.")
+            self.action_hint.setText(
+                "Install / Repair downloads the latest version for LRCPlus. No administrator access is needed. "
+                "Remove keeps tools installed elsewhere. New imports pick up changes immediately."
+                if self.tools.supported(name) else
+                "Automatic installation is unavailable on this platform. Install the tool on PATH; Check can verify it."
+            )
+            return
+        if self.manager is None:
+            return
         try:
             status = self.manager.status(name)
             self._buttons["install"].setEnabled(status["source"] != "app")
@@ -171,18 +202,20 @@ class DependencyManagerWidget(QWidget):
     def _start_selected(self, action):
         item = self.tree.currentItem()
         if item:
-            self._start(action, item.data(0, Qt.ItemDataRole.UserRole))
+            self._start(action, item.data(0, Qt.ItemDataRole.UserRole),
+                        item.data(0, Qt.ItemDataRole.UserRole + 1))
 
-    def _start(self, action, name):
+    def _start(self, action, name, kind="library"):
         if self.busy:
             return
         self.details.clear()
         self.status.setText(f"{'Checking' if action == 'check' else 'Removing' if action == 'remove' else 'Installing'} {name}…")
-        self._checks.pop(name, None)
-        self._job = _DependencyJob(self.manager, action, name, self)
+        self._checks.pop((kind, name), None)
+        manager = self.tools if kind == "tool" else self.manager
+        self._job = _DependencyJob(manager, action, name, self, kind=kind)
         self._job.message.connect(self._message)
-        self._job.failed.connect(lambda error: self._failed(action, name, error))
-        self._job.succeeded.connect(lambda: self._succeeded(action, name))
+        self._job.failed.connect(lambda error: self._failed(action, name, error, kind))
+        self._job.succeeded.connect(lambda: self._succeeded(action, name, kind))
         self._job.finished.connect(self._finished)
         self.progress.show()
         for button in self._buttons.values():
@@ -194,20 +227,22 @@ class DependencyManagerWidget(QWidget):
         if "\n" not in message:
             self.status.setText(message)
 
-    def _failed(self, action, name, error):
+    def _failed(self, action, name, error, kind="library"):
         if action == "check":
-            self._checks[name] = error
+            self._checks[(kind, name)] = error
         self.status.setText(f"{name}: operation failed. See details for the cause.")
         self.details.appendPlainText(error)
         self.details_button.setChecked(True)
 
-    def _succeeded(self, action, name):
+    def _succeeded(self, action, name, kind="library"):
         if action == "check":
-            self._checks[name] = "ok"
-            self.status.setText(f"{name}: import check passed.")
+            self._checks[(kind, name)] = "ok"
+            self.status.setText(f"{name}: {'tool' if kind == 'tool' else 'import'} check passed.")
         else:
             self._checks.clear()
-            self.status.setText("Dependencies updated. Restart LRCPlus to apply the changes.")
+            self.status.setText("Tools updated. New imports use the current tools immediately."
+                                if kind == "tool" else
+                                "Dependencies updated. Restart LRCPlus to apply the changes.")
 
     def _finished(self):
         job = self._job

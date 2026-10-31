@@ -1,5 +1,6 @@
 from pathlib import Path
 import math
+import os
 import random
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -20,6 +21,14 @@ from PySide6.QtWidgets import (
 from core.audio_controller import AudioController, snap_volume_percentage
 from core.background_job import BackgroundJob
 from core.lrclib import LRCLibError, search as search_lrclib
+from core.musixmatch import (
+    MusixmatchError, search as search_musixmatch,
+    fetch_lyrics as fetch_musixmatch_lyrics, get_token as get_musixmatch_token,
+)
+from core.chinese_lyrics import (
+    PROVIDERS as CHINESE_LYRICS_PROVIDERS, LyricsProviderError,
+    search as search_chinese_lyrics, fetch_lyrics as fetch_chinese_lyrics,
+)
 from core.queue_controller import QueueControllerMixin
 from core.lyrics_controller import LyricsController, _FuriganaProgressBridge
 from core.settings import (
@@ -1685,13 +1694,19 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
 
 
         def search_lrclib_lyrics(self):
-            """Search LRCLIB, inspect results, and load the selected lyrics."""
+            """Search online providers, inspect results, and load selected lyrics."""
             dialog = QDialog(self)
             dialog.setWindowTitle("Search Lyrics")
             dialog.resize(900, 650)
 
             layout = QVBoxLayout(dialog)
-            layout.addWidget(QLabel("Search LRCLIB"))
+            provider_row = QHBoxLayout()
+            provider_row.addWidget(QLabel("Lyrics source"))
+            provider = QComboBox(dialog)
+            provider.addItems(["LRCLIB", *CHINESE_LYRICS_PROVIDERS, "Musixmatch"])
+            provider.setAccessibleName("Lyrics source")
+            provider_row.addWidget(provider)
+            layout.addLayout(provider_row)
 
             search_row = QHBoxLayout()
             query_input = QLineEdit(dialog)
@@ -1708,11 +1723,41 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
             search_row.addWidget(search_button)
             layout.addLayout(search_row)
 
+            key_panel = QWidget(dialog)
+            key_layout = QVBoxLayout(key_panel)
+            key_layout.setContentsMargins(0, 0, 0, 0)
+            auth_method = QComboBox(key_panel)
+            auth_method.setAccessibleName("Musixmatch authentication method")
+            auth_method.addItem("Authentication token (OpenLyrics)", "token")
+            auth_method.addItem("Developer API key", "api_key")
+            key_layout.addWidget(auth_method)
+            credential_row = QHBoxLayout()
+            api_key = QLineEdit(key_panel)
+            api_key.setEchoMode(QLineEdit.EchoMode.Password)
+            credential_row.addWidget(api_key)
+            show_key_button = QPushButton("Show", key_panel)
+            show_key_button.setAutoDefault(False)
+            show_key_button.setCheckable(True)
+            show_key_button.toggled.connect(lambda show: api_key.setEchoMode(
+                QLineEdit.EchoMode.Normal if show else QLineEdit.EchoMode.Password
+            ))
+            credential_row.addWidget(show_key_button)
+            get_token_button = QPushButton("Get token", key_panel)
+            get_token_button.setAutoDefault(False)
+            credential_row.addWidget(get_token_button)
+            key_layout.addLayout(credential_row)
+            key_note = QLabel(key_panel)
+            key_note.setOpenExternalLinks(True)
+            key_note.setWordWrap(True)
+            key_layout.addWidget(key_note)
+            layout.addWidget(key_panel)
+            key_panel.hide()
+
             splitter = QSplitter(Qt.Orientation.Vertical, dialog)
 
-            results = QTableWidget(0, 4, splitter)
+            results = QTableWidget(0, 5, splitter)
             results.setHorizontalHeaderLabels(
-                ["Title", "Album", "Artist", "Synced"]
+                ["Title", "Album", "Artist", "Timing", "Duration"]
             )
             results.setSelectionBehavior(
                 QTableWidget.SelectionBehavior.SelectRows
@@ -1733,6 +1778,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
             header.setSectionResizeMode(
                 3, QHeaderView.ResizeMode.ResizeToContents
             )
+            header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
 
             preview_panel = QWidget(splitter)
             preview_layout = QVBoxLayout(preview_panel)
@@ -1746,6 +1792,10 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
                 "Select a result to preview its lyrics here."
             )
             preview_layout.addWidget(preview)
+            attribution = QLabel(preview_panel)
+            attribution.setTextFormat(Qt.TextFormat.PlainText)
+            attribution.setWordWrap(True)
+            preview_layout.addWidget(attribution)
 
             splitter.addWidget(results)
             splitter.addWidget(preview_panel)
@@ -1758,6 +1808,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
 
             buttons = QHBoxLayout()
             use_button = QPushButton("Use Selected Lyrics", dialog)
+            use_button.setEnabled(False)
             cancel_button = QPushButton("Cancel", dialog)
             buttons.addStretch(1)
             buttons.addWidget(use_button)
@@ -1765,17 +1816,44 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
             layout.addLayout(buttons)
 
             records = []
-            search_job = BackgroundJob(dialog, "lrclib-search")
+            provider_states = {}
+            active_provider = provider.currentText()
+            search_job = BackgroundJob(dialog, "lyrics-search")
+            preview_job = BackgroundJob(dialog, "lyrics-preview")
+            token_job = BackgroundJob(dialog, "musixmatch-token")
             search_cancel = Event()
+            preview_cancel = Event()
+            token_cancel = Event()
             search_in_progress = False
+            token_in_progress = False
             cooldown_timer = QTimer(dialog)
             cooldown_timer.setInterval(100)
+            provider_errors = (LRCLibError, MusixmatchError, LyricsProviderError)
+
+            def cooldown_attribute():
+                return {
+                    "LRCLIB": "_lrclib_search_ready_at",
+                    "Musixmatch": "_musixmatch_search_ready_at",
+                    "NetEase Cloud Music": "_netease_search_ready_at",
+                    "QQ Music": "_qqmusic_search_ready_at",
+                    "KuGou": "_kugou_search_ready_at",
+                    "Kuwo": "_kuwo_search_ready_at",
+                }[provider.currentText()]
+
+            def timing_label(item):
+                if item.get("lyricsFormat") == "lrcx":
+                    return "Words"
+                if item.get("syncedLyrics") or item.get("hasSyncedLyrics"):
+                    return "Lines"
+                if item.get("plainLyrics"):
+                    return "Plain"
+                return "Unknown" if item.get("hasSyncedLyrics", False) is None else "No"
 
             def update_search_button():
                 remaining = math.ceil(max(
-                    0, getattr(self, "_lrclib_search_ready_at", 0) - monotonic()
+                    0, getattr(self, cooldown_attribute(), 0) - monotonic()
                 ))
-                search_button.setEnabled(not search_in_progress and remaining == 0)
+                search_button.setEnabled(not search_in_progress and not token_in_progress and remaining == 0)
                 search_button.setText(
                     f"Search ({remaining}s)" if remaining else "Search"
                 )
@@ -1794,9 +1872,20 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
                 return None
 
             def update_preview():
+                nonlocal preview_cancel
+                preview_cancel.set()
+                preview_cancel = Event()
+                preview_job.cancel()
+                use_button.setEnabled(False)
+                attribution.clear()
                 item = selected_record()
                 if item is None:
                     preview.clear()
+                    return
+
+                if item.get("source") in ("Musixmatch", *CHINESE_LYRICS_PROVIDERS) and not item.get("syncedLyrics") and not item.get("plainLyrics"):
+                    preview.setPlainText(f"Loading lyrics from {item['source']}...")
+                    preview_job.start(fetch_preview, item, api_key.text().strip(), preview_cancel, auth_method.currentData())
                     return
 
                 synced = item.get("syncedLyrics") or ""
@@ -1808,11 +1897,135 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
                     preview.setPlainText(plain)
                 else:
                     preview.setPlainText(
-                        "This LRCLIB result does not contain lyrics."
+                        "This result does not contain lyrics."
                     )
+                use_button.setEnabled(bool(synced or plain))
+                if item.get("source"):
+                    notes = [f"Lyrics provided by {item['source']}", item.get("copyright"), item.get("sourceUrl")]
+                    if item["source"] == "Kuwo":
+                        notes.append("Kuwo may include original and translated lines together.")
+                    attribution.setText("\n".join(filter(None, notes)))
+
+            def fetch_preview(item, key, cancel, mode):
+                try:
+                    if item.get("source") in CHINESE_LYRICS_PROVIDERS:
+                        return fetch_chinese_lyrics(item, cancel)
+                    return fetch_musixmatch_lyrics(item, key, cancel, auth_mode=mode)
+                except provider_errors as error:
+                    return error
+
+            def show_preview(payload):
+                if isinstance(payload, provider_errors):
+                    preview.setPlainText(str(payload))
+                    if payload.retry_after:
+                        setattr(self, cooldown_attribute(), max(
+                            getattr(self, cooldown_attribute(), 0), monotonic() + payload.retry_after,
+                        ))
+                        update_search_button()
+                    return
+                item = selected_record()
+                if item is not None and item.get("id") == payload.get("id") and item.get("source") == payload.get("source"):
+                    item.update(payload)
+                    results.item(results.currentRow(), 3).setText(timing_label(item))
+                    update_preview()
+
+            def preview_failed(error):
+                preview.setPlainText(f"Could not load lyrics: {error}")
+
+            def reset_provider():
+                nonlocal search_in_progress, token_in_progress
+                search_cancel.set()
+                search_job.cancel()
+                token_cancel.set()
+                token_job.cancel()
+                token_in_progress = False
+                get_token_button.setEnabled(True)
+                get_token_button.setText("Get token")
+                search_in_progress = False
+                results.setRowCount(0)
+                records.clear()
+                update_preview()
+                status.clear()
+                key_panel.setVisible(provider.currentText() == "Musixmatch")
+                update_search_button()
+
+            def switch_provider():
+                nonlocal active_provider, records
+                provider_states[active_provider] = {
+                    "records": list(records), "query": query_input.text(),
+                    "row": results.currentRow(),
+                    "scroll": results.verticalScrollBar().value(),
+                    "preview_scroll": preview.verticalScrollBar().value(),
+                    "status": ("Search cancelled. Search again to refresh."
+                               if search_in_progress else status.text()),
+                }
+                reset_provider()
+                active_provider = provider.currentText()
+                saved = provider_states.get(active_provider)
+                if saved is not None:
+                    records = list(saved["records"])
+                    query_input.setText(saved["query"])
+                    populate_results(saved["row"])
+                    results.verticalScrollBar().setValue(saved["scroll"])
+                    preview.verticalScrollBar().setValue(saved["preview_scroll"])
+                    status.setText(saved["status"])
+
+            def credential_attribute():
+                return "_musixmatch_token" if auth_method.currentData() == "token" else "_musixmatch_api_key"
+
+            def change_auth_method():
+                reset_provider()
+                token_mode = auth_method.currentData() == "token"
+                label = "Musixmatch authentication token" if token_mode else "Musixmatch API key"
+                api_key.setAccessibleName(label)
+                api_key.setPlaceholderText(label)
+                env_key = "MUSIXMATCH_TOKEN" if token_mode else "MUSIXMATCH_API_KEY"
+                api_key.setText(getattr(self, credential_attribute(), os.environ.get(env_key, "")))
+                show_key_button.setChecked(False)
+                get_token_button.setVisible(token_mode)
+                key_note.setText(
+                    "Paste an existing authentication token or click Get token. "
+                    "The token is remembered until the app exits."
+                    if token_mode else
+                    'Use your <a href="https://developer.musixmatch.com/">Musixmatch developer API key</a>. '
+                    "Kept in memory until the app exits. Synced lyrics require API access."
+                )
+
+            def credential_edited():
+                setattr(self, credential_attribute(), api_key.text().strip())
+                reset_provider()
+
+            def request_token():
+                nonlocal token_cancel, token_in_progress
+                reset_provider()
+                token_cancel = Event()
+                token_in_progress = True
+                get_token_button.setEnabled(False)
+                get_token_button.setText("Getting token...")
+                status.setText("Requesting a Musixmatch authentication token...")
+                update_search_button()
+                token_job.start(get_musixmatch_token, token_cancel)
+
+            def token_ready(token):
+                nonlocal token_in_progress
+                token_in_progress = False
+                get_token_button.setEnabled(True)
+                get_token_button.setText("Get token")
+                api_key.setText(token)
+                self._musixmatch_token = token
+                status.setText("Musixmatch token retrieved. You can search now.")
+                update_search_button()
+
+            def token_failed(error):
+                nonlocal token_in_progress
+                token_in_progress = False
+                get_token_button.setEnabled(True)
+                get_token_button.setText("Get token")
+                status.setText(f"Could not get a Musixmatch token: {error}")
+                update_search_button()
 
             def run_search():
-                nonlocal search_in_progress
+                nonlocal search_in_progress, search_cancel
                 update_search_button()
                 if not search_button.isEnabled():
                     return
@@ -1823,28 +2036,47 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
                     )
                     return
 
-                status.setText("Searching LRCLIB… Temporary server errors are retried automatically.")
+                source = provider.currentText()
+                key = api_key.text().strip()
+                if source == "Musixmatch" and not key:
+                    status.setText(
+                        "Paste an authentication token or click Get token before searching."
+                        if auth_method.currentData() == "token" else
+                        "Enter a Musixmatch API key before searching."
+                    )
+                    api_key.setFocus()
+                    return
+                if source == "Musixmatch":
+                    setattr(self, credential_attribute(), key)
+                search_cancel.set()
+                search_cancel = Event()
+                status.setText(f"Searching {source}...")
                 results.setRowCount(0)
                 preview.clear()
                 records.clear()
+                update_preview()
                 search_in_progress = True
-                self._lrclib_search_ready_at = monotonic() + 5
+                setattr(self, cooldown_attribute(), monotonic() + 5)
                 update_search_button()
-                search_job.start(fetch_results, query)
+                search_job.start(fetch_results, query, source, key, search_cancel, auth_method.currentData())
 
-            def fetch_results(query):
+            def fetch_results(query, source, key, cancel, mode):
                 try:
-                    return search_lrclib(query, search_cancel)
-                except LRCLibError as error:
+                    if source == "Musixmatch":
+                        return search_musixmatch(query, key, cancel, auth_mode=mode)
+                    if source in CHINESE_LYRICS_PROVIDERS:
+                        return search_chinese_lyrics(source, query, cancel)
+                    return search_lrclib(query, cancel)
+                except provider_errors as error:
                     return error
 
             def show_results(payload):
                 nonlocal search_in_progress
                 search_in_progress = False
-                if isinstance(payload, LRCLibError):
-                    self._lrclib_search_ready_at = max(
-                        self._lrclib_search_ready_at, monotonic() + payload.retry_after,
-                    )
+                if isinstance(payload, provider_errors):
+                    setattr(self, cooldown_attribute(), max(
+                        getattr(self, cooldown_attribute(), 0), monotonic() + payload.retry_after,
+                    ))
                     update_search_button()
                     status.setText(str(payload))
                     return
@@ -1854,6 +2086,19 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
 
                 records.extend(payload)
 
+                populate_results()
+                if records:
+                    status.setText(
+                        f"{len(records)} result(s). "
+                        "Select one to inspect the lyrics."
+                    )
+                else:
+                    status.setText("No lyrics found.")
+
+            def populate_results(selected_row=0):
+                # Rebuilding a cached table must not fetch intermediate rows.
+                results.blockSignals(True)
+                results.setRowCount(0)
                 for row_index, item in enumerate(records):
                     results.insertRow(row_index)
 
@@ -1864,25 +2109,25 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
                     )
                     album = item.get("albumName") or ""
                     artist = item.get("artistName") or "Unknown artist"
-                    synced = "Yes" if item.get("syncedLyrics") else "No"
+                    try:
+                        seconds = max(0, int(float(item.get("duration") or 0)))
+                    except (TypeError, ValueError, OverflowError):
+                        seconds = 0
+                    duration = f"{seconds // 60}:{seconds % 60:02d}" if seconds else ""
 
                     for column, value in enumerate(
-                        [title, album, artist, synced]
+                        [title, album, artist, timing_label(item), duration]
                     ):
                         table_item = QTableWidgetItem(str(value))
                         results.setItem(
                             row_index, column, table_item
                         )
 
-                if records:
-                    results.selectRow(0)
-                    update_preview()
-                    status.setText(
-                        f"{len(records)} result(s). "
-                        "Select one to inspect the lyrics."
-                    )
+                results.blockSignals(False)
+                if 0 <= selected_row < len(records):
+                    results.selectRow(selected_row)
                 else:
-                    status.setText("No lyrics found.")
+                    update_preview()
 
             def search_failed(error):
                 nonlocal search_in_progress
@@ -1913,7 +2158,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
 
                 if synced:
                     destination = (
-                        self.current_audio_path.with_suffix(".lrc")
+                        self.current_audio_path.with_suffix(".lrcx" if item.get("lyricsFormat") == "lrcx" else ".lrc")
                     )
                     content = synced
                 else:
@@ -1923,6 +2168,13 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
                     content = plain
 
                 try:
+                    if item.get("source") == "Musixmatch":
+                        credit = "\n".join(filter(None, [f"Lyrics provided by {item['source']}", item.get("copyright"), item.get("sourceUrl")]))
+                        if synced:
+                            credit = credit.replace("\n", " ").replace("[", "(").replace("]", ")")
+                            content = f"[re:{credit}]\n{content}"
+                        else:
+                            content = f"{content.rstrip()}\n\n{credit}"
                     atomic_write_text(destination, content.rstrip() + "\n", backup=True)
                     self.clear_lyrics_search_index()
                     self.load_lrc_file(str(destination))
@@ -1940,18 +2192,31 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
             search_job.failed.connect(search_failed)
             query_input.returnPressed.connect(run_search)
             results.itemSelectionChanged.connect(update_preview)
+            provider.currentTextChanged.connect(switch_provider)
+            api_key.textEdited.connect(credential_edited)
+            auth_method.currentIndexChanged.connect(change_auth_method)
+            get_token_button.clicked.connect(request_token)
+            token_job.finished.connect(token_ready)
+            token_job.failed.connect(token_failed)
+            preview_job.finished.connect(show_preview)
+            preview_job.failed.connect(preview_failed)
             results.itemDoubleClicked.connect(
                 lambda _: use_selected()
             )
             use_button.clicked.connect(use_selected)
             cancel_button.clicked.connect(dialog.reject)
+            change_auth_method()
 
             try:
                 dialog.exec()
             finally:
                 cooldown_timer.stop()
                 search_cancel.set()
+                preview_cancel.set()
+                token_cancel.set()
                 search_job.close()
+                preview_job.close()
+                token_job.close()
                 dialog.deleteLater()
 
         def open_settings(self):

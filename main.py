@@ -11,6 +11,10 @@ if __name__ == "__main__" and "--lrcplus-dependency-probe" in sys.argv:
 
 activate_dependencies()
 
+from core.external_tools import activate_tools
+
+activate_tools()
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon

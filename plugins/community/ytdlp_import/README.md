@@ -9,9 +9,15 @@ worker, settings, and download history all live in this plugin.
 1. In **Settings > Dependencies**, install/repair **yt-dlp** and **mutagen**.
    The yt-dlp requirement includes its `default` extras, including matching
    YouTube challenge scripts. Restart LRCPlus after installation or updates.
-2. Install **FFmpeg and ffprobe**, and put them on PATH or enter their folder in
-   **Settings > Plugins > yt-dlp Audio Import**.
-3. For YouTube, install a supported JavaScript runtime. Auto-detection tries
+2. In **Settings > Dependencies**, select **FFmpeg + ffprobe** and **Install / Repair**.
+   On supported Windows systems, this downloads a verified private installation
+   for LRCPlus without administrator access or system PATH changes. Both tools
+   are installed together. Existing installations can also be found on PATH or
+   selected in **Settings > Plugins > yt-dlp Audio Import**.
+3. For YouTube, install **Deno (JavaScript runtime)** from the same manager.
+   New imports detect managed tool installations immediately; **Check** verifies
+   their executables, and **Remove** only removes LRCPlus-managed copies.
+   Auto-detection tries
    Deno, Node, then QuickJS. The plugin settings also accept an explicit runtime
    type and executable path. See the official
    [yt-dlp dependency guide](https://github.com/yt-dlp/yt-dlp#dependencies) and

@@ -118,7 +118,8 @@ class YtdlpImportPlugin:
         help_text = QLabel(
             'Install or repair <b>yt-dlp</b> and <b>mutagen</b> in Settings &gt; Dependencies, then restart. '
             'Reinstalling yt-dlp updates its Python package and matching YouTube challenge scripts. '
-            'FFmpeg/ffprobe and a supported JavaScript runtime are installed separately. '
+            'Install <b>FFmpeg + ffprobe</b> and <b>Deno</b> in Settings &gt; Dependencies too. '
+            'Their managed installations are detected automatically. '
             'Use <b>Check setup</b> in the import window to inspect them. '
             '<a href="https://github.com/yt-dlp/yt-dlp#dependencies">Tool setup</a> · '
             '<a href="https://github.com/yt-dlp/yt-dlp/wiki/EJS">YouTube runtime setup</a>'
