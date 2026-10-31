@@ -5,6 +5,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import Qt
 
 import core.dependencies as dependencies
 from core.dependencies import DependencyError, DependencyManager, parse_dependencies
@@ -18,18 +19,18 @@ def _plugin(name, requirement=None, module=None):
     }
 
 
-def _wheel(folder, name, *, requires=(), extras=(), code="VALUE = 42\n"):
+def _wheel(folder, name, *, version="1.0", requires=(), extras=(), code="VALUE = 42\n"):
     module = name.replace("-", "_")
-    metadata = f"{module}-1.0.dist-info"
+    metadata = f"{module}-{version}.dist-info"
     files = {
         f"{module}/__init__.py": code,
-        f"{metadata}/METADATA": "Metadata-Version: 2.1\n" + f"Name: {name}\nVersion: 1.0\n"
+        f"{metadata}/METADATA": "Metadata-Version: 2.1\n" + f"Name: {name}\nVersion: {version}\n"
         + "".join(f"Provides-Extra: {item}\n" for item in extras)
         + "".join(f"Requires-Dist: {item}\n" for item in requires) + "\n",
         f"{metadata}/WHEEL": "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
     }
     files[f"{metadata}/RECORD"] = "".join(f"{path},,\n" for path in [*files, f"{metadata}/RECORD"])
-    path = folder / f"{module}-1.0-py3-none-any.whl"
+    path = folder / f"{module}-{version}-py3-none-any.whl"
     with zipfile.ZipFile(path, "w") as archive:
         for key, value in files.items():
             archive.writestr(key, value)
@@ -49,6 +50,8 @@ def offline_manager(tmp_path, monkeypatch):
     _wheel(wheels, "lp-test-undeclared", code="import lp_test_support\n")
     _wheel(wheels, "lp-test-extra", requires=["lp-test-support>=1; extra == 'default'"],
            extras=["default"], code="import lp_test_support\n")
+    _wheel(wheels, "fugashi", version="1.5.2", code="import unidic_lite\n")
+    _wheel(wheels, "unidic-lite", version="1.0.8")
     manager = DependencyManager(tmp_path / "dependencies")
     manager.configure([_plugin(name) for name in (
         "lp-test-alpha", "lp-test-beta", "lp-test-broken", "lp-test-conflict",
@@ -292,8 +295,9 @@ def test_settings_dependency_tab_and_busy_close_guard(qapp, tmp_path):
     dialog = SettingsDialog([], {}, plugin_manager=manager)
     try:
         widget = dialog.dependencies_tab
-        assert widget.tree.topLevelItemCount() == 1
-        assert widget.tree.topLevelItem(0).text(2) == "Missing"
+        missing = next(widget.tree.topLevelItem(i) for i in range(widget.tree.topLevelItemCount())
+                       if widget.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole) == "lp-test-missing")
+        assert missing.text(2) == "Missing"
         widget._job = object()
         dialog.accept()
         assert dialog.result() == 0
@@ -319,6 +323,9 @@ def test_dependency_job_reports_import_failure_and_restores_controls(qapp, monke
     monkeypatch.setattr(manager.dependency_manager, "check", fail)
     widget = DependencyManagerWidget(manager)
     try:
+        item = next(widget.tree.topLevelItem(i) for i in range(widget.tree.topLevelItemCount())
+                    if widget.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole) == "packaging")
+        widget.tree.setCurrentItem(item)
         widget._start("check", "packaging")
         assert widget.busy
         deadline = time.monotonic() + 5
@@ -326,10 +333,51 @@ def test_dependency_job_reports_import_failure_and_restores_controls(qapp, monke
             qapp.processEvents()
             time.sleep(0.005)
         assert not widget.busy
-        assert "Import failed" in widget.tree.topLevelItem(0).text(2)
+        item = widget.tree.currentItem()
+        assert "Import failed" in item.text(2)
         assert "broken DLL" in widget.details.toPlainText()
         assert widget._buttons["check"].isEnabled()
         assert not widget._buttons["install"].isEnabled()
+    finally:
+        widget.deleteLater()
+        qapp.processEvents()
+
+
+def test_mecab_engine_and_dictionary_install_together(offline_manager):
+    manager = offline_manager
+    manager.base_paths = []
+    manager.base_versions = {}
+    state = manager.install("fugashi")
+    site = dependencies._site_path(manager.root, state)
+    assert (site / "fugashi" / "__init__.py").is_file()
+    assert (site / "unidic_lite" / "__init__.py").is_file()
+    assert manager.status("fugashi")["state"] == "available"
+    assert manager.status("unidic-lite")["state"] == "available"
+    assert "MeCab" in manager.catalog["fugashi"]["plugins"][0]
+    manager.remove("fugashi")
+    assert manager.status("fugashi")["state"] == "missing"
+    assert manager.status("unidic-lite")["state"] == "missing"
+
+
+@pytest.mark.parametrize("version", [None, "0.1"])
+def test_app_version_mismatch_still_allows_check_and_explains_repair(qapp, version):
+    from ui.dependency_settings import DependencyManagerWidget
+
+    manager = PluginManager()
+    manager.dependency_manager.configure([_plugin("packaging", "packaging>=24", "packaging")])
+    manager.dependency_manager.base_versions["packaging"] = version
+    widget = DependencyManagerWidget(manager)
+    try:
+        item = next(widget.tree.topLevelItem(i) for i in range(widget.tree.topLevelItemCount())
+                    if widget.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole) == "packaging")
+        widget.tree.setCurrentItem(item)
+        assert widget._buttons["check"].isEnabled()
+        assert not widget._buttons["install"].isEnabled()
+        assert "Update LRCPlus" in widget.action_hint.text()
+        widget._succeeded("check", "packaging")
+        widget.refresh()
+        assert "Import check passed" in widget.tree.currentItem().text(2)
+        assert "Incompatible" in widget.tree.currentItem().text(2) or "verified" in widget.tree.currentItem().text(2)
     finally:
         widget.deleteLater()
         qapp.processEvents()

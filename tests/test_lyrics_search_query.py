@@ -7,6 +7,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QDialog, QLabel, QLineEdit, QPushButton, QTableWidget, QWidget
 
 import ui.main_window as main_window
+import core.lrclib as lrclib
 
 
 def test_lyrics_search_query_prefers_artist_and_title_metadata(
@@ -72,6 +73,7 @@ def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
         if outcome == "error":
             raise OSError("Network unavailable")
         return SimpleNamespace(
+            status_code=200, headers={}, close=lambda: None,
             raise_for_status=lambda: None,
             json=lambda: [{"trackName": "Song", "syncedLyrics": "[00:01]Hello"}],
         )
@@ -127,7 +129,7 @@ def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
         assert button.text() == "Search"
         return 0
 
-    monkeypatch.setattr(main_window.requests, "get", get)
+    monkeypatch.setattr(lrclib.requests, "get", get)
     monkeypatch.setattr(QDialog, "exec", interact)
     try:
         main_window.Player.search_lrclib_lyrics(parent)

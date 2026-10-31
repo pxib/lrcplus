@@ -4,7 +4,7 @@ import random
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from time import monotonic
-import requests
+from threading import Event
 
 from PySide6.QtCore import Qt, QUrl, QTimer, Signal, QThread, QSize, QRect
 from PySide6.QtGui import QAction, QKeySequence, QShortcut, QPixmap, QPainter
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from core.audio_controller import AudioController, snap_volume_percentage
 from core.background_job import BackgroundJob
+from core.lrclib import LRCLibError, search as search_lrclib
 from core.queue_controller import QueueControllerMixin
 from core.lyrics_controller import LyricsController, _FuriganaProgressBridge
 from core.settings import (
@@ -1765,6 +1766,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
 
             records = []
             search_job = BackgroundJob(dialog, "lrclib-search")
+            search_cancel = Event()
             search_in_progress = False
             cooldown_timer = QTimer(dialog)
             cooldown_timer.setInterval(100)
@@ -1821,7 +1823,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
                     )
                     return
 
-                status.setText("Searching LRCLIB…")
+                status.setText("Searching LRCLIB… Temporary server errors are retried automatically.")
                 results.setRowCount(0)
                 preview.clear()
                 records.clear()
@@ -1831,21 +1833,21 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
                 search_job.start(fetch_results, query)
 
             def fetch_results(query):
-                response = requests.get(
-                    "https://lrclib.net/api/search",
-                    params={"q": query},
-                    headers={
-                        "User-Agent": "LRCPlus/1.0 (https://github.com/pxib/lrcplus)",
-                        "Lrclib-App-Id": "zTywhWzql6kFvrFMcWui-xuV0qYCVO3FzKQKPwZGf7U",
-                    },
-                    timeout=15,
-                )
-                response.raise_for_status()
-                return response.json()
+                try:
+                    return search_lrclib(query, search_cancel)
+                except LRCLibError as error:
+                    return error
 
             def show_results(payload):
                 nonlocal search_in_progress
                 search_in_progress = False
+                if isinstance(payload, LRCLibError):
+                    self._lrclib_search_ready_at = max(
+                        self._lrclib_search_ready_at, monotonic() + payload.retry_after,
+                    )
+                    update_search_button()
+                    status.setText(str(payload))
+                    return
                 update_search_button()
                 if not isinstance(payload, list):
                     payload = []
@@ -1948,6 +1950,7 @@ class Player(QueueActionsMixin, QueueControllerMixin, AudioDeviceControllerMixin
                 dialog.exec()
             finally:
                 cooldown_timer.stop()
+                search_cancel.set()
                 search_job.close()
                 dialog.deleteLater()
 

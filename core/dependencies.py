@@ -37,6 +37,18 @@ class DependencyError(RuntimeError):
     pass
 
 
+# Fugashi wheels include the MeCab engine; UniDic-lite supplies its dictionary.
+BUILTIN_DEPENDENCIES = {
+    "plugin_id": "lrcplus-mecab",
+    "name": "MeCab (local Japanese readings)",
+    "dependencies": [
+        {"requirement": "fugashi>=1.5,<2", "import_name": "fugashi",
+         "requires": ["unidic-lite>=1.0.8,<2"]},
+        {"requirement": "unidic-lite>=1.0.8,<2", "import_name": "unidic_lite"},
+    ],
+}
+
+
 _runtime_dll_handles = {}
 
 
@@ -346,7 +358,7 @@ class DependencyManager:
     def configure(self, plugins):
         self.catalog = {}
         self.catalog_errors = {}
-        for plugin in plugins:
+        for plugin in [BUILTIN_DEPENDENCIES, *plugins]:
             try:
                 dependencies = parse_dependencies(plugin.get("dependencies", []))
             except DependencyError as error:
@@ -442,6 +454,24 @@ class DependencyManager:
                                 pins.append(str(constraint))
                     constraints.write_text("\n".join(pins) + "\n", encoding="utf-8")
                     python = ensure_installer(log)
+                    selected = sorted({item for values in requirements.values() for item in values})
+                    wheel_options = []
+                    dictionaries = [value for value in selected
+                                    if canonicalize_name(Requirement(value).name) == "unidic-lite"]
+                    if dictionaries:
+                        # UniDic-lite is distributed as source containing dictionary
+                        # data. Build its pure-Python wheel before the binary-only
+                        # target install (pip disallows sdists with --python-version).
+                        wheels = get_app_data_dir() / "cache" / "dictionary-wheels"
+                        wheels.mkdir(parents=True, exist_ok=True)
+                        log("Preparing the MeCab dictionary. The download is about 47 MB.")
+                        log(_run([
+                            python, "-I", "-m", "pip", "--isolated", "--disable-pip-version-check",
+                            "wheel", "--index-url", "https://pypi.org/simple", "--no-deps",
+                            "--wheel-dir", wheels, "--find-links", wheels,
+                            "--constraint", constraints, *dictionaries,
+                        ]).strip())
+                        wheel_options = ["--find-links", wheels]
                     log("Resolving and installing dependencies. This can take a few minutes.")
                     output = _run([
                         python, "-I", "-m", "pip", "--isolated", "--disable-pip-version-check",
@@ -451,7 +481,7 @@ class DependencyManager:
                         "--no-warn-script-location", "--target", target,
                         "--cache-dir", get_app_data_dir() / "cache" / "downloads" / "pip",
                         "--constraint", constraints,
-                        *sorted({item for values in requirements.values() for item in values}),
+                        *wheel_options, *selected,
                     ])
                     log(output.strip())
                     log("Checking installed versions and imports…")

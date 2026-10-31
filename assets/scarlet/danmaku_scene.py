@@ -381,9 +381,9 @@ class ScarletScene:
     def overlay(self, p, game):
         p.fillRect(QRectF(0, 0, 384, 448), QColor(10, 3, 13, 175))
         title, subtitle = {
-            "paused": ("一時停止", "Space / P / Esc で再開"),
-            "won": ("弾幕クリア！", "Space でもう一度"),
-            "lost": ("満身創痍", "Space でもう一度"),
+            "paused": ("一時停止", "Space / P / Esc で再開" if self.language == "ja" else "Space / P / Esc to resume"),
+            "won": ("弾幕クリア！", "Space でもう一度" if self.language == "ja" else "Space to play again"),
+            "lost": ("満身創痍", "Space でもう一度" if self.language == "ja" else "Space to play again"),
         }[game.state]
         font = QFont(self.font)
         font.setPixelSize(30)
@@ -490,4 +490,4 @@ class ScarletScene:
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRect(self.FIELD)
         self.sidebar(p, game, high_score, fps)
-        self.text(p, 32, 476, "移動：矢印 / WASD　低速：Shift　射撃：Z　ボム：X　停止：Esc", 8, "#c0b1bf")
+        self.text(p, 32, 476, "移動：矢印 / WASD　低速：Shift　射撃：Z　ボム：X　停止：Esc" if self.language == "ja" else "Movement: Arrows / WASD　Slow: Shift　Shooting: Z　Bomb: X　Pause: Esc", 8, "#c0b1bf")

@@ -47,7 +47,7 @@ class DependencyManagerWidget(QWidget):
         self._buttons = {}
         layout = QVBoxLayout(self)
         notice = QLabel(
-            "Install optional libraries used by plugins. Installations and removals "
+            "Manage optional libraries for plugins and local MeCab readings. Installations and removals "
             "are saved immediately; restart LRCPlus to apply them. "
             "The first installation in a Windows release also downloads a private Python runtime."
         )
@@ -68,6 +68,9 @@ class DependencyManagerWidget(QWidget):
             actions.addWidget(button)
         actions.addStretch()
         layout.addLayout(actions)
+        self.action_hint = QLabel()
+        self.action_hint.setWordWrap(True)
+        layout.addWidget(self.action_hint)
         self.storage = QLabel()
         self.storage.setWordWrap(True)
         self.storage.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -112,7 +115,7 @@ class DependencyManagerWidget(QWidget):
                 check = self._checks.get(name)
                 text = status["text"]
                 if check:
-                    text = "Import check passed" if check == "ok" else "Import failed — see details"
+                    text += "; " + ("Import check passed" if check == "ok" else "Import failed — see details")
                 requirements = ", ".join(sorted({item.requirement for item in entry["dependencies"]}))
                 item = QTreeWidgetItem([requirements, ", ".join(sorted(set(entry["plugins"]))), text])
                 item.setData(0, Qt.ItemDataRole.UserRole, name)
@@ -131,6 +134,7 @@ class DependencyManagerWidget(QWidget):
         self._update_buttons()
 
     def _update_buttons(self, *_args):
+        self.action_hint.clear()
         for button in self._buttons.values():
             button.setEnabled(False)
         item = self.tree.currentItem()
@@ -144,11 +148,25 @@ class DependencyManagerWidget(QWidget):
                 "This library is supplied by the app. Update the app or its Python environment to repair it."
                 if status["source"] == "app" else "Install or repair this library and its supporting packages."
             )
-            self._buttons["check"].setEnabled(status["state"] == "available")
-            self._buttons["remove"].setEnabled(name in self.manager.state()["requirements"])
+            # An import probe is useful even when metadata is missing or the
+            # installed version does not meet the plugin's requirement.
+            self._buttons["check"].setEnabled(True)
+            explicit = name in self.manager.state()["requirements"]
+            self._buttons["remove"].setEnabled(explicit)
             self._buttons["remove"].setToolTip("Removes this explicit installation. Other libraries may still require it.")
-        except DependencyError:
-            pass
+            if status["source"] == "app":
+                self.action_hint.setText(
+                    "Bundled with LRCPlus or its Python environment. Check is available; "
+                    "installing or removing a downloaded copy cannot replace this library. "
+                    "Update LRCPlus to repair a bundled version or missing version information."
+                )
+            elif not explicit and status["state"] != "missing":
+                self.action_hint.setText(
+                    "Installed as a supporting library. Install / Repair adds an explicit installation; "
+                    "Remove applies to explicit installations only."
+                )
+        except DependencyError as error:
+            self.action_hint.setText(str(error))
 
     def _start_selected(self, action):
         item = self.tree.currentItem()

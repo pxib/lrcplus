@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSlider,
+    QStyle,
+    QStyleOptionSlider,
     QStyledItemDelegate,
     QToolButton,
     QVBoxLayout,
@@ -20,26 +22,60 @@ from PySide6.QtWidgets import (
 from core.music_library import scan_folders
 
 class ClickableSlider(QSlider):
-    """A slider that seeks immediately when its groove is clicked."""
+    """Click or drag to seek, using the current style's handle geometry."""
+
+    def _mouse_value(self, point, offset=None):
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        style = self.style()
+        groove = style.subControlRect(QStyle.ComplexControl.CC_Slider, option,
+                                      QStyle.SubControl.SC_SliderGroove, self)
+        handle = style.subControlRect(QStyle.ComplexControl.CC_Slider, option,
+                                      QStyle.SubControl.SC_SliderHandle, self)
+        if self.orientation() == Qt.Orientation.Horizontal:
+            start, span, size, position = groove.x(), groove.width(), handle.width(), point.x()
+        else:
+            start, span, size, position = groove.y(), groove.height(), handle.height(), point.y()
+        offset = size // 2 if offset is None else offset
+        return QStyle.sliderValueFromPosition(
+            self.minimum(), self.maximum(), round(position - start - offset),
+            max(0, span - size), option.upsideDown,
+        ), handle
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            if self.orientation() == Qt.Orientation.Horizontal:
-                span = self.width()
-                position = event.position().x()
-            else:
-                span = self.height()
-                position = self.height() - event.position().y()
-
-            if span > 0:
-                ratio = max(0.0, min(1.0, position / span))
-                value = self.minimum() + ratio * (
-                    self.maximum() - self.minimum()
-                )
-                self.setValue(round(value))
-                self.sliderMoved.emit(self.value())
-
+            value, handle = self._mouse_value(event.position())
+            self._drag_offset = None
+            if handle.contains(event.position().toPoint()):
+                self._drag_offset = (event.position().x() - handle.x()
+                                     if self.orientation() == Qt.Orientation.Horizontal
+                                     else event.position().y() - handle.y())
+                value = self.value()
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+            self.setSliderDown(True)
+            self.setSliderPosition(value)
+            # Native styles can page-step on groove clicks without emitting
+            # sliderReleased. Own the gesture so the player always commits it.
+            event.accept()
+            return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.isSliderDown() and event.buttons() & Qt.MouseButton.LeftButton:
+            value, _ = self._mouse_value(event.position(), getattr(self, "_drag_offset", None))
+            self.setSliderPosition(value)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.isSliderDown():
+            value, _ = self._mouse_value(event.position(), getattr(self, "_drag_offset", None))
+            self.setSliderPosition(value)
+            self.setSliderDown(False)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class ClickableTimeLabel(QLabel):

@@ -2,13 +2,13 @@ import random
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QSignalBlocker, Qt, QUrl
 from PySide6.QtMultimedia import (
     QAudioBufferOutput,
     QAudioSink,
     QMediaPlayer,
 )
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from core.recent import add_to_recent_songs
 from core.background_job import BackgroundJob
@@ -788,6 +788,17 @@ class AudioController:
                 self.stop_playback()
 
         def position_changed(self, position_ms):
+            # Recover after a missed duration notification or transient zero.
+            duration = self.media_player.duration()
+            if duration > 0 and self.seek_slider.maximum() != duration:
+                self.duration_changed(duration)
+            # Losing mouse capture can omit the release event. Clear the drag
+            # without seeking back to a stale handle value on the next tick.
+            if (self.seek_slider.isSliderDown()
+                    and not QApplication.mouseButtons() & Qt.MouseButton.LeftButton):
+                with QSignalBlocker(self.seek_slider):
+                    self.seek_slider.setSliderDown(False)
+                self.is_seeking = False
             # The slider's real interaction state is authoritative.  A rare missed
             # sliderReleased signal used to leave is_seeking=True forever, freezing
             # the seekbar until the user changed tracks.

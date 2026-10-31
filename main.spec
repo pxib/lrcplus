@@ -76,6 +76,8 @@ a = Analysis(
         "koroman",
         "pycantonese",
         "pypresence",
+        "fugashi",
+        "unidic_lite",
         "PySide6.QtQml",
         "PySide6.QtQuick",
         "PySide6.QtQuickWidgets",
