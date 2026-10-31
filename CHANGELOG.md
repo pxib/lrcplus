@@ -1,6 +1,12 @@
 # Changelog
 Versions uses dates with optional revisions.
 
+## [2026-10-31.6]
+
+### Fixes
+- **Experimental:** Fix KuGou artist/title searches by preserving the hyphen separator. Add song-search fallback for partial titles and single-character queries such as `あ`, `世`, and `笑`, then resolve lyrics using the selected recording's hash and duration.
+- **Experimental:** Fall back to line-timed lyrics when KuGou word timing is malformed so affected results can still be previewed and saved.
+
 ## [2026-10-31.5]
 
 ### Added

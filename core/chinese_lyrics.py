@@ -40,7 +40,8 @@ class LyricsProviderError(RuntimeError):
         self.status_code = status_code
 
 
-def _request(source, url, cancel, *, params=None, data=None, method=None, check_status=True, status_field=None):
+def _request(source, url, cancel, *, params=None, data=None, method=None, check_status=True, status_field=None,
+             expected_status=None):
     if cancel.is_set():
         return {}
     headers = {"User-Agent": f"{APP_NAME}/{APP_VERSION} ({PROJECT_URL})"}
@@ -79,6 +80,8 @@ def _request(source, url, cancel, *, params=None, data=None, method=None, check_
             raise LyricsProviderError(f"{source} returned an invalid response.")
         field, expected_code = ("status", 200) if source in {"KuGou", "Kuwo"} else ("code", 200 if source == "NetEase Cloud Music" else 0)
         field = status_field or field
+        if expected_status is not None:
+            expected_code = expected_status
         code = payload.get(field)
         if check_status and code != expected_code:
             if code is None:
@@ -218,9 +221,9 @@ def _search_qqmusic(query, cancel):
     return records
 
 
-def _search_kugou(query, cancel):
+def _kugou_candidates(query, cancel, *, duration=0, song_hash=""):
     payload = _request("KuGou", "https://lyrics.kugou.com/search", cancel, params={
-        "ver": 1, "man": "yes", "client": "pc", "keyword": query, "duration": 0, "hash": "",
+        "ver": 1, "man": "yes", "client": "pc", "keyword": query, "duration": duration, "hash": song_hash,
     })
     candidates = payload.get("candidates", [])
     if not isinstance(candidates, list):
@@ -233,6 +236,35 @@ def _search_kugou(query, cancel):
             "id": str(item["id"]), "accessKey": item["accesskey"],
             "trackName": _text(item.get("song")), "artistName": _text(item.get("singer")),
             "albumName": "", "duration": _duration(item.get("duration"), 1000),
+            "source": "KuGou", "hasSyncedLyrics": None,
+            "sourceUrl": f"https://www.kugou.com/yy/html/search.html#searchType=song&searchKey={quote(query)}",
+        })
+    return records
+
+
+def _search_kugou(query, cancel):
+    records = _kugou_candidates(query, cancel)
+    if records or cancel.is_set():
+        return records
+    # The lyric matcher requires a recording; use song search for partial titles.
+    payload = _request("KuGou", "https://mobileservice.kugou.com/api/v3/search/song", cancel,
+                       expected_status=1, params={
+                           "keyword": query, "page": 1, "pagesize": 30, "plat": 0, "version": 9108,
+                       })
+    if cancel.is_set():
+        return []
+    data = payload.get("data")
+    songs = data.get("info") if isinstance(data, dict) else None
+    if not isinstance(songs, list):
+        raise LyricsProviderError("KuGou returned invalid search results.")
+    for song in songs:
+        if not isinstance(song, dict) or not isinstance(song.get("hash"), str) or not re.fullmatch(r"[A-Fa-f0-9]{32}", song["hash"]):
+            raise LyricsProviderError("KuGou returned invalid search results.")
+        records.append({
+            "id": song["hash"], "songHash": song["hash"],
+            "trackName": unescape(_text(song.get("songname"))),
+            "artistName": unescape(_text(song.get("singername"))),
+            "albumName": unescape(_text(song.get("album_name"))), "duration": _duration(song.get("duration")),
             "source": "KuGou", "hasSyncedLyrics": None,
             "sourceUrl": f"https://www.kugou.com/yy/html/search.html#searchType=song&searchKey={quote(query)}",
         })
@@ -272,8 +304,9 @@ def search(source, query, cancel=None):
     cancel = cancel if cancel is not None else Event()
     if cancel.is_set():
         return []
-    # The player's default query uses Artist - Title; both services expect keywords.
-    query = re.sub(r"\s+[-\u2013\u2014]\s+", " ", query.strip(), count=1)
+    # KuGou needs Artist-Title; removing the separator can hide matching lyrics.
+    separator = "-" if source == "KuGou" else " "
+    query = re.sub(r"\s+[-\u2013\u2014]\s+", separator, query.strip(), count=1)
     if not query:
         return []
     if source == "NetEase Cloud Music":
@@ -377,16 +410,37 @@ def fetch_lyrics(record, cancel=None):
         except (binascii.Error, ValueError, UnicodeError):
             raise LyricsProviderError("QQ Music returned invalid lyrics.") from None
     elif source == "KuGou":
-        payload = _request(source, "https://lyrics.kugou.com/download", cancel, params={
-            "ver": 1, "client": "pc", "id": record["id"], "accesskey": record["accessKey"], "fmt": "krc", "charset": "utf8",
-        })
+        lyric_id, access_key = record["id"], record.get("accessKey")
+        if not access_key and record.get("songHash"):
+            query = "-".join(filter(None, (record.get("artistName"), record.get("trackName"))))
+            candidates = _kugou_candidates(query, cancel,
+                                           duration=round(_duration(record.get("duration")) * 1000),
+                                           song_hash=record["songHash"])
+            if cancel.is_set():
+                return result
+            if not candidates:
+                raise LyricsProviderError("KuGou has no lyrics available for this track.")
+            lyric_id, access_key = candidates[0]["id"], candidates[0]["accessKey"]
+        params = {"ver": 1, "client": "pc", "id": lyric_id, "accesskey": access_key, "fmt": "krc", "charset": "utf8"}
+        payload = _request(source, "https://lyrics.kugou.com/download", cancel, params=params)
         if cancel.is_set():
             return result
         try:
             text = decode_krc(payload.get("content"))
         except ValueError:
             raise LyricsProviderError("KuGou returned an invalid or oversized KRC file.") from None
-        return _word_result(record, text, "krc")
+        try:
+            return _word_result(record, text, "krc")
+        except LyricsProviderError:
+            # Some KRC files contain backwards word offsets, including credits.
+            # Keep their usable line lyrics instead of rejecting the recording.
+            payload = _request(source, "https://lyrics.kugou.com/download", cancel, params={**params, "fmt": "lrc"})
+        if cancel.is_set():
+            return result
+        try:
+            text = base64.b64decode("".join(_text(payload.get("content")).split()), validate=True).decode("utf-8-sig")
+        except (binascii.Error, ValueError, UnicodeError):
+            raise LyricsProviderError("KuGou returned invalid lyrics.") from None
     elif source == "Kuwo":
         try:
             payload = _request(source, "https://m.kuwo.cn/newh5/singles/songinfoandlrc", cancel, params={"musicId": record["id"]})

@@ -12,8 +12,11 @@ from lyrics.loader import load_lyrics
 import ui.main_window as main_window
 
 
-@pytest.mark.parametrize("source, word_timed", [("NetEase Cloud Music", True), ("NetEase Cloud Music", False), ("KuGou", True), ("Kuwo", False)])
-def test_native_provider_preview_cache_and_save(qapp, monkeypatch, tmp_path, source, word_timed):
+@pytest.mark.parametrize("source, word_timed, catalog_search", [
+    ("NetEase Cloud Music", True, False), ("NetEase Cloud Music", False, False),
+    ("KuGou", True, False), ("KuGou", True, True), ("Kuwo", False, False),
+])
+def test_native_provider_preview_cache_and_save(qapp, monkeypatch, tmp_path, source, word_timed, catalog_search):
     parent = QWidget()
     parent.current_audio_path = tmp_path / "Song.mp3"
     loaded, calls = [], []
@@ -34,7 +37,11 @@ def test_native_provider_preview_cache_and_save(qapp, monkeypatch, tmp_path, sou
             return {"code": 200, "yrc": {"lyric": '[0,1000](0,1000,0)作词：Credit\n[1234,2000](1334,250,0)Hello (1834,300,0)world' if word_timed else ""},
                     "lrc": {"lyric": "[00:00.000]作词：Credit\n[00:01.234]Hello world"}}
         if url.endswith("/search"):
+            if catalog_search and not kwargs["params"]["hash"]:
+                return {"status": 200, "candidates": []}
             return {"status": 200, "candidates": [{"id": "42", "accesskey": "candidate-key", "song": "Song", "singer": "Artist", "duration": 323400}]}
+        if url.endswith("/api/v3/search/song"):
+            return {"status": 1, "data": {"info": [{"hash": "a" * 32, "songname": "Song", "singername": "Artist", "duration": 323.4}]}}
         if url.endswith("/download"):
             return {"status": 200, "content": encoded}
         if url.endswith("searchMusicBykeyWord"):
@@ -46,7 +53,7 @@ def test_native_provider_preview_cache_and_save(qapp, monkeypatch, tmp_path, sou
     def interact(dialog):
         provider = dialog.findChild(QComboBox)
         provider.setCurrentText(source)
-        dialog.findChild(QLineEdit).setText("Artist - Song")
+        dialog.findChild(QLineEdit).setText("\u3042" if catalog_search else "Artist - Song")
         next(button for button in dialog.findChildren(QPushButton) if button.text() == "Search").click()
         table, preview = dialog.findChild(QTableWidget), dialog.findChild(QTextEdit)
         use = next(button for button in dialog.findChildren(QPushButton) if button.text() == "Use Selected Lyrics")

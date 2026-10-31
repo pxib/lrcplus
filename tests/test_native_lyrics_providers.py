@@ -77,12 +77,14 @@ def test_netease_rate_limit_does_not_start_fallback_request(monkeypatch):
     assert len(calls) == 1
 
 
-def test_kugou_search_uses_returned_candidate_key_and_preserves_duration(monkeypatch):
+@pytest.mark.parametrize("separator", [" - ", " \u2013 ", " \u2014 "])
+def test_kugou_search_uses_returned_candidate_key_and_preserves_duration(monkeypatch, separator):
     calls, closed = replies(monkeypatch,
         {"status": 200, "candidates": [{"id": "42", "accesskey": "candidate-key", "song": "Song", "singer": "Artist", "duration": 247510}]},
         {"status": 200, "content": encoded_krc("[ti:Song]\n[ar:Artist]\n[0,500]<0,500,0>Song - Artist\n[1000,500]<0,500,0>歌")},
     )
-    records = chinese_lyrics.search("KuGou", "Artist - Song")
+    records = chinese_lyrics.search("KuGou", f"Artist{separator}Song")
+    assert calls[0][1]["params"]["keyword"] == "Artist-Song"
     assert records[0]["duration"] == 247.51
     assert "candidate-key" not in records[0]["sourceUrl"]
     result = chinese_lyrics.fetch_lyrics(records[0])
@@ -98,6 +100,97 @@ def test_kugou_rejects_invalid_krc(monkeypatch):
     replies(monkeypatch, {"status": 200, "content": "not a KRC file"})
     with pytest.raises(chinese_lyrics.LyricsProviderError, match="invalid or oversized"):
         chinese_lyrics.fetch_lyrics({"source": "KuGou", "id": "42", "accessKey": "key"})
+
+
+@pytest.mark.parametrize("query", ["\u3042", "\u4e16", "\u7b11"])
+def test_kugou_partial_search_uses_song_catalog_and_resolves_lyrics_lazily(monkeypatch, query):
+    song_hash = "abcdef0123456789abcdef0123456789"
+    calls, closed = replies(monkeypatch,
+        {"status": 200, "candidates": []},
+        {"status": 1, "data": {"info": [{
+            "hash": song_hash, "songname": query, "singername": "Artist", "album_name": "Album", "duration": 123,
+        }]}},
+        {"status": 200, "candidates": [{"id": "42", "accesskey": "candidate-key"}]},
+        {"status": 200, "content": encoded_krc("[1000,500]<0,500,0>Lyrics")},
+    )
+    records = chinese_lyrics.search("KuGou", query)
+    assert len(records) == 1
+    record = records[0]
+    assert record["trackName"] == query
+    assert record["albumName"] == "Album"
+    assert record["duration"] == 123
+    assert record["hasSyncedLyrics"] is None
+    assert "accessKey" not in record
+    assert len(calls) == 2  # No lyric downloads until previewing a song.
+    assert calls[1][0] == "https://mobileservice.kugou.com/api/v3/search/song"
+    assert calls[1][1]["params"]["keyword"] == query
+    result = chinese_lyrics.fetch_lyrics(record)
+    assert result["lyricsFormat"] == "lrcx"
+    assert result["trackName"] == query
+    assert result["albumName"] == "Album"
+    assert result["id"] == song_hash
+    assert calls[2][1]["params"]["keyword"] == f"Artist-{query}"
+    assert calls[2][1]["params"]["duration"] == 123000
+    assert calls[2][1]["params"]["hash"] == song_hash
+    assert calls[3][1]["params"]["id"] == "42"
+    assert calls[3][1]["params"]["accesskey"] == "candidate-key"
+    assert len(calls) == len(closed) == 4
+
+
+def test_kugou_song_without_lyrics_does_not_attempt_download(monkeypatch):
+    calls, closed = replies(monkeypatch, {"status": 200, "candidates": []})
+    with pytest.raises(chinese_lyrics.LyricsProviderError, match="no lyrics available"):
+        chinese_lyrics.fetch_lyrics({"source": "KuGou", "id": "a" * 32, "songHash": "a" * 32,
+                                    "trackName": "Song", "artistName": "Artist", "duration": 123})
+    assert len(calls) == len(closed) == 1
+
+
+@pytest.mark.parametrize("failure", [429, {"status": 429}])
+def test_kugou_refusal_does_not_start_catalog_fallback(monkeypatch, failure):
+    calls, closed = replies(monkeypatch, failure)
+    with pytest.raises(chinese_lyrics.LyricsProviderError) as error:
+        chinese_lyrics.search("KuGou", "Song")
+    assert error.value.retry_after == 60
+    assert len(calls) == len(closed) == 1
+
+
+def test_kugou_cancel_after_lyric_search_does_not_start_catalog_fallback(monkeypatch):
+    cancel = Event()
+    calls = []
+    def request(url, **kwargs):
+        calls.append(url)
+        cancel.set()
+        return SimpleNamespace(status_code=200, headers={},
+                               json=lambda: {"status": 200, "candidates": []}, close=lambda: None)
+    monkeypatch.setattr(chinese_lyrics.requests, "get", request)
+    assert chinese_lyrics.search("KuGou", "Song", cancel) == []
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("data", [None, [], {}, {"info": None}, {"info": [None]}, {"info": [{"hash": "invalid"}]}])
+def test_kugou_malformed_catalog_is_an_error(monkeypatch, data):
+    replies(monkeypatch, {"status": 200, "candidates": []}, {"status": 1, "data": data})
+    with pytest.raises(chinese_lyrics.LyricsProviderError, match="invalid search results"):
+        chinese_lyrics.search("KuGou", "Song")
+
+
+def test_kugou_catalog_api_failure_is_not_empty_results(monkeypatch):
+    replies(monkeypatch, {"status": 200, "candidates": []}, {"status": 0, "errcode": 500})
+    with pytest.raises(chinese_lyrics.LyricsProviderError, match="code 0"):
+        chinese_lyrics.search("KuGou", "Song")
+
+
+def test_kugou_malformed_word_timing_falls_back_to_line_lyrics(monkeypatch):
+    calls, closed = replies(monkeypatch,
+        {"status": 200, "content": encoded_krc("[1000,1000]<0,100,0>A<50,100,0>B<20,100,0>C")},
+        {"status": 200, "content": base64.b64encode(b"[00:01.000]ABC").decode()},
+    )
+    result = chinese_lyrics.fetch_lyrics({"source": "KuGou", "id": "42", "accessKey": "key"})
+    assert result["lyricsFormat"] == "lrc"
+    assert result["syncedLyrics"] == "[00:01.000]ABC"
+    assert calls[0][1]["params"]["fmt"] == "krc"
+    assert calls[1][1]["params"] == {**calls[0][1]["params"], "fmt": "lrc"}
+    assert len(calls) == len(closed) == 2
 
 
 def test_candidate_keys_are_redacted_from_network_errors(monkeypatch):
@@ -138,7 +231,7 @@ def test_kuwo_rejects_invalid_timestamps(monkeypatch, value):
 
 @pytest.mark.parametrize("source, payload", [("KuGou", {"status": 200, "candidates": []}), ("Kuwo", {"TOTAL": "0", "abslist": []})])
 def test_new_sources_empty_results(monkeypatch, source, payload):
-    replies(monkeypatch, payload)
+    replies(monkeypatch, payload, *([{"status": 1, "data": {"info": []}}] if source == "KuGou" else []))
     assert chinese_lyrics.search(source, "missing song") == []
 
 

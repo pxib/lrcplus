@@ -42,6 +42,19 @@ An anonymous candidate search worked at `https://lyrics.kugou.com/search` with
 `ver=1`, `man=yes`, `client=pc`, and `keyword`. Candidates provide the lyric ID,
 song and singer names, duration, and a per-candidate `accesskey`. That key is
 returned by the search service and does not need a user credential field.
+Keep the artist/title separator as a compact hyphen (`Artist-Title`). Live checks
+returned no candidates for `Rick Astley Never Gonna Give You Up` or
+`Bo Burnham Welcome to the Internet`, but 10 and 2 respectively with the hyphen.
+The app normalizes its default `Artist - Title` query to this format for KuGou.
+This lyric endpoint is a recording matcher rather than a general keyword search:
+`あ`, `世`, and `笑` all returned empty candidate lists. When that happens, the
+app searches `https://mobileservice.kugou.com/api/v3/search/song` instead, with
+`plat=0`, `version=9108`, and a maximum of 30 results. This endpoint uses
+`status=1` for success and `data.info` for song records. Each record supplies
+title, singer, album, duration in seconds, and a recording hash. Previewing a
+record resolves its lyric candidates with that hash and duration in milliseconds.
+The song search returned 30 records for each of the three single-character
+queries during live verification.
 Download uses `https://lyrics.kugou.com/download` with `ver=1`, `client=pc`,
 `id`, `accesskey`, `fmt=krc`, and `charset=utf8`.
 [Search/download reference](https://github.com/ESLyric/scripts/blob/main/searcher/kugou.js).
@@ -51,6 +64,11 @@ its remaining bytes are XOR transformed and zlib compressed. Both the decoding
 and decompression use Python's standard library. The decoder validates the
 header and limits compressed files to 2 MiB and decompressed lyrics to 4 MiB.
 [Decoder reference](https://github.com/chenmozhijin/LDDC/blob/main/LDDC/core/decryptor/__init__.py).
+
+Some live candidates for KOKIA's `ありがとう…` contain backwards word offsets.
+If decoded KRC cannot produce usable word lyrics, the app downloads `fmt=lrc`
+for the same lyric ID and access key, decodes the base64 UTF-8 text, and keeps
+line timing instead. This produced a usable preview for the first `あ` result.
 
 KRC lines use `[start,duration]` in milliseconds. Word markers
 `<offset,duration,flag>` are relative to the line start, so conversion must add
