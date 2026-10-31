@@ -181,3 +181,39 @@ def test_credit_only_result_is_not_treated_as_lyrics(monkeypatch, source):
     reply(monkeypatch, lyric_payload(source, "[ti:Song]\n[ar:Artist]\n[00:00.000]作曲：Composer"))
     with pytest.raises(chinese_lyrics.LyricsProviderError, match="no lyrics available"):
         chinese_lyrics.fetch_lyrics(record(source))
+
+
+def test_netease_json_credits_and_colon_timestamps_become_playable_lrc(monkeypatch, tmp_path):
+    from lyrics.loader import load_lyrics
+
+    text = ('{"t":0,"c":[{"tx":"作词: "},{"tx":"椎名もた"}]}\n'
+            '{"t":1000,"c":[{"tx":"作曲: "},{"tx":"椎名もた"}]}\n'
+            '[00:22:48]僕の命っつったって\n[00:24:30]誰の命っつったって')
+    reply(monkeypatch, lyric_payload("NetEase Cloud Music", text))
+    result = chinese_lyrics.fetch_lyrics(record("NetEase Cloud Music"))
+    assert result["lyricsFormat"] == "lrc"
+    assert result["timing"] == "line"
+    assert result["syncedLyrics"] == '[00:22.48]僕の命っつったって\n[00:24.30]誰の命っつったって'
+    path = tmp_path / "song.lrc"
+    path.write_text(result["syncedLyrics"], encoding="utf-8")
+    lines = load_lyrics(path)
+    assert [line.start for line in lines] == [22.48, 24.3]
+    assert [line.text for line in lines] == ['僕の命っつったって', '誰の命っつったって']
+
+
+def test_normalization_preserves_precision_zero_time_and_repeated_timestamps():
+    text = '[00:00:000]作曲：Credit\n[00:00:00][01:01:234]Song\n[00:02.345]Later'
+    assert chinese_lyrics.clean_lyrics(text, {"source": "NetEase Cloud Music"}) == (
+        '[00:00.00][01:01.234]Song\n[00:02.345]Later'
+    )
+
+
+def test_json_looking_lyric_text_is_not_removed():
+    text = '[00:00.00]{"line":"this is a lyric"}\n[00:01.00]{a lyric, not JSON}'
+    assert chinese_lyrics.clean_lyrics(text, {"source": "NetEase Cloud Music"}) == text
+
+
+def test_netease_json_metadata_only_is_not_offered_as_plain_lyrics(monkeypatch):
+    reply(monkeypatch, lyric_payload("NetEase Cloud Music", '{"t":0,"c":[{"tx":"作曲：Credit"}]}'))
+    with pytest.raises(chinese_lyrics.LyricsProviderError, match="no lyrics available"):
+        chinese_lyrics.fetch_lyrics(record("NetEase Cloud Music"))

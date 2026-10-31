@@ -12,6 +12,7 @@ from assets.scarlet import BGM_DIR
 
 
 THEME_PATH = BGM_DIR / "flandre_theme.MID"
+STAGE_THEME_PATH = BGM_DIR / "extrastagetheme.mid"
 
 
 class MidiPlaybackError(OSError):
@@ -41,7 +42,8 @@ class WindowsMidiFile:
             raise MidiPlaybackError(f"MIDI error {error}: {buffer.value}")
         return buffer.value.strip()
 
-    def play(self, restart=False):
+    def prepare(self):
+        """Open the sequencer silently before the story's playback cue."""
         if not self.opened:
             self.command(f'open "{self.path}" type sequencer alias {self.alias} wait')
             self.opened = True
@@ -50,6 +52,9 @@ class WindowsMidiFile:
             except MidiPlaybackError:
                 self.close()
                 raise
+
+    def play(self, restart=False):
+        self.prepare()
         self.command(f"play {self.alias}" + (" from 0" if restart else ""))
 
     def pause(self):
@@ -84,20 +89,36 @@ class BossTheme(QObject):
         self._visible = False
         self._started = False
         self._playing = False
+        self._prepared = False
         self.backend = None
+        self.path = Path(path)
+        # Keep only the current backend alive in the destruction callback.
+        owner = self._backend_owner = [None]
+        self.destroyed.connect(lambda _object=None: owner[0].close() if owner[0] is not None else None)
         self.timer = QTimer(self)
         self.timer.setInterval(250)
         self.timer.timeout.connect(self._poll)
+        self._load_backend(backend)
+
+    def _load_backend(self, backend=None):
         try:
-            if not Path(path).is_file():
-                raise MidiPlaybackError("Boss theme MIDI is missing")
-            self.backend = backend if backend is not None else make_midi_backend(path)
+            if not self.path.is_file():
+                raise MidiPlaybackError(f"Theme MIDI is missing: {self.path.name}")
+            self.backend = backend if backend is not None else make_midi_backend(self.path)
         except OSError as error:
             self.error = str(error)
-        if self.backend is not None:
-            # QObject destruction also covers a parent deleted while still open.
-            player = self.backend
-            self.destroyed.connect(lambda _object=None: player.close())
+        self._backend_owner[0] = self.backend
+
+    def set_track(self, path):
+        """Release the previous sequencer before loading the next story track."""
+        path = Path(path)
+        if path == self.path:
+            return
+        self.stop()
+        self.path = path
+        self.backend = None
+        self.error = ""
+        self._load_backend()
 
     @property
     def status_label(self):
@@ -106,6 +127,17 @@ class BossTheme(QObject):
         if self.backend is None:
             return "ＢＧＭ：未対応"
         return "ＢＧＭ：OFF［M］" if self.muted else "ＢＧＭ：ON［M］"
+
+    def prepare(self):
+        if self.error or self.backend is None or self._prepared or self.muted:
+            return
+        try:
+            prepare = getattr(self.backend, "prepare", None)
+            if prepare is not None:
+                self._prepared = True
+                prepare()
+        except OSError as error:
+            self._fail(error)
 
     def sync(self, state, visible=True):
         self._state, self._visible = state, visible
@@ -124,7 +156,7 @@ class BossTheme(QObject):
                     self.backend.pause()
                     self._playing = False
                 self.timer.stop()
-            else:
+            elif state != "ready" or self._started or not visible:
                 self.stop()
         except OSError as error:
             self._fail(error)
@@ -148,6 +180,6 @@ class BossTheme(QObject):
 
     def stop(self):
         self.timer.stop()
-        if self.backend is not None and self._started:
+        if self.backend is not None and (self._started or self._prepared):
             self.backend.close()
-        self._started = self._playing = False
+        self._started = self._playing = self._prepared = False

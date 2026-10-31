@@ -67,7 +67,7 @@ def _request(method, credential, params, cancel, auth_mode="api_key"):
                     raise ValueError()
                 if token_mode and method != "token.get" and header.get("hint") == "renew":
                     raise MusixmatchError(
-                        "The Musixmatch authentication token is invalid or expired. Use Get token to renew it.", 401,
+                        "The Musixmatch authentication token is invalid or expired. Paste a different token.", 401,
                     )
                 status = header["status_code"]
                 status_kind = "API status"
@@ -84,7 +84,7 @@ def _request(method, credential, params, cancel, auth_mode="api_key"):
             except (ValueError, KeyError, TypeError):
                 raise MusixmatchError("Musixmatch returned an invalid response.") from None
         explanation = {
-            401: ("The Musixmatch authentication token is invalid or expired. Use Get token to renew it."
+            401: ("The Musixmatch authentication token is invalid or expired. Paste a different token."
                   if token_mode else "The Musixmatch API key is invalid or expired."),
             402: "The Musixmatch API quota has been reached.",
             403: f"Your Musixmatch {credential_name} cannot access these lyrics.",

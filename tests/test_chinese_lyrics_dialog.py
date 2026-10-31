@@ -86,7 +86,7 @@ def test_anonymous_provider_search_preview_and_save(qapp, monkeypatch, tmp_path,
             return 0
         wait_for(entered_preview.is_set)
         assert table.rowCount() == 2
-        assert table.item(0, 3).text() == "Unknown"
+        assert table.item(0, 3).text() == "Checking"
         assert not use.isEnabled()
         ticks = []
         QTimer.singleShot(0, lambda: ticks.append(True))

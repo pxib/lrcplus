@@ -3,6 +3,7 @@ import base64
 import binascii
 from html import unescape
 from decimal import Decimal, DecimalException, ROUND_HALF_UP
+import json
 import math
 import re
 from threading import Event
@@ -18,6 +19,7 @@ from core.native_lyrics import decode_krc, parse_word_lyrics, timestamp_ms, to_l
 
 PROVIDERS = ("NetEase Cloud Music", "QQ Music", "KuGou", "Kuwo")
 _TIMESTAMP = re.compile(r"\[\d+:\d+(?:\.\d+)?\]")
+_COLON_TIMESTAMP = re.compile(r"\[(\d+):(\d{1,2}):(\d{1,3})\]")
 _METADATA_TAG = re.compile(
     r"\[(ti|ar|al|by|offset|length|au|re|ve|id|hash|sign|qq|total|language|encoding):[^\]]*\]",
     re.IGNORECASE,
@@ -38,7 +40,7 @@ class LyricsProviderError(RuntimeError):
         self.status_code = status_code
 
 
-def _request(source, url, cancel, *, params=None, data=None, method=None, check_status=True):
+def _request(source, url, cancel, *, params=None, data=None, method=None, check_status=True, status_field=None):
     if cancel.is_set():
         return {}
     headers = {"User-Agent": f"{APP_NAME}/{APP_VERSION} ({PROJECT_URL})"}
@@ -76,10 +78,16 @@ def _request(source, url, cancel, *, params=None, data=None, method=None, check_
         if not isinstance(payload, dict):
             raise LyricsProviderError(f"{source} returned an invalid response.")
         field, expected_code = ("status", 200) if source in {"KuGou", "Kuwo"} else ("code", 200 if source == "NetEase Cloud Music" else 0)
+        field = status_field or field
         code = payload.get(field)
         if check_status and code != expected_code:
             if code is None:
                 raise LyricsProviderError(f"{source} returned an invalid response.")
+            if source == "Kuwo" and code == 301:
+                raise LyricsProviderError(
+                    "Kuwo's lyric service could not provide this result (code 301). Try another result or provider.",
+                    status_code=301,
+                )
             raise LyricsProviderError(
                 f"{source} could not complete the request (code {code}). Please try again later.",
                 max(retry_after, 60 if code == 429 else 0), status_code=code,
@@ -101,6 +109,18 @@ def _heading_name(value):
     return " ".join(value.split())
 
 
+def _is_netease_metadata(body):
+    if not body.startswith("{"):
+        return False
+    try:
+        entry = json.loads(body)
+    except ValueError:
+        return False
+    return (isinstance(entry, dict) and isinstance(entry.get("t"), (int, float))
+            and isinstance(entry.get("c"), list) and bool(entry["c"])
+            and all(isinstance(part, dict) and isinstance(part.get("tx"), str) for part in entry["c"]))
+
+
 def _clean_rows(rows, record, metadata_text):
     """Filter plain lyric bodies while retaining their original timing data."""
     titles = {_heading_name(record.get("trackName"))} - {""}
@@ -120,6 +140,8 @@ def _clean_rows(rows, record, metadata_text):
     lyrics_started = False
     for body, original in rows:
         body = body.strip()
+        if record.get("source") == "NetEase Cloud Music" and _is_netease_metadata(body):
+            continue
         if body and not _METADATA_TAG.sub("", body).strip():
             continue
         if _CREDIT.match(body):
@@ -134,6 +156,7 @@ def _clean_rows(rows, record, metadata_text):
 
 def clean_lyrics(text, record):
     """Remove provider headers and credits without discarding lyrics at 00:00."""
+    text = _COLON_TIMESTAMP.sub(r"[\1:\2.\3]", text)
     lines = text.lstrip("\ufeff").splitlines()
     return "\n".join(_clean_rows([(_TIMESTAMP.sub("", line), line) for line in lines], record, text))
 
@@ -365,7 +388,13 @@ def fetch_lyrics(record, cancel=None):
             raise LyricsProviderError("KuGou returned an invalid or oversized KRC file.") from None
         return _word_result(record, text, "krc")
     elif source == "Kuwo":
-        payload = _request(source, "https://m.kuwo.cn/newh5/singles/songinfoandlrc", cancel, params={"musicId": record["id"]})
+        try:
+            payload = _request(source, "https://m.kuwo.cn/newh5/singles/songinfoandlrc", cancel, params={"musicId": record["id"]})
+        except LyricsProviderError as error:
+            if error.status_code != 301 or cancel.is_set():
+                raise
+            payload = _request(source, "https://www.kuwo.cn/openapi/v1/www/lyric/getlyric", cancel,
+                               params={"musicId": record["id"]}, status_field="code")
         if cancel.is_set():
             return result
         text = _kuwo_lrc(payload)

@@ -114,13 +114,15 @@ def test_death_animation_freezes_controls_until_respawn_or_game_over(lives):
 def test_each_phase_has_full_independent_hp_and_timer(clear_by):
     game = combat_game()
     game.start_or_pause()
-    for phase in range(3):
+    for phase in range(len(game.PHASES)):
         assert game.phase == phase
         assert game.hp == game.MAX_HP
         assert game.phase_remaining == game.PHASE_DURATION
         game.bullets = [Bullet(50, 50, 0, 0)]
         game.shots = [Bullet(50, 50, 0, 0)]
-        if clear_by == "damage":
+        if game.phase_definition.survival:
+            game.phase_elapsed = game.PHASE_DURATION
+        elif clear_by == "damage" or game.phase_definition.damage_finish:
             game.hp = 0
         else:
             game.phase_elapsed = game.PHASE_DURATION
@@ -128,17 +130,17 @@ def test_each_phase_has_full_independent_hp_and_timer(clear_by):
         assert game.transition_remaining == game.PHASE_BREAK
         assert not game.bullets and not game.shots
         assert any(isinstance(item, StarItem) for item in game.items)
-        if phase < 2:
+        if phase < len(game.PHASES) - 1:
             assert game.state == "playing"
             assert game.score == phase * 100  # Only earlier stars, no clear bonus yet.
         else:
             assert game.state == "playing"
         advance(game, game.PHASE_BREAK)
-        if phase == 2:
+        if phase == len(game.PHASES) - 1:
             assert game.state == "won"
-            assert game.score == 7800  # Three cancelled bullets plus clear bonus.
+            assert game.score == 9300  # Eighteen cancelled bullets plus clear bonus.
             game._check_win()
-            assert game.score == 7800
+            assert game.score == 9300
 
 
 def test_partial_damage_and_total_elapsed_do_not_skip_health_bars():
@@ -152,10 +154,10 @@ def test_partial_damage_and_total_elapsed_do_not_skip_health_bars():
     game.hp = 0
     game._check_win()
     assert game.phase == 1 and game.hp == game.MAX_HP
-    assert game.phase_remaining == 25
+    assert game.phase_remaining == game.PHASE_DURATION
 
 
-@pytest.mark.parametrize("phase", [0, 2])
+@pytest.mark.parametrize("phase", [0, len(DanmakuGame.PHASES) - 1])
 def test_phase_completion_waits_for_death_animation(phase):
     game = combat_game()
     game.start_or_pause()
@@ -173,19 +175,17 @@ def test_phase_completion_waits_for_death_animation(phase):
     assert game.transition_remaining > 0
     advance(game, game.transition_remaining)
     assert game.state == ("playing" if phase == 0 else "won")
-    assert game.phase == min(phase + 1, 2)
+    assert game.phase == min(phase + 1, len(game.PHASES) - 1)
 
 
-def test_patterns_get_denser_and_faster_with_each_health_bar():
+def test_later_nonspells_get_denser_and_faster():
     game = combat_game()
     game.start_or_pause()
     counts, speeds = [], []
-    for _ in range(3):
+    for phase in (0, 2, 4):
+        game.start_phase(phase)
         game._spawn()
         counts.append(len(game.bullets))
         speeds.append(max((b.vx ** 2 + b.vy ** 2) ** .5 for b in game.bullets))
-        game.hp = 0
-        game._check_win()
-        advance(game, game.PHASE_BREAK)
     assert counts == sorted(set(counts))
     assert speeds == sorted(set(speeds))

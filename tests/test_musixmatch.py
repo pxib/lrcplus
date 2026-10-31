@@ -141,7 +141,7 @@ def test_token_renew_hint_does_not_masquerade_as_no_results(monkeypatch):
         status_code=200, headers={}, close=lambda: None,
         json=lambda: {"message": {"header": {"status_code": 200, "hint": "renew"}}},
     ))
-    with pytest.raises(musixmatch.MusixmatchError, match="Get token") as error:
+    with pytest.raises(musixmatch.MusixmatchError, match="Paste a different token") as error:
         musixmatch.search("Song", "expired-token", auth_mode="token")
     assert error.value.status_code == 401
     assert "expired-token" not in str(error.value)

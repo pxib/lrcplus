@@ -21,8 +21,8 @@ def advance(game, seconds, **controls):
 
 
 @pytest.fixture
-def quiet_audio(monkeypatch, fake_midi, fake_sound_effects):
-    monkeypatch.setattr("assets.scarlet.boss_music.make_midi_backend", lambda path: fake_midi)
+def quiet_audio(monkeypatch, fake_midi_factory, fake_sound_effects):
+    monkeypatch.setattr("assets.scarlet.boss_music.make_midi_backend", fake_midi_factory)
     monkeypatch.setattr("assets.scarlet.sound_effects.make_sound_effect", fake_sound_effects.factory)
 
 
@@ -134,6 +134,7 @@ def test_pickup_popup_matches_score_rises_linearly_freezes_and_expires():
 def test_every_health_fill_blocks_shots_and_bombs_until_first_attack(phase):
     game = DanmakuGame()
     game._phase = phase
+    game.hp = game.MAX_HP
     game.start_or_pause()
     bx, by = game.boss
     game.shots = [Bullet(bx, by, 0, 0)]

@@ -151,3 +151,31 @@ def test_cancel_before_new_source_request(monkeypatch, source):
     record = {"source": source, "id": "42"}
     assert chinese_lyrics.fetch_lyrics(record, cancel) == record
     assert not calls
+
+
+def test_kuwo_301_uses_alternate_endpoint_with_code_envelope(monkeypatch):
+    calls, closed = replies(monkeypatch,
+        {"status": 301, "msg": "Unavailable"},
+        {"code": 200, "data": {"lrclist": [{"time": "1.234", "lineLyric": "Song"}]}},
+    )
+    result = chinese_lyrics.fetch_lyrics({"source": "Kuwo", "id": "411629241"})
+    assert result["syncedLyrics"] == "[00:01.234]Song"
+    assert calls[0][0].startswith("https://m.kuwo.cn/")
+    assert calls[1][0] == "https://www.kuwo.cn/openapi/v1/www/lyric/getlyric"
+    assert all(options["params"] == {"musicId": "411629241"} for _, options in calls)
+    assert len(closed) == 2
+
+
+def test_kuwo_repeated_301_is_a_clear_error_without_more_requests(monkeypatch):
+    calls, closed = replies(monkeypatch, {"status": 301}, {"code": 301})
+    with pytest.raises(chinese_lyrics.LyricsProviderError, match="Try another result or provider"):
+        chinese_lyrics.fetch_lyrics({"source": "Kuwo", "id": "42"})
+    assert len(calls) == len(closed) == 2
+
+
+def test_kuwo_rate_limit_does_not_attempt_alternate_endpoint(monkeypatch):
+    calls, closed = replies(monkeypatch, 429)
+    with pytest.raises(chinese_lyrics.LyricsProviderError) as error:
+        chinese_lyrics.fetch_lyrics({"source": "Kuwo", "id": "42"})
+    assert error.value.retry_after == 60
+    assert len(calls) == 1

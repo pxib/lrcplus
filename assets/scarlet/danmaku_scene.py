@@ -14,6 +14,7 @@ from core.fonts import library_font
 from assets.scarlet import CHAR_DIR, PORTRAIT_DIR, SPRITE_DIR
 from assets.scarlet.danmaku import HomingShot, PowerItem, StarItem
 from assets.scarlet.dialogue import INTRO_DIALOGUE as DIALOGUE, NAMES
+from assets.scarlet.flandre import BULLET_COLORS
 
 
 class ScarletScene:
@@ -209,13 +210,42 @@ class ScarletScene:
         p.setBrush(QColor("#ffe2c5"))
         p.drawEllipse(QPointF(enemy.x, enemy.y - 7), 5, 5)
 
+    @staticmethod
+    def enemy_effects(p, game):
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        for ring in game.enemy_death_rings:
+            progress = 1 - max(0.0, min(1.0, ring.remaining / game.ENEMY_EFFECT_DURATION))
+            radius = 10 + 38 * progress
+            fade = (1 - progress) ** 1.2
+            gradient = QRadialGradient(QPointF(ring.x, ring.y), radius)
+            # Transparent center, with soft inner and outer edges to the ring.
+            for stop, alpha in ((0, 0), (.48, 0), (.65, 75), (.78, 145), (.9, 50), (1, 0)):
+                gradient.setColorAt(stop, QColor(255, 87, 115, round(alpha * fade)))
+            p.setBrush(gradient)
+            p.drawEllipse(QPointF(ring.x, ring.y), radius, radius)
+        for particle in game.hit_particles:
+            life = max(0.0, min(1.0, particle.remaining / game.ENEMY_EFFECT_DURATION))
+            radius = particle.radius * (1 + .3 * (1 - life))
+            alpha = round(110 * life ** 1.15)
+            gradient = QRadialGradient(QPointF(particle.x, particle.y), radius)
+            gradient.setColorAt(0, QColor(245, 74, 105, alpha))
+            gradient.setColorAt(.3, QColor(245, 74, 105, round(alpha * .85)))
+            gradient.setColorAt(.65, QColor(245, 74, 105, round(alpha * .35)))
+            gradient.setColorAt(1, QColor(245, 74, 105, 0))
+            p.setBrush(gradient)
+            p.drawEllipse(QPointF(particle.x, particle.y), radius, radius)
+        p.restore()
+
     def actors(self, p, game, sprite, direction):
         bx, by = self.boss_position if self.boss_position is not None else game.boss
-        if self.story_phase != "warmup":
+        if self.story_phase != "warmup" and game.boss_visible:
             self.magic_circle(p, bx, by, game.elapsed)
         if self.story_phase == "warmup":
             for enemy in game.enemies:
                 self.fairy(p, enemy)
+        elif not game.boss_visible:
+            pass
         elif self.boss_sprite.isNull():
             self.character(p, bx, by, boss=True)
         else:
@@ -225,6 +255,15 @@ class ScarletScene:
             # Anchor her body, rather than the image bounds, to the boss center.
             p.drawPixmap(QPointF(bx - 17, by - 39), self.boss_sprite)
             p.restore()
+        for clone in game.encounter.clones:
+            if self.boss_sprite.isNull():
+                self.character(p, clone.x, clone.y, boss=True)
+            else:
+                p.drawPixmap(QPointF(clone.x - 17, clone.y - 39), self.boss_sprite)
+            p.fillRect(QRectF(clone.x - 15, clone.y + 29, 30, 2), QColor("#40243b"))
+            fraction = clone.hp / game.phase_definition.tuning.get("clone_hp", 90)
+            p.fillRect(QRectF(clone.x - 15, clone.y + 29, 30 * fraction, 2), QColor("#ffb6cb"))
+        self.enemy_effects(p, game)
         p.setPen(Qt.PenStyle.NoPen)
         if game.has_options and not game.dying and game.lives > 0:
             for index, (x, y) in enumerate(game.option_positions):
@@ -245,12 +284,27 @@ class ScarletScene:
             else:
                 p.setBrush(QColor("#c7fff4"))
                 p.drawRoundedRect(QRectF(shot.x - 2, shot.y - 9, 4, 18), 1.5, 1.5)
-        colors = ("#ff7990", "#80caff", "#dba2ff")
+        # Rendering and collision use the same capsule endpoints and width.
+        for laser in game.encounter.lasers:
+            ax, ay, ex, ey = laser.segment
+            color = QColor(BULLET_COLORS[laser.color])
+            color.setAlpha(210 if laser.active else 90)
+            pen = QPen(color, laser.width if laser.active else 1.5)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.drawLine(QPointF(ax, ay), QPointF(ex, ey))
+            if laser.active:
+                core = QPen(QColor("#fff6dc"), laser.width * .28)
+                core.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(core)
+                p.drawLine(QPointF(ax, ay), QPointF(ex, ey))
+        p.setPen(Qt.PenStyle.NoPen)
         for bullet in game.bullets:
-            p.setBrush(QColor(colors[bullet.color]))
-            p.drawEllipse(QPointF(bullet.x, bullet.y), 4.5, 6)
+            radius = getattr(bullet, "radius", 4.5)
+            p.setBrush(QColor(BULLET_COLORS[bullet.color]))
+            p.drawEllipse(QPointF(bullet.x, bullet.y), radius, radius)
             p.setBrush(QColor("#fff5e9"))
-            p.drawEllipse(QPointF(bullet.x - .5, bullet.y - 1), 2, 3)
+            p.drawEllipse(QPointF(bullet.x - .5, bullet.y - .5), radius * .42, radius * .42)
         for item in game.items:
             if isinstance(item, StarItem):
                 self.star(p, item.x, item.y, "#fff099", radius=5.5)
@@ -418,6 +472,9 @@ class ScarletScene:
         self.text(p, 434, 266, self.music_status, 10, "#c9baca")
         language_hint = "会話：日本語［L: English］" if self.language == "ja" else "Dialogue: English [L: 日本語]"
         self.text(p, 434, 284, language_hint, 10, "#c9baca")
+        if self.story_phase in {"combat", "outro", "complete"}:
+            captured = sum(captured for _, captured in game.encounter.captures)
+            self.text(p, 434, 254, f"Spell captures  {captured}/10", 10, "#efc5dc")
         # An original title seal in the arrangement of classic Touhou sidebars.
         self.text(p, 441, 332, "東方", 39, "#ada7b0", bold=True)
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -461,16 +518,28 @@ class ScarletScene:
             if game.state in {"paused", "lost"}:
                 self.overlay(p, game)
         else:
-            for phase in range(len(game.PATTERNS)):
-                y = 3 + phase * 5
-                p.fillRect(QRectF(5, y, 374, 3), QColor("#3b1526"))
-                fraction = 0 if phase < game.phase else (
-                    game.hp / game.MAX_HP * game.hp_fill_progress if phase == game.phase else 1)
-                color = "#fff0d9" if phase == game.phase else "#92546b"
-                p.fillRect(QRectF(5, y, 374 * fraction, 3), QColor(color))
-            self.text(p, 7, 31, game.PATTERNS[game.phase], 12)
-            self.text(p, 299, 31, f"{game.phase + 1}/3", 11, "#d8a5b8")
+            p.fillRect(QRectF(5, 3, 374, 3), QColor("#3b1526"))
+            fraction = game.hp / game.MAX_HP * game.hp_fill_progress
+            p.fillRect(QRectF(5, 3, 374 * fraction, 3), QColor("#fff0d9"))
+            # Eighteen rows would cover the playfield; use small progress marks.
+            for phase in range(len(game.PHASES)):
+                color = "#4f3548" if phase < game.phase else ("#fff0d9" if phase == game.phase else "#92546b")
+                p.fillRect(QRectF(5 + phase * 10, 9, 7, 2), QColor(color))
+            definition = game.phase_definition
+            title = definition.japanese if self.language == "ja" else definition.english
+            self.text(p, 7, 31, title, 11 if self.language == "ja" else 9)
+            self.text(p, 295, 19, f"{game.phase + 1}/{len(game.PHASES)}", 9, "#d8a5b8")
             self.text(p, 347, 31, f"{ceil(game.phase_remaining):02d}", 15)
+            if definition.spell and game.boss_elapsed < 2.2 and not game.transition_remaining:
+                p.save()
+                p.setOpacity(min(1., (2.2 - game.boss_elapsed) * 2))
+                p.fillRect(QRectF(6, 54, 372, 46), QColor(28, 9, 35, 180))
+                self.text(p, 12, 73, definition.japanese, 12, "#ffe6ee")
+                self.text(p, 12, 90, definition.english, 9, "#f3c4d4")
+                p.restore()
+            if game.debug:
+                self.text(p, 7, 420, f"{game.boss_state.value} | {len(game.bullets)} bullets | HP {game.hp}", 9)
+                self.text(p, 7, 436, f"seed {game.seed} | god {game.debug_invulnerable} | speed {game.debug_speed:g}", 9)
             if game.transition_remaining > 0:
                 if game.transition_is_final:
                     label = "撃破！" if self.language == "ja" else "Defeated!"

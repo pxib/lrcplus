@@ -269,13 +269,18 @@ class LyricsSearchMixin:
             cls._lyrics_folder_index_cache.clear()
         print("[Lyrics] Cleared lyric search index")
 
-    def find_lrc_for_audio(self, audio_path):
-        """Find matching lyrics using cached per-folder indexes."""
+    def find_lrc_for_audio(self, audio_path, *, configured_folders=None, attachments=None):
+        """Find matching lyrics using cached per-folder indexes.
+
+        Batch callers can supply settings snapshots to avoid rereading the
+        preferences file for every track. Attachment keys are normalized paths.
+        """
         audio_path = Path(audio_path)
         wanted = self._normalise_path_key(audio_path)
 
         # Persisted explicit association is always authoritative.
-        attached = get_lyrics_attachment(audio_path)
+        attached = (get_lyrics_attachment(audio_path) if attachments is None
+                    else attachments.get(wanted))
         if attached:
             attached_path = Path(attached)
             if attached_path.exists() and attached_path.is_file():
@@ -285,7 +290,7 @@ class LyricsSearchMixin:
 
         folders = self._build_lyrics_search_folders(
             audio_path,
-            load_lrc_search_folders(),
+            load_lrc_search_folders() if configured_folders is None else configured_folders,
         )
         print(f"[Lyrics] Search folders: {[str(folder) for folder in folders]}")
 

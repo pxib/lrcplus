@@ -1,7 +1,7 @@
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QObject
 
-from assets.scarlet.boss_music import BossTheme
+from assets.scarlet.boss_music import BossTheme, WindowsMidiFile
 
 
 def test_theme_loops_only_while_playing_and_preserves_pause_position(qapp, fake_midi):
@@ -93,3 +93,79 @@ def test_missing_theme_is_nonfatal(qapp, fake_midi, tmp_path):
         assert fake_midi.calls == []
     finally:
         theme.deleteLater()
+
+
+def test_preloaded_theme_stays_silent_and_ready_until_cue(qapp, fake_midi, monkeypatch):
+    preparations = []
+    monkeypatch.setattr(fake_midi, "prepare", lambda: preparations.append(True), raising=False)
+    theme = BossTheme(backend=fake_midi)
+    try:
+        theme.prepare()
+        theme.prepare()
+        theme.sync("ready")
+        assert preparations == [True]
+        assert fake_midi.calls == []
+        assert not theme.timer.isActive()
+        theme.sync("playing")
+        assert fake_midi.calls == [("play", True)]
+        theme.sync("paused")
+        theme.sync("playing")
+        assert fake_midi.calls[-1] == ("play", False)
+    finally:
+        theme.stop()
+        theme.deleteLater()
+
+
+@pytest.mark.parametrize("hide", [False, True])
+def test_preloaded_device_is_released_even_if_music_never_started(qapp, fake_midi, monkeypatch, hide):
+    monkeypatch.setattr(fake_midi, "prepare", lambda: None, raising=False)
+    theme = BossTheme(backend=fake_midi)
+    try:
+        theme.prepare()
+        if hide:
+            theme.sync("ready", visible=False)
+        else:
+            theme.stop()
+        assert fake_midi.calls == [("close",)]
+        assert not theme._prepared
+    finally:
+        theme.stop()
+        theme.deleteLater()
+
+
+def test_failed_preload_is_nonfatal_and_releases_device(qapp, fake_midi, monkeypatch):
+    def fail():
+        raise OSError("MIDI output unavailable")
+
+    monkeypatch.setattr(fake_midi, "prepare", fail, raising=False)
+    theme = BossTheme(backend=fake_midi)
+    try:
+        theme.prepare()
+        theme.sync("playing")
+        assert theme.error
+        assert fake_midi.calls == [("close",)]
+    finally:
+        theme.stop()
+        theme.deleteLater()
+
+
+def test_windows_midi_cue_only_issues_play_after_silent_preload(tmp_path):
+    # Exercise the actual MCI command sequence without requiring an audio device.
+    player = object.__new__(WindowsMidiFile)
+    player.path = tmp_path / "theme.mid"
+    player.alias = "test_boss"
+    player.opened = False
+    commands = []
+    player.command = commands.append
+    player.prepare()
+    assert len(commands) == 2
+    assert commands[0].startswith("open ")
+    assert commands[1] == "set test_boss time format milliseconds"
+    player.prepare()
+    player.play(restart=True)
+    assert commands[2:] == ["play test_boss from 0"]
+    player.pause()
+    player.play()
+    assert commands[-2:] == ["pause test_boss", "play test_boss"]
+    player.close()
+    assert not player.opened

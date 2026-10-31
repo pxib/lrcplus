@@ -126,38 +126,15 @@ def test_musixmatch_preview_stays_responsive_and_saves(qapp, monkeypatch, tmp_pa
         qapp.processEvents()
 
 
-@pytest.mark.parametrize("outcome", ["success", "error", "cancel", "switch", "edit", "auth_switch", "placeholder"])
-def test_get_token_is_async_and_ignores_cancelled_results(qapp, monkeypatch, outcome):
-    entered, release, completed = threading.Event(), threading.Event(), threading.Event()
+def test_manual_token_entry_is_masked_and_retained_without_generation(qapp, monkeypatch):
     parent = QWidget()
     parent.current_audio_path = None
-    if outcome == "placeholder":
-        parent._musixmatch_token = "existing-token"
-    monkeypatch.delenv("MUSIXMATCH_TOKEN", raising=False)
+    monkeypatch.setenv("MUSIXMATCH_TOKEN", "existing-token")
     monkeypatch.setenv("MUSIXMATCH_API_KEY", "developer-key")
 
-    def get(url, **kwargs):
-        assert url.endswith("/token.get")
-        assert "apikey" not in kwargs["params"]
-        assert "usertoken" not in kwargs["params"]
-        assert threading.get_ident() != threading.main_thread().ident
-        entered.set()
-        assert release.wait(5)
-        completed.set()
-        return SimpleNamespace(
-            status_code=200, headers={}, close=lambda: None,
-            json=lambda: {"message": {
-                "header": {"status_code": 200 if outcome != "error" else 503},
-                "body": {"user_token": "0000000000000" if outcome == "placeholder" else "generated-token"},
-            }},
-        )
-
-    def wait_for(predicate):
-        deadline = time.monotonic() + 4
-        while not predicate() and time.monotonic() < deadline:
-            qapp.processEvents()
-            time.sleep(0.005)
-        assert predicate()
+    def no_network(*args, **kwargs):
+        raise AssertionError("Editing credentials must not make token requests")
+    monkeypatch.setattr(musixmatch.requests, "get", no_network)
 
     def interact(dialog):
         provider = dialog.findChild(QComboBox)
@@ -166,68 +143,29 @@ def test_get_token_is_async_and_ignores_cancelled_results(qapp, monkeypatch, out
                     if combo.accessibleName() == "Musixmatch authentication method")
         field = next(field for field in dialog.findChildren(QLineEdit)
                      if field.accessibleName() == "Musixmatch authentication token")
-        get_button = next(button for button in dialog.findChildren(QPushButton) if button.text() == "Get token")
-        search = next(button for button in dialog.findChildren(QPushButton) if button.text() == "Search")
+        assert not any(button.text() in {"Get token", "Generate token"}
+                       for button in dialog.findChildren(QPushButton))
+        assert field.text() == "existing-token"
+        assert field.echoMode() == QLineEdit.EchoMode.Password
         show = next(button for button in dialog.findChildren(QPushButton) if button.text() == "Show")
-        assert field.text() == ("existing-token" if outcome == "placeholder" else "")
-        get_button.click()
-        wait_for(entered.is_set)
-        assert not get_button.isEnabled()
-        assert not search.isEnabled()
-        ticks = []
-        QTimer.singleShot(0, lambda: ticks.append(True))
-        qapp.processEvents()
-        assert ticks
-        if outcome == "cancel":
-            dialog.reject()
-            return 0
-        if outcome == "switch":
-            provider.setCurrentText("LRCLIB")
-        elif outcome == "auth_switch":
-            auth.setCurrentIndex(auth.findData("api_key"))
-            assert field.text() == "developer-key"
-        elif outcome == "edit":
-            field.setText("pasted-token")
-            field.textEdited.emit(field.text())
-        release.set()
-        wait_for(completed.is_set)
-        if outcome in {"switch", "auth_switch", "edit"}:
-            # Drain completion polling long enough to catch a late token result.
-            drained = []
-            QTimer.singleShot(100, lambda: drained.append(True))
-            wait_for(lambda: drained)
-            expected = {"switch": "", "auth_switch": "developer-key", "edit": "pasted-token"}[outcome]
-            assert field.text() == expected
-            assert getattr(parent, "_musixmatch_token", "") == ("pasted-token" if outcome == "edit" else "")
-        elif outcome in {"error", "placeholder"}:
-            wait_for(lambda: any("Could not get a Musixmatch token" in label.text()
-                                 for label in dialog.findChildren(QLabel)))
-            if outcome == "placeholder":
-                assert field.text() == "existing-token"
-                assert parent._musixmatch_token == "existing-token"
-                assert any("all-zero placeholder" in label.text() for label in dialog.findChildren(QLabel))
-            else:
-                assert not field.text()
-            assert get_button.isEnabled()
-        else:
-            wait_for(lambda: field.text() == "generated-token")
-            assert parent._musixmatch_token == "generated-token"
-            assert field.echoMode() == QLineEdit.EchoMode.Password
-            show.click()
-            assert field.echoMode() == QLineEdit.EchoMode.Normal
-            auth.setCurrentIndex(auth.findData("api_key"))
-            assert field.text() == "developer-key"
-            auth.setCurrentIndex(auth.findData("token"))
-            assert field.text() == "generated-token"
-            assert field.echoMode() == QLineEdit.EchoMode.Password
-        assert search.isEnabled()
+        show.click()
+        assert field.echoMode() == QLineEdit.EchoMode.Normal
+        field.setText("pasted-token")
+        field.textEdited.emit(field.text())
+        assert parent._musixmatch_token == "pasted-token"
+        auth.setCurrentIndex(auth.findData("api_key"))
+        assert field.text() == "developer-key"
+        auth.setCurrentIndex(auth.findData("token"))
+        assert field.text() == "pasted-token"
+        assert field.echoMode() == QLineEdit.EchoMode.Password
+        provider.setCurrentText("LRCLIB")
+        provider.setCurrentText("Musixmatch")
+        assert field.text() == "pasted-token"
         return 0
 
-    monkeypatch.setattr(musixmatch.requests, "get", get)
     monkeypatch.setattr(QDialog, "exec", interact)
     try:
         main_window.Player.search_lrclib_lyrics(parent)
     finally:
-        release.set()
         parent.deleteLater()
         qapp.processEvents()

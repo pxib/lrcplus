@@ -82,6 +82,15 @@ lyrics. Translation separation needs investigation before offering an
 “original only” guarantee. One search timed out during the checks; the retry
 succeeded.
 
+The mobile endpoint can also return API status `301` inside an HTTP 200 response.
+The implementation then tries
+`https://www.kuwo.cn/openapi/v1/www/lyric/getlyric` for the same `musicId`.
+That endpoint uses a `code: 200` success envelope instead of `status: 200`.
+Both endpoints returned 132 lyric rows for “少女A”, song `411629241`, in a later
+live check; the reported 301 could not be reproduced consistently from this
+connection. If both endpoints fail, the result displays an error rather than
+claiming that usable lyrics were found.
+
 ## Fit with LRCPlus
 
 LRCX already represents line starts, segment starts, explicit segment ends, and
@@ -105,3 +114,11 @@ selection, loaded lyric previews, and scroll positions until the dialog exits.
 Switching away cancels pending requests; returning to completed results reuses
 the cached data. Changing Musixmatch credentials clears its active results while
 preserving other providers' results.
+
+Timing checks now run automatically for the active provider's result list. A
+two-worker queue spaces request starts by at least 250 milliseconds, prioritizes
+the selected row, and pauses pending work on server retry delays. Completed
+lyrics and errors are cached with their records. Rows show Checking, Words,
+Lines, Plain, Unavailable, or Error as appropriate; errors on unselected rows do
+not replace the selected preview. Switching sources or closing the dialog
+cancels queued work and discards late responses.

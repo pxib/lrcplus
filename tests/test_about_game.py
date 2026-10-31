@@ -18,8 +18,8 @@ from ui.settings_dialog import SettingsDialog
 
 
 @pytest.fixture(autouse=True)
-def quiet_boss_theme(monkeypatch, fake_midi, fake_sound_effects):
-    monkeypatch.setattr("assets.scarlet.boss_music.make_midi_backend", lambda path: fake_midi)
+def quiet_boss_theme(monkeypatch, fake_midi_factory, fake_sound_effects):
+    monkeypatch.setattr("assets.scarlet.boss_music.make_midi_backend", fake_midi_factory)
     monkeypatch.setattr("assets.scarlet.sound_effects.make_sound_effect", fake_sound_effects.factory)
 
 
@@ -97,7 +97,7 @@ def test_graze_scores_only_once_and_bomb_clears_bullets():
 def test_shots_hit_boss_and_award_clear_bonus_once():
     game = combat_game()
     game.start_or_pause()
-    game._phase = 2
+    game._phase = len(game.PHASES) - 1
     game.hp = 1
     bx, by = game.boss
     game.shots = [Bullet(bx, by + 5, 0, -600)]
@@ -115,16 +115,21 @@ def test_shots_hit_boss_and_award_clear_bonus_once():
 def test_boss_patterns_advance_with_damage():
     game = combat_game()
     game.start_or_pause()
-    for phase in range(3):
+    for phase in range(len(game.PHASES)):
         if game.transition_remaining:
             finish_break(game)
         for _ in range(20):
             game.update(.1)
         assert game.phase == phase
         assert game.hp == game.MAX_HP
-        game.hp = 1
-        game.bomb()
-        if phase < 2:
+        if game.phase_definition.survival:
+            game.phase_elapsed = game.PHASE_DURATION
+            game._check_win()
+        else:
+            game.hp = 1
+            game.bombs = 1
+            game.bomb()
+        if phase < len(game.PHASES) - 1:
             assert game.state == "playing"
     finish_break(game)
     assert game.state == "won"
@@ -133,11 +138,11 @@ def test_boss_patterns_advance_with_damage():
 def test_patterns_timeout_and_pause():
     game = combat_game()
     game.start_or_pause()
-    for phase in range(3):
-        game._phase = phase
+    for phase in (0, 1, 2):
+        game.start_phase(phase)
         game._spawn()
         assert game.phase == phase
-    assert len(game.bullets) == 20 + 24 + 27
+        assert game.bullets
     game.pause()
     elapsed = game.elapsed
     game.update(0.1, 1, 1, shooting=True)
@@ -148,16 +153,23 @@ def test_patterns_timeout_and_pause():
     game.phase_elapsed = game.PHASE_DURATION - 0.01
     game.update(0.02)
     finish_break(game)
-    assert game.state == "won"
+    assert game.state == "playing" and game.phase == 3
 
 
 def test_full_fight_keeps_bullet_population_bounded():
     game = combat_game()
     game.start_or_pause()
-    for _ in range(920):
-        game.invulnerable = 1
-        game.update(0.1)
-        assert len(game.bullets) < 500
+    for phase in game.PHASES:
+        for _ in range(60):
+            game.invulnerable = 1
+            game.update(.1)
+            assert len(game.bullets) < 1800
+        if phase.damage_finish:
+            game.hp = 0
+        else:
+            game.phase_elapsed = game.PHASE_DURATION
+        game._check_win()
+        finish_break(game)
     assert game.state == "won"
 
 
@@ -598,7 +610,7 @@ def test_x_deathbomb_saves_last_life_and_only_starts_outro_on_clear(qapp, fake_m
         window.game.lives = 1
         window.game._spawn_in = 100
         if kills_boss:
-            window.game._phase = 2
+            window.game._phase = len(window.game.PHASES) - 1
             window.game.hp_fill_remaining = 0
             window.game.wave = 1
             window.game.hp = 24
@@ -618,7 +630,7 @@ def test_x_deathbomb_saves_last_life_and_only_starts_outro_on_clear(qapp, fake_m
             finish_break(window.game)
             window._check_battle_end()
             assert window.story_phase == "outro"
-            assert fake_midi.current_mode == "stopped"
+            assert fake_midi.current_mode == "playing"
         else:
             assert window.story_phase == "combat"
             assert fake_midi.current_mode == "playing"
@@ -717,7 +729,7 @@ def test_victory_plays_entire_outro_before_clear_screen(qapp, fake_midi):
         qapp.processEvents()
         window.timer.stop()
         window._start_combat()
-        window.game._phase = 2
+        window.game._phase = len(window.game.PHASES) - 1
         window.game.hp = 0
         window.game._check_win()
         finish_break(window.game)
@@ -725,13 +737,15 @@ def test_victory_plays_entire_outro_before_clear_screen(qapp, fake_midi):
         window._check_battle_end()
         assert window.story_phase == "outro"
         assert window.scene.dialogue_script is OUTRO_DIALOGUE
-        assert fake_midi.calls[-1] == ("close",)
+        assert fake_midi.current_mode == "playing"
         for index, line in enumerate(OUTRO_DIALOGUE):
             assert window.story_phase == "outro"
             assert window.dialogue_index == index
             assert line.text("ja") and line.text("en")
+            assert fake_midi.current_mode == "playing"
             window._advance_dialogue()
         assert window.story_phase == "complete"
+        assert fake_midi.calls[-1] == ("close",)
         assert window.game.state == "won"
         assert window.game.score == score
         window._check_battle_end()
@@ -769,7 +783,7 @@ def test_dialogue_language_toggle_keeps_story_position_and_long_speeches_fit(qap
         window.deleteLater()
 
 
-def test_phase_changes_keep_music_playing_and_wait_for_third_bar_before_outro(qapp, fake_midi):
+def test_phase_changes_keep_music_playing_and_wait_for_final_spell_before_outro(qapp, fake_midi):
     window = DanmakuWindow()
     try:
         window.show()
@@ -777,32 +791,36 @@ def test_phase_changes_keep_music_playing_and_wait_for_third_bar_before_outro(qa
         window.timer.stop()
         window._start_combat()
         calls = list(fake_midi.calls)
-        for phase in range(3):
-            window.game.hp = 0
+        for phase in range(len(window.game.PHASES)):
+            if window.game.phase_definition.survival:
+                window.game.phase_elapsed = window.game.PHASE_DURATION
+            else:
+                window.game.hp = 0
             window.game._check_win()
             finish_break(window.game)
             window._check_battle_end()
             window._sync_music()
-            if phase < 2:
+            if phase < len(window.game.PHASES) - 1:
                 assert window.story_phase == "combat"
                 assert window.game.hp == window.game.MAX_HP
                 assert fake_midi.calls == calls
                 assert fake_midi.current_mode == "playing"
             else:
                 assert window.story_phase == "outro"
-                assert fake_midi.current_mode == "stopped"
+                assert fake_midi.current_mode == "playing"
+                assert fake_midi.calls == calls
     finally:
         window.close()
         window.deleteLater()
 
 
-def test_three_health_bars_show_spent_current_and_future_health(qapp):
+def test_health_bar_and_progress_marks_show_current_phase(qapp):
     window = DanmakuWindow()
     try:
         window.scene.story_phase = "combat"
         window.scene.boss_position = None
         window.game.hp_fill_remaining = 0
-        for phase in range(3):
+        for phase in (0, 8, 17):
             window.game._phase = phase
             window.game.hp = window.game.MAX_HP / 2
             image = QImage(640, 480, QImage.Format.Format_ARGB32)
@@ -810,15 +828,11 @@ def test_three_health_bars_show_spent_current_and_future_health(qapp):
             painter = QPainter(image)
             window.scene.paint(painter, window.game, window.player_sprite, 0, 0, 0, 60)
             painter.end()
-            for bar in range(3):
-                left = image.pixelColor(32 + 90, 16 + 4 + 5 * bar).name()
-                right = image.pixelColor(32 + 300, 16 + 4 + 5 * bar).name()
-                if bar < phase:
-                    assert left == right == "#3b1526"
-                elif bar == phase:
-                    assert left == "#fff0d9" and right == "#3b1526"
-                else:
-                    assert left == right == "#92546b"
+            assert image.pixelColor(32 + 90, 16 + 4).name() == "#fff0d9"
+            assert image.pixelColor(32 + 300, 16 + 4).name() == "#3b1526"
+            for mark in range(len(window.game.PHASES)):
+                color = "#4f3548" if mark < phase else ("#fff0d9" if mark == phase else "#92546b")
+                assert image.pixelColor(32 + 7 + mark * 10, 16 + 9).name() == color
     finally:
         window.close()
         window.deleteLater()

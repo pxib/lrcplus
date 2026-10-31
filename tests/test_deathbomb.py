@@ -114,7 +114,7 @@ def test_restart_discards_a_pending_death():
 @pytest.mark.parametrize("save", [False, True])
 def test_boss_clear_waits_for_pending_last_life_hit_to_resolve(save):
     game = hit_player(lives=1)
-    game._phase = 2
+    game._phase = len(game.PHASES) - 1
     game.hp = 1
     bx, by = game.boss
     game.shots = [Bullet(bx, by, 0, 0)]

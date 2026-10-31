@@ -149,7 +149,7 @@ def test_boss_wave_sounds_follow_pattern_and_clear_reason():
     game._spawn()
     assert game.take_sound_events() == ["bossattack2"]
     game.hp = 0
-    game._phase = 2
+    game._phase = len(game.PHASES) - 1
     game._check_win()
     assert game.take_sound_events() == ["bossdeath"]
     game._check_win()
@@ -169,10 +169,11 @@ def test_countdown_warns_once_per_second_and_freezes_when_paused():
     game.update(.1)
     assert game.take_sound_events() == []
     game.start_or_pause()
-    game._phase = 2
+    game._phase = len(game.PHASES) - 1
+    game.hp = 0
     game.phase_elapsed = game.PHASE_DURATION - .01
     game.update(.02)
-    assert game.take_sound_events() == ["timeout"]
+    assert game.take_sound_events() == ["timeout", "bossdeath"]
     for _ in range(40):
         game.update(.1)
     assert game.state == "won"

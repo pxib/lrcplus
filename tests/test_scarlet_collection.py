@@ -55,18 +55,13 @@ def test_clear_turns_each_bullet_into_a_star_once_and_recenters_without_attackin
     advance(game, remaining - 1 - .001)
     assert game.state == "playing" and not game.bullets
     advance(game, .002)
-    if phase == 2:
-        assert game.state == "won"
-        assert game.score == 7700
-        advance(game, 1)
-        assert game.score == 7700
-    else:
-        assert game.state == "playing" and game.phase == phase + 1
-        assert game.hp == game.MAX_HP and not game.bullets
-        assert game.phase_elapsed == 0
-        advance(game, .3)
-        assert game.bullets
-        assert not game.boss_vulnerable  # Next bar is still filling.
+    assert game.state == "playing" and game.phase == phase + 1
+    assert game.hp == game.MAX_HP and not game.bullets
+    assert game.phase_elapsed == 0
+    advance(game, .3)
+    # Lævateinn starts with a sword warning rather than ordinary bullets.
+    assert game.bullets or game.encounter.lasers
+    assert not game.boss_vulnerable  # Next bar is still filling.
 
 
 def test_lethal_bomb_converts_bullets_instead_of_losing_the_star_rewards():

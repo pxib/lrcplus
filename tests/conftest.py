@@ -58,6 +58,23 @@ def fake_midi():
 
 
 @pytest.fixture
+def fake_midi_factory(fake_midi):
+    """Keep stage and boss playback separate, as real MIDI sequencers are."""
+    from pathlib import Path
+    from assets.scarlet.boss_music import THEME_PATH
+
+    backends = {THEME_PATH.name: fake_midi}
+
+    def factory(path):
+        name = Path(path).name
+        if name not in backends:
+            backends[name] = type(fake_midi)()
+        return backends[name]
+
+    return factory
+
+
+@pytest.fixture
 def fake_sound_effects():
     from types import SimpleNamespace
     from PySide6.QtMultimedia import QSoundEffect

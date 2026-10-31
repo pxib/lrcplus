@@ -2,11 +2,11 @@
 
 from PySide6.QtCore import QElapsedTimer, QEvent, QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPixmap
-from PySide6.QtWidgets import QDialog
+from PySide6.QtWidgets import QComboBox, QDialog
 
 from assets.scarlet import CHAR_DIR
 from assets.scarlet.danmaku import DanmakuGame
-from assets.scarlet.boss_music import BossTheme
+from assets.scarlet.boss_music import BossTheme, STAGE_THEME_PATH, THEME_PATH
 from core.settings import load_all_settings, save_all_settings
 from assets.scarlet.danmaku_scene import ScarletScene
 from assets.scarlet.dialogue import BGM_CUE_INDEX, OUTRO_DIALOGUE
@@ -46,7 +46,9 @@ class DanmakuWindow(QDialog):
                  Qt.Key.Key_Shift, Qt.Key.Key_Z, Qt.Key.Key_X, Qt.Key.Key_R,
                  Qt.Key.Key_P, Qt.Key.Key_M, Qt.Key.Key_L, Qt.Key.Key_Escape, Qt.Key.Key_Space, Qt.Key.Key_Return}
 
-    def __init__(self, parent=None):
+    DEBUG_KEYS = {Qt.Key.Key_F5, Qt.Key.Key_F6, Qt.Key.Key_F7, Qt.Key.Key_F8}
+
+    def __init__(self, parent=None, *, debug=False):
         super().__init__(parent)
         self.setWindowTitle("紅い残響 ～ Scarlet Refrain")
         self.setWindowModality(Qt.WindowModality.NonModal)
@@ -54,11 +56,24 @@ class DanmakuWindow(QDialog):
         self.resize(960, 720)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAccessibleName("Scarlet Refrain bullet dodging game")
-        self.game = DanmakuGame()
+        self.game = DanmakuGame(debug=debug)
         self.player_sprite = ReimuSprite()
         self.scene = ScarletScene()
-        self.music = BossTheme(self)
+        self.music = BossTheme(self, path=STAGE_THEME_PATH)
         self.sfx = SoundEffects(self)
+        self.difficulty_selector = QComboBox(self)
+        self.difficulty_selector.addItems(self.game.DIFFICULTIES)
+        self.difficulty_selector.setAccessibleName("Game difficulty")
+        self.difficulty_selector.setToolTip("Choose difficulty. Changing it starts a new run.")
+        self.difficulty_selector.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.difficulty_selector.setStyleSheet(
+            "QComboBox { background: #382631; color: #fff0df; border: 1px solid #92546b;"
+            " padding: 3px 8px; }"
+            "QComboBox QAbstractItemView { background: #382631; color: #fff0df;"
+            " selection-background-color: #92546b; }"
+        )
+        self.difficulty_selector.activated.connect(
+            lambda index: self._change_difficulty(self.game.DIFFICULTIES[index]))
         self.dialogue_index = 0
         self.entrance_elapsed = 0.0
         self._story_suspended = False
@@ -76,6 +91,8 @@ class DanmakuWindow(QDialog):
         self._start_warmup()
 
     def _start_warmup(self):
+        self.music.set_track(STAGE_THEME_PATH)
+        self.music.prepare()
         self.game.start_warmup()
         self.scene.story_phase = "warmup"
 
@@ -90,6 +107,7 @@ class DanmakuWindow(QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self.music.prepare()
         self._story_suspended = False
         self.clock.start()
         self.timer.start()
@@ -110,32 +128,45 @@ class DanmakuWindow(QDialog):
         self._save_high_score()
         super().closeEvent(event)
 
-    @staticmethod
-    def _read_high_score():
+    @property
+    def _high_score_key(self):
+        return ("scarlet_lunatic_high_score" if self.game.difficulty == "Lunatic"
+                else "scarlet_high_score")
+
+    def _read_high_score(self):
         record = load_all_settings().get("easter_eggs", {})
         try:
-            return max(0, int(record.get("scarlet_high_score", 0))) if isinstance(record, dict) else 0
+            return max(0, int(record.get(self._high_score_key, 0))) if isinstance(record, dict) else 0
         except (TypeError, ValueError, OverflowError):
             return 0
 
     def _save_high_score(self):
-        if self.game.score <= self.high_score:
+        if self.game.debug or self.game.score <= self.high_score:
             return
         self.high_score = self.game.score
         payload = load_all_settings()
         record = payload.get("easter_eggs", {})
         record = dict(record) if isinstance(record, dict) else {}
-        record["scarlet_high_score"] = max(self._read_high_score(), self.high_score)
+        record[self._high_score_key] = max(self._read_high_score(), self.high_score)
         payload["easter_eggs"] = record
         try:
             save_all_settings(payload)
         except OSError:
             pass  # An unwritable preferences file must not interrupt the game.
 
-    def _restart(self):
+    def _change_difficulty(self, difficulty):
+        if difficulty != self.game.difficulty:
+            self._restart(difficulty)
+            self.update()
+
+    def _restart(self, difficulty=None):
         self.music.stop()
         self.sfx.stop()
         self._save_high_score()
+        if difficulty is not None:
+            self.game.difficulty = difficulty
+        self.difficulty_selector.setCurrentText(self.game.difficulty)
+        self.high_score = self._read_high_score()
         self.game.reset()
         self.scene.reset_presentation()
         self.dialogue_index = 0
@@ -146,9 +177,28 @@ class DanmakuWindow(QDialog):
         self._start_warmup()
         self.sfx.play("menuinteract")
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "difficulty_selector"):
+            scale = min(self.width() / 640, self.height() / 480)
+            left = (self.width() - 640 * scale) / 2
+            top = (self.height() - 480 * scale) / 2
+            self.difficulty_selector.setGeometry(
+                round(left + 434 * scale), round(top + 20 * scale),
+                round(189 * scale), round(27 * scale))
+            font = self.difficulty_selector.font()
+            font.setPixelSize(max(10, round(13 * scale)))
+            self.difficulty_selector.setFont(font)
+
     def _sync_music(self):
-        state = self.game.state if self.story_phase == "combat" else "ready"
-        if self.story_phase == "intro" and self.dialogue_index >= BGM_CUE_INDEX:
+        boss_music = (self.story_phase in {"combat", "outro"}
+                      or (self.story_phase == "intro" and self.dialogue_index >= BGM_CUE_INDEX))
+        if boss_music and self.music.path != THEME_PATH:
+            # Keep the stage theme until the actual handoff, including dialogue.
+            self.music.set_track(THEME_PATH)
+            self.music.prepare()
+        state = self.game.state if self.story_phase in {"warmup", "combat"} else "ready"
+        if self.story_phase in {"entrance", "intro", "outro"}:
             state = "paused" if self._story_suspended else "playing"
         self.music.sync(state, self.isVisible())
         self.sfx.set_muted(self.music.muted)
@@ -236,7 +286,8 @@ class DanmakuWindow(QDialog):
         elif event.type() == QEvent.Type.WindowActivate:
             self._story_suspended = False
             self._sync_music()
-        elif event.type() == QEvent.Type.ShortcutOverride and event.key() in self.GAME_KEYS:
+        elif event.type() == QEvent.Type.ShortcutOverride and (event.key() in self.GAME_KEYS or
+                (self.game.debug and event.key() in self.DEBUG_KEYS)):
             event.accept()
             return True
         return super().event(event)
@@ -247,6 +298,19 @@ class DanmakuWindow(QDialog):
 
     def keyPressEvent(self, event):
         key = event.key()
+        if self.game.debug and key in self.DEBUG_KEYS:
+            event.accept()
+            if not event.isAutoRepeat():
+                command = {Qt.Key.Key_F5: "restart", Qt.Key.Key_F6: "next",
+                           Qt.Key.Key_F7: "invulnerable", Qt.Key.Key_F8: "slow"}[key]
+                self.game.debug_command(command)
+                if command in {"restart", "next"}:
+                    self.scene.story_phase = "combat"
+                    self.scene.boss_position = None
+                    self.keys.clear()
+                    self._sync_music()
+                self.update()
+            return
         if key not in self.GAME_KEYS:
             super().keyPressEvent(event)
             return
