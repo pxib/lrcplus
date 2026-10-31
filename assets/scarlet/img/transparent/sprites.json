@@ -1,0 +1,558 @@
+{
+  "source": "spritemap.png",
+  "source_sha256": "d5d4890b999f194a4c75c140148b5382b6a0b2845e2e047f18336feab1dc87ce",
+  "atlas": "spritemap-transparent.png",
+  "atlas_size": [
+    1711,
+    1979
+  ],
+  "tile_size": 256,
+  "tiles": {
+    "rumia-portraits": {
+      "file": "rumia-portraits.png",
+      "atlas_rect": [
+        25,
+        25,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        25,
+        1992,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        306,
+        1992,
+        256,
+        256
+      ]
+    },
+    "rumia-portraits-alt": {
+      "file": "rumia-portraits-alt.png",
+      "atlas_rect": [
+        306,
+        25,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        587,
+        1992,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        868,
+        1992,
+        256,
+        256
+      ]
+    },
+    "rumia-effects": {
+      "file": "rumia-effects.png",
+      "atlas_rect": [
+        587,
+        25,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        1149,
+        1992,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        1430,
+        1992,
+        256,
+        256
+      ]
+    },
+    "rumia-sprites": {
+      "file": "rumia-sprites.png",
+      "atlas_rect": [
+        868,
+        25,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        25,
+        2273,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        306,
+        2273,
+        256,
+        256
+      ]
+    },
+    "cirno-portraits": {
+      "file": "cirno-portraits.png",
+      "atlas_rect": [
+        25,
+        306,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        25,
+        2554,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        306,
+        2554,
+        256,
+        256
+      ]
+    },
+    "cirno-effects": {
+      "file": "cirno-effects.png",
+      "atlas_rect": [
+        306,
+        306,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        587,
+        2554,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        868,
+        2554,
+        256,
+        256
+      ]
+    },
+    "cirno-sprites": {
+      "file": "cirno-sprites.png",
+      "atlas_rect": [
+        587,
+        306,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        1149,
+        2554,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        1430,
+        2554,
+        256,
+        256
+      ]
+    },
+    "meiling-portraits": {
+      "file": "meiling-portraits.png",
+      "atlas_rect": [
+        25,
+        587,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        25,
+        2835,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        306,
+        2835,
+        256,
+        256
+      ]
+    },
+    "meiling-portraits-alt": {
+      "file": "meiling-portraits-alt.png",
+      "atlas_rect": [
+        306,
+        587,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        587,
+        2835,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        868,
+        2835,
+        256,
+        256
+      ]
+    },
+    "meiling-effects": {
+      "file": "meiling-effects.png",
+      "atlas_rect": [
+        587,
+        587,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        1149,
+        2835,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        1430,
+        2835,
+        256,
+        256
+      ]
+    },
+    "patchouli-portraits": {
+      "file": "patchouli-portraits.png",
+      "atlas_rect": [
+        25,
+        868,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        25,
+        3116,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        306,
+        3116,
+        256,
+        256
+      ]
+    },
+    "patchouli-portraits-alt": {
+      "file": "patchouli-portraits-alt.png",
+      "atlas_rect": [
+        306,
+        868,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        587,
+        3116,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        868,
+        3116,
+        256,
+        256
+      ]
+    },
+    "patchouli-effects": {
+      "file": "patchouli-effects.png",
+      "atlas_rect": [
+        587,
+        868,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        1149,
+        3116,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        1430,
+        3116,
+        256,
+        256
+      ]
+    },
+    "sakuya-portraits": {
+      "file": "sakuya-portraits.png",
+      "atlas_rect": [
+        25,
+        1149,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        25,
+        3397,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        306,
+        3397,
+        256,
+        256
+      ]
+    },
+    "sakuya-portraits-alt": {
+      "file": "sakuya-portraits-alt.png",
+      "atlas_rect": [
+        306,
+        1149,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        587,
+        3397,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        868,
+        3397,
+        256,
+        256
+      ]
+    },
+    "sakuya-effects": {
+      "file": "sakuya-effects.png",
+      "atlas_rect": [
+        587,
+        1149,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        1149,
+        3397,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        1430,
+        3397,
+        256,
+        256
+      ]
+    },
+    "sakuya-sprites": {
+      "file": "sakuya-sprites.png",
+      "atlas_rect": [
+        868,
+        1149,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        25,
+        3678,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        306,
+        3678,
+        256,
+        256
+      ]
+    },
+    "remilia-portrait": {
+      "file": "remilia-portrait.png",
+      "atlas_rect": [
+        25,
+        1430,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        25,
+        3959,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        587,
+        3959,
+        256,
+        256
+      ]
+    },
+    "remilia-portrait-alt": {
+      "file": "remilia-portrait-alt.png",
+      "atlas_rect": [
+        306,
+        1430,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        306,
+        3959,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        587,
+        3959,
+        256,
+        256
+      ]
+    },
+    "remilia-effects": {
+      "file": "remilia-effects.png",
+      "atlas_rect": [
+        587,
+        1430,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        868,
+        3959,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        1149,
+        3959,
+        256,
+        256
+      ]
+    },
+    "remilia-sprites": {
+      "file": "remilia-sprites.png",
+      "atlas_rect": [
+        868,
+        1430,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        25,
+        4240,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        306,
+        4240,
+        256,
+        256
+      ]
+    },
+    "flandre-portrait": {
+      "file": "flandre-portrait.png",
+      "atlas_rect": [
+        25,
+        1711,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        25,
+        4521,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        587,
+        4521,
+        256,
+        256
+      ]
+    },
+    "flandre-portrait-alt": {
+      "file": "flandre-portrait-alt.png",
+      "atlas_rect": [
+        306,
+        1711,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        306,
+        4521,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        587,
+        4521,
+        256,
+        256
+      ]
+    },
+    "flandre-portrait-tired": {
+      "file": "flandre-portrait-tired.png",
+      "atlas_rect": [
+        587,
+        1711,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        868,
+        4521,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        1149,
+        4521,
+        256,
+        256
+      ]
+    },
+    "flandre-effects": {
+      "file": "flandre-effects.png",
+      "atlas_rect": [
+        868,
+        1711,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        25,
+        4802,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        306,
+        4802,
+        256,
+        256
+      ]
+    },
+    "flandre-sprites": {
+      "file": "flandre-sprites.png",
+      "atlas_rect": [
+        1149,
+        1711,
+        256,
+        256
+      ],
+      "source_color_rect": [
+        587,
+        4802,
+        256,
+        256
+      ],
+      "source_mask_rect": [
+        868,
+        4802,
+        256,
+        256
+      ]
+    }
+  }
+}

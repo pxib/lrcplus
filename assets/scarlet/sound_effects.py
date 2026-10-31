@@ -19,6 +19,7 @@ SOUNDS = {
     "itempickup": (.35, .06, 2),
     "menuinteract": (.35, .035, 2),
     "playerdeath": (.6, .5, 1),
+    "playershoot": (.18, .09, 2),
     "timeout": (.45, .4, 1),
 }
 
@@ -65,7 +66,7 @@ class SoundEffects(QObject):
     def play_many(self, events):
         events = list(dict.fromkeys(events))
         for event in events:
-            if "bossdeath" in events and event in {"bossdamage", "bossattack1", "bossattack2"}:
+            if "bossdeath" in events and event in {"bossdamage", "bossattack1", "bossattack2", "playershoot"}:
                 continue
             self.play(event)
 

@@ -4,11 +4,11 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtTest import QTest
-from PySide6.QtGui import QFontMetrics
+from PySide6.QtGui import QFontMetrics, QImage, QPainter
 from PySide6.QtWidgets import QApplication, QTabWidget
 
 from core.app_info import APP_VERSION
-from assets.scarlet.danmaku import Bullet, DanmakuGame, HomingShot, PointItem
+from assets.scarlet.danmaku import Bullet, DanmakuGame, HomingShot, PointItem, StarItem
 from core.settings import load_all_settings, save_all_settings
 from ui.about_tab import AboutTab, debug_info
 from assets.scarlet.danmaku_game import DanmakuWindow, ReimuSprite
@@ -23,8 +23,21 @@ def quiet_boss_theme(monkeypatch, fake_midi, fake_sound_effects):
     monkeypatch.setattr("assets.scarlet.sound_effects.make_sound_effect", fake_sound_effects.factory)
 
 
-def test_diagonal_movement_focus_and_bounds():
+def combat_game():
+    """Arrange a boss whose opening health fill and first volley are complete."""
     game = DanmakuGame()
+    game.hp_fill_remaining = 0
+    game.wave = 1
+    return game
+
+
+def finish_break(game):
+    for _ in range(40):
+        game.update(.1)
+
+
+def test_diagonal_movement_focus_and_bounds():
+    game = combat_game()
     game.start_or_pause()
     x, y = game.x, game.y
     game.update(0.1, 1, -1)
@@ -39,7 +52,7 @@ def test_diagonal_movement_focus_and_bounds():
 
 
 def test_hit_invulnerability_and_game_over():
-    game = DanmakuGame()
+    game = combat_game()
     game.start_or_pause()
     for lives in (2, 1, 0):
         game.invulnerable = 0
@@ -49,7 +62,10 @@ def test_hit_invulnerability_and_game_over():
         game.update(game.DEATHBOMB_WINDOW)
         assert game.lives == lives
         assert game.bullets == [hostile]
-        assert len([item for item in game.items if item.gravity]) == (3 - lives) * 10
+        assert len([item for item in game.items if item.scattered]) == (3 - lives) * 10
+        assert game.dying
+        for _ in range(5):
+            game.update(.1)
         if lives:
             game.bullets = [Bullet(game.x, game.y, 0, 0)]
             game.update(1 / 120)
@@ -58,7 +74,7 @@ def test_hit_invulnerability_and_game_over():
 
 
 def test_graze_scores_only_once_and_bomb_clears_bullets():
-    game = DanmakuGame()
+    game = combat_game()
     game.start_or_pause()
     game.bullets = [Bullet(game.x + 18, game.y, 0, 0)]
     game.update(0.05)
@@ -71,18 +87,23 @@ def test_graze_scores_only_once_and_bomb_clears_bullets():
     assert game.hp == game.MAX_HP - 24
     assert game.invulnerable > 0
     for _ in range(5):
+        for _ in range(20):
+            game.update(.1)
         game.bomb()
     assert game.bombs == 0
     assert game.hp == game.MAX_HP - 72
 
 
 def test_shots_hit_boss_and_award_clear_bonus_once():
-    game = DanmakuGame()
+    game = combat_game()
     game.start_or_pause()
+    game._phase = 2
     game.hp = 1
     bx, by = game.boss
     game.shots = [Bullet(bx, by + 5, 0, -600)]
     game.update(1 / 120)
+    assert game.transition_remaining == game.PHASE_BREAK
+    finish_break(game)
     assert game.state == "won"
     score = game.score
     assert score == 25 + 3 * 2000 + 3 * 500
@@ -92,18 +113,28 @@ def test_shots_hit_boss_and_award_clear_bonus_once():
 
 
 def test_boss_patterns_advance_with_damage():
-    game = DanmakuGame()
-    game.hp = 240
-    assert game.phase == 1
-    game.hp = 120
-    assert game.phase == 2
+    game = combat_game()
+    game.start_or_pause()
+    for phase in range(3):
+        if game.transition_remaining:
+            finish_break(game)
+        for _ in range(20):
+            game.update(.1)
+        assert game.phase == phase
+        assert game.hp == game.MAX_HP
+        game.hp = 1
+        game.bomb()
+        if phase < 2:
+            assert game.state == "playing"
+    finish_break(game)
+    assert game.state == "won"
 
 
 def test_patterns_timeout_and_pause():
-    game = DanmakuGame()
+    game = combat_game()
     game.start_or_pause()
     for phase in range(3):
-        game.elapsed = phase * 25
+        game._phase = phase
         game._spawn()
         assert game.phase == phase
     assert len(game.bullets) == 20 + 24 + 27
@@ -114,15 +145,16 @@ def test_patterns_timeout_and_pause():
     game.bomb()
     assert game.bombs == 3
     game.start_or_pause()
-    game.elapsed = game.DURATION - 0.01
+    game.phase_elapsed = game.PHASE_DURATION - 0.01
     game.update(0.02)
+    finish_break(game)
     assert game.state == "won"
 
 
 def test_full_fight_keeps_bullet_population_bounded():
-    game = DanmakuGame()
+    game = combat_game()
     game.start_or_pause()
-    for _ in range(750):
+    for _ in range(920):
         game.invulnerable = 1
         game.update(0.1)
         assert len(game.bullets) < 500
@@ -279,6 +311,7 @@ def test_japanese_dialogue_advances_without_firing_or_running_simulation(qapp):
         window.show()
         qapp.processEvents()
         window.timer.stop()
+        window._begin_entrance()
         window._update_story(window.ENTRANCE_DURATION)
         for index in range(len(DIALOGUE)):
             assert window.game.state == "ready"
@@ -292,7 +325,8 @@ def test_japanese_dialogue_advances_without_firing_or_running_simulation(qapp):
         assert not window.keys
         assert window.game.bombs == 3
         QTest.keyClick(window, Qt.Key.Key_R)
-        assert window.game.state == "ready"
+        assert window.game.state == "playing"
+        assert window.story_phase == "warmup"
         assert window.dialogue_index == 0
         QTest.keyClick(window, Qt.Key.Key_Escape)
         assert window.game.state == "playing"
@@ -341,7 +375,7 @@ def test_high_score_survives_reopening_without_overwriting_other_settings(qapp):
 
 
 def test_point_items_drop_and_can_be_collected():
-    game = DanmakuGame()
+    game = combat_game()
     game.start_or_pause()
     game.hp = 349
     bx, by = game.boss
@@ -358,7 +392,7 @@ def test_point_items_drop_and_can_be_collected():
 
 
 def test_hit_scatter_reaches_upper_screen_and_preserves_all_danmaku():
-    game = DanmakuGame()
+    game = combat_game()
     game.start_or_pause()
     game._spawn_in = 100
     colliding = Bullet(game.x, game.y, 0, 0)
@@ -370,12 +404,13 @@ def test_hit_scatter_reaches_upper_screen_and_preserves_all_danmaku():
     assert not game.items
     game.update(game.DEATHBOMB_WINDOW)
     assert len(game.items) == 10
-    assert all(hypot(item.x - hit_position[0], item.y - hit_position[1]) < 6 for item in game.items)
+    assert all(hypot(item.x - hit_position[0], item.y - hit_position[1]) < 15 for item in game.items)
     assert all(item.vy < 0 and item.collect_delay > 0 for item in game.items)
     for _ in range(10):
         game.update(.1)
     assert len(game.items) == 10
-    assert max(item.y for item in game.items) < 100
+    assert max(item.y for item in game.items) < 155
+    assert all(item.vx == 0 and item.vy == game.ITEM_SPEED for item in game.items)
     assert max(item.x for item in game.items) - min(item.x for item in game.items) > 200
     assert game.bullets == [colliding, moving]
     assert moving.x > 40 and moving.y > 100
@@ -384,36 +419,36 @@ def test_hit_scatter_reaches_upper_screen_and_preserves_all_danmaku():
 
 @pytest.mark.parametrize("position", [(20, 420), (364, 420), (20, 24), (364, 24)])
 def test_unfocused_homing_shots_reach_boss_from_either_side_or_above(position):
-    game = DanmakuGame()
+    game = combat_game()
     game.start_or_pause()
     game._spawn_in = 100
     game.invulnerable = 100
     game.x, game.y = position
     game.update(1 / 120, shooting=True)
     game.shots = [shot for shot in game.shots if isinstance(shot, HomingShot)]
-    assert len(game.shots) == 2
+    assert len(game.shots) == 5
     for _ in range(360):
         game.update(1 / 120)
     assert game.hp < game.MAX_HP
 
 
 def test_focused_fire_does_not_launch_homing_shots():
-    game = DanmakuGame()
+    game = combat_game()
     game.start_or_pause()
     game.update(.1, focus=True, shooting=True)
     assert game.shots
     assert not any(isinstance(shot, HomingShot) for shot in game.shots)
     game.update(.1, focus=False, shooting=True)
     seekers = [shot for shot in game.shots if isinstance(shot, HomingShot)]
-    assert len(seekers) == 2
+    assert len(seekers) == 5
     game.update(.1, focus=True, shooting=True)
     assert all(shot in game.shots for shot in seekers)
-    assert len([shot for shot in game.shots if isinstance(shot, HomingShot)]) == 2
+    assert len([shot for shot in game.shots if isinstance(shot, HomingShot)]) == 5
 
 
 @pytest.mark.parametrize("distance", [45, 220])
 def test_individual_shot_damage_is_independent_of_distance(distance):
-    game = DanmakuGame()
+    game = combat_game()
     game.start_or_pause()
     game._spawn_in = 100
     bx, by = game.boss
@@ -480,6 +515,7 @@ def test_boss_music_follows_dialogue_pause_mute_restart_and_close(qapp, fake_mid
         qapp.processEvents()
         window.timer.stop()
         assert fake_midi.calls == []
+        window._begin_entrance()
         window._update_story(window.ENTRANCE_DURATION)
         for _ in DIALOGUE:
             QTest.keyClick(window, Qt.Key.Key_Z)
@@ -494,7 +530,8 @@ def test_boss_music_follows_dialogue_pause_mute_restart_and_close(qapp, fake_mid
         QTest.keyClick(window, Qt.Key.Key_Space)
         assert fake_midi.calls[-1] == ("play", False)
         QTest.keyClick(window, Qt.Key.Key_R)
-        assert window.game.state == "ready"
+        assert window.game.state == "playing"
+        assert window.story_phase == "warmup"
         assert fake_midi.calls[-1] == ("close",)
         QTest.keyClick(window, Qt.Key.Key_Escape)
         assert fake_midi.calls[-1] == ("play", True)
@@ -509,6 +546,7 @@ def test_boss_music_follows_dialogue_pause_mute_restart_and_close(qapp, fake_mid
 def test_flandre_enters_from_offscreen_before_dialogue_without_starting_combat(qapp, fake_midi):
     window = DanmakuWindow()
     try:
+        window._begin_entrance()
         assert window.story_phase == "entrance"
         assert window.scene.boss_position[1] + 70 < 0
         window._advance_dialogue()
@@ -534,6 +572,7 @@ def test_entrance_pauses_on_focus_loss_and_resumes_on_activation(qapp):
         window.show()
         qapp.processEvents()
         window.timer.stop()
+        window._begin_entrance()
         window.clock = SimpleNamespace(restart=lambda: 100)
         window._pause()
         elapsed = window.entrance_elapsed
@@ -559,6 +598,9 @@ def test_x_deathbomb_saves_last_life_and_only_starts_outro_on_clear(qapp, fake_m
         window.game.lives = 1
         window.game._spawn_in = 100
         if kills_boss:
+            window.game._phase = 2
+            window.game.hp_fill_remaining = 0
+            window.game.wave = 1
             window.game.hp = 24
         window.game.bullets = [Bullet(window.game.x, window.game.y, 0, 0)]
         window.game.update(1 / 120)
@@ -568,10 +610,13 @@ def test_x_deathbomb_saves_last_life_and_only_starts_outro_on_clear(qapp, fake_m
         QTest.keyClick(window, Qt.Key.Key_X)
         assert window.game.lives == 1
         assert window.game.bombs == 2
-        assert not window.game.items
+        assert all(isinstance(item, StarItem) for item in window.game.items)
         assert window.game.deathbomb_remaining == 0
         assert window.game.deathbomb_flash > 0
         if kills_boss:
+            assert window.story_phase == "combat"
+            finish_break(window.game)
+            window._check_battle_end()
             assert window.story_phase == "outro"
             assert fake_midi.current_mode == "stopped"
         else:
@@ -588,6 +633,7 @@ def test_sfx_follow_game_events_and_mute_pause_close(qapp, fake_sound_effects):
         window.show()
         qapp.processEvents()
         window.timer.stop()
+        window._begin_entrance()
         window._update_story(window.ENTRANCE_DURATION)
         QTest.keyClick(window, Qt.Key.Key_Z)
         assert "menuinteract" in fake_sound_effects.played
@@ -640,6 +686,7 @@ def test_story_music_starts_at_supplied_cue_and_continues_into_combat(qapp, fake
         window.show()
         qapp.processEvents()
         window.timer.stop()
+        window._begin_entrance()
         window._update_story(window.ENTRANCE_DURATION)
         for _ in range(BGM_CUE_INDEX - 1):
             window._advance_dialogue()
@@ -670,8 +717,10 @@ def test_victory_plays_entire_outro_before_clear_screen(qapp, fake_midi):
         qapp.processEvents()
         window.timer.stop()
         window._start_combat()
+        window.game._phase = 2
         window.game.hp = 0
         window.game._check_win()
+        finish_break(window.game)
         score = window.game.score
         window._check_battle_end()
         assert window.story_phase == "outro"
@@ -695,6 +744,7 @@ def test_victory_plays_entire_outro_before_clear_screen(qapp, fake_midi):
 def test_dialogue_language_toggle_keeps_story_position_and_long_speeches_fit(qapp):
     window = DanmakuWindow()
     try:
+        window._begin_entrance()
         window._update_story(window.ENTRANCE_DURATION)
         window.dialogue_index = 15
         assert window.scene.language == "ja"
@@ -710,10 +760,99 @@ def test_dialogue_language_toggle_keeps_story_position_and_long_speeches_fit(qap
                 assert document.size().height() + 35 < 350
         window._restart()
         assert window.scene.language == "en"
-        assert window.story_phase == "entrance"
+        assert window.story_phase == "warmup"
         QTest.keyClick(window, Qt.Key.Key_L)
         assert window.scene.language == "ja"
         assert len(DIALOGUE) == 26 and len(OUTRO_DIALOGUE) == 15
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_phase_changes_keep_music_playing_and_wait_for_third_bar_before_outro(qapp, fake_midi):
+    window = DanmakuWindow()
+    try:
+        window.show()
+        qapp.processEvents()
+        window.timer.stop()
+        window._start_combat()
+        calls = list(fake_midi.calls)
+        for phase in range(3):
+            window.game.hp = 0
+            window.game._check_win()
+            finish_break(window.game)
+            window._check_battle_end()
+            window._sync_music()
+            if phase < 2:
+                assert window.story_phase == "combat"
+                assert window.game.hp == window.game.MAX_HP
+                assert fake_midi.calls == calls
+                assert fake_midi.current_mode == "playing"
+            else:
+                assert window.story_phase == "outro"
+                assert fake_midi.current_mode == "stopped"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_three_health_bars_show_spent_current_and_future_health(qapp):
+    window = DanmakuWindow()
+    try:
+        window.scene.story_phase = "combat"
+        window.scene.boss_position = None
+        window.game.hp_fill_remaining = 0
+        for phase in range(3):
+            window.game._phase = phase
+            window.game.hp = window.game.MAX_HP / 2
+            image = QImage(640, 480, QImage.Format.Format_ARGB32)
+            image.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(image)
+            window.scene.paint(painter, window.game, window.player_sprite, 0, 0, 0, 60)
+            painter.end()
+            for bar in range(3):
+                left = image.pixelColor(32 + 90, 16 + 4 + 5 * bar).name()
+                right = image.pixelColor(32 + 300, 16 + 4 + 5 * bar).name()
+                if bar < phase:
+                    assert left == right == "#3b1526"
+                elif bar == phase:
+                    assert left == "#fff0d9" and right == "#3b1526"
+                else:
+                    assert left == right == "#92546b"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_death_sprite_flattens_widens_and_fades_before_respawn(qapp):
+    window = DanmakuWindow()
+    try:
+        game = window.game
+        game.start_or_pause()
+        game.x, game.y = 192, 310
+        game.bombs = 0
+        game.bullets = [Bullet(game.x, game.y, 0, 0)]
+        game.update(1 / 120)
+        game.items.clear()
+        game.bullets.clear()
+        bounds = []
+        alpha = []
+        for progress in (0, .5, .9):
+            game.death_remaining = game.DEATH_DURATION * (1 - progress)
+            image = QImage(384, 448, QImage.Format.Format_ARGB32)
+            image.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(image)
+            window.scene.actors(painter, game, window.player_sprite, 0)
+            painter.end()
+            pixels = [(x, y, image.pixelColor(x, y).alpha())
+                      for y in range(275, 345) for x in range(100, 285)
+                      if image.pixelColor(x, y).alpha()]
+            bounds.append((max(p[0] for p in pixels) - min(p[0] for p in pixels),
+                           max(p[1] for p in pixels) - min(p[1] for p in pixels)))
+            alpha.append(max(p[2] for p in pixels))
+        assert bounds[0][0] < bounds[1][0] < bounds[2][0]
+        assert bounds[0][1] > bounds[1][1] > bounds[2][1]
+        assert alpha[0] > alpha[1] > alpha[2] > 0
     finally:
         window.close()
         window.deleteLater()

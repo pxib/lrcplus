@@ -1,6 +1,6 @@
 """Classic 4:3 presentation for Scarlet Refrain, drawn in 640 × 480 units."""
 
-from math import atan2, cos, exp, pi, sin
+from math import atan2, ceil, cos, exp, pi, sin
 from random import Random
 
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -11,8 +11,8 @@ from PySide6.QtGui import (
 )
 
 from core.fonts import library_font
-from assets.scarlet import CHAR_DIR, PORTRAIT_DIR
-from assets.scarlet.danmaku import HomingShot
+from assets.scarlet import CHAR_DIR, PORTRAIT_DIR, SPRITE_DIR
+from assets.scarlet.danmaku import HomingShot, PowerItem, StarItem
 from assets.scarlet.dialogue import INTRO_DIALOGUE as DIALOGUE, NAMES
 
 
@@ -23,6 +23,7 @@ class ScarletScene:
     def __init__(self):
         self.font = library_font(QFont())
         self.boss_sprite = QPixmap(str(CHAR_DIR / "flandre.png"))
+        self.fairy_sheet = QPixmap(str(SPRITE_DIR / "cirno-effects.png"))
         self.portraits = {
             name: QPixmap(str(PORTRAIT_DIR / f"{name}-portrait.png"))
             for name in ("reimu", "flandre")
@@ -34,6 +35,7 @@ class ScarletScene:
 
     def reset_presentation(self):
         self.focus_alpha = 0.0
+        self.option_rotation = 0.0
         self.portrait_emphasis = {"reimu": 0.0, "flandre": 0.0}
         self.story_phase = "entrance"
         self.dialogue_script = DIALOGUE
@@ -49,6 +51,7 @@ class ScarletScene:
         speaker = self.dialogue_script[dialogue_index].speaker if in_dialogue else None
         if not paused:
             self.music_cue_remaining = max(0.0, self.music_cue_remaining - dt)
+            self.option_rotation = (self.option_rotation + 180 * dt) % 360
         blend = 0.0 if paused else 1 - exp(-dt / .1)
         for name, value in self.portrait_emphasis.items():
             target = 1.0 if name == speaker else 0.0
@@ -183,10 +186,37 @@ class ScarletScene:
         p.drawEllipse(QRectF(6, -3, 7, 6))
         p.restore()
 
+    def fairy(self, p, enemy):
+        if not self.fairy_sheet.isNull():
+            # The top three rows contain fairies; each starts with four
+            # 32 × 32 idle frames. The rest of the texture contains effects.
+            column = int(enemy.age * 10 + 1e-8) % 4
+            row = enemy.variant % 3
+            p.save()
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+            p.drawPixmap(QRectF(enemy.x - 16, enemy.y - 16, 32, 32),
+                         self.fairy_sheet, QRectF(column * 32, row * 32, 32, 32))
+            p.restore()
+            return
+        p.setPen(QPen(QColor("#39274d"), 1))
+        p.setBrush(QColor("#bedaf0"))
+        for side in (-1, 1):
+            p.drawEllipse(QRectF(enemy.x + side * 10 - 8, enemy.y - 6, 16, 9))
+        p.setBrush(QColor("#646bd3"))
+        p.drawPolygon(QPolygonF([QPointF(enemy.x, enemy.y - 7),
+                                 QPointF(enemy.x - 9, enemy.y + 11),
+                                 QPointF(enemy.x + 9, enemy.y + 11)]))
+        p.setBrush(QColor("#ffe2c5"))
+        p.drawEllipse(QPointF(enemy.x, enemy.y - 7), 5, 5)
+
     def actors(self, p, game, sprite, direction):
         bx, by = self.boss_position if self.boss_position is not None else game.boss
-        self.magic_circle(p, bx, by, game.elapsed)
-        if self.boss_sprite.isNull():
+        if self.story_phase != "warmup":
+            self.magic_circle(p, bx, by, game.elapsed)
+        if self.story_phase == "warmup":
+            for enemy in game.enemies:
+                self.fairy(p, enemy)
+        elif self.boss_sprite.isNull():
             self.character(p, bx, by, boss=True)
         else:
             p.save()
@@ -196,6 +226,9 @@ class ScarletScene:
             p.drawPixmap(QPointF(bx - 17, by - 39), self.boss_sprite)
             p.restore()
         p.setPen(Qt.PenStyle.NoPen)
+        if game.has_options and not game.dying and game.lives > 0:
+            for index, (x, y) in enumerate(game.option_positions):
+                self.yin_yang(p, x, y, self.option_rotation * (1 if index == 0 else -1))
         for shot in game.shots:
             if isinstance(shot, HomingShot):
                 p.save()
@@ -219,16 +252,30 @@ class ScarletScene:
             p.setBrush(QColor("#fff5e9"))
             p.drawEllipse(QPointF(bullet.x - .5, bullet.y - 1), 2, 3)
         for item in game.items:
-            p.fillRect(QRectF(item.x - 6, item.y - 6, 12, 12), QColor("#4376dc"))
-            self.text(p, item.x - 3, item.y + 4, "点", 9, bold=True)
-        if not game.invulnerable or int(game.invulnerable * 12) % 2 == 0:
+            if isinstance(item, StarItem):
+                self.star(p, item.x, item.y, "#fff099", radius=5.5)
+                continue
+            power = isinstance(item, PowerItem)
+            p.fillRect(QRectF(item.x - 6, item.y - 6, 12, 12), QColor("#d94c53" if power else "#4376dc"))
+            self.text(p, item.x - 3, item.y + 4, "P" if power else "点", 9, bold=True)
+        for popup in game.score_popups:
+            self.text(p, popup.x - 12, popup.y, str(popup.value), 10, "#b9f4ff", bold=True)
+        if game.dying or (game.lives > 0 and (
+                not game.invulnerable or int(game.invulnerable * 12) % 2 == 0)):
+            p.save()
+            p.translate(game.x, game.y)
+            if game.dying:
+                progress = 1 - game.death_remaining / game.DEATH_DURATION
+                p.scale(1 + 3 * progress, max(.04, (1 - progress) ** 2))
+                p.setOpacity((1 - progress) ** 1.5)
             if sprite.sheet.isNull():
-                self.character(p, game.x, game.y)
+                self.character(p, 0, 0)
             else:
                 p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-                p.drawPixmap(QRectF(game.x - 16, game.y - 24, 32, 48), sprite.sheet,
+                p.drawPixmap(QRectF(-16, -24, 32, 48), sprite.sheet,
                              QRectF(sprite.frame_rect(game.elapsed, direction)))
-        if self.focus_alpha > 0:
+            p.restore()
+        if self.focus_alpha > 0 and not game.dying and game.lives > 0:
             p.save()
             p.setOpacity(self.focus_alpha)
             p.setPen(QPen(QColor("#ffccdd"), 1))
@@ -246,6 +293,27 @@ class ScarletScene:
             label = "喰らいボム！" if self.language == "ja" else "Deathbomb!"
             self.text(p, max(8, min(292, game.x - 42)), game.y - 33, label, 12, "#fff0c9", bold=True)
             p.restore()
+
+    @staticmethod
+    def yin_yang(p, x, y, angle):
+        p.save()
+        p.translate(x, y)
+        p.rotate(angle)
+        p.setPen(QPen(QColor("#f8ddd2"), .8))
+        p.setBrush(QColor("#fff7ec"))
+        p.drawEllipse(QPointF(0, 0), 8, 8)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("#d32641"))
+        half = QPainterPath(QPointF(0, -8))
+        half.arcTo(QRectF(-8, -8, 16, 16), 90, -180)
+        half.cubicTo(-5.3, 8, -5.3, 0, 0, 0)
+        half.cubicTo(5.3, 0, 5.3, -8, 0, -8)
+        p.drawPath(half)
+        p.setBrush(QColor("#d32641"))
+        p.drawEllipse(QPointF(0, -4), 1.4, 1.4)
+        p.setBrush(QColor("#fff7ec"))
+        p.drawEllipse(QPointF(0, 4), 1.4, 1.4)
+        p.restore()
 
     def portrait(self, p, name, target):
         pixmap = self.portraits[name]
@@ -336,10 +404,13 @@ class ScarletScene:
         for i in range(game.lives):
             self.star(p, 507 + i * 16, 127, "#db4556")
         for i in range(game.bombs):
-            self.star(p, 507 + i * 16, 151, "#8bbd83")
+            self.star(p, 507 + i * 16, 151, "#657c63" if game.bomb_cooldown > 0 else "#8bbd83")
+        if game.bomb_cooldown > 0:
+            self.text(p, 568, 157, f"{game.bomb_cooldown:.1f}s", 11, "#c5ddab")
         self.text(p, 434, 195, "Power", 16, "#ec6678")
-        p.fillRect(QRectF(497, 180, 126, 17), QColor("#aaa1b7"))
-        self.text(p, 500, 194, "ＭＡＸ", 15, "#ffffff")
+        p.fillRect(QRectF(497, 180, 126, 17), QColor("#49394f"))
+        p.fillRect(QRectF(497, 180, 126 * game.power / game.MAX_POWER, 17), QColor("#aaa1b7"))
+        self.text(p, 500, 194, "ＭＡＸ" if game.power >= game.MAX_POWER else f"{game.power:03d}", 15, "#ffffff")
         self.text(p, 434, 218, "Graze", 16, "#6caf5e")
         self.text(p, 497, 218, f"{game.graze:03d}", 19, italic=True)
         self.text(p, 434, 241, "点", 15)
@@ -373,22 +444,45 @@ class ScarletScene:
         p.translate(self.FIELD.topLeft())
         p.setClipRect(QRectF(0, 0, 384, 448))
         self.background(p, game.elapsed)
+        if game.power >= game.MAX_POWER and self.story_phase in {"warmup", "combat"}:
+            p.setPen(QPen(QColor(255, 234, 195, 90), .7, Qt.PenStyle.DashLine))
+            p.drawLine(QPointF(0, game.COLLECTION_LINE), QPointF(game.WIDTH, game.COLLECTION_LINE))
+            label = "自動回収" if self.language == "ja" else "Auto-collect"
+            self.text(p, 7, game.COLLECTION_LINE - 4, label, 8, "#efcdab")
         self.actors(p, game, sprite, direction)
         if self.story_phase == "entrance":
             self.entrance_title(p)
         elif self.story_phase in {"intro", "outro"}:
             self.dialogue(p, dialogue_index)
+        elif self.story_phase == "warmup":
+            label = "準備運動 ～ Ｐを集めよう" if self.language == "ja" else "Warm-up ~ collect P items"
+            self.text(p, 7, 25, label, 12)
+            self.text(p, 347, 25, f"{ceil(max(0, game.WARMUP_DURATION - game.warmup_elapsed)):02d}", 15)
+            if game.state in {"paused", "lost"}:
+                self.overlay(p, game)
         else:
-            p.fillRect(QRectF(5, 4, 374, 4), QColor("#3b1526"))
-            p.fillRect(QRectF(5, 4, 374 * game.hp / game.MAX_HP, 4), QColor("#f5d5cc"))
-            self.text(p, 7, 25, game.PATTERNS[game.phase], 12)
-            self.text(p, 339, 25, f"{max(0, int(game.DURATION - game.elapsed)):02d}", 15)
+            for phase in range(len(game.PATTERNS)):
+                y = 3 + phase * 5
+                p.fillRect(QRectF(5, y, 374, 3), QColor("#3b1526"))
+                fraction = 0 if phase < game.phase else (
+                    game.hp / game.MAX_HP * game.hp_fill_progress if phase == game.phase else 1)
+                color = "#fff0d9" if phase == game.phase else "#92546b"
+                p.fillRect(QRectF(5, y, 374 * fraction, 3), QColor(color))
+            self.text(p, 7, 31, game.PATTERNS[game.phase], 12)
+            self.text(p, 299, 31, f"{game.phase + 1}/3", 11, "#d8a5b8")
+            self.text(p, 347, 31, f"{ceil(game.phase_remaining):02d}", 15)
+            if game.transition_remaining > 0:
+                if game.transition_is_final:
+                    label = "撃破！" if self.language == "ja" else "Defeated!"
+                else:
+                    label = "次の弾幕まで" if self.language == "ja" else "Next pattern in"
+                self.text(p, 8, 51, f"{label} {ceil(game.transition_remaining)}", 12, "#fff0c9")
             if game.state in {"paused", "won", "lost"}:
                 self.overlay(p, game)
         if self.music_cue_remaining > 0:
             p.save()
             p.setOpacity(min(1.0, self.music_cue_remaining / .5))
-            cue = "♪ U.N.オーエンは彼女なのか？" if self.language == "ja" else "♪ U.N. Owen was Her?"
+            cue = "♪ U.N.オーエンは彼女なのか？（予算なし）" if self.language == "ja" else "♪ U.N. Owen was Her? ($5 Budget)"
             self.text(p, 12, 46, cue, 12, "#f5ddc2")
             p.restore()
         p.restore()

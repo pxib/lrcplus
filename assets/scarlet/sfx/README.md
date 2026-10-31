@@ -6,19 +6,20 @@ rights and are not covered by the application's MIT license.
 
 | File | Event |
 | --- | --- |
-| `bossattack1.wav` | Boss spiral bullet waves |
+| `bossattack1.wav` | Boss spiral waves and warm-up enemy fire |
 | `bossattack2.wav` | Later boss patterns and the bomb burst |
-| `bossdamage.wav` | Player shots damaging the boss |
+| `bossdamage.wav` | Player shots damaging enemies or the boss |
 | `bossdeath.wav` | Defeating the boss by reducing HP to zero |
 | `extendlife.wav` | Successful deathbomb: life saved |
 | `graze.wav` | First graze of each enemy bullet |
-| `itempickup.wav` | Collecting point items |
+| `itempickup.wav` | Collecting point or power items |
 | `menuinteract.wav` | Dialogue, language, mute, pause/resume, and restart controls |
 | `playerdeath.wav` | A committed death after the deathbomb window expires |
+| `playershoot.wav` | Reimu's main firing volleys |
 | `timeout.wav` | Final ten-second countdown and surviving to time-out |
 
-There is no separate player-shot or bomb WAV in the supplied set. Bombs use
-the stronger attack cue; firing itself stays silent until shots hit the boss.
+There is no separate bomb WAV in the supplied set. Bombs use the stronger
+attack cue. Player firing uses the subsequently supplied `playershoot.wav`.
 No extra-life scoring rule has been added: the life cue acknowledges a save.
 
 Effects are preloaded with bounded voice pools and per-sound rate limits.

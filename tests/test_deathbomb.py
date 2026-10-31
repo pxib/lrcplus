@@ -5,6 +5,8 @@ from assets.scarlet.danmaku import Bullet, DanmakuGame
 
 def hit_player(*, lives=3, bombs=3):
     game = DanmakuGame()
+    game.hp_fill_remaining = 0
+    game.wave = 1
     game.start_or_pause()
     game._spawn_in = 100
     game.lives, game.bombs = lives, bombs
@@ -35,21 +37,30 @@ def test_bomb_inside_window_preserves_life_position_and_point_inventory(delay, l
     assert game.deathbomb_flash > 0
 
 
-@pytest.mark.parametrize("lives, state", [(1, "lost"), (3, "playing")])
-def test_expiry_commits_one_death_and_preserves_danmaku(lives, state):
+@pytest.mark.parametrize("lives", [1, 3])
+def test_expiry_commits_one_death_and_preserves_danmaku(lives):
     game = hit_player(lives=lives)
     bullets = list(game.bullets)
     game.update(game.DEATHBOMB_WINDOW)
     assert game.lives == lives - 1
-    assert game.state == state
+    assert game.state == "playing"
+    assert game.dying
     assert game.bombs == 3
     assert len(game.items) == 10
     assert game.bullets == bullets
-    assert (game.x, game.y) == (game.WIDTH / 2, game.HEIGHT - 65)
+    assert (game.x, game.y) == (60, 300)
     assert game.deathbomb_remaining == 0
     game.bomb()
     assert game.lives == lives - 1  # A late normal bomb cannot refund a life.
-    assert game.bombs == (3 if state == "lost" else 2)
+    assert game.bombs == 3  # Bombing is disabled during the death animation.
+    for _ in range(5):
+        game.update(.1)
+    assert not game.dying
+    if lives == 1:
+        assert game.state == "lost"
+    else:
+        assert (game.x, game.y) == (game.WIDTH / 2, game.HEIGHT - 65)
+        assert game.invulnerable > 2.4
 
 
 def test_repeated_collisions_do_not_extend_the_window():
@@ -81,7 +92,8 @@ def test_pausing_freezes_the_window_and_disables_bombing_until_resume():
 
 def test_no_bombs_means_no_rescue_window():
     game = hit_player(lives=1, bombs=0)
-    assert game.state == "lost"
+    assert game.state == "playing"
+    assert game.dying
     assert game.lives == 0
     assert game.deathbomb_remaining == 0
     assert len(game.items) == 10
@@ -102,6 +114,7 @@ def test_restart_discards_a_pending_death():
 @pytest.mark.parametrize("save", [False, True])
 def test_boss_clear_waits_for_pending_last_life_hit_to_resolve(save):
     game = hit_player(lives=1)
+    game._phase = 2
     game.hp = 1
     bx, by = game.boss
     game.shots = [Bullet(bx, by, 0, 0)]
@@ -110,6 +123,9 @@ def test_boss_clear_waits_for_pending_last_life_hit_to_resolve(save):
     assert game.state == "playing"
     if save:
         game.bomb()
+        assert game.transition_remaining == game.PHASE_BREAK
+        for _ in range(40):
+            game.update(.1)
         assert game.state == "won"
         assert game.lives == 1
         score = game.score
@@ -117,6 +133,10 @@ def test_boss_clear_waits_for_pending_last_life_hit_to_resolve(save):
         assert game.score == score
     else:
         game.update(game.DEATHBOMB_WINDOW)
+        assert game.dying
+        assert game.state == "playing"
+        for _ in range(5):
+            game.update(.1)
         assert game.state == "lost"
         assert game.lives == 0
 

@@ -8,6 +8,14 @@ from assets.scarlet.danmaku import Bullet, DanmakuGame, PointItem
 from assets.scarlet.sound_effects import SOUNDS, SoundEffects
 
 
+def combat_game():
+    """Arrange a boss whose opening health fill and first volley are complete."""
+    game = DanmakuGame()
+    game.hp_fill_remaining = 0
+    game.wave = 1
+    return game
+
+
 def test_sound_bank_loads_each_supplied_wav_once_per_bounded_voice(qapp, fake_sound_effects):
     sounds = SoundEffects(effect_factory=fake_sound_effects.factory)
     try:
@@ -89,7 +97,7 @@ def test_missing_sfx_folder_is_nonfatal(qapp, fake_sound_effects, tmp_path):
 def test_boss_death_has_priority_over_attack_and_damage_cues(qapp, fake_sound_effects):
     sounds = SoundEffects(effect_factory=fake_sound_effects.factory)
     try:
-        sounds.play_many(["bossdamage", "bossattack1", "bossdeath", "bossdeath"])
+        sounds.play_many(["playershoot", "bossdamage", "bossattack1", "bossdeath", "bossdeath"])
         assert fake_sound_effects.played == ["bossdeath"]
     finally:
         sounds.stop()
@@ -97,7 +105,7 @@ def test_boss_death_has_priority_over_attack_and_damage_cues(qapp, fake_sound_ef
 
 
 def test_grazes_pickups_and_boss_hits_emit_one_cue_per_event_batch():
-    game = DanmakuGame()
+    game = combat_game()
     game.start_or_pause()
     game._spawn_in = 100
     bx, by = game.boss
@@ -112,7 +120,7 @@ def test_grazes_pickups_and_boss_hits_emit_one_cue_per_event_batch():
 
 
 def test_player_death_waits_for_deathbomb_expiry_and_success_plays_life_cue():
-    game = DanmakuGame()
+    game = combat_game()
     game.start_or_pause()
     game.bullets = [Bullet(game.x, game.y, 0, 0)]
     game.update(1 / 120)
@@ -128,14 +136,20 @@ def test_player_death_waits_for_deathbomb_expiry_and_success_plays_life_cue():
 
 
 def test_boss_wave_sounds_follow_pattern_and_clear_reason():
-    game = DanmakuGame()
+    game = combat_game()
     game.start_or_pause()
     game._spawn()
     assert game.take_sound_events() == ["bossattack1"]
-    game.elapsed = 25
+    game.hp = 0
+    game._check_win()
+    game.take_sound_events()
+    for _ in range(40):
+        game.update(.1)
+    game.take_sound_events()
     game._spawn()
     assert game.take_sound_events() == ["bossattack2"]
     game.hp = 0
+    game._phase = 2
     game._check_win()
     assert game.take_sound_events() == ["bossdeath"]
     game._check_win()
@@ -143,10 +157,10 @@ def test_boss_wave_sounds_follow_pattern_and_clear_reason():
 
 
 def test_countdown_warns_once_per_second_and_freezes_when_paused():
-    game = DanmakuGame()
+    game = combat_game()
     game.start_or_pause()
     game._spawn_in = 100
-    game.elapsed = game.DURATION - 10.01
+    game.phase_elapsed = game.PHASE_DURATION - 10.01
     game.update(.02)
     assert game.take_sound_events() == ["timeout"]
     game.update(.1)
@@ -155,7 +169,10 @@ def test_countdown_warns_once_per_second_and_freezes_when_paused():
     game.update(.1)
     assert game.take_sound_events() == []
     game.start_or_pause()
-    game.elapsed = game.DURATION - .01
+    game._phase = 2
+    game.phase_elapsed = game.PHASE_DURATION - .01
     game.update(.02)
     assert game.take_sound_events() == ["timeout"]
+    for _ in range(40):
+        game.update(.1)
     assert game.state == "won"

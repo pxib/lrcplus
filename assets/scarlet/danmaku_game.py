@@ -73,6 +73,20 @@ class DanmakuWindow(QDialog):
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.timer.setInterval(16)
         self.timer.timeout.connect(self._tick)
+        self._start_warmup()
+
+    def _start_warmup(self):
+        self.game.start_warmup()
+        self.scene.story_phase = "warmup"
+
+    def _begin_entrance(self):
+        if (self.game.dying or self.game._pending_hit_position is not None
+                or self.game.state == "lost"):
+            return
+        self.game.prepare_boss()
+        self.scene.reset_presentation()
+        self.entrance_elapsed = 0.0
+        self.keys.clear()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -129,6 +143,7 @@ class DanmakuWindow(QDialog):
         self._story_suspended = False
         self._player_direction = 0
         self.keys.clear()
+        self._start_warmup()
         self.sfx.play("menuinteract")
 
     def _sync_music(self):
@@ -141,9 +156,11 @@ class DanmakuWindow(QDialog):
 
     def _play_game_sounds(self):
         events = self.game.take_sound_events()
-        if self.game.state == "lost" and "playerdeath" in events:
+        if self.game.lives <= 0 and "playerdeath" in events:
             self.sfx.stop()
             events = ["playerdeath"]
+        elif "bossdeath" in events:
+            self.sfx.stop()
         self.sfx.play_many(events)
 
     @property
@@ -164,6 +181,10 @@ class DanmakuWindow(QDialog):
             self.keys.clear()
 
     def _start_combat(self):
+        if self.game.mode == "warmup":
+            self._begin_entrance()
+            if self.game.mode == "warmup":
+                return
         self.scene.story_phase = "combat"
         self.scene.boss_position = None
         if self.game.state == "ready":
@@ -246,6 +267,10 @@ class DanmakuWindow(QDialog):
             self.sfx.play("menuinteract")
             self.update()
             return
+        if self.story_phase == "warmup" and key == Qt.Key.Key_Escape:
+            self._start_combat()
+            self.update()
+            return
         if self.story_phase in {"entrance", "intro", "outro"}:
             if key in (Qt.Key.Key_Z, Qt.Key.Key_Space, Qt.Key.Key_Return):
                 self._advance_dialogue()
@@ -308,10 +333,10 @@ class DanmakuWindow(QDialog):
         self.scene.update_presentation(
             dt, focused and self.game.state == "playing",
             self.dialogue_index, self.story_phase in {"intro", "outro"},
-            paused=self._story_suspended,
+            paused=self._story_suspended or self.game.state == "paused",
         )
         horizontal = int(held(Qt.Key.Key_Right, Qt.Key.Key_D)) - int(held(Qt.Key.Key_Left, Qt.Key.Key_A))
-        if self.game.state == "playing":
+        if self.game.state == "playing" and not self.game.dying:
             self._player_direction = horizontal
         self.game.update(
             dt,
@@ -319,6 +344,9 @@ class DanmakuWindow(QDialog):
             int(held(Qt.Key.Key_Down, Qt.Key.Key_S)) - int(held(Qt.Key.Key_Up, Qt.Key.Key_W)),
             focused, held(Qt.Key.Key_Z),
         )
+        if (self.story_phase == "warmup" and self.game.state == "playing"
+                and self.game.warmup_complete):
+            self._begin_entrance()
         self._check_battle_end()
         self._play_game_sounds()
         if self.game.state in {"won", "lost"}:
