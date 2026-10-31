@@ -29,6 +29,76 @@ def qapp():
 
 
 @pytest.fixture
+def fake_midi():
+    """Exercise game audio controls without playing sound during UI tests."""
+    class Midi:
+        def __init__(self):
+            self.calls = []
+            self.current_mode = "stopped"
+            self.fail_play = False
+
+        def play(self, restart=False):
+            self.calls.append(("play", restart))
+            if self.fail_play:
+                raise OSError("MIDI output unavailable")
+            self.current_mode = "playing"
+
+        def pause(self):
+            self.calls.append(("pause",))
+            self.current_mode = "paused"
+
+        def mode(self):
+            return self.current_mode
+
+        def close(self):
+            self.calls.append(("close",))
+            self.current_mode = "stopped"
+
+    return Midi()
+
+
+@pytest.fixture
+def fake_sound_effects():
+    from types import SimpleNamespace
+    from PySide6.QtMultimedia import QSoundEffect
+
+    voices, played = [], []
+
+    class Effect:
+        def __init__(self, parent):
+            self.playing = False
+            self.current_status = QSoundEffect.Status.Ready
+            self.stops = 0
+            voices.append(self)
+
+        def setLoopCount(self, count):
+            self.loops = count
+
+        def setVolume(self, volume):
+            self.volume = volume
+
+        def setSource(self, url):
+            self.source = url
+
+        def status(self):
+            return self.current_status
+
+        def isPlaying(self):
+            return self.playing
+
+        def play(self):
+            from pathlib import Path
+            self.playing = True
+            played.append(Path(self.source.toLocalFile()).stem)
+
+        def stop(self):
+            self.playing = False
+            self.stops += 1
+
+    return SimpleNamespace(factory=Effect, voices=voices, played=played)
+
+
+@pytest.fixture
 def make_lyrics_editor(tmp_path, qapp, monkeypatch):
     from ui.lrc_editor import LrcEditorDialog
 

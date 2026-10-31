@@ -59,7 +59,7 @@ class AboutTab(QWidget):
         self.logo.setAutoRaise(True)
         self.logo.setAccessibleName("LRCPlus logo")
         self.logo.setToolTip("Every song deserves an encore.")
-        self.logo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.logo.setCursor(Qt.CursorShape.ArrowCursor)
         self.logo.clicked.connect(self._logo_clicked)
         layout.addWidget(self.logo, 0, Qt.AlignmentFlag.AlignHCenter)
         title = QLabel(f"<span style='font-size: 25pt; font-weight: 600;'>{APP_NAME}</span>")
@@ -122,7 +122,7 @@ class AboutTab(QWidget):
         self._click_timer.stop()
         self._reset_clicks()
         if self.game_window is None:
-            from ui.danmaku_game import DanmakuWindow
+            from assets.scarlet.danmaku_game import DanmakuWindow
 
             # Parent to Settings so it stays interactive during Settings.exec().
             self.game_window = DanmakuWindow(self.window())
@@ -150,7 +150,11 @@ class AboutTab(QWidget):
             "Reimu Hakurei sprite — GabrielDrawingsxD.\n"
             "https://www.deviantart.com/gabrieldrawingsxd/art/"
             "My-new-Reimu-Hakurei-sprite-516844635\n"
+            "Flandre Scarlet boss sprite — Touhou Project / ZUN.\n"
+            "https://en.touhouwiki.net/images/6/6d/Th06FlandreSprite.png\n"
             "Dialogue portraits — new fan illustrations generated with imagegen.\n"
+            "Boss-theme MIDI — provided by the user.\n"
+            "Game sound effects — WAV files provided by the user.\n"
             "Inspired by Touhou Project by ZUN / Team Shanghai Alice.\n"
             "No affiliation or endorsement.\n\n"
             "Third-party components retain their own licenses."
@@ -159,7 +163,8 @@ class AboutTab(QWidget):
         for title, path in (("LRCPlus · MIT", "LICENSE.txt"),
                             ("Noto · OFL", "assets/fonts/LICENSE"),
                             ("oneko · MIT", "assets/oneko-LICENSE.txt"),
-                            ("Reimu · source", "assets/reimu-README.md")):
+                            ("Reimu · source", "assets/scarlet/char/reimu-README.md"),
+                            ("Flandre · source", "assets/scarlet/char/flandre-README.md")):
             text = QPlainTextEdit()
             text.setReadOnly(True)
             try:

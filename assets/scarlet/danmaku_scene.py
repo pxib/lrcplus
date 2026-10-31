@@ -1,25 +1,19 @@
 """Classic 4:3 presentation for Scarlet Refrain, drawn in 640 × 480 units."""
 
-from math import cos, pi, sin
-from pathlib import Path
+from math import atan2, cos, exp, pi, sin
 from random import Random
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
-    QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath,
-    QPen, QPixmap, QPolygonF, QRadialGradient,
+    QAbstractTextDocumentLayout, QColor, QFont, QImage, QLinearGradient,
+    QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygonF, QRadialGradient,
+    QTextDocument, QTextOption,
 )
 
 from core.fonts import library_font
-
-
-ASSETS = Path(__file__).resolve().parents[1] / "assets"
-DIALOGUE = (
-    ("flandre", "フランドール・スカーレット", "私は４９５年間一回も、\nお外に出てないのよ。"),
-    ("reimu", "博麗 霊夢", "……それで、私と遊びたいって？"),
-    ("flandre", "フランドール・スカーレット", "そう！　弾幕ごっこをしましょう？"),
-    ("reimu", "博麗 霊夢", "いいわ。手加減はしないからね。"),
-)
+from assets.scarlet import CHAR_DIR, PORTRAIT_DIR
+from assets.scarlet.danmaku import HomingShot
+from assets.scarlet.dialogue import INTRO_DIALOGUE as DIALOGUE, NAMES
 
 
 class ScarletScene:
@@ -28,11 +22,38 @@ class ScarletScene:
 
     def __init__(self):
         self.font = library_font(QFont())
+        self.boss_sprite = QPixmap(str(CHAR_DIR / "flandre.png"))
         self.portraits = {
-            name: QPixmap(str(ASSETS / f"{name}-portrait.png"))
+            name: QPixmap(str(PORTRAIT_DIR / f"{name}-portrait.png"))
             for name in ("reimu", "flandre")
         }
         self.texture = self._make_texture()
+        self.music_status = ""
+        self.language = "ja"
+        self.reset_presentation()
+
+    def reset_presentation(self):
+        self.focus_alpha = 0.0
+        self.portrait_emphasis = {"reimu": 0.0, "flandre": 0.0}
+        self.story_phase = "entrance"
+        self.dialogue_script = DIALOGUE
+        self.boss_position = (self.FIELD.width() / 2, -90)
+        self.entrance_progress = 0.0
+        self.music_cue_remaining = 0.0
+
+    def update_presentation(self, dt, focused, dialogue_index, in_dialogue, paused=False):
+        dt = max(0.0, min(dt, .1))
+        target = 1.0 if focused else 0.0
+        speed = dt / (.14 if focused else .2)
+        self.focus_alpha += max(-speed, min(speed, target - self.focus_alpha))
+        speaker = self.dialogue_script[dialogue_index].speaker if in_dialogue else None
+        if not paused:
+            self.music_cue_remaining = max(0.0, self.music_cue_remaining - dt)
+        blend = 0.0 if paused else 1 - exp(-dt / .1)
+        for name, value in self.portrait_emphasis.items():
+            target = 1.0 if name == speaker else 0.0
+            value += (target - value) * blend
+            self.portrait_emphasis[name] = target if abs(target - value) < .001 else value
 
     @staticmethod
     def _make_texture():
@@ -162,14 +183,35 @@ class ScarletScene:
         p.drawEllipse(QRectF(6, -3, 7, 6))
         p.restore()
 
-    def actors(self, p, game, sprite, direction, focus):
-        bx, by = game.boss
+    def actors(self, p, game, sprite, direction):
+        bx, by = self.boss_position if self.boss_position is not None else game.boss
         self.magic_circle(p, bx, by, game.elapsed)
-        self.character(p, bx, by, boss=True)
+        if self.boss_sprite.isNull():
+            self.character(p, bx, by, boss=True)
+        else:
+            p.save()
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+            # The supplied 49 × 71 sprite has wings above and to the right.
+            # Anchor her body, rather than the image bounds, to the boss center.
+            p.drawPixmap(QPointF(bx - 17, by - 39), self.boss_sprite)
+            p.restore()
         p.setPen(Qt.PenStyle.NoPen)
         for shot in game.shots:
-            p.setBrush(QColor("#c7fff4"))
-            p.drawRoundedRect(QRectF(shot.x - 2, shot.y - 9, 4, 18), 1.5, 1.5)
+            if isinstance(shot, HomingShot):
+                p.save()
+                p.translate(shot.x, shot.y)
+                p.rotate(atan2(shot.vy, shot.vx) * 180 / pi + 90)
+                colors = ("#ff8fbb", "#84e6ff", "#ffe985", "#bc9cff")
+                p.setPen(QPen(QColor("#fff5df"), .8))
+                p.setBrush(QColor(colors[shot.color]))
+                p.drawPolygon(QPolygonF([QPointF(0, -9), QPointF(6, 0),
+                                         QPointF(0, 9), QPointF(-6, 0)]))
+                p.setBrush(QColor("#fffce8"))
+                p.drawEllipse(QPointF(0, 0), 1.5, 3)
+                p.restore()
+            else:
+                p.setBrush(QColor("#c7fff4"))
+                p.drawRoundedRect(QRectF(shot.x - 2, shot.y - 9, 4, 18), 1.5, 1.5)
         colors = ("#ff7990", "#80caff", "#dba2ff")
         for bullet in game.bullets:
             p.setBrush(QColor(colors[bullet.color]))
@@ -186,22 +228,33 @@ class ScarletScene:
                 p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
                 p.drawPixmap(QRectF(game.x - 16, game.y - 24, 32, 48), sprite.sheet,
                              QRectF(sprite.frame_rect(game.elapsed, direction)))
-        if focus:
+        if self.focus_alpha > 0:
+            p.save()
+            p.setOpacity(self.focus_alpha)
             p.setPen(QPen(QColor("#ffccdd"), 1))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(QPointF(game.x, game.y), 20, 20)
-        p.setPen(QPen(QColor("#fff8f2"), 1))
-        p.setBrush(QColor("#e52f45"))
-        p.drawEllipse(QPointF(game.x, game.y), 2.5, 2.5)
+            p.setPen(QPen(QColor("#fff8f2"), 1))
+            p.setBrush(QColor("#e52f45"))
+            p.drawEllipse(QPointF(game.x, game.y), 2.5, 2.5)
+            p.restore()
         if game.bomb_flash:
             p.fillRect(QRectF(0, 0, 384, 448), QColor(255, 222, 210, int(130 * game.bomb_flash / .65)))
+        if game.deathbomb_flash > 0:
+            p.save()
+            p.setOpacity(min(1.0, game.deathbomb_flash / .2))
+            label = "喰らいボム！" if self.language == "ja" else "Deathbomb!"
+            self.text(p, max(8, min(292, game.x - 42)), game.y - 33, label, 12, "#fff0c9", bold=True)
+            p.restore()
 
-    def portrait(self, p, name, target, active):
+    def portrait(self, p, name, target):
         pixmap = self.portraits[name]
         if pixmap.isNull():
             return
         p.save()
-        p.setOpacity(1.0 if active else .43)
+        emphasis = self.portrait_emphasis[name]
+        target = target.translated((12 if name == "reimu" else -12) * emphasis, 0)
+        p.setOpacity(.43 + .57 * emphasis)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         scaled = pixmap.size().scaled(target.size().toSize(), Qt.AspectRatioMode.KeepAspectRatio)
         rect = QRectF(target.center().x() - scaled.width() / 2,
@@ -209,15 +262,53 @@ class ScarletScene:
         p.drawPixmap(rect, pixmap, QRectF(pixmap.rect()))
         p.restore()
 
+    def dialogue_document(self, line):
+        document = QTextDocument()
+        document.setDocumentMargin(0)
+        font = QFont(self.font)
+        font.setPixelSize(15 if self.language == "ja" else 13)
+        document.setDefaultFont(font)
+        option = QTextOption()
+        option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        document.setDefaultTextOption(option)
+        document.setPlainText(line.text(self.language))
+        document.setTextWidth(296)
+        return document
+
     def dialogue(self, p, index):
-        speaker, name, line = DIALOGUE[index]
-        self.portrait(p, "reimu", QRectF(-24, 185, 238, 288), speaker == "reimu")
-        self.portrait(p, "flandre", QRectF(155, 156, 254, 316), speaker == "flandre")
-        p.fillRect(QRectF(36, 364, 321, 67), QColor(5, 3, 11, 192))
-        self.text(p, 47, 357, name, 12, "#ffdfcd")
-        for i, text in enumerate(line.splitlines()):
-            self.text(p, 49, 384 + i * 22, text, 15, "#eee1ff")
-        self.text(p, 173, 422, "Z / Space：次へ　Esc：スキップ", 9, "#d1bfcd")
+        line = self.dialogue_script[index]
+        name = NAMES[line.speaker][self.language]
+        self.portrait(p, "reimu", QRectF(-24, 185, 238, 288))
+        self.portrait(p, "flandre", QRectF(155, 156, 254, 316))
+        document = self.dialogue_document(line)
+        top = 431 - max(67, document.size().height() + 35)
+        p.fillRect(QRectF(36, top, 321, 431 - top), QColor(5, 3, 11, 192))
+        self.text(p, 47, top - 8, name, 12, "#ffdfcd")
+        context = QAbstractTextDocumentLayout.PaintContext()
+        for offset, color in ((1.4, QColor(8, 5, 12, 220)), (0, QColor("#eee1ff"))):
+            p.save()
+            p.translate(49 + offset, top + 9 + offset)
+            context.palette.setColor(QPalette.ColorRole.Text, color)
+            document.documentLayout().draw(p, context)
+            p.restore()
+        hint = ("Z / Space：次へ　Esc：スキップ　L：English" if self.language == "ja"
+                else "Z / Space: Next    Esc: Skip    L: 日本語")
+        self.text(p, 47, 422, hint, 9, "#d1bfcd")
+
+    def entrance_title(self, p):
+        if self.entrance_progress <= .35:
+            return
+        p.save()
+        p.setOpacity(min(1.0, (self.entrance_progress - .35) / .25))
+        lines = (("悪魔の妹", "フランドール・スカーレット") if self.language == "ja"
+                 else ("The Devil's Little Sister", "Flandre Scarlet"))
+        for y, text, size in ((222, lines[0], 15), (252, lines[1], 20)):
+            font = QFont(self.font)
+            font.setPixelSize(size)
+            p.setFont(font)
+            p.setPen(QColor("#fff0e5"))
+            p.drawText(QRectF(0, y, 384, 30), Qt.AlignmentFlag.AlignCenter, text)
+        p.restore()
 
     def overlay(self, p, game):
         p.fillRect(QRectF(0, 0, 384, 448), QColor(10, 3, 13, 175))
@@ -253,6 +344,9 @@ class ScarletScene:
         self.text(p, 497, 218, f"{game.graze:03d}", 19, italic=True)
         self.text(p, 434, 241, "点", 15)
         self.text(p, 497, 241, f"{game.point_items:03d}", 19, italic=True)
+        self.text(p, 434, 266, self.music_status, 10, "#c9baca")
+        language_hint = "会話：日本語［L: English］" if self.language == "ja" else "Dialogue: English [L: 日本語]"
+        self.text(p, 434, 284, language_hint, 10, "#c9baca")
         # An original title seal in the arrangement of classic Touhou sidebars.
         self.text(p, 441, 332, "東方", 39, "#ada7b0", bold=True)
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -273,14 +367,16 @@ class ScarletScene:
         self.text(p, 477, 455, "Scarlet Refrain", 10, "#d9c7cf", italic=True)
         self.text(p, 553, 476, f"{fps:05.2f}fps", 13, italic=True)
 
-    def paint(self, p, game, sprite, direction, focus, dialogue_index, high_score, fps):
+    def paint(self, p, game, sprite, direction, dialogue_index, high_score, fps):
         p.drawTiledPixmap(QRectF(0, 0, 640, 480), self.texture)
         p.save()
         p.translate(self.FIELD.topLeft())
         p.setClipRect(QRectF(0, 0, 384, 448))
         self.background(p, game.elapsed)
-        self.actors(p, game, sprite, direction, focus)
-        if game.state == "ready":
+        self.actors(p, game, sprite, direction)
+        if self.story_phase == "entrance":
+            self.entrance_title(p)
+        elif self.story_phase in {"intro", "outro"}:
             self.dialogue(p, dialogue_index)
         else:
             p.fillRect(QRectF(5, 4, 374, 4), QColor("#3b1526"))
@@ -289,6 +385,12 @@ class ScarletScene:
             self.text(p, 339, 25, f"{max(0, int(game.DURATION - game.elapsed)):02d}", 15)
             if game.state in {"paused", "won", "lost"}:
                 self.overlay(p, game)
+        if self.music_cue_remaining > 0:
+            p.save()
+            p.setOpacity(min(1.0, self.music_cue_remaining / .5))
+            cue = "♪ U.N.オーエンは彼女なのか？" if self.language == "ja" else "♪ U.N. Owen was Her?"
+            self.text(p, 12, 46, cue, 12, "#f5ddc2")
+            p.restore()
         p.restore()
         p.setPen(QPen(QColor("#18131d"), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
