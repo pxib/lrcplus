@@ -28,7 +28,7 @@ from lyrics.lrcx_parser import get_lrcx_offset
 from lyrics.widgets import FuriganaWidget
 from lyrics.ass_parser import parse_ass
 from lyrics.waveform import WaveformWidget, find_ffmpeg
-from core.settings import get_playback_settings, get_karaoke_settings, save_karaoke_settings, get_lyrics_attachment, set_lyrics_attachment
+from core.settings import get_playback_settings, get_karaoke_settings, apply_karaoke_settings, get_effective_lyrics_settings, get_lyrics_attachment, set_lyrics_attachment
 
 try:
     from lyrics.furigana import build_furigana_segments, prefetch_furigana_batches, clear_reading_segment_cache, yomi_word_surfaces, set_reading_mode, get_reading_mode, available_reading_modes, detect_lyrics_language, detect_lyrics_collection_language, split_reading_by_text_ranges, token_to_furigana_segments
@@ -375,18 +375,6 @@ class LrcEditorUiMixin:
             self.karaoke_hint.setWordWrap(True)
             karaoke_layout.addWidget(self.karaoke_hint)
 
-            sweep_controls = QHBoxLayout()
-            self.karaoke_sweep_style_button = QPushButton("Properties")
-            self.karaoke_sweep_style_button.setToolTip(
-                "Configure karaoke rendering properties."
-            )
-            self.karaoke_sweep_style_button.clicked.connect(
-                self._show_karaoke_properties
-            )
-            sweep_controls.addWidget(self.karaoke_sweep_style_button)
-            sweep_controls.addStretch()
-            karaoke_layout.addLayout(sweep_controls)
-
             # Karaoke gets the same transport choice as the Lyrics tab: a
             # compact seekbar for ordinary playback, or a waveform for visual
             # timing work.
@@ -723,9 +711,10 @@ class LrcEditorUiMixin:
             preview_layout.addWidget(preview_hint)
 
             self.karaoke_renderer_preview = FuriganaWidget()
-            self.karaoke_renderer_preview.set_karaoke_sweep_style(
-                self.karaoke_sweep_style
+            self.karaoke_renderer_preview.set_focus_transition(
+                get_effective_lyrics_settings(getattr(self.player, "current_audio_path", None))["focus_transition"]
             )
+            apply_karaoke_settings(self.karaoke_renderer_preview, get_karaoke_settings())
             self.karaoke_renderer_preview.setMinimumHeight(180)
             self.karaoke_renderer_preview.alignment = "center"
             self.karaoke_renderer_preview.highlight_animation = "none"

@@ -2,7 +2,7 @@ import unicodedata
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent
-from PySide6.QtGui import QFont, QRawFont
+from PySide6.QtGui import QFont, QRawFont, QTextLayout
 
 from core import fonts
 
@@ -23,8 +23,9 @@ def test_bundled_font_covers_japanese_and_vietnamese_without_fallback(qapp, text
     assert font.family() == "Noto Sans JP"
     raw_font = QRawFont.fromFont(font)
     assert raw_font.familyName() == "Noto Sans JP"
-    missing = {f"U+{ord(c):04X}" for c in text
-               if not c.isspace() and not raw_font.supportsCharacter(c)}
+    # Qt composes decomposed Vietnamese accents during shaping.
+    missing = {f"U+{ord(c):04X}" for c in unicodedata.normalize("NFC", text)
+               if not c.isspace() and not raw_font.supportsCharacter(ord(c))}
     assert not missing
 
 
@@ -71,3 +72,37 @@ def test_player_library_uses_bundled_font(qapp):
         window.close()
         window.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+def test_covered_chinese_uses_bundled_glyphs_without_system_fallback(qapp):
+    text = "\u65e5\u672c\u8a9e\u306e\u6b4c - \u5f35\u5b66\u53cb"
+    original = QFont("Yu Gothic UI", 13)
+    original.setBold(True)
+    font = fonts.content_font(original, text)
+    assert font.pointSize() == 13 and font.bold()
+    assert original.family() == "Yu Gothic UI"
+    assert font.styleStrategy() & QFont.StyleStrategy.NoFontMerging
+    layout = QTextLayout(text, font)
+    layout.beginLayout()
+    layout.createLine().setLineWidth(2000)
+    layout.endLayout()
+    assert layout.glyphRuns()
+    assert all(run.rawFont().familyName() == "Noto Sans JP" for run in layout.glyphRuns())
+    assert all(glyph != 0 for run in layout.glyphRuns() for glyph in run.glyphIndexes())
+
+
+@pytest.mark.parametrize("text", ["\u0627\u0644\u0633\u0644\u0627\u0645", "\U0001f600"])
+def test_unsupported_characters_restore_font_fallback(qapp, text):
+    font = fonts.content_font(QFont(), "Song")
+    assert font.styleStrategy() & QFont.StyleStrategy.NoFontMerging
+    assert any(not QRawFont.fromFont(font).supportsCharacter(ord(char)) for char in text)
+    fallback = fonts.content_font(font, text)
+    assert not fallback.styleStrategy() & QFont.StyleStrategy.NoFontMerging
+    assert fallback.family() == "Noto Sans JP"
+
+
+def test_content_font_allows_system_fallback_if_bundled_font_is_missing(qapp, monkeypatch):
+    base = fonts.content_font(QFont(), "Song")
+    monkeypatch.setattr(fonts, "_library_font_family", lambda: None)
+    font = fonts.content_font(base, "\u8fd8\u662f\u89c9\u5f97\u4f60\u6700\u597d")
+    assert not font.styleStrategy() & QFont.StyleStrategy.NoFontMerging

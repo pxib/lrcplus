@@ -74,6 +74,21 @@ source metadata, so some video titles and channel names will not match.
 
 ## Subtitles and synced lyrics
 
+Enable **Automatically find lyrics** to search [LRCLIB](https://lrclib.net/)
+when importing audio. The plugin matches the title and artist, checks the
+duration when available (within three seconds), and prefers synced `.lrc`
+lyrics over plain `.txt` lyrics. Matching lyrics are saved beside the audio
+and attached automatically, independently of **Use subtitles as synced lyrics**.
+Selected subtitle lyrics take precedence. No match or a lookup failure still
+imports the audio and displays the lookup result.
+
+The option is off by default, is remembered when downloading, and is also
+available in the plugin settings. For previously downloaded audio without
+remembered lyrics, **Find lyrics** searches without downloading the audio
+again. Existing remembered lyrics and `.lrcx`, `.lrc`, or `.txt` files beside
+that audio are reused. Files are never overwritten. The lookup runs in the
+cancellable worker and requires no additional dependency or account.
+
 After **Preview**, the **Subtitles** selector lists available languages with
 separate **Uploaded** and **Automatic** sources. Choose one to keep its original
 VTT/SRT file beside the audio. The default is audio only; your last subtitle

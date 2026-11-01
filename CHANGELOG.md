@@ -1,6 +1,29 @@
 # Changelog
 Versions uses dates with optional revisions.
 
+## [2026-11-01]
+
+### Changes
+- Temporarily disabled the Karaoke Screen plugin ahead of its move to another project, preserving its source code.
+- Moved Focus transition to Lyrics > Rendering, with global and per-file settings and migration of the previous Karaoke preference.
+- Added Focus transition under Settings > Karaoke > Animations, gently blurring and dimming surrounding lines as the current line comes into focus.
+- Added line entrance and word lift animations, enabled by default with independent toggles in Settings > Karaoke.
+- Added Rainbow, Pulse, and Spotlight karaoke sweep effects.
+- Moved karaoke rendering properties and sweep FPS into Settings > Karaoke.
+- Added an overwrite confirmation for all lyrics providers when the song already has lyrics.
+- Added an option to automatically retrieve lyrics. (yt-dlp)
+
+## Fixes
+- Reduce memory growth when reopening Recent Songs by releasing closed dialogs and avoiding unnecessary layout of hidden filenames.
+- Reduce memory spikes in KuGou, Kuwo, and QQ Music search results and lyric previews by correcting Unicode font coverage checks and avoiding unnecessary system font loads while preserving multilingual text.
+- Avoid repainting static karaoke lines on every sweep tick and keep focus blur damage within each row, reducing unnecessary neighboring redraws.
+- Karaoke softness and effect widths now scale with font size rather than segment length, with consistent glyph smoothing during playback.
+- Karaoke effects now color each glyph once, preventing layered text and duplicated ruby/romaji rendering.
+- Lyrics offset now also shifts karaoke highlighting in the main, scrolling, and fullscreen displays, keeping them synchronized.
+- Floating lyrics window can now be moved if other dialogs are open. (Floating Lyrics)
+
+merry christmas noobs
+
 ## [2026-10-31.6]
 
 ### Fixes

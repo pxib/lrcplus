@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.settings import get_karaoke_settings
+from core.settings import get_karaoke_settings, apply_karaoke_settings, get_effective_lyrics_settings
 from core.pitch_detector import PitchDetector
 from lyrics.widgets import FuriganaWidget
 from ui.artwork_background import ArtworkBackgroundWidget
@@ -82,6 +82,8 @@ class KaraokeScreenPlugin(QObject):
             self.midi_offsets = {}
         context.on("app_ready", self.on_app_ready)
         context.on("track_changed", self.on_track_changed)
+        context.on("karaoke_settings_changed", self.on_karaoke_settings_changed)
+        context.on("lyrics_settings_changed", self.on_lyrics_settings_changed)
         context.api.register_settings_widget(
             "Karaoke Game",
             self._create_settings_widget,
@@ -172,7 +174,7 @@ class KaraokeScreenPlugin(QObject):
         self.screen.transpose_spin.valueChanged.connect(self.on_transpose_changed)
         self.screen_timer = QTimer(self.screen)
         self.screen_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self.screen_timer.setInterval(16)
+        self.screen_timer.setInterval(round(1000 / get_karaoke_settings()["sweep_fps"]))
         self.screen_timer.timeout.connect(self.refresh_karaoke_screen)
         self.pitch_timer = QTimer(self.screen)
         self.pitch_timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -635,8 +637,11 @@ class KaraokeScreenPlugin(QObject):
         position_seconds = self._estimated_position_seconds()
         position_ms = position_seconds * 1000.0
         self.screen.pitch_lane.set_position(position_ms)
-        self.screen.current_lyric.set_karaoke_position(position_seconds)
-        self.screen.next_lyric.set_karaoke_position(position_seconds)
+        lyric_position = position_seconds - getattr(
+            self.window, "lyrics_offset_seconds", 0.0
+        )
+        self.screen.current_lyric.set_karaoke_position(lyric_position)
+        self.screen.next_lyric.set_karaoke_position(lyric_position)
 
     def refresh_karaoke_screen(self):
         screen = self.screen
@@ -662,7 +667,10 @@ class KaraokeScreenPlugin(QObject):
                     len(visible_indices) - 1,
                 )
             page_slot = (current_slot // 2) * 2
-            position_ms = int(self.context.api.get_position())
+            # Pair lookahead compares against unshifted lyric timestamps.
+            position_ms = self.context.api.get_position() - 1000.0 * getattr(
+                self.window, "lyrics_offset_seconds", 0.0
+            )
             if page_slot > 0:
                 previous_bottom = visible_indices[page_slot - 1]
                 this_pair_start = visible_indices[page_slot]
@@ -738,14 +746,16 @@ class KaraokeScreenPlugin(QObject):
                 else:
                     screen.current_lyric.set_lyric(current, generate=True)
                 self._screen_line_index = index
+                screen.current_lyric.start_line_entrance()
         else:
             current = "♪"
             if self._screen_line_index != index:
                 screen.current_lyric.set_lyric(current, generate=True)
                 self._screen_line_index = index
 
-        if (upcoming != self._screen_next_text
-                or upcoming_index != self._screen_next_line_index):
+        next_changed = (upcoming != self._screen_next_text
+                        or upcoming_index != self._screen_next_line_index)
+        if next_changed:
             lyric_lines = getattr(self.window, "lyric_lines", [])
             if upcoming and upcoming_index is not None and upcoming_index < len(lyric_lines):
                 lyric_line = lyric_lines[upcoming_index]
@@ -762,6 +772,10 @@ class KaraokeScreenPlugin(QObject):
             self._screen_next_text = upcoming
             self._screen_next_line_index = upcoming_index
         screen.next_lyric.setVisible(bool(upcoming))
+        if next_changed:
+            screen.next_lyric.start_line_entrance()
+        screen.current_lyric.set_current_line(index == getattr(self.window, "current_line", -1))
+        screen.next_lyric.set_current_line(upcoming_index == getattr(self.window, "current_line", -1))
 
         path = self.context.api.get_current_track()
         screen.track_label.setText(
@@ -776,13 +790,23 @@ class KaraokeScreenPlugin(QObject):
     def _apply_sweep_style(self):
         if self.screen is None:
             return
-        style = get_karaoke_settings().get("sweep_style", "classic")
+        settings = get_karaoke_settings()
+        focus = get_effective_lyrics_settings(getattr(self.window, "current_audio_path", None))["focus_transition"]
         for widget in (
             getattr(self.screen, "current_lyric", None),
             getattr(self.screen, "next_lyric", None),
         ):
-            if widget is not None and hasattr(widget, "set_karaoke_sweep_style"):
-                widget.set_karaoke_sweep_style(style)
+            if widget is not None:
+                apply_karaoke_settings(widget, settings)
+                widget.set_focus_transition(focus)
+
+    def on_lyrics_settings_changed(self):
+        self._apply_sweep_style()
+
+    def on_karaoke_settings_changed(self):
+        self._apply_sweep_style()
+        if self.screen_timer is not None:
+            self.screen_timer.setInterval(round(1000 / get_karaoke_settings()["sweep_fps"]))
 
     def on_unload(self, context):
         self._stop_microphone()

@@ -1,10 +1,10 @@
-from PySide6.QtCore import Qt, QPoint, QTimer
-from PySide6.QtGui import QFontMetrics, QPainter, QColor
+from PySide6.QtCore import Qt, QPoint, QTimer, QEvent
+from PySide6.QtGui import QFontMetrics, QPainter, QColor, QWindow
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFormLayout,
     QSpinBox, QDoubleSpinBox, QCheckBox, QLineEdit, QColorDialog,
-    QGroupBox
+    QGroupBox, QApplication
 )
 from lyrics.widgets import FuriganaWidget
 
@@ -241,6 +241,9 @@ class FloatingLyricsWindow(QWidget):
         self.settings = settings
         self._drag_offset = None
         self.visibility_changed = None
+        self._modal_parent_timer = QTimer(self)
+        self._modal_parent_timer.setSingleShot(True)
+        self._modal_parent_timer.timeout.connect(self._sync_modal_parent)
 
         # Required for rgba() window backgrounds to actually reveal whatever
         # is behind this top-level floating window.
@@ -266,13 +269,40 @@ class FloatingLyricsWindow(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        QApplication.instance().installEventFilter(self)
+        self._sync_modal_parent()
         if self.visibility_changed is not None:
             self.visibility_changed(True)
 
     def hideEvent(self, event):
+        QApplication.instance().removeEventFilter(self)
+        self._modal_parent_timer.stop()
+        self._drag_offset = None
         super().hideEvent(event)
         if self.visibility_changed is not None:
             self.visibility_changed(False)
+
+    def eventFilter(self, watched, event):
+        if isinstance(watched, QWindow):
+            if watched is self.windowHandle() and event.type() == QEvent.Type.WindowBlocked:
+                self._sync_modal_parent()
+            elif watched.isModal() and event.type() in (QEvent.Type.Show, QEvent.Type.Hide):
+                # The modal stack is updated after the window's show/hide event.
+                self._modal_parent_timer.start(0)
+        return super().eventFilter(watched, event)
+
+    def _sync_modal_parent(self):
+        handle = self.windowHandle()
+        if handle is None:
+            return
+        modal = QApplication.modalWindow()
+        if modal is handle or (modal is not None and handle.isAncestorOf(modal)):
+            return
+        # Qt permits input to transient children of the active modal window.
+        # Change only the native owner, keeping this widget independent of the
+        # dialog's lifetime, visibility, geometry and settings.
+        if handle.transientParent() is not modal:
+            handle.setTransientParent(modal)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)

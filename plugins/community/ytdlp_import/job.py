@@ -107,7 +107,7 @@ class ImportJob(QObject):
     def start(self):
         try:
             command = worker_command()
-            if self.request["action"] in {"download", "subtitles"}:
+            if self.request["action"] in {"download", "subtitles", "lyrics"}:
                 folder = Path(self.request["folder"]).expanduser().resolve()
                 folder.mkdir(parents=True, exist_ok=True)
                 self.stage = Path(tempfile.mkdtemp(prefix=".lrcplus-import-", dir=folder))

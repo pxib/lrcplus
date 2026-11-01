@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QToolButton,
 )
-from core.settings import APPEARANCE_DEFAULTS
+from core.settings import APPEARANCE_DEFAULTS, KARAOKE_SWEEP_STYLES, get_karaoke_settings
 from core.theme import build_theme_palette
 from ui.dependency_settings import DependencyManagerWidget
 from ui.about_tab import AboutTab
@@ -59,6 +59,7 @@ LYRIC_KEYS = (
     "font_family",
     "font_size",
     "lyrics_alignment",
+    "focus_transition",
     "highlight_current",
     "highlight_animation",
     "highlight_animation_duration",
@@ -197,7 +198,7 @@ class SettingsDialog(QDialog):
             self.theme_color = APPEARANCE_DEFAULTS["theme_color"]
         self.theme_color = QColor(self.theme_color).name()
         self.playback_settings = dict(playback_settings or {})
-        self.karaoke_settings = dict(karaoke_settings or {})
+        self.karaoke_settings = get_karaoke_settings({"karaoke": karaoke_settings or {}})
         self.local_overrides = dict(local_overrides or {})
         self.current_file = current_file
         self.plugin_manager = plugin_manager
@@ -642,24 +643,6 @@ class SettingsDialog(QDialog):
             empty.setStyleSheet("color: #A0A0A0;")
             plugin_body_layout.addWidget(empty)
 
-        self._add_section_heading(plugin_body_layout, "Karaoke")
-        self.karaoke_sweep_fps = QComboBox()
-        for fps in (15, 30, 60, 120):
-            self.karaoke_sweep_fps.addItem(f"{fps} FPS", fps)
-        current_sweep_fps = self.karaoke_settings.get("sweep_fps", 60)
-        index = self.karaoke_sweep_fps.findData(current_sweep_fps)
-        self.karaoke_sweep_fps.setCurrentIndex(
-            index if index >= 0 else self.karaoke_sweep_fps.findData(60)
-        )
-        self._add_labeled(
-            plugin_body_layout,
-            "Karaoke sweep:",
-            self.karaoke_sweep_fps,
-        )
-        self.karaoke_sweep_fps.setToolTip(
-            "How often karaoke highlighting is refreshed during playback."
-        )
-
         plugin_body_layout.addStretch()
         plugin_scroll.setWidget(plugin_body)
         plugins_layout.addWidget(plugin_scroll, 1)
@@ -668,6 +651,9 @@ class SettingsDialog(QDialog):
         tabs.addTab(appearance_tab, "Appearance")
         tabs.addTab(playback_tab, "Playback")
         tabs.addTab(lyrics_tab, "Lyrics")
+        tabs.addTab(self._make_scroll_tab(
+            "Karaoke", self._create_karaoke_controls
+        ), "Karaoke")
         tabs.addTab(files_tab, "Files")
         tabs.addTab(plugins_tab, "Plugins")
         self.dependencies_tab = DependencyManagerWidget(self.plugin_manager, self)
@@ -1078,6 +1064,15 @@ class SettingsDialog(QDialog):
         controls["font_size"] = font_size
         self._add_labeled(layout, "Font size:", font_size)
 
+        rendering_group = QGroupBox("Rendering")
+        rendering_layout = QVBoxLayout(rendering_group)
+        focus = QCheckBox("Focus transition")
+        focus.setChecked(bool(values.get("focus_transition", True)))
+        focus.setToolTip("Bring the current line into focus while gently blurring and dimming surrounding lyrics.")
+        controls["focus_transition"] = focus
+        rendering_layout.addWidget(focus)
+        layout.addWidget(rendering_group)
+
         self._add_section_heading(layout, "Highlighting")
         highlight_current = QCheckBox("Highlight current lyric")
         highlight_current.setChecked(bool(values.get("highlight_current", True)))
@@ -1406,6 +1401,7 @@ class SettingsDialog(QDialog):
             "scrolling_lyrics": "Display",
             "show_ruby": "Furigana", "show_romaji": "Romaji", "all_romaji": "All romaji",
             "font_family": "Typography",
+            "focus_transition": "Rendering",
             "highlight_current": "Highlighting",
             "scroll_animation_speed": "Scrolling",
         }
@@ -1492,7 +1488,7 @@ class SettingsDialog(QDialog):
             index = editor.findData(value)
             editor.setCurrentIndex(index if index >= 0 else 1)
             return editor
-        if key in {"show_ruby", "show_romaji", "all_romaji", "highlight_current"}:
+        if key in {"show_ruby", "show_romaji", "all_romaji", "highlight_current", "focus_transition"}:
             editor = QCheckBox()
             editor.setChecked(bool(value))
             return editor
@@ -1621,7 +1617,7 @@ class SettingsDialog(QDialog):
     def _read_value(self, key, control):
         if key == "scrolling_lyrics":
             return control.currentData()
-        if key in {"show_ruby", "show_romaji", "all_romaji", "highlight_current", "continuous_scroll_duration_based", "continuous_scroll_nudge_current", "limited_reading_rendering", "fade_in_readings"}:
+        if key in {"show_ruby", "show_romaji", "all_romaji", "highlight_current", "continuous_scroll_duration_based", "continuous_scroll_nudge_current", "limited_reading_rendering", "fade_in_readings", "focus_transition"}:
             return control.isChecked()
         if key in {
             "lyrics_direction",
@@ -1720,13 +1716,90 @@ class SettingsDialog(QDialog):
             "pitch_value": self.playback_settings.get("pitch_value", 0),
         }
 
+    def _create_karaoke_controls(self, layout):
+        self.karaoke_controls = {}
+        for key, title, options in (
+            ("sweep_style", "Sweep effect:", KARAOKE_SWEEP_STYLES.items()),
+            ("sweep_easing", "Easing:", (
+                ("linear", "Linear"), ("ease_in", "Ease In"),
+                ("ease_out", "Ease Out"), ("ease_in_out", "Ease In-Out"),
+            )),
+            ("sweep_fps", "Karaoke sweep FPS:", ((fps, f"{fps} FPS") for fps in (15, 30, 60, 120))),
+        ):
+            combo = QComboBox()
+            for value, label in options:
+                combo.addItem(label, value)
+            combo.setCurrentIndex(combo.findData(self.karaoke_settings[key]))
+            self._add_labeled(layout, title, combo)
+            self.karaoke_controls[key] = combo
+        self.karaoke_sweep_fps = self.karaoke_controls["sweep_fps"]
+        self.karaoke_sweep_fps.setToolTip(
+            "How often karaoke highlighting is refreshed during playback."
+        )
+        description = QLabel()
+        description.setWordWrap(True)
+        layout.addWidget(description)
+        effect_controls = {}
+        for key, title, minimum, maximum, suffix, styles in (
+            ("softness", "Edge softness:", 1, 40, "", {"soft"}),
+            ("glow_intensity", "Glow intensity:", 0, 255, "", {"glow"}),
+            ("glow_radius", "Glow spread:", 1, 8, "", {"glow"}),
+            ("shimmer_width", "Shimmer width:", 1, 40, "", {"shimmer"}),
+            ("sweep_delay_ms", "Maximum sweep delay:", 0, 500, "ms", None),
+            ("sweep_delay_percent", "Sweep delay:", 0, 40, "%", None),
+        ):
+            slider = self._add_slider(
+                layout, title, self.karaoke_settings[key], minimum, maximum, suffix
+            )
+            self.karaoke_controls[key] = slider
+            if styles:
+                effect_controls[key] = (styles, layout.itemAt(layout.count() - 1).layout())
+                if key != "glow_intensity":
+                    slider.setToolTip(
+                        "Scales with font size. Segment length and duration do not change the effect width."
+                    )
+
+        def update_effect_controls():
+            style = self.karaoke_controls["sweep_style"].currentData()
+            description.setText({
+                "classic": "A crisp highlight follows each timed segment.",
+                "soft": "Blend the highlight smoothly at the sweep edge.",
+                "glow": "Add a luminous glow to the sweep edge.",
+                "shimmer": "A bright shimmer travels along the sweep edge.",
+                "rainbow": "Sweep through the lyrics with shifting rainbow colors.",
+                "pulse": "Pulse the highlight brightness as each segment is sung.",
+                "spotlight": "A bright spotlight follows the active part of the lyric.",
+            }[style])
+            for styles, row in effect_controls.values():
+                for index in range(row.count()):
+                    row.itemAt(index).widget().setVisible(style in styles)
+
+        self.karaoke_controls["sweep_style"].currentIndexChanged.connect(update_effect_controls)
+        update_effect_controls()
+        self._add_section_heading(layout, "Animations")
+        for key, label, tooltip in (
+            ("line_entrance", "Line entrance", "Fade each new line in with a gentle upward drift."),
+            ("word_lift", "Word lift", "Lift the active karaoke word and its readings, then settle them as the word finishes."),
+        ):
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(self.karaoke_settings[key])
+            checkbox.setToolTip(tooltip)
+            self.karaoke_controls[key] = checkbox
+            layout.addWidget(checkbox)
+        width_note = QLabel("Effect widths scale with font size to stay consistent across short and long segments.")
+        width_note.setWordWrap(True)
+        layout.addWidget(width_note)
+        note = QLabel("Sweep delay is limited by both the percentage of each segment and the maximum delay.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return self.karaoke_controls
+
     def get_karaoke_settings(self):
         return {
-            "sweep_fps": int(self.karaoke_sweep_fps.currentData()),
-            # Sweep style is now edited from Lyrics Editor > Karaoke.
-            # Preserve the existing saved value when the general Settings
-            # dialog is saved.
-            "sweep_style": self.karaoke_settings.get("sweep_style", "classic"),
+            key: (widget.currentData() if isinstance(widget, QComboBox)
+                  else widget.isChecked() if isinstance(widget, QCheckBox)
+                  else widget.value())
+            for key, widget in self.karaoke_controls.items()
         }
 
     def get_global_lyrics_settings(self):

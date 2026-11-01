@@ -4,6 +4,7 @@ import math
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer, QEvent
 from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import QVBoxLayout, QWidget, QScrollArea
+from core.settings import KARAOKE_SWEEP_STYLES
 from lyrics.furigana import get_cached_furigana_segments
 from lyrics.widgets import FuriganaWidget
 
@@ -187,6 +188,8 @@ class ScrollingLyricsWidget(QWidget):
                      self.ruby_font_size, self.show_ruby, self.show_romaji,
                      getattr(self, "all_romaji", False), self.ruby_position,
                      self.ruby_padding, self.padding, self.vertical_padding,
+                     getattr(self, "karaoke_line_entrance", False),
+                     getattr(self, "karaoke_word_lift", False),
                      self.scroll_area.viewport().height() if vertical else 0)
         if signature == self._geometry_signature:
             return
@@ -194,6 +197,10 @@ class ScrollingLyricsWidget(QWidget):
         font = QFont(self.font_family)
         font.setPointSize(self.font_size)
         base_height = QFontMetrics(font).height()
+        top_margin = FuriganaWidget.TOP_MARGIN + (math.ceil(base_height * 0.1)
+                     if getattr(self, "karaoke_word_lift", False) else 0)
+        bottom_margin = FuriganaWidget.BOTTOM_MARGIN + (math.ceil(base_height * 0.16)
+                        if getattr(self, "karaoke_line_entrance", False) else 0)
         font.setPointSize(self.ruby_font_size)
         reading_height = QFontMetrics(font).height() if self.show_ruby or self.show_romaji else 0
         self._extents = []
@@ -201,13 +208,13 @@ class ScrollingLyricsWidget(QWidget):
             if vertical:
                 text = str(lyric.text if hasattr(lyric, "text") else lyric[1])
                 drawable = max(1, self.scroll_area.viewport().height()
-                               - FuriganaWidget.TOP_MARGIN - FuriganaWidget.BOTTOM_MARGIN
+                               - top_margin - bottom_margin
                                - self.vertical_padding * 2)
                 columns = max(1, math.ceil(len(text) * (base_height + FuriganaWidget.PADDING) / drawable))
                 extent = FuriganaWidget.PADDING + columns * (base_height + FuriganaWidget.PADDING
                          + (reading_height + self.ruby_padding if reading_height else 0))
             else:
-                extent = (FuriganaWidget.TOP_MARGIN + base_height + FuriganaWidget.BOTTOM_MARGIN
+                extent = (top_margin + base_height + bottom_margin
                           + self.padding + (reading_height + self.ruby_padding if reading_height else 0))
                 text = str(lyric.text if hasattr(lyric, "text") else lyric[1])
                 extent = (extent - self.padding) * (text.count("\n") + 1) + self.padding
@@ -811,7 +818,10 @@ class ScrollingLyricsWidget(QWidget):
             getattr(self, "karaoke_shimmer_width", 10),
             getattr(self, "karaoke_sweep_delay_ms", 100),
             getattr(self, "karaoke_sweep_delay_percent", 10),
+            line_entrance=getattr(self, "karaoke_line_entrance", False),
+            word_lift=getattr(self, "karaoke_word_lift", False),
         )
+        row.set_focus_transition(getattr(self, "focus_transition", False))
         row.set_current_line(False)
         row.set_ruby_visible(self.show_ruby)
         row.set_romaji_visible(self.show_romaji)
@@ -908,7 +918,11 @@ class ScrollingLyricsWidget(QWidget):
         shimmer_width=10,
         sweep_delay_ms=100,
         sweep_delay_percent=10,
+        line_entrance=False,
+        word_lift=False,
     ):
+        motion_changed = (getattr(self, "karaoke_word_lift", False) != bool(word_lift)
+                          or getattr(self, "karaoke_line_entrance", False) != bool(line_entrance))
         self.karaoke_sweep_style = style
         self.karaoke_sweep_easing = easing
         self.karaoke_softness = softness
@@ -917,6 +931,8 @@ class ScrollingLyricsWidget(QWidget):
         self.karaoke_shimmer_width = shimmer_width
         self.karaoke_sweep_delay_ms = sweep_delay_ms
         self.karaoke_sweep_delay_percent = sweep_delay_percent
+        self.karaoke_line_entrance = bool(line_entrance)
+        self.karaoke_word_lift = bool(word_lift)
         for row in self.rows:
             row.set_karaoke_properties(
                 style,
@@ -927,13 +943,22 @@ class ScrollingLyricsWidget(QWidget):
                 shimmer_width,
                 sweep_delay_ms,
                 sweep_delay_percent,
+                line_entrance=line_entrance,
+                word_lift=word_lift,
             )
+        if motion_changed:
+            self._refresh_row_heights()
         self.update()
+
+    def set_focus_transition(self, enabled):
+        self.focus_transition = bool(enabled)
+        for row in self.rows:
+            row.set_focus_transition(enabled)
 
     def set_karaoke_sweep_style(self, style):
         """Set the karaoke sweep style for every scrolling lyric row."""
         style = str(style or "classic").lower()
-        if style not in {"classic", "soft", "glow", "shimmer"}:
+        if style not in KARAOKE_SWEEP_STYLES:
             style = "classic"
 
         self.karaoke_sweep_style = style

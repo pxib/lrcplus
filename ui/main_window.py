@@ -13,7 +13,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QButtonGroup, QComboBox, QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
     QInputDialog, QMainWindow, QScrollArea, QStackedWidget, QLineEdit, QDoubleSpinBox,
-    QMessageBox, QPushButton, QProgressBar, QSlider, QTextEdit, QToolButton, QVBoxLayout, QWidget,
+    QMessageBox, QPushButton, QProgressBar, QSlider, QToolButton, QVBoxLayout, QWidget,
     QGraphicsView, QGraphicsScene,
     QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QTreeWidget, QTreeWidgetItem, QAbstractItemView, QStyledItemDelegate,
 )
@@ -45,6 +45,7 @@ from core.settings import (
     save_playback_settings,
     get_karaoke_settings,
     save_karaoke_settings,
+    apply_karaoke_settings,
     get_local_lyrics_overrides,
     save_global_lyrics_settings,
     save_local_lyrics_overrides,
@@ -60,6 +61,7 @@ from lyrics.waveform import WaveformWidget, find_ffmpeg
 from lyrics.writer import convert_lyrics
 from ui.settings_dialog import SettingsDialog
 from ui.lrc_editor import LrcEditorDialog
+from ui.lyrics_preview import LyricsPreview
 from ui.queue_actions import QueueActionsMixin
 from ui.library_lyrics_search import LibraryLyricsSearchMixin, LyricMatchDelegate
 from ui.audio_devices import AudioDeviceControllerMixin
@@ -67,7 +69,7 @@ from ui.artwork_background import ArtworkBackgroundWidget, extract_embedded_cove
 from ui.player_dialogs import (ClickableSlider, ClickableTimeLabel, AlbumCoverDelegate, CoverPreviewView, CoverPreviewDialog, PitchChangerDialog, LibraryScanWorker)
 from core.booru_artwork import fetch_booru_artwork
 from core.file_io import atomic_write_text
-from core.fonts import library_font
+from core.fonts import content_font, library_font
 from core.theme import build_theme_palette
 from ui.easter_eggs import BudgetBrandLabel, CatSeekTrack, EasterEggs
 
@@ -1751,6 +1753,10 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             search_row = QHBoxLayout()
             query_input = QLineEdit(dialog)
             query_input.setPlaceholderText("Song title, artist, or keywords")
+            query_input.setFont(content_font(query_input.font(), ""))
+            query_input.textChanged.connect(
+                lambda text: query_input.setFont(content_font(query_input.font(), text))
+            )
 
             # Prefer embedded tags, falling back to the filename when unavailable.
             if self.current_audio_path:
@@ -1793,6 +1799,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             splitter = QSplitter(Qt.Orientation.Vertical, dialog)
 
             results = QTableWidget(0, 5, splitter)
+            results.setFont(library_font(results.font()))
             results.setHorizontalHeaderLabels(
                 ["Title", "Album", "Artist", "Timing", "Duration"]
             )
@@ -1822,9 +1829,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             preview_layout.setContentsMargins(0, 0, 0, 0)
             preview_layout.addWidget(QLabel("Preview / Inspect Lyrics"))
 
-            preview = QTextEdit(preview_panel)
-            preview.setReadOnly(True)
-            preview.setAcceptRichText(False)
+            preview = LyricsPreview(preview_panel)
             preview.setPlaceholderText(
                 "Select a result to preview its lyrics here."
             )
@@ -1944,7 +1949,9 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                     notes = [f"Lyrics provided by {item['source']}", item.get("copyright"), item.get("sourceUrl")]
                     if item["source"] == "Kuwo":
                         notes.append("Kuwo may include original and translated lines together.")
-                    attribution.setText("\n".join(filter(None, notes)))
+                    credit = "\n".join(filter(None, notes))
+                    attribution.setFont(content_font(attribution.font(), credit))
+                    attribution.setText(credit)
 
             def fetch_preview(item, key, mode, cancel):
                 try:
@@ -2144,6 +2151,8 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                         [title, album, artist, timing_label(item), duration]
                     ):
                         table_item = QTableWidgetItem(str(value))
+                        if column < 3:
+                            table_item.setFont(content_font(results.font(), str(value)))
                         if column == 3:
                             table_item.setToolTip(item.get("_preview_error", ""))
                         results.setItem(
@@ -2195,6 +2204,26 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                     content = plain
 
                 try:
+                    current_lyrics = getattr(self, "current_lyrics_path", None)
+                    has_lyrics = (
+                        bool(getattr(self, "lyric_lines", []))
+                        or (current_lyrics and Path(current_lyrics).is_file())
+                        or destination.exists()
+                        or any(self.current_audio_path.with_suffix(suffix).is_file()
+                               for suffix in (".lrc", ".lrcx", ".txt"))
+                    )
+                    if has_lyrics:
+                        answer = QMessageBox.warning(
+                            dialog,
+                            "Overwrite Lyrics",
+                            f'"{self.current_audio_path.name}" already has lyrics.\n\n'
+                            f"Replace them with the selected lyrics from {provider.currentText()}?\n"
+                            f"An existing file at {destination} will be overwritten.",
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                            QMessageBox.StandardButton.Cancel,
+                        )
+                        if answer != QMessageBox.StandardButton.Yes:
+                            return
                     if item.get("source") == "Musixmatch":
                         credit = "\n".join(filter(None, [f"Lyrics provided by {item['source']}", item.get("copyright"), item.get("sourceUrl")]))
                         if synced:
@@ -2280,6 +2309,10 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
 
                     self.karaoke_settings = dialog.get_karaoke_settings()
                     save_karaoke_settings(self.karaoke_settings)
+                    for widget in (self.lyric_widget, self.scrolling_lyrics_widget):
+                        apply_karaoke_settings(widget, self.karaoke_settings)
+                    if self.plugin_manager is not None:
+                        self.plugin_manager.emit("karaoke_settings_changed")
 
                     self.lrc_search_paths = dialog.get_folders()
 
@@ -2424,6 +2457,9 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             dialog.resize(500, 300)
 
             list_widget = QListWidget()
+            # Filenames share a row height. Avoid measuring hidden titles,
+            # which can eagerly load large fallback fonts on Windows.
+            list_widget.setUniformItemSizes(True)
             for song in recent:
                 audio_path = Path(song.get("audio", ""))
                 if audio_path.exists():
@@ -2462,7 +2498,12 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             layout.addWidget(list_widget)
             layout.addLayout(button_layout)
             dialog.setLayout(layout)
-            dialog.exec()
+            try:
+                dialog.exec()
+            finally:
+                # Closing a parented dialog only hides it; release its widgets
+                # and signal callbacks before the next Recent opening.
+                dialog.deleteLater()
 
 
         def showEvent(self, event):

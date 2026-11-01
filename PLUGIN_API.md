@@ -58,6 +58,10 @@ PLUGIN_CLASS = MyPlugin
 
 The loader requires `plugin.py` and a module-level `PLUGIN_CLASS`.
 
+Set `"enabled": false` in a plugin's `manifest.json` to temporarily exclude it
+from discovery and loading, including Core plugins. Omit the field or set it to
+`true` to restore the plugin.
+
 ---
 
 ## 2. Lifecycle

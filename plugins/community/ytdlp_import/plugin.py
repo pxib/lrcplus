@@ -16,6 +16,7 @@ DEFAULTS = {
     "ffmpeg_location": "", "js_runtime": "auto", "js_path": "",
     "subtitle_language": "", "subtitle_kind": "manual", "subtitles_as_lyrics": True,
     "use_musicbrainz_cover": False,
+    "automatically_find_lyrics": False,
 }
 
 
@@ -97,6 +98,10 @@ class YtdlpImportPlugin:
         widget.use_musicbrainz_cover = QCheckBox("Use MusicBrainz for album cover")
         widget.use_musicbrainz_cover.setChecked(bool(values["use_musicbrainz_cover"]))
         form.addRow(widget.use_musicbrainz_cover)
+        widget.automatically_find_lyrics = QCheckBox("Automatically find lyrics")
+        widget.automatically_find_lyrics.setChecked(bool(values["automatically_find_lyrics"]))
+        widget.automatically_find_lyrics.setToolTip("Find matching lyrics on LRCLIB when importing audio. Prefers synced lyrics.")
+        form.addRow(widget.automatically_find_lyrics)
         widget.ffmpeg = QLineEdit(str(values["ffmpeg_location"]))
         widget.ffmpeg.setPlaceholderText("Auto-detect from PATH, or enter the FFmpeg folder")
         form.addRow("FFmpeg folder or executable:", widget.ffmpeg)
@@ -134,6 +139,7 @@ class YtdlpImportPlugin:
             "download_folder": widget.folder.text().strip() or DEFAULTS["download_folder"],
             "codec": widget.codec.currentData(),
             "use_musicbrainz_cover": widget.use_musicbrainz_cover.isChecked(),
+            "automatically_find_lyrics": widget.automatically_find_lyrics.isChecked(),
             "ffmpeg_location": widget.ffmpeg.text().strip(),
             "js_runtime": widget.runtime.currentData(), "js_path": widget.runtime_path.text().strip(),
         }

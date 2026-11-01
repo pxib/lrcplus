@@ -145,6 +145,7 @@ class LyricsController(LyricsSearchMixin):
         set_mecab_parse_mode(self.mecab_parse_mode)
         self.font_family = effective["font_family"]
         self.font_size = effective["font_size"]
+        self.focus_transition = effective["focus_transition"]
         self.lyrics_alignment = effective["lyrics_alignment"]
         self.highlight_current = effective["highlight_current"]
         self.highlight_animation = effective["highlight_animation"]
@@ -172,6 +173,9 @@ class LyricsController(LyricsSearchMixin):
 
         if hasattr(self, "lyric_display_stack"):
             self.apply_lyric_display_mode()
+        manager = getattr(self, "plugin_manager", None)
+        if manager is not None:
+            manager.emit("lyrics_settings_changed")
         if (
             previous_parser is not None
             and (
@@ -204,6 +208,7 @@ class LyricsController(LyricsSearchMixin):
             self.ruby_font_size,
         )
         self.lyric_widget.set_colors(self.lyrics_color, self.highlight_color)
+        self.lyric_widget.set_focus_transition(self.focus_transition)
         self.lyric_widget.set_highlight_current(self.highlight_current)
         self.lyric_widget.set_highlight_animation(
             self.highlight_animation,
@@ -231,6 +236,7 @@ class LyricsController(LyricsSearchMixin):
         self.scrolling_lyrics_widget.set_highlight_current(
             self.highlight_current
         )
+        self.scrolling_lyrics_widget.set_focus_transition(self.focus_transition)
         self.scrolling_lyrics_widget.set_highlight_animation(
             self.highlight_animation,
             self.highlight_animation_duration,
@@ -847,6 +853,7 @@ class LyricsController(LyricsSearchMixin):
                 self.lyric_widget.set_lyric(text, style_spans=line.style_spans, is_blockquote=line.is_blockquote)
 
             self.lyric_widget.set_current_line(True)
+            self.lyric_widget.start_line_entrance()
             self.highlight_current_lyric()
 
     def update_lyrics_list(self):

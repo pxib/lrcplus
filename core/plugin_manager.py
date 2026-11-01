@@ -356,6 +356,8 @@ class PluginManager:
                 }
                 manifest = self._manifest_metadata(child)
                 if manifest is not None:
+                    if manifest.get("enabled") is False:
+                        continue
                     metadata.update({k: v for k, v in manifest.items() if k in {"plugin_id", "name", "version", "description", "api_version", "dependencies"}})
                     metadata["plugin_id"] = child.name
                 else:

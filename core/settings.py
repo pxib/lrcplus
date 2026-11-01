@@ -60,6 +60,16 @@ PLAYBACK_DEFAULTS = {
     "pitch_linked_to_speed": False,
 }
 
+KARAOKE_SWEEP_STYLES = {
+    "classic": "Classic",
+    "soft": "Soft",
+    "glow": "Glow",
+    "shimmer": "Shimmer",
+    "rainbow": "Rainbow",
+    "pulse": "Pulse",
+    "spotlight": "Spotlight",
+}
+
 KARAOKE_DEFAULTS = {
     "sweep_fps": 60,
     "sweep_style": "classic",
@@ -70,6 +80,8 @@ KARAOKE_DEFAULTS = {
     "shimmer_width": 10,
     "sweep_delay_ms": 100,
     "sweep_delay_percent": 10,
+    "line_entrance": True,
+    "word_lift": True,
 }
 
 
@@ -185,7 +197,7 @@ def get_karaoke_settings(payload=None):
     sweep_style = str(
         values.get("sweep_style", KARAOKE_DEFAULTS["sweep_style"])
     ).lower()
-    if sweep_style not in {"classic", "soft", "glow", "shimmer"}:
+    if sweep_style not in KARAOKE_SWEEP_STYLES:
         sweep_style = KARAOKE_DEFAULTS["sweep_style"]
 
     def safe_int(value, fallback, minimum, maximum):
@@ -208,6 +220,8 @@ def get_karaoke_settings(payload=None):
         ),
         "sweep_style": sweep_style,
         "sweep_easing": sweep_easing,
+        "line_entrance": bool(values.get("line_entrance", KARAOKE_DEFAULTS["line_entrance"])),
+        "word_lift": bool(values.get("word_lift", KARAOKE_DEFAULTS["word_lift"])),
         "softness": safe_int(
             values.get("softness", KARAOKE_DEFAULTS["softness"]),
             KARAOKE_DEFAULTS["softness"], 1, 40,
@@ -248,6 +262,23 @@ def get_karaoke_settings(payload=None):
             40,
         ),
     }
+
+
+def apply_karaoke_settings(widget, values):
+    """Apply all renderer properties, including on newly mounted lyric rows."""
+    if hasattr(widget, "set_karaoke_properties"):
+        if all(
+            getattr(widget, f"karaoke_{key}", None) == values.get(key, default)
+            for key, default in KARAOKE_DEFAULTS.items() if key != "sweep_fps"
+        ):
+            return
+        widget.set_karaoke_properties(**{
+            {"sweep_style": "style", "sweep_easing": "easing"}.get(key, key):
+                values.get(key, default)
+            for key, default in KARAOKE_DEFAULTS.items() if key != "sweep_fps"
+        })
+    elif hasattr(widget, "set_karaoke_sweep_style"):
+        widget.set_karaoke_sweep_style(values.get("sweep_style", "classic"))
 
 
 def save_karaoke_settings(values):

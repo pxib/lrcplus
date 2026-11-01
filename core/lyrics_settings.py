@@ -31,6 +31,7 @@ LYRICS_DEFAULTS = {
     "fade_in_readings": True,
     "font_family": "",
     "font_size": 32,
+    "focus_transition": True,
     "lyrics_alignment": "center",
     "highlight_current": True,
     "highlight_animation": "none",
@@ -182,6 +183,7 @@ def normalize_lyrics_settings(values):
     result["highlight_current"] = bool(
         values.get("highlight_current", result["highlight_current"])
     )
+    result["focus_transition"] = bool(values.get("focus_transition", result["focus_transition"]))
 
     animation = str(values.get(
         "highlight_animation",
@@ -295,6 +297,10 @@ def get_global_lyrics_settings(payload=None):
     }
 
     nested = payload.get("lyrics_global", {})
+    # Keep the user's choice from the earlier Karaoke settings location.
+    old_karaoke = payload.get("karaoke", {})
+    if isinstance(old_karaoke, dict) and "focus_transition" in old_karaoke:
+        legacy.setdefault("focus_transition", old_karaoke["focus_transition"])
     merged = {**legacy, **nested}
     return normalize_lyrics_settings(merged)
 

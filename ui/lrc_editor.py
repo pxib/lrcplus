@@ -34,7 +34,7 @@ from lyrics.lrcx_parser import get_lrcx_offset
 from lyrics.widgets import FuriganaWidget
 from lyrics.ass_parser import parse_ass
 from lyrics.waveform import WaveformWidget, find_ffmpeg
-from core.settings import get_playback_settings, get_karaoke_settings, save_karaoke_settings, get_lyrics_attachment, set_lyrics_attachment
+from core.settings import get_playback_settings, get_lyrics_attachment, set_lyrics_attachment
 
 try:
     from lyrics.furigana import build_furigana_segments, prefetch_furigana_batches, clear_reading_segment_cache, yomi_word_surfaces, set_reading_mode, get_reading_mode, available_reading_modes, detect_lyrics_language, detect_lyrics_collection_language, split_reading_by_text_ranges, token_to_furigana_segments
@@ -107,10 +107,6 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             parent is not None
             and getattr(parent, "plugin_manager", None) is not None
             and "karaoke" in parent.plugin_manager.plugins
-        )
-        self.karaoke_sweep_style = get_karaoke_settings().get(
-            "sweep_style",
-            "classic",
         )
         self.lines = []
         self.loading = False
@@ -798,214 +794,6 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             self.karaoke_preview_panel.setVisible(on_karaoke_tab)
             if on_karaoke_tab:
                 self._refresh_karaoke_preview()
-
-    def _update_karaoke_sweep_style_button(self):
-        button = getattr(self, "karaoke_sweep_style_button", None)
-        if button is not None:
-            button.setText("Properties")
-
-    def _apply_karaoke_sweep_style(self):
-        style = str(
-            getattr(self, "karaoke_sweep_style", "classic")
-        ).lower()
-        if style not in {"classic", "soft", "glow", "shimmer"}:
-            style = "classic"
-            self.karaoke_sweep_style = style
-
-        # Persist the style globally, since this property belongs to the
-        # karaoke renderer rather than an individual lyric line.
-        current = get_karaoke_settings()
-        save_karaoke_settings({
-            "sweep_fps": current.get("sweep_fps", 60),
-            "sweep_style": style,
-            "sweep_easing": current.get("sweep_easing", "linear"),
-            "softness": current.get("softness", 8),
-            "glow_intensity": current.get("glow_intensity", 70),
-            "glow_radius": current.get("glow_radius", 1),
-            "shimmer_width": current.get("shimmer_width", 10),
-            "sweep_delay_ms": current.get("sweep_delay_ms", 100),
-            "sweep_delay_percent": current.get(
-                "sweep_delay_percent", 10
-            ),
-        })
-
-        current = get_karaoke_settings()
-        preview = getattr(self, "karaoke_renderer_preview", None)
-        if preview is not None:
-            preview.set_karaoke_properties(
-                current["sweep_style"],
-                current["sweep_easing"],
-                current["softness"],
-                current["glow_intensity"],
-                current["glow_radius"],
-                current.get("shimmer_width", 10),
-                current.get("sweep_delay_ms", 100),
-                current.get("sweep_delay_percent", 10),
-            )
-
-        main_window = self.player
-        if main_window is not None:
-            for widget in (
-                getattr(main_window, "lyric_widget", None),
-                getattr(main_window, "scrolling_lyrics_widget", None),
-            ):
-                if widget is not None and hasattr(
-                    widget,
-                    "set_karaoke_sweep_style",
-                ):
-                    current = get_karaoke_settings()
-                    if hasattr(widget, "set_karaoke_properties"):
-                        widget.set_karaoke_properties(
-                            current["sweep_style"],
-                            current["sweep_easing"],
-                            current["softness"],
-                            current["glow_intensity"],
-                            current["glow_radius"],
-                            current.get("shimmer_width", 10),
-                            current.get("sweep_delay_ms", 100),
-                            current.get("sweep_delay_percent", 10),
-                        )
-                    else:
-                        widget.set_karaoke_sweep_style(style)
-
-    def _show_karaoke_properties(self):
-        settings = get_karaoke_settings()
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Karaoke Properties")
-        dialog.setMinimumWidth(360)
-
-        layout = QVBoxLayout(dialog)
-        form = QFormLayout()
-
-        style = QComboBox()
-        style.addItem("Classic", "classic")
-        style.addItem("Soft", "soft")
-        style.addItem("Glow", "glow")
-        style.addItem("Shimmer", "shimmer")
-        style.addItem("Shimmer", "shimmer")
-        style.setCurrentIndex(
-            max(0, style.findData(settings.get("sweep_style", "classic")))
-        )
-        form.addRow("Sweep style:", style)
-
-        easing = QComboBox()
-        for label, value in (
-            ("Linear", "linear"),
-            ("Ease In", "ease_in"),
-            ("Ease Out", "ease_out"),
-            ("Ease In-Out", "ease_in_out"),
-        ):
-            easing.addItem(label, value)
-        easing.setCurrentIndex(
-            max(0, easing.findData(settings.get("sweep_easing", "linear")))
-        )
-        form.addRow("Easing:", easing)
-
-        softness = QSlider(Qt.Orientation.Horizontal)
-        softness.setRange(1, 40)
-        softness.setValue(settings.get("softness", 8))
-        softness_value = QLabel()
-        softness_row = QHBoxLayout()
-        softness_row.addWidget(softness)
-        softness_row.addWidget(softness_value)
-        softness_widget = QWidget()
-        softness_widget.setLayout(softness_row)
-        form.addRow("Edge softness:", softness_widget)
-
-        glow_intensity = QSlider(Qt.Orientation.Horizontal)
-        glow_intensity.setRange(0, 255)
-        glow_intensity.setValue(settings.get("glow_intensity", 70))
-        glow_intensity_value = QLabel()
-        glow_intensity_row = QHBoxLayout()
-        glow_intensity_row.addWidget(glow_intensity)
-        glow_intensity_row.addWidget(glow_intensity_value)
-        glow_intensity_widget = QWidget()
-        glow_intensity_widget.setLayout(glow_intensity_row)
-        form.addRow("Glow intensity:", glow_intensity_widget)
-
-        glow_radius = QSlider(Qt.Orientation.Horizontal)
-        glow_radius.setRange(1, 8)
-        glow_radius.setValue(settings.get("glow_radius", 1))
-        glow_radius_value = QLabel()
-        glow_radius_row = QHBoxLayout()
-        glow_radius_row.addWidget(glow_radius)
-        glow_radius_row.addWidget(glow_radius_value)
-        glow_radius_widget = QWidget()
-        glow_radius_widget.setLayout(glow_radius_row)
-        form.addRow("Glow radius:", glow_radius_widget)
-
-        shimmer_width = QSlider(Qt.Orientation.Horizontal)
-        shimmer_width.setRange(1, 40)
-        shimmer_width.setValue(settings.get("shimmer_width", 10))
-        shimmer_width_value = QLabel()
-        shimmer_width_row = QHBoxLayout()
-        shimmer_width_row.addWidget(shimmer_width)
-        shimmer_width_row.addWidget(shimmer_width_value)
-        shimmer_width_widget = QWidget()
-        shimmer_width_widget.setLayout(shimmer_width_row)
-        form.addRow("Shimmer width:", shimmer_width_widget)
-
-        layout.addLayout(form)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Apply
-            | QDialogButtonBox.StandardButton.Close
-        )
-        layout.addWidget(buttons)
-
-        def refresh_labels():
-            softness_value.setText(f"{softness.value()}%")
-            glow_intensity_value.setText(str(glow_intensity.value()))
-            glow_radius_value.setText(f"{glow_radius.value()} px")
-            shimmer_width_value.setText(f"{shimmer_width.value()} px")
-
-        def refresh_visibility():
-            selected = style.currentData()
-            softness_widget.setVisible(selected == "soft")
-            form.labelForField(softness_widget).setVisible(selected == "soft")
-            is_glow = selected == "glow"
-            glow_intensity_widget.setVisible(is_glow)
-            form.labelForField(glow_intensity_widget).setVisible(is_glow)
-            glow_radius_widget.setVisible(is_glow)
-            form.labelForField(glow_radius_widget).setVisible(is_glow)
-            is_shimmer = selected == "shimmer"
-            shimmer_width_widget.setVisible(is_shimmer)
-            form.labelForField(shimmer_width_widget).setVisible(is_shimmer)
-
-        def apply_properties():
-            values = {
-                "sweep_fps": settings.get("sweep_fps", 60),
-                "sweep_style": style.currentData(),
-                "sweep_easing": easing.currentData(),
-                "softness": softness.value(),
-                "glow_intensity": glow_intensity.value(),
-                "glow_radius": glow_radius.value(),
-                "shimmer_width": shimmer_width.value(),
-            }
-            save_karaoke_settings(values)
-            self.karaoke_sweep_style = values["sweep_style"]
-            self._apply_karaoke_sweep_style()
-            self._refresh_karaoke_preview()
-
-        refresh_labels()
-        refresh_visibility()
-        style.currentIndexChanged.connect(refresh_visibility)
-        softness.valueChanged.connect(lambda _: refresh_labels())
-        glow_intensity.valueChanged.connect(lambda _: refresh_labels())
-        glow_radius.valueChanged.connect(lambda _: refresh_labels())
-        shimmer_width.valueChanged.connect(lambda _: refresh_labels())
-        buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(
-            apply_properties
-        )
-        buttons.rejected.connect(dialog.close)
-
-        dialog.exec()
-
-    def _select_karaoke_sweep_style(self, style):
-        self.karaoke_sweep_style = str(style or "classic").lower()
-        self._apply_karaoke_sweep_style()
-        self._refresh_karaoke_preview()
 
     def _populate_lines(self, preserve_line_index=None):
         """Refresh the sidebar as a view of canonical document order.
@@ -2984,7 +2772,8 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
                 self._preview_segments_line_index = None
             return
 
-        if rebuild_segments or self._preview_segments_line_index != index:
+        line_changed = self._preview_segments_line_index != index
+        if rebuild_segments or line_changed:
             line_end = getattr(line, "end", None)
             if line_end is None:
                 timeline = sorted(
@@ -3012,6 +2801,9 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
                 is_blockquote=line.is_blockquote,
             )
             self._preview_segments_line_index = index
+            if line_changed:
+                self.karaoke_renderer_preview.set_current_line(True)
+                self.karaoke_renderer_preview.start_line_entrance()
 
         if position_ms is None and self.player is not None and hasattr(self.player, "media_player"):
             position_ms = self.player.media_player.position()

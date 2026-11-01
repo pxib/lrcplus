@@ -308,6 +308,56 @@ def test_audio_download_includes_original_captions_and_convertible_lyrics(tmp_pa
     assert Path(result["lyrics_path"]).name.startswith(Path(result["path"]).stem)
 
 
+@pytest.mark.parametrize("extension", [".lrc", ".txt"])
+def test_automatic_lyrics_publish_beside_audio_even_with_subtitle_conversion_disabled(tmp_path, fake_downloader, monkeypatch, extension):
+    request = subtitle_request(tmp_path)
+    request["config"]["automatically_find_lyrics"] = True
+    request["subtitles_as_lyrics"] = False
+    text = "[00:01.00]Found lyrics\n" if extension == ".lrc" else "Found lyrics\n"
+    monkeypatch.setattr(worker, "find_lyrics", lambda info: {"extension": extension, "text": text})
+    result = worker.download(request)
+    assert Path(result["lyrics_path"]) == Path(result["path"]).with_suffix(extension)
+    assert Path(result["lyrics_path"]).read_text(encoding="utf-8") == text
+    assert Path(result["subtitle_path"]).read_text(encoding="utf-8") == VTT
+    assert result["lyrics_source"] == "LRCLIB"
+
+
+def test_selected_subtitle_lyrics_take_precedence_over_automatic_lookup(tmp_path, fake_downloader, monkeypatch):
+    request = subtitle_request(tmp_path)
+    request["config"]["automatically_find_lyrics"] = True
+    monkeypatch.setattr(worker, "find_lyrics", lambda info: pytest.fail("Selected subtitles take precedence"))
+    result = worker.download(request)
+    assert load_lrc(result["lyrics_path"])[0] == (1.25, "Hello & world")
+    assert "lyrics_source" not in result
+
+
+@pytest.mark.parametrize("outcome", [None, TimeoutError("offline"), ValueError("invalid response")])
+def test_lyrics_lookup_failure_still_publishes_audio(tmp_path, fake_downloader, monkeypatch, outcome):
+    request = subtitle_request(tmp_path)
+    request["config"]["automatically_find_lyrics"] = True
+    request["subtitle"] = None
+
+    def find(info):
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(worker, "find_lyrics", find)
+    result = worker.download(request)
+    assert Path(result["path"]).read_bytes() == b"audio bytes"
+    assert "lyrics_path" not in result
+    assert result["lyrics_message"]
+
+
+def test_disabled_automatic_lyrics_does_not_contact_provider(tmp_path, fake_downloader, monkeypatch):
+    request = subtitle_request(tmp_path)
+    request["subtitle"] = None
+    monkeypatch.setattr(worker, "find_lyrics", lambda info: pytest.fail("Option is disabled"))
+    result = worker.download(request)
+    assert Path(result["path"]).is_file()
+    assert "lyrics_path" not in result
+
+
 def test_subtitles_only_download_reuses_audio_and_preserves_authored_lyrics(tmp_path, fake_downloader):
     audio = tmp_path / "song.m4a"
     audio.write_bytes(b"existing audio")

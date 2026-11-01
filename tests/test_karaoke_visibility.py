@@ -140,6 +140,37 @@ def test_only_visible_lyric_display_receives_updates(karaoke, qapp):
     assert window.scrolling_lyrics_widget.positions
 
 
+@pytest.mark.parametrize("display", ["lyric_widget", "scrolling_lyrics_widget"])
+@pytest.mark.parametrize("playing", [False, True])
+@pytest.mark.parametrize("position_ms,offset,expected", [
+    (12000, 2.5, 9.5),
+    (12000, -2.5, 14.5),
+    (12000, 0.0, 12.0),
+    (0, 2.5, -2.5),
+])
+def test_karaoke_uses_offset_lyric_time(
+    karaoke, qapp, monkeypatch, display, playing, position_ms, offset, expected
+):
+    window, plugin = karaoke
+    monkeypatch.setattr("plugins.core.karaoke.plugin.time.monotonic", lambda: 100.0)
+    window.lyrics_offset_seconds = offset
+    window.media_player.position_ms = position_ms
+    window.workspace_stack.setCurrentWidget(window.lyrics_page)
+    window.display_stack.setCurrentWidget(getattr(window, display))
+    window.show()
+    qapp.processEvents()
+    if playing:
+        window.media_player.play()
+
+    plugin.update_karaoke_position()
+    assert getattr(window, display).positions[-1] == pytest.approx(expected)
+
+    # Reloading an offset takes effect without changing the media clock.
+    window.lyrics_offset_seconds = offset + 1.0
+    plugin.update_karaoke_position()
+    assert getattr(window, display).positions[-1] == pytest.approx(expected - 1.0)
+
+
 def test_untimed_lyrics_do_not_run_karaoke_timer(karaoke, qapp):
     window, plugin = karaoke
     window.workspace_stack.setCurrentWidget(window.lyrics_page)

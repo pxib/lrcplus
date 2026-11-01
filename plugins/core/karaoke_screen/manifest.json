@@ -2,5 +2,6 @@
   "name": "Karaoke Screen",
   "version": "0.1.0",
   "description": "Fullscreen lyrics with an optional MIDI pitch guide.",
+  "enabled": false,
   "api_version": 3
 }

@@ -16,12 +16,14 @@ PREFIX = "LRCPLUS_YTDLP "
 
 if __package__:
     from .captions import convert_caption_file, caption_style_warning
-    from .artwork import find_cover, embed_cover
+    from .artwork import find_cover, embed_cover, search_terms
+    from .lyrics import find_lyrics
 else:
     # Isolated Python excludes the script directory from its import path.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from captions import convert_caption_file, caption_style_warning
-    from artwork import find_cover, embed_cover
+    from artwork import find_cover, embed_cover, search_terms
+    from lyrics import find_lyrics
 
 
 def emit(event, **values):
@@ -111,11 +113,13 @@ def options(config):
 
 
 def metadata(info):
+    title, artist, album = search_terms(info)
     return {
         "identity": identity(info), "title": str(info.get("title") or info.get("id")),
         "artist": str(info.get("artist") or info.get("uploader") or ""),
         "duration": info.get("duration"), "url": str(info.get("webpage_url") or ""),
         "album": str(info.get("album") or ""),
+        "lyrics_query": {"track": title, "artist": artist, "album": album, "duration": info.get("duration")},
         "release_date": info.get("release_date"), "upload_date": info.get("upload_date"),
     }
 
@@ -303,6 +307,55 @@ def caption_suffix(selected):
     return "." + language + "." + selected["kind"]
 
 
+def collect_automatic_lyrics(info, request, stage, files, details, *, audio=None):
+    if not request.get("config", {}).get("automatically_find_lyrics", False):
+        return
+    if any(extension.endswith((".lrc", ".lrcx")) for extension in files):
+        return  # Explicitly selected subtitle lyrics take precedence.
+    if audio is not None:
+        saved = request.get("existing_lyrics_path")
+        candidates = ([Path(saved)] if saved else []) + [audio.with_suffix(ext) for ext in (".lrcx", ".lrc", ".txt")]
+        for path in candidates:
+            if path.suffix.lower() in {".lrcx", ".lrc", ".txt"} and path.is_file():
+                details.update(lyrics_path=str(path), lyrics_source="existing",
+                               lyrics_message="Kept existing lyrics.")
+                return
+    emit("processing", message="Looking for lyrics on LRCLIB…")
+    try:
+        match = find_lyrics(info)
+        if match is None:
+            details["lyrics_message"] = "No reliable lyrics match found on LRCLIB."
+            return
+        extension = match["extension"]
+        path = stage / ("found-lyrics" + extension)
+        path.write_text(match["text"], encoding="utf-8")
+        files[extension] = path
+        details.update(lyrics_extension=extension, lyrics_source="LRCLIB",
+                       lyrics_message="Found " + ("synced" if extension == ".lrc" else "plain") + " lyrics on LRCLIB.")
+    except Exception as error:
+        details["lyrics_message"] = "Automatic lyrics lookup failed; audio is still available."
+        emit("log", message="LRCLIB lyrics lookup failed: " + str(error)[:500])
+
+
+def automatic_lyrics_result(details, published):
+    extension = details.pop("lyrics_extension", None)
+    if extension:
+        details["lyrics_path"] = str(published[extension])
+    return details
+
+
+def find_existing_audio_lyrics(request):
+    stage, destination = checked_stage(request)
+    audio = Path(request["audio_path"]).resolve()
+    if audio.parent != destination or not audio.is_file() or audio.suffix.lower() not in {".m4a", ".mp3"}:
+        raise ValueError("The existing audio file is unavailable.")
+    files, details = {}, {}
+    info = request.get("info", {})
+    collect_automatic_lyrics(info.get("lyrics_query", info), request, stage, files, details, audio=audio)
+    published = publish_bundle(audio.stem, files, destination) if files else {}
+    return dict(path=str(audio), **automatic_lyrics_result(details, published))
+
+
 def download_subtitles(request):
     from yt_dlp import YoutubeDL
 
@@ -322,8 +375,12 @@ def download_subtitles(request):
         validate_subtitle(info, request)
         processed = ydl.process_ie_result(info, download=True)
     files, details = collect_subtitles(processed or info, request, stage)
-    published = publish_bundle(audio.stem + caption_suffix(request["subtitle"]), files, destination)
-    return dict(metadata(info), path=str(audio), **subtitle_result(details, published))
+    prefix = caption_suffix(request["subtitle"])
+    files = {prefix + extension: path for extension, path in files.items()}
+    collect_automatic_lyrics(info, request, stage, files, details, audio=audio)
+    published = publish_bundle(audio.stem, files, destination)
+    subtitle_result(details, published, prefix=prefix)
+    return dict(metadata(info), path=str(audio), **automatic_lyrics_result(details, published))
 
 
 def download(request):
@@ -396,9 +453,11 @@ def download(request):
     # Publish sidecars before the audio; audio becomes visible only when all
     # selected outputs have been written. Collisions keep a shared basename.
     files = {prefix + extension: path for extension, path in caption_files.items()}
+    collect_automatic_lyrics(info, request, stage, files, details)
     files[source.suffix] = source
     published = publish_bundle(source.stem, files, destination)
-    return dict(metadata(info), path=str(published[source.suffix]), **subtitle_result(details, published, prefix=prefix))
+    subtitle_result(details, published, prefix=prefix)
+    return dict(metadata(info), path=str(published[source.suffix]), **automatic_lyrics_result(details, published))
 
 
 def check_setup(config):
@@ -445,6 +504,8 @@ def main():
             result = download(request)
         elif action == "subtitles":
             result = download_subtitles(request)
+        elif action == "lyrics":
+            result = find_existing_audio_lyrics(request)
         elif action == "check":
             result = check_setup(request["config"])
         else:

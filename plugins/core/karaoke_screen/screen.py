@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from core.settings import get_karaoke_settings
+from core.settings import get_karaoke_settings, apply_karaoke_settings, get_effective_lyrics_settings
 from lyrics.widgets import FuriganaWidget
 from ui.artwork_background import ArtworkBackgroundWidget
 
@@ -483,27 +483,29 @@ class KaraokeScreen(QDialog):
 
         layout.addStretch(1)
         self.current_lyric = FuriganaWidget()
+        focus = get_effective_lyrics_settings(getattr(parent, "current_audio_path", None))["focus_transition"]
+        self.current_lyric.set_focus_transition(focus)
         self.current_lyric.setMinimumHeight(145)
         self.current_lyric.set_alignment("left")
         self.current_lyric.set_font(size=56, ruby_size=28)
         self.current_lyric.set_colors("#ffffff", "#91e5cf")
         self.current_lyric.set_ruby_visible(True)
         self.current_lyric.set_reserve_ruby_space(True)
-        self._add_lyric_outline(self.current_lyric)
-        self.current_lyric.set_karaoke_sweep_style(
-            get_karaoke_settings().get("sweep_style", "classic")
-        )
-        layout.addWidget(self.current_lyric, 2)
+        current_lyric_frame = self._add_lyric_outline(self.current_lyric)
+        apply_karaoke_settings(self.current_lyric, get_karaoke_settings())
+        layout.addWidget(current_lyric_frame, 2)
 
         self.next_lyric = FuriganaWidget()
+        self.next_lyric.set_focus_transition(focus)
         self.next_lyric.setMinimumHeight(110)
         self.next_lyric.set_alignment("right")
         self.next_lyric.set_font(size=44, ruby_size=23)
         self.next_lyric.set_colors("#b8cccf", "#91e5cf")
         self.next_lyric.set_ruby_visible(True)
         self.next_lyric.set_reserve_ruby_space(True)
-        self._add_lyric_outline(self.next_lyric)
-        layout.addWidget(self.next_lyric, 1)
+        next_lyric_frame = self._add_lyric_outline(self.next_lyric)
+        apply_karaoke_settings(self.next_lyric, get_karaoke_settings())
+        layout.addWidget(next_lyric_frame, 1)
         layout.addStretch(1)
 
         footer = QHBoxLayout()
@@ -553,11 +555,16 @@ class KaraokeScreen(QDialog):
 
     @staticmethod
     def _add_lyric_outline(widget):
-        outline = QGraphicsDropShadowEffect(widget)
+        frame = QWidget()
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(widget)
+        outline = QGraphicsDropShadowEffect(frame)
         outline.setBlurRadius(8)
         outline.setOffset(0, 2)
         outline.setColor(QColor(0, 0, 0, 220))
-        widget.setGraphicsEffect(outline)
+        frame.setGraphicsEffect(outline)
+        return frame
 
     def set_background_pixmap(self, pixmap):
         if pixmap is not None and not pixmap.isNull():

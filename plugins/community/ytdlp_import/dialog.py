@@ -148,6 +148,12 @@ class ImportDialog(QDialog):
         self.subtitles_as_lyrics.setChecked(bool(settings.get("subtitles_as_lyrics", True)))
         self.subtitles_as_lyrics.setEnabled(False)
         self.subtitles_as_lyrics.toggled.connect(self._check_existing)
+        self.automatically_find_lyrics = QCheckBox("Automatically find lyrics")
+        self.automatically_find_lyrics.setChecked(bool(settings.get("automatically_find_lyrics", False)))
+        self.automatically_find_lyrics.setToolTip(
+            "Find matching lyrics on LRCLIB. Prefers synced lyrics, then plain text. Selected subtitle lyrics take precedence."
+        )
+        self.automatically_find_lyrics.toggled.connect(self._check_existing)
         self.subtitle_hint = QLabel("Preview a track to see available subtitle languages.")
         self.subtitle_hint.setWordWrap(True)
         self.subtitle_warning = QLabel()
@@ -213,6 +219,7 @@ class ImportDialog(QDialog):
         layout.addWidget(self.subtitles_as_lyrics)
         layout.addWidget(self.subtitle_hint)
         layout.addWidget(self.subtitle_warning)
+        layout.addWidget(self.automatically_find_lyrics)
         layout.addWidget(self.add_to_queue)
         layout.addWidget(self.progress)
         layout.addWidget(self.status)
@@ -263,6 +270,7 @@ class ImportDialog(QDialog):
             self.folder.setText(str(settings["download_folder"]))
             self.codec.setCurrentIndex(max(0, self.codec.findData(settings["codec"])))
             self.use_musicbrainz_cover.setChecked(bool(settings.get("use_musicbrainz_cover", False)))
+            self.automatically_find_lyrics.setChecked(bool(settings.get("automatically_find_lyrics", False)))
 
     def _artwork_changed(self):
         self.config["use_musicbrainz_cover"] = self.use_musicbrainz_cover.isChecked()
@@ -358,7 +366,10 @@ class ImportDialog(QDialog):
             return True
         if entry.get("subtitle") != selected or not Path(entry.get("subtitle_path") or "").is_file():
             return False
-        return not self.subtitles_as_lyrics.isChecked() or Path(entry.get("lyrics_path") or "").is_file()
+        return not self.subtitles_as_lyrics.isChecked() or (
+            entry.get("lyrics_source") not in {"LRCLIB", "existing"}
+            and Path(entry.get("lyrics_path") or "").is_file()
+        )
 
     def _check_existing(self, *_args):
         history = self.api.get_setting("downloads", {})
@@ -369,6 +380,8 @@ class ImportDialog(QDialog):
         self.download_button.setText("Add existing" if self._existing else "Download")
         if self._existing and not self._has_selected_subtitles(self._existing_entry):
             self.download_button.setText("Get subtitles")
+        elif self._existing and self.automatically_find_lyrics.isChecked() and not self._saved_lyrics():
+            self.download_button.setText("Find lyrics")
         self.download_button.setEnabled(self.info is not None and self.job is None)
         self.again_button.setVisible(bool(self._existing))
         self._refresh_download_size()
@@ -377,6 +390,10 @@ class ImportDialog(QDialog):
             if self._existing_entry.get("subtitle") == self.subtitle_combo.currentData():
                 self._caption_warning = self._existing_entry.get("subtitle_warning", "")
         self._refresh_subtitle_warning()
+
+    def _saved_lyrics(self):
+        value = self._existing_entry.get("lyrics_path")
+        return value if value and Path(value).is_file() else None
 
     def download(self, _checked=False, *, force=False):
         if self.job is not None or self.info is None:
@@ -390,6 +407,7 @@ class ImportDialog(QDialog):
             for key, value in (("download_folder", self.folder.text().strip()), ("codec", self.codec.currentData()),
                                ("add_to_queue", self.add_to_queue.isChecked()),
                                ("use_musicbrainz_cover", self.use_musicbrainz_cover.isChecked()),
+                               ("automatically_find_lyrics", self.automatically_find_lyrics.isChecked()),
                                ("subtitle_language", selected.get("language", "")),
                                ("subtitle_kind", selected.get("kind", "manual")),
                                ("subtitles_as_lyrics", self.subtitles_as_lyrics.isChecked())):
@@ -401,9 +419,17 @@ class ImportDialog(QDialog):
         if self._existing and not force:
             if not self._has_selected_subtitles(self._existing_entry):
                 self._start("subtitles")
+            elif self.automatically_find_lyrics.isChecked() and not self._saved_lyrics():
+                self._start("lyrics")
             else:
-                lyrics = self._existing_entry.get("lyrics_path") if selected else None
-                self._import_file(self._existing, lyrics_path=lyrics)
+                use_saved = self.automatically_find_lyrics.isChecked() or (
+                    selected and self.subtitles_as_lyrics.isChecked()
+                    and self._existing_entry.get("lyrics_source") not in {"LRCLIB", "existing"}
+                )
+                lyrics = self._saved_lyrics() if use_saved else None
+                source = ("existing" if self.automatically_find_lyrics.isChecked()
+                          else self._existing_entry.get("lyrics_source"))
+                self._import_file(self._existing, lyrics_path=lyrics, lyrics_source=source)
             return
         self._start("download")
 
@@ -413,13 +439,15 @@ class ImportDialog(QDialog):
         self._last_action = action
         request = {"action": action, "config": dict(self.config), "url": self.preview_url}
         request["config"]["use_musicbrainz_cover"] = self.use_musicbrainz_cover.isChecked()
+        request["config"]["automatically_find_lyrics"] = self.automatically_find_lyrics.isChecked()
         if action == "preview":
             request["musicbrainz_not_before"] = ImportDialog._artwork_available_at
-        if action in {"download", "subtitles"}:
+        if action in {"download", "subtitles", "lyrics"}:
             request.update(folder=self.folder.text().strip(), codec=self.codec.currentData(), identity=self.info["identity"],
                            subtitle=self.subtitle_combo.currentData(), subtitles_as_lyrics=self.subtitles_as_lyrics.isChecked())
-            if action == "subtitles":
-                request.update(audio_path=self._existing, folder=str(Path(self._existing).parent))
+            if action in {"subtitles", "lyrics"}:
+                request.update(audio_path=self._existing, folder=str(Path(self._existing).parent),
+                               info=dict(self.info), existing_lyrics_path=self._saved_lyrics())
             elif self.use_musicbrainz_cover.isChecked() and self.info.get("musicbrainz_cover"):
                 request["musicbrainz_cover"] = dict(self.info["musicbrainz_cover"], data=self.info["thumbnail"])
         self.details.clear()
@@ -429,6 +457,7 @@ class ImportDialog(QDialog):
         self.retry_button.hide()
         self.progress.setRange(0, 0)
         self.status.setText({"preview": "Reading track information…", "download": "Starting download…",
+                             "lyrics": "Looking for lyrics for the existing audio…",
                              "subtitles": "Downloading subtitles for the existing audio…", "check": "Checking tools…"}[action])
         job = ImportJob(request, self)
         self.job = job
@@ -442,7 +471,8 @@ class ImportDialog(QDialog):
 
     def _set_busy(self, busy):
         for widget in (self.url, self.folder, self.browse_button, self.codec, self.preview_button,
-                       self.setup_button, self.add_to_queue, self.again_button, self.use_musicbrainz_cover):
+                       self.setup_button, self.add_to_queue, self.again_button, self.use_musicbrainz_cover,
+                       self.automatically_find_lyrics):
             widget.setEnabled(not busy)
         self.cancel_button.setEnabled(busy)
         self.progress.setVisible(busy)
@@ -507,7 +537,7 @@ class ImportDialog(QDialog):
             self.status.setText("Ready to download.")
             self._populate_subtitles(result.get("subtitle_tracks", []))
             self._check_existing()
-        elif action in {"download", "subtitles"}:
+        elif action in {"download", "subtitles", "lyrics"}:
             path = result.get("path")
             if not path or not Path(path).is_file():
                 self._failed("The downloaded audio file could not be found.")
@@ -515,9 +545,11 @@ class ImportDialog(QDialog):
             history = self.api.get_setting("downloads", {})
             history = dict(history) if isinstance(history, dict) else {}
             history[self._history_key()] = {key: result[key] for key in
-                                           ("path", "url", "title", "subtitle", "subtitle_path", "lyrics_path", "subtitle_warning", "musicbrainz_cover") if key in result}
-            if action == "subtitles":
+                                           ("path", "url", "title", "subtitle", "subtitle_path", "lyrics_path", "lyrics_source", "subtitle_warning", "musicbrainz_cover") if key in result}
+            if action in {"subtitles", "lyrics"}:
                 history[self._history_key()] = dict(self._existing_entry, **history[self._history_key()])
+                if action == "subtitles" and "lyrics_path" in result and "lyrics_source" not in result:
+                    history[self._history_key()].pop("lyrics_source", None)
             try:
                 self.api.set_setting("downloads", dict(list(history.items())[-1000:]))
             except OSError as error:
@@ -527,23 +559,30 @@ class ImportDialog(QDialog):
             self.download_button.setText("Add existing")
             self.again_button.show()
             self._existing_entry = history[self._history_key()]
+            if self.automatically_find_lyrics.isChecked() and not self._saved_lyrics():
+                self.download_button.setText("Find lyrics")
             self._caption_warning = result.get("subtitle_warning", "")
             self._refresh_subtitle_warning()
-            added = self._import_file(path, lyrics_path=result.get("lyrics_path"))
+            added = self._import_file(path, lyrics_path=result.get("lyrics_path"), lyrics_source=result.get("lyrics_source"))
+            if result.get("lyrics_message"):
+                self.details.appendPlainText(result["lyrics_message"])
+                if added:
+                    self.status.setText(self.status.text() + "\n" + result["lyrics_message"])
             if result.get("warning"):
                 self.details.appendPlainText(result["warning"])
                 if added:
                     self.status.setText(self.status.text() + "\n" + result["warning"])
 
-    def _import_file(self, path, *, lyrics_path=None):
+    def _import_file(self, path, *, lyrics_path=None, lyrics_source=None):
         try:
-            if lyrics_path and self.subtitles_as_lyrics.isChecked():
+            attach = bool(lyrics_path and (lyrics_source in {"LRCLIB", "existing"} or self.subtitles_as_lyrics.isChecked()))
+            if attach:
                 self.api.attach_lyrics(str(path), str(lyrics_path))
             self.api.import_audio_files([str(path)], add_to_queue=self.add_to_queue.isChecked())
             destination = "library and queue" if self.add_to_queue.isChecked() else "library"
             self.status.setText(f"Added to {destination}: {Path(path).name}")
-            if lyrics_path and self.subtitles_as_lyrics.isChecked():
-                self.status.setText(self.status.text() + "\nSynced subtitle lyrics attached.")
+            if attach:
+                self.status.setText(self.status.text() + ("\nLyrics attached." if lyrics_source else "\nSynced subtitle lyrics attached."))
             return True
         except (OSError, ValueError, RuntimeError) as error:
             self.status.setText(f"Audio saved at {path}. Could not add it to the library/queue: {error}. Use Add existing to retry.")
@@ -573,7 +612,7 @@ class ImportDialog(QDialog):
     def _retry(self):
         if self._last_action == "download":
             self.download(force=True)
-        elif self._last_action == "subtitles":
+        elif self._last_action in {"subtitles", "lyrics"}:
             self.download()
         elif self._last_action == "preview":
             self.preview()

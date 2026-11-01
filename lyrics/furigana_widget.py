@@ -4,13 +4,14 @@ import math
 from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import Qt, QPointF, QRectF, QPropertyAnimation, QEasingCurve, QTimer, QSize, QVariantAnimation, QObject, Signal
-from PySide6.QtGui import QFont, QFontMetrics, QColor, QPainter, QLinearGradient, QBrush, QPen
+from PySide6.QtGui import QFont, QFontMetrics, QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QWidget,
     QScrollArea,
     QInputDialog,
+    QGraphicsBlurEffect,
 )
 from lyrics.furigana import (
     build_furigana_segments,
@@ -18,10 +19,19 @@ from lyrics.furigana import (
     split_reading_by_text_ranges,
     kana_to_romaji,
 )
+from core.settings import KARAOKE_SWEEP_STYLES
+from lyrics.karaoke_effects import eased_progress, sweep_effect_pen, text_color_pen, word_lift_amount
 from lyrics.karaoke_layout import annotate_next_timed_starts
 from lyrics.formatting import style_at
 
 _FURIGANA_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="LRCPlus-Yomi")
+
+
+class _LineFocusBlurEffect(QGraphicsBlurEffect):
+    def boundingRectFor(self, source_rect):
+        # Stay inside this lyric's paint area. Expanded effect bounds make a
+        # repaint of the active line also invalidate its static neighbors.
+        return source_rect
 
 
 
@@ -179,6 +189,22 @@ class FuriganaWidget(QWidget):
         self.karaoke_shimmer_width = 10
         self.karaoke_sweep_delay_ms = 100
         self.karaoke_sweep_delay_percent = 10
+        self.karaoke_line_entrance = False
+        self.karaoke_word_lift = False
+        self.focus_transition = False
+        self.focus_progress = 1.0
+        self._focus_effect = None
+        self._focus_animation = QVariantAnimation(self)
+        self._focus_animation.setDuration(240)
+        self._focus_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self._focus_animation.valueChanged.connect(self._on_focus_value)
+        self.line_entrance_progress = 1.0
+        self._line_entrance_animation = QVariantAnimation(self)
+        self._line_entrance_animation.setStartValue(0.0)
+        self._line_entrance_animation.setEndValue(1.0)
+        self._line_entrance_animation.setDuration(260)
+        self._line_entrance_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._line_entrance_animation.valueChanged.connect(self._on_line_entrance_value)
 
         self.base_font = QFont()
         self.style_spans = []
@@ -194,6 +220,7 @@ class FuriganaWidget(QWidget):
         self._karaoke_furigana_pending = None
         self._prepared_layout_key = None
         self._prepared_layout = []
+        self._karaoke_static_bounds = None
 
         # Reading rendering can be limited independently from the base lyric.
         # This keeps long scrolling lyrics responsive without hiding the lyrics
@@ -388,6 +415,8 @@ class FuriganaWidget(QWidget):
         if family:
             self.reading_font.setFamily(family)
         self.reading_font.setPointSize(ruby_size)
+        self._update_focus_effect()
+        self._update_motion_margin()
         self._update_content_geometry()
         self.update()
 
@@ -536,6 +565,96 @@ class FuriganaWidget(QWidget):
         self._was_current_line = self.is_current_line
         self.is_current_line = current
         self._start_highlight_animation(current)
+        if current:
+            self.start_line_entrance()
+        else:
+            self._line_entrance_animation.stop()
+            self.line_entrance_progress = 1.0
+            self._transition_focus(False)
+
+    def set_focus_transition(self, enabled):
+        enabled = bool(enabled)
+        if self.focus_transition == enabled:
+            return
+        self.focus_transition = enabled
+        self._transition_focus(self.is_current_line, animate=False)
+
+    def _on_focus_value(self, value):
+        self.focus_progress = float(value)
+        self._update_focus_effect()
+        self.update()
+
+    def _update_focus_effect(self):
+        if not self.focus_transition:
+            if self._focus_effect is not None:
+                self._focus_effect.setEnabled(False)
+            return
+        if self._focus_effect is None:
+            self._focus_effect = _LineFocusBlurEffect(self)
+            self._focus_effect.setBlurHints(QGraphicsBlurEffect.BlurHint.AnimationHint)
+            self.setGraphicsEffect(self._focus_effect)
+        radius = QFontMetrics(self.base_font).height() * 0.045 * (1 - self.focus_progress)
+        self._focus_effect.setBlurRadius(radius)
+        self._focus_effect.setEnabled(radius > 0.01)
+
+    def _transition_focus(self, current, restart=False, animate=True):
+        self._focus_animation.stop()
+        target = 1.0 if current or not self.focus_transition else 0.0
+        if not self.focus_transition or not self.isVisible() or not animate:
+            self._on_focus_value(target)
+            return
+        if restart and current:
+            self._on_focus_value(0.0)
+        if self.focus_progress == target:
+            return
+        self._focus_animation.setStartValue(self.focus_progress)
+        self._focus_animation.setEndValue(target)
+        self._focus_animation.start()
+
+    def _on_line_entrance_value(self, value):
+        self.line_entrance_progress = float(value)
+        self.update()
+
+    def start_line_entrance(self):
+        self._line_entrance_animation.stop()
+        if self.is_current_line:
+            self._transition_focus(True, restart=True)
+        if self.karaoke_line_entrance and self.lyric and self.isVisible():
+            self.line_entrance_progress = 0.0
+            self._line_entrance_animation.start()
+        else:
+            self.line_entrance_progress = 1.0
+        self.update()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._transition_focus(self.is_current_line, animate=False)
+        if self.is_current_line:
+            self.start_line_entrance()
+
+    def hideEvent(self, event):
+        self._line_entrance_animation.stop()
+        self.line_entrance_progress = 1.0
+        self._transition_focus(self.is_current_line, animate=False)
+        super().hideEvent(event)
+
+    def _word_lift_offset(self, segment):
+        if not self.karaoke_word_lift or self.karaoke_position is None or segment.get("instant"):
+            return 0.0
+        start = segment.get("start")
+        if start is None:
+            return 0.0
+        start = float(start)
+        end = segment.get("end")
+        if end is None or float(end) <= start:
+            end = segment.get("_next_timed_start")
+        if end is None:
+            end = segment.get("line_end", self.karaoke_line_end)
+        if end is None:
+            end = start + 1.0
+        return -QFontMetrics(self.base_font).height() * 0.1 * word_lift_amount(
+            self.karaoke_position, start, float(end)
+        )
 
     def set_karaoke_properties(
         self,
@@ -547,9 +666,11 @@ class FuriganaWidget(QWidget):
         shimmer_width=10,
         sweep_delay_ms=100,
         sweep_delay_percent=10,
+        line_entrance=False,
+        word_lift=False,
     ):
         self.karaoke_sweep_style = (
-            style if style in {"classic", "soft", "glow", "shimmer"} else "classic"
+            style if style in KARAOKE_SWEEP_STYLES else "classic"
         )
         self.karaoke_sweep_easing = (
             easing
@@ -568,11 +689,26 @@ class FuriganaWidget(QWidget):
         self.karaoke_sweep_delay_percent = max(
             0, min(40, int(sweep_delay_percent))
         )
+        self.karaoke_line_entrance = bool(line_entrance)
+        self.karaoke_word_lift = bool(word_lift)
+        if not self.karaoke_line_entrance:
+            self._line_entrance_animation.stop()
+            self.line_entrance_progress = 1.0
+        self._update_motion_margin()
         self.update()
+
+    def _update_motion_margin(self):
+        height = QFontMetrics(self.base_font).height()
+        top = type(self).TOP_MARGIN + (math.ceil(height * 0.1) if self.karaoke_word_lift else 0)
+        bottom = type(self).BOTTOM_MARGIN + (math.ceil(height * 0.16) if self.karaoke_line_entrance else 0)
+        if self.TOP_MARGIN != top or self.BOTTOM_MARGIN != bottom:
+            self.TOP_MARGIN = top
+            self.BOTTOM_MARGIN = bottom
+            self._update_content_geometry()
 
     def set_karaoke_sweep_style(self, style):
         style = str(style or "classic").lower()
-        if style not in {"classic", "soft", "glow", "shimmer"}:
+        if style not in KARAOKE_SWEEP_STYLES:
             style = "classic"
         if self.karaoke_sweep_style == style:
             return
@@ -591,7 +727,17 @@ class FuriganaWidget(QWidget):
         if self.karaoke_position == position:
             return
 
+        previous = self.karaoke_position
         self.karaoke_position = position
+        bounds = self._karaoke_static_bounds
+        if previous is not None and bounds is not None:
+            source, line_end, start, end, snapshot = bounds
+            if source is self.segments and line_end == self.karaoke_line_end:
+                if start is None or (previous < start and position < start) or (previous >= end and position >= end):
+                    # The clock still advances, but static neighbors keep their
+                    # cached glyph/blur image instead of repainting at sweep FPS.
+                    if snapshot == self.segments:
+                        return
         self.update()
 
     def _segment_progress(self, segment, segments):
@@ -1707,7 +1853,7 @@ class FuriganaWidget(QWidget):
                     piece.setdefault("_decorations", []).append(span)
                     previous = span
 
-    def _paint_decoration_spans(self, painter, segment, normal, highlight, progress, timing_span, sliding):
+    def _paint_decoration_spans(self, painter, segment, normal, highlight, progress, timing_span, sliding, opacity=None):
         spans = segment.get("_decorations", ())
         if not spans:
             return
@@ -1734,7 +1880,7 @@ class FuriganaWidget(QWidget):
                 continue
             left, right, y = span["left"], span["right"], span["y"]
             painter.save()
-            painter.setOpacity(self.display_opacity * (self.reading_opacity if reading else 1.0))
+            painter.setOpacity((self.display_opacity if opacity is None else opacity) * (self.reading_opacity if reading else 1.0))
             for color, start, end in (
                 (normal, max(left, reveal) if reveal is not None else left, right),
                 (highlight, left, min(right, reveal) if reveal is not None else left),
@@ -1856,6 +2002,24 @@ class FuriganaWidget(QWidget):
         if key != self._prepared_layout_key:
             prepared = self._build_prepared_segments()
             annotate_next_timed_starts(prepared)
+            starts, ends = [], []
+            for piece in prepared:
+                start = piece.get("start")
+                if start is None:
+                    continue
+                start = float(start)
+                end = piece.get("end")
+                if end is None or float(end) <= start:
+                    end = piece.get("_next_timed_start")
+                if end is None:
+                    end = piece.get("line_end", self.karaoke_line_end)
+                starts.append(start)
+                ends.append(float(end) if end is not None and float(end) > start else start + 1.0)
+            self._karaoke_static_bounds = (
+                self.segments, self.karaoke_line_end,
+                min(starts) if starts else None, max(ends) if ends else None,
+                key[1],
+            )
             default_reading_metrics = QFontMetrics(self.reading_font)
             for piece in prepared:
                 reading_metrics = (QFontMetrics(self._styled_font(self.reading_font, piece))
@@ -2383,6 +2547,38 @@ class FuriganaWidget(QWidget):
         distance = (1.0 - progress) * self.width()
         return -distance if direction == "left" else distance
 
+    def _karaoke_text_pen(self, segment, progress, normal, timing_spans,
+                          vertical_piece_sweep, metrics, *, reading=False):
+        if progress <= 0.0:
+            return text_color_pen(normal)
+        vertical = segment.get("reading_vertical") if reading else segment.get("_vertical")
+        if segment.get("_vertical"):
+            start, end = vertical_piece_sweep.get(id(segment), (0.0, 1.0))
+            progress = (min(1.0, progress) - start) / max(1e-9, end - start)
+        progress = eased_progress(progress, self.karaoke_sweep_easing)
+        if vertical:
+            if reading:
+                left = float(segment.get("reading_y", 0)) - metrics.ascent()
+                extent = len(segment.get("reading") or "") * segment.get("reading_step", metrics.height())
+            else:
+                left = float(segment["base_y"]) - metrics.ascent()
+                extent = float(segment.get("height", metrics.height()))
+        else:
+            group = segment.get("timing_group", segment.get("karaoke_group"))
+            span = timing_spans.get((group, segment.get("base_y")))
+            if span is not None:
+                left, right = span
+                extent = right - left
+            else:
+                left = float(segment.get("karaoke_x", segment["x"]))
+                extent = float(segment.get("karaoke_width", segment["width"]))
+        return sweep_effect_pen(
+            self.karaoke_sweep_style, normal, self.highlight_color,
+            left, extent, progress, font_height=metrics.height(), vertical=bool(vertical),
+            softness=self.karaoke_softness, glow_intensity=self.karaoke_glow_intensity,
+            glow_radius=self.karaoke_glow_radius, shimmer_width=self.karaoke_shimmer_width,
+        )
+
     def paintEvent(self, event):
         # In Slide mode, upcoming lyrics do not exist visually until their
         # timestamp/current-line turn arrives.
@@ -2403,14 +2599,20 @@ class FuriganaWidget(QWidget):
             painter.end()
             return
 
-        # Used by the vertical karaoke clip geometry below. Keep these
+        # Used by the vertical karaoke brush geometry below. Keep these
         # metrics in paintEvent so the highlight uses the exact same base
         # font measurements as the normal glyph rendering.
         base_metrics = QFontMetrics(self.base_font)
         reading_metrics = QFontMetrics(self.reading_font)
 
         painter.save()
-        painter.setOpacity(self.display_opacity)
+        entrance = self.line_entrance_progress if self.karaoke_line_entrance else 1.0
+        line_opacity = self.display_opacity * (0.2 + 0.8 * entrance)
+        if self.focus_transition:
+            line_opacity *= 0.7 + 0.3 * self.focus_progress
+        painter.setOpacity(line_opacity)
+        if entrance < 1.0:
+            painter.translate(0, base_metrics.height() * 0.16 * (1 - entrance))
 
         highlight_scale = self._highlight_scale()
         slide_offset = self._highlight_slide_offset()
@@ -2489,11 +2691,13 @@ class FuriganaWidget(QWidget):
         # may create many visual pieces, but those pieces must never get their
         # own independent timing calculation.
         group_progress = {}
+        group_lift = {}
         for piece in prepared:
             group = piece.get("timing_group", piece.get("karaoke_group"))
             if group is None or group in group_progress:
                 continue
             group_progress[group] = self._segment_progress(piece, prepared)
+            group_lift[group] = self._word_lift_offset(piece)
 
         # Give every vertical visual piece a stable portion of its group's
         # karaoke sweep. Prepared order is also reading order: top-to-bottom,
@@ -2525,10 +2729,13 @@ class FuriganaWidget(QWidget):
                     or left > visible_rect.right() + paint_margin):
                 continue
 
+            timing_group = segment.get("timing_group", segment.get("karaoke_group"))
+            lift = group_lift[timing_group] if timing_group in group_lift else self._word_lift_offset(segment)
+            painter.save()
+            painter.translate(0, lift)
             painter.setFont(self._paint_font(self.base_font, segment))
 
-            # v0.2: draw normal text first, then clip the karaoke color across
-            # the segment according to its progress between timed starts.
+            # Each glyph is painted once with a brush containing both colors.
             normal_pen = self.lyrics_color
             highlight_pen = self.highlight_color
             timing_group = segment.get(
@@ -2561,73 +2768,10 @@ class FuriganaWidget(QWidget):
                 elif self.highlight_animation in {"none", "pop", "scale"}:
                     normal_pen = self.highlight_color
 
-            # Classic karaoke uses a hard edge. Draw only the not-yet-sung
-            # portion in the normal color; the highlighted pass below draws
-            # the sung portion. Drawing the whole glyph twice compounds its
-            # antialiased edge coverage and makes it look brighter/thicker.
-            normal_sweep_clip = None
-            if progress > 0.0:
-                if segment.get("_vertical"):
-                    start, end = vertical_piece_sweep.get(
-                        id(segment), (0.0, 1.0)
-                    )
-                    span = max(1e-9, end - start)
-                    local_progress = max(
-                        0.0,
-                        min(
-                            1.0,
-                            (min(1.0, progress) - start) / span,
-                        ),
-                    )
-                    top = float(segment["base_y"]) - base_metrics.ascent()
-                    fill_height = max(
-                        0.0,
-                        float(
-                            segment.get("height", base_metrics.height())
-                        ) * local_progress,
-                    )
-                    normal_sweep_clip = QRectF(
-                        0,
-                        top + fill_height,
-                        self.width(),
-                        max(0.0, self.height() - top - fill_height),
-                    )
-                elif getattr(self, "karaoke_sweep_style", "classic") == "classic":
-                    visual_group = (timing_group, segment.get("base_y"))
-                    if visual_group in timing_spans:
-                        karaoke_left, karaoke_right = timing_spans[visual_group]
-                        karaoke_width = max(0.0, karaoke_right - karaoke_left)
-                    else:
-                        karaoke_left = segment.get("karaoke_x", base_x)
-                        karaoke_width = segment.get(
-                            "karaoke_width", segment["width"]
-                        )
-                    progress_value = min(1.0, max(0.0, progress))
-                    easing = getattr(self, "karaoke_sweep_easing", "linear")
-                    if easing == "ease_in":
-                        progress_value *= progress_value
-                    elif easing == "ease_out":
-                        progress_value = 1.0 - (1.0 - progress_value) ** 2
-                    elif easing == "ease_in_out":
-                        if progress_value < 0.5:
-                            progress_value = 2.0 * progress_value * progress_value
-                        else:
-                            progress_value = (
-                                1.0
-                                - ((-2.0 * progress_value + 2.0) ** 2) / 2.0
-                            )
-                    sweep_end = karaoke_left + karaoke_width * progress_value
-                    normal_sweep_clip = QRectF(
-                        sweep_end,
-                        0,
-                        max(0.0, self.width() - sweep_end),
-                        self.height(),
-                    )
-
-            if normal_sweep_clip is not None:
-                painter.save()
-                painter.setClipRect(normal_sweep_clip)
-            painter.setPen(normal_pen)
+            painter.setPen(self._karaoke_text_pen(
+                segment, progress, normal_pen, timing_spans,
+                vertical_piece_sweep, base_metrics,
+            ))
             if segment.get("_vertical"):
                 painter.drawText(
                     int(segment.get("base_x", segment["x"])),
@@ -2640,8 +2784,6 @@ class FuriganaWidget(QWidget):
                     int(segment["base_y"]),
                     segment["text"],
                 )
-            if normal_sweep_clip is not None:
-                painter.restore()
 
             # Slide sweeps the current-line highlight across the lyric.
             if (
@@ -2677,255 +2819,6 @@ class FuriganaWidget(QWidget):
                     )
                     painter.restore()
 
-            if progress > 0.0:
-                if segment.get("_vertical"):
-                    start, end = vertical_piece_sweep.get(id(segment), (0.0, 1.0))
-                    span = max(1e-9, end - start)
-                    local_progress = max(0.0, min(1.0, (min(1.0, progress) - start) / span))
-                    if local_progress > 0.0:
-                        top = float(segment["base_y"]) - base_metrics.ascent()
-                        fill_height = max(0.0, float(segment.get("height", base_metrics.height())) * local_progress)
-                        painter.save()
-                        painter.setClipRect(QRectF(
-                            float(segment.get("base_x", segment["x"])),
-                            top,
-                            max(1.0, float(segment.get("width", base_metrics.height()))),
-                            fill_height,
-                        ))
-                        painter.setPen(highlight_pen)
-                        painter.drawText(
-                            int(segment.get("base_x", segment["x"])),
-                            int(segment["base_y"]),
-                            segment["text"],
-                        )
-                        painter.restore()
-                else:
-                    timing_group = segment.get(
-                        "timing_group", segment.get("karaoke_group")
-                    )
-                    span = timing_spans.get((timing_group, segment.get("base_y")))
-                    if span is not None:
-                        karaoke_left = span[0]
-                        karaoke_width = max(0.0, span[1] - span[0])
-                    else:
-                        karaoke_left = segment.get("karaoke_x", base_x)
-                        karaoke_width = segment.get(
-                            "karaoke_width", segment["width"]
-                        )
-
-                    progress_value = min(1.0, max(0.0, progress))
-                    style = getattr(self, "karaoke_sweep_style", "classic")
-                    easing = getattr(self, "karaoke_sweep_easing", "linear")
-                    if easing == "ease_in":
-                        progress_value = progress_value * progress_value
-                    elif easing == "ease_out":
-                        progress_value = 1.0 - (1.0 - progress_value) ** 2
-                    elif easing == "ease_in_out":
-                        if progress_value < 0.5:
-                            progress_value = 2.0 * progress_value * progress_value
-                        else:
-                            progress_value = (
-                                1.0
-                                - ((-2.0 * progress_value + 2.0) ** 2) / 2.0
-                            )
-
-                    # Every sweep style must use this same final, eased edge.
-                    sweep_end = (
-                        karaoke_left + karaoke_width * progress_value
-                    )
-
-                    if style == "classic":
-                        painter.save()
-                        painter.setClipRect(QRectF(
-                            karaoke_left,
-                            0,
-                            karaoke_width * progress_value,
-                            self.height(),
-                        ))
-                        painter.setPen(highlight_pen)
-                        painter.drawText(
-                            int(base_x),
-                            int(segment["base_y"]),
-                            segment["text"],
-                        )
-                        painter.restore()
-
-                    elif style == "soft":
-                        # Keep the normal text intact, then paint the whole
-                        # segment with a narrow color blend around the sweep edge.
-                        softness = max(
-                            1,
-                            min(40, int(getattr(self, "karaoke_softness", 8))),
-                        )
-                        feather = min(
-                            48.0,
-                            max(2.0, karaoke_width * (softness / 100.0)),
-                        )
-                        gradient = QLinearGradient(
-                            sweep_end - feather,
-                            0,
-                            sweep_end + feather,
-                            0,
-                        )
-                        gradient.setColorAt(0.0, highlight_pen)
-                        gradient.setColorAt(0.5, highlight_pen)
-                        gradient.setColorAt(1.0, self.lyrics_color)
-                        painter.save()
-                        painter.setClipRect(
-                            QRectF(karaoke_left, 0, karaoke_width, self.height())
-                        )
-                        painter.setPen(QPen(QBrush(gradient), 1))
-                        painter.drawText(
-                            int(base_x),
-                            int(segment["base_y"]),
-                            segment["text"],
-                        )
-                        painter.restore()
-
-                    elif style == "shimmer":
-                        # A narrow bright band travels with the sweep edge,
-                        # while the completed portion keeps the highlight color.
-                        shimmer_width = max(
-                            1,
-                            min(
-                                40,
-                                int(
-                                    getattr(
-                                        self,
-                                        "karaoke_shimmer_width",
-                                        10,
-                                    )
-                                ),
-                            ),
-                        )
-                        painter.save()
-                        painter.setClipRect(QRectF(
-                            karaoke_left,
-                            0,
-                            karaoke_width * progress_value,
-                            self.height(),
-                        ))
-                        painter.setPen(highlight_pen)
-                        painter.drawText(
-                            int(base_x),
-                            int(segment["base_y"]),
-                            segment["text"],
-                        )
-                        painter.restore()
-
-                        # Treat the Properties value as a visible width
-                        # percentage of the current lyric sweep, rather than
-                        # an almost-unnoticeable fixed pixel width.
-                        band = min(
-                            max(2.0, karaoke_width * (shimmer_width / 100.0)),
-                            max(2.0, karaoke_width),
-                        )
-                        shimmer = QLinearGradient(
-                            sweep_end - band,
-                            0,
-                            sweep_end + band,
-                            0,
-                        )
-                        edge_color = QColor(highlight_pen)
-                        edge_color.setAlpha(40)
-                        bright = QColor(highlight_pen)
-                        bright = bright.lighter(180)
-                        shimmer.setColorAt(0.0, edge_color)
-                        shimmer.setColorAt(0.35, highlight_pen)
-                        shimmer.setColorAt(0.5, bright)
-                        shimmer.setColorAt(0.65, highlight_pen)
-                        shimmer.setColorAt(1.0, edge_color)
-                        painter.save()
-                        band_left = max(
-                            karaoke_left,
-                            sweep_end - band,
-                        )
-                        band_right = min(
-                            karaoke_left + karaoke_width,
-                            sweep_end + band,
-                        )
-                        painter.setClipRect(QRectF(
-                            band_left,
-                            0,
-                            max(0.0, band_right - band_left),
-                            self.height(),
-                        ))
-                        painter.setPen(QPen(QBrush(shimmer), 1))
-                        painter.drawText(
-                            int(base_x),
-                            int(segment["base_y"]),
-                            segment["text"],
-                        )
-                        painter.restore()
-
-                    else:  # glow
-                        glow_radius = max(
-                            1,
-                            min(8, int(getattr(self, "karaoke_glow_radius", 1))),
-                        )
-                        feather = min(
-                            40.0,
-                            max(4.0, karaoke_width * (glow_radius * 0.03)),
-                        )
-                        # A small translucent edge glow, followed by the normal
-                        # hard sweep. This keeps Glow readable rather than
-                        # turning the entire lyric into a bloom effect.
-                        glow_color = QColor(highlight_pen)
-                        glow_color.setAlpha(
-                            max(
-                                0,
-                                min(
-                                    255,
-                                    int(
-                                        getattr(
-                                            self,
-                                            "karaoke_glow_intensity",
-                                            70,
-                                        )
-                                    ),
-                                ),
-                            )
-                        )
-                        painter.save()
-                        painter.setClipRect(QRectF(
-                            karaoke_left,
-                            0,
-                            karaoke_width * progress_value + feather,
-                            self.height(),
-                        ))
-                        painter.setPen(glow_color)
-                        glow_radius = max(
-                            1,
-                            min(8, int(getattr(self, "karaoke_glow_radius", 1))),
-                        )
-                        for dx, dy in (
-                            (-glow_radius, 0),
-                            (glow_radius, 0),
-                            (0, -glow_radius),
-                            (0, glow_radius),
-                        ):
-                            painter.drawText(
-                                int(base_x + dx),
-                                int(segment["base_y"] + dy),
-                                segment["text"],
-                            )
-                        painter.restore()
-
-                        painter.save()
-                        painter.setClipRect(QRectF(
-                            karaoke_left,
-                            0,
-                            karaoke_width * progress_value,
-                            self.height(),
-                        ))
-                        painter.setPen(highlight_pen)
-                        painter.drawText(
-                            int(base_x),
-                            int(segment["base_y"]),
-                            segment["text"],
-                        )
-                        painter.restore()
-
             # Be defensive here: renderer input can come from multiple
             # lyric sources/plugins, and a malformed segment should not abort
             # the entire QPainter pass after some text has already been drawn.
@@ -2940,7 +2833,7 @@ class FuriganaWidget(QWidget):
                 and (not segment.get("_vertical") or self.show_ruby)
             ):
                 painter.save()
-                painter.setOpacity(self.display_opacity * self.reading_opacity)
+                painter.setOpacity(line_opacity * self.reading_opacity)
                 reading_x = (
                     segment["x"]
                     + (
@@ -2952,21 +2845,10 @@ class FuriganaWidget(QWidget):
 
                 painter.setFont(self._paint_font(self.reading_font, segment))
 
-                reading_normal_sweep_clip = (
-                    normal_sweep_clip
-                    if (
-                        progress > 0.0
-                        and not segment.get("reading_vertical")
-                        and getattr(
-                            self, "karaoke_sweep_style", "classic"
-                        ) == "classic"
-                    )
-                    else None
-                )
-                if reading_normal_sweep_clip is not None:
-                    painter.save()
-                    painter.setClipRect(reading_normal_sweep_clip)
-                painter.setPen(normal_pen)
+                painter.setPen(self._karaoke_text_pen(
+                    segment, progress, normal_pen, timing_spans,
+                    vertical_piece_sweep, reading_metrics, reading=True,
+                ))
                 if segment.get("reading_vertical"):
                     reading_x = segment.get("reading_x", reading_x)
                     reading_y = segment.get("reading_y", self.TOP_MARGIN + reading_metrics.ascent() if False else self.TOP_MARGIN)
@@ -2993,8 +2875,6 @@ class FuriganaWidget(QWidget):
                         int(draw_y),
                         display_reading,
                     )
-                if reading_normal_sweep_clip is not None:
-                    painter.restore()
 
                 # Slide highlighting must cover ruby too, not only base text.
                 if (
@@ -3042,378 +2922,15 @@ class FuriganaWidget(QWidget):
                         )
                         painter.restore()
 
-                if progress > 0.0:
-                    if segment.get("reading_vertical"):
-                        # Vertical ruby must use the SAME local piece progress
-                        # as its base glyph.  Using the whole group's progress
-                        # here made every ruby piece sweep simultaneously while
-                        # the base text correctly advanced piece-by-piece.
-                        if segment.get("_vertical"):
-                            piece_start, piece_end = vertical_piece_sweep.get(
-                                id(segment), (0.0, 1.0)
-                            )
-                            piece_span = max(1e-9, piece_end - piece_start)
-                            ruby_progress = max(
-                                0.0,
-                                min(
-                                    1.0,
-                                    (
-                                        min(1.0, progress) - piece_start
-                                    ) / piece_span,
-                                ),
-                            )
-                        else:
-                            ruby_progress = min(1.0, progress)
-
-                        easing = getattr(
-                            self,
-                            "karaoke_sweep_easing",
-                            "linear",
-                        )
-                        if easing == "ease_in":
-                            ruby_progress = ruby_progress * ruby_progress
-                        elif easing == "ease_out":
-                            ruby_progress = (
-                                1.0 - (1.0 - ruby_progress) ** 2
-                            )
-                        elif easing == "ease_in_out":
-                            if ruby_progress < 0.5:
-                                ruby_progress = (
-                                    2.0 * ruby_progress * ruby_progress
-                                )
-                            else:
-                                ruby_progress = (
-                                    1.0
-                                    - (
-                                        (-2.0 * ruby_progress + 2.0) ** 2
-                                    ) / 2.0
-                                )
-
-                        if ruby_progress > 0.0:
-                            reading_step = float(
-                                segment.get(
-                                    "reading_step",
-                                    QFontMetrics(self.reading_font).height(),
-                                )
-                            )
-                            reading_top = (
-                                float(segment.get("reading_y", 0.0))
-                                - reading_metrics.ascent()
-                            )
-                            reading_height = max(
-                                1.0, len(reading) * reading_step
-                            )
-                            painter.save()
-                            painter.setClipRect(QRectF(
-                                float(reading_x),
-                                reading_top,
-                                max(
-                                    1.0,
-                                    float(
-                                        segment.get(
-                                            "reading_width",
-                                            reading_metrics.height(),
-                                        )
-                                    ),
-                                ),
-                                reading_height * ruby_progress,
-                            ))
-                            painter.setPen(highlight_pen)
-                            cursor_y = float(
-                                segment.get(
-                                    "reading_y",
-                                    reading_top + reading_metrics.ascent(),
-                                )
-                            )
-                            for reading_char in reading:
-                                painter.drawText(
-                                    int(reading_x),
-                                    int(cursor_y),
-                                    reading_char,
-                                )
-                                cursor_y += reading_step
-                            painter.restore()
-                    elif not segment.get("_vertical"):
-                        ruby_timing_group = segment.get(
-                            "timing_group", segment.get("karaoke_group")
-                        )
-                        ruby_span = timing_spans.get((ruby_timing_group, segment.get("base_y")))
-                        if ruby_span is not None:
-                            ruby_left = ruby_span[0]
-                            ruby_width = max(0.0, ruby_span[1] - ruby_span[0])
-                        else:
-                            ruby_left = float(segment.get("x", reading_x))
-                            ruby_width = max(
-                                float(segment.get("reading_width", 0.0)),
-                                float(segment.get("width", 0.0)),
-                            )
-                        ruby_progress = min(1.0, max(0.0, progress))
-                        easing = getattr(
-                            self,
-                            "karaoke_sweep_easing",
-                            "linear",
-                        )
-                        if easing == "ease_in":
-                            ruby_progress = ruby_progress * ruby_progress
-                        elif easing == "ease_out":
-                            ruby_progress = (
-                                1.0 - (1.0 - ruby_progress) ** 2
-                            )
-                        elif easing == "ease_in_out":
-                            if ruby_progress < 0.5:
-                                ruby_progress = (
-                                    2.0 * ruby_progress * ruby_progress
-                                )
-                            else:
-                                ruby_progress = (
-                                    1.0
-                                    - (
-                                        (-2.0 * ruby_progress + 2.0) ** 2
-                                    ) / 2.0
-                                )
-
-                        style = getattr(
-                            self,
-                            "karaoke_sweep_style",
-                            "classic",
-                        )
-                        sweep_end = ruby_left + ruby_width * ruby_progress
-
-                        if style == "soft":
-                            softness = max(
-                                1,
-                                min(
-                                    40,
-                                    int(
-                                        getattr(
-                                            self,
-                                            "karaoke_softness",
-                                            8,
-                                        )
-                                    ),
-                                ),
-                            )
-                            feather = min(
-                                48.0,
-                                max(
-                                    2.0,
-                                    ruby_width * (softness / 100.0),
-                                ),
-                            )
-                            gradient = QLinearGradient(
-                                sweep_end - feather,
-                                0,
-                                sweep_end + feather,
-                                0,
-                            )
-                            gradient.setColorAt(0.0, highlight_pen)
-                            gradient.setColorAt(0.5, highlight_pen)
-                            gradient.setColorAt(
-                                1.0,
-                                self.lyrics_color,
-                            )
-                            painter.save()
-                            painter.setClipRect(
-                                QRectF(
-                                    ruby_left,
-                                    0,
-                                    ruby_width,
-                                    self.height(),
-                                )
-                            )
-                            painter.setPen(
-                                QPen(QBrush(gradient), 1)
-                            )
-                            painter.drawText(
-                                int(reading_x),
-                                int(segment["reading_y"]),
-                                reading,
-                            )
-                            painter.restore()
-
-                        elif style == "shimmer":
-                            painter.save()
-                            painter.setClipRect(
-                                QRectF(
-                                    ruby_left,
-                                    0,
-                                    ruby_width * ruby_progress,
-                                    self.height(),
-                                )
-                            )
-                            painter.setPen(highlight_pen)
-                            painter.drawText(
-                                int(reading_x),
-                                int(segment["reading_y"]),
-                                reading,
-                            )
-                            painter.restore()
-
-                            shimmer_width = max(
-                                1,
-                                min(
-                                    40,
-                                    int(
-                                        getattr(
-                                            self,
-                                            "karaoke_shimmer_width",
-                                            10,
-                                        )
-                                    ),
-                                ),
-                            )
-                            band = min(
-                                max(
-                                    2.0,
-                                    ruby_width * (shimmer_width / 100.0),
-                                ),
-                                max(2.0, ruby_width),
-                            )
-                            shimmer = QLinearGradient(
-                                sweep_end - band,
-                                0,
-                                sweep_end + band,
-                                0,
-                            )
-                            edge_color = QColor(highlight_pen)
-                            edge_color.setAlpha(40)
-                            bright = QColor(highlight_pen).lighter(180)
-                            shimmer.setColorAt(0.0, edge_color)
-                            shimmer.setColorAt(0.35, highlight_pen)
-                            shimmer.setColorAt(0.5, bright)
-                            shimmer.setColorAt(0.65, highlight_pen)
-                            shimmer.setColorAt(1.0, edge_color)
-                            painter.save()
-                            band_left = max(
-                                ruby_left,
-                                sweep_end - band,
-                            )
-                            band_right = min(
-                                ruby_left + ruby_width,
-                                sweep_end + band,
-                            )
-                            painter.setClipRect(
-                                QRectF(
-                                    band_left,
-                                    0,
-                                    max(0.0, band_right - band_left),
-                                    self.height(),
-                                )
-                            )
-                            painter.setPen(
-                                QPen(QBrush(shimmer), 1)
-                            )
-                            painter.drawText(
-                                int(reading_x),
-                                int(segment["reading_y"]),
-                                reading,
-                            )
-                            painter.restore()
-
-                        elif style == "glow":
-                            glow_radius = max(
-                                1,
-                                min(
-                                    8,
-                                    int(
-                                        getattr(
-                                            self,
-                                            "karaoke_glow_radius",
-                                            1,
-                                        )
-                                    ),
-                                ),
-                            )
-                            feather = min(
-                                40.0,
-                                max(
-                                    4.0,
-                                    ruby_width
-                                    * (glow_radius * 0.03),
-                                ),
-                            )
-                            glow_color = QColor(highlight_pen)
-                            glow_color.setAlpha(
-                                max(
-                                    0,
-                                    min(
-                                        255,
-                                        int(
-                                            getattr(
-                                                self,
-                                                "karaoke_glow_intensity",
-                                                70,
-                                            )
-                                        ),
-                                    ),
-                                )
-                            )
-                            painter.save()
-                            painter.setClipRect(
-                                QRectF(
-                                    ruby_left,
-                                    0,
-                                    ruby_width * ruby_progress
-                                    + feather,
-                                    self.height(),
-                                )
-                            )
-                            painter.setPen(glow_color)
-                            for dx, dy in (
-                                (-glow_radius, 0),
-                                (glow_radius, 0),
-                                (0, -glow_radius),
-                                (0, glow_radius),
-                            ):
-                                painter.drawText(
-                                    int(reading_x + dx),
-                                    int(segment["reading_y"] + dy),
-                                    reading,
-                                )
-                            painter.restore()
-
-                            painter.save()
-                            painter.setClipRect(
-                                QRectF(
-                                    ruby_left,
-                                    0,
-                                    ruby_width * ruby_progress,
-                                    self.height(),
-                                )
-                            )
-                            painter.setPen(highlight_pen)
-                            painter.drawText(
-                                int(reading_x),
-                                int(segment["reading_y"]),
-                                reading,
-                            )
-                            painter.restore()
-
-                        else:  # classic
-                            painter.save()
-                            painter.setClipRect(
-                                QRectF(
-                                    ruby_left,
-                                    0,
-                                    ruby_width * ruby_progress,
-                                    self.height(),
-                                )
-                            )
-                            painter.setPen(highlight_pen)
-                            painter.drawText(
-                                int(reading_x),
-                                int(segment["reading_y"]),
-                                reading,
-                            )
-                            painter.restore()
-
                 painter.restore()
 
             self._paint_decoration_spans(
                 painter, segment, normal_pen, highlight_pen, progress,
                 timing_spans.get((timing_group, segment.get("base_y"))),
                 normal_highlight and self.highlight_animation == "slide",
+                opacity=line_opacity,
             )
+            painter.restore()
 
         painter.restore()
         painter.end()
