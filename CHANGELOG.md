@@ -1,6 +1,11 @@
 # Changelog
 Versions uses dates with optional revisions.
 
+## [2026-11-01.2]
+
+### Changes
+- Dropdowns, numeric spinners, sliders, and dials now ignore the scroll wheel, avoiding accidental changes when you're scrolling.
+
 ## [2026-11-01]
 
 ### Changes

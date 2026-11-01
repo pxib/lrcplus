@@ -23,6 +23,7 @@ from core.plugin_manager import PluginManager
 from core.app_info import APP_NAME, APP_VERSION
 from core.settings import get_disabled_plugins
 from lyrics.furigana import katakana_to_hiragana, token_to_furigana_segments
+from ui.input_events import ControlWheelFilter
 from ui.main_window import Player
 
 __all__ = [
@@ -34,6 +35,8 @@ __all__ = [
 
 def main() -> int:
     app = QApplication(sys.argv)
+    control_wheel_filter = ControlWheelFilter(app)
+    app.installEventFilter(control_wheel_filter)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
 
