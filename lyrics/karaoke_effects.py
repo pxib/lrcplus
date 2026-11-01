@@ -47,6 +47,12 @@ def sweep_effect_pen(style, normal, highlight, left, extent, progress, *,
         return text_color_pen(highlight)
 
     normal, highlight = QColor(normal), QColor(highlight)
+    if normal == highlight:
+        # The sweep has no visible color change, but building a gradient pen
+        # still changes the glyph edge rasterization. Reuse the plain-text pen
+        # so the opaque-background output stays byte-for-byte identical.
+        return text_color_pen(normal)
+
     extent = max(1.0, extent)
     # Effect widths are visual properties of the font, independent of timing
     # group length, line wrapping, and how many glyphs share one timestamp.

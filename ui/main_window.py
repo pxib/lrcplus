@@ -362,7 +362,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 ),
             )
 
-            self.shuffle_enabled = False
+            self.shuffle_enabled = self.playback_settings.get("shuffle_enabled", False)
             self.shuffle_button = QPushButton("Shuffle: Off")
             self.shuffle_button.setObjectName("dockAction")
             self.shuffle_button.clicked.connect(self.cycle_shuffle_mode)
@@ -2316,6 +2316,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                     self._apply_appearance_settings()
 
                     self.playback_settings = dialog.get_playback_settings()
+                    self.shuffle_enabled = self.playback_settings.get("shuffle_enabled", False)
                     save_playback_settings(self.playback_settings)
                     self.waveform_widget.setVisible(
                         self.playback_settings.get("show_waveform", True)

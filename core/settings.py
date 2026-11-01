@@ -48,6 +48,7 @@ STARTUP_DEFAULTS = {
 PLAYBACK_DEFAULTS = {
     "precise_timestamp_fps": 30,
     "play_mode": "library",
+    "shuffle_enabled": False,
     "shuffle_mode": "tracks",
     "after_playback": "next_track",
     "output_device": "",
@@ -156,6 +157,7 @@ def get_playback_settings(payload=None):
             PLAYBACK_DEFAULTS["precise_timestamp_fps"],
         ),
         "play_mode": play_mode,
+        "shuffle_enabled": bool(values.get("shuffle_enabled", PLAYBACK_DEFAULTS["shuffle_enabled"])),
         "shuffle_mode": shuffle_mode,
         "after_playback": after_playback,
         "output_device": str(values.get("output_device", PLAYBACK_DEFAULTS["output_device"]) or ""),

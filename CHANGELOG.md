@@ -1,6 +1,29 @@
 # Changelog
 Versions uses dates with optional revisions.
 
+## [2026-11-01.4]
+
+### Added
+
+- Remember whether Shuffle is on or off across app restarts. Save the choice immediately and preserve it when applying other settings.
+- Generate Japanese number and counter readings in both Furigana and All Romaji, including `3回` (さんかい / sankai), `1人` (ひとり / hitori), and `20歳` (はたち / hatachi). Keep ambiguous dates, clock times, decimals, identifiers, and leading-zero codes numeric, and respect manual readings and the selected reading language.
+
+### Changed
+
+- Use Hepburn consonant conventions in romaji: `tch` before `ch`, and `m` for ん before `b`, `p`, or `m`. Preserve all vowel kana for singing, including `inoue`, `kuuki`, `ookii`, and `houki`; keep authored Latin text unchanged.
+- Display authored ASCII and full-width spaces between Japanese phrases as comma pauses in All Romaji, while keeping generated word spaces, original lyrics, and karaoke timestamps intact.
+
+### Fixed
+
+- Ignore decorative symbols during Japanese analysis without removing them from the lyrics, allowing forms such as `日～々` to retain the reading ひび.
+- Correct romaji quote spacing, keeping text inside opening/closing quotes together and separating quoted phrases from surrounding words.
+- Join inflected forms such as `furimuite`, `hoshikute`, and `naritakute` instead of inserting spaces at every tokenizer boundary.
+- Use `nani` for generated romaji in `何も`, while preserving explicitly edited readings.
+- Preserve numeric punctuation in clock times, decimals, dates, and identifiers instead of inserting tokenizer spaces inside them.
+- Convert small kana, doubled consonants, long-vowel marks, and voicing marks correctly across karaoke and formatting boundaries, including half-width and decomposed kana.
+- Keep romaji annotations consistent across pieces of one reading and measure their displayed width correctly. Preserve explicit ruby edits, cache number readings during song prefetch, and retain locally resolvable number furigana when the parser is unavailable.
+- Fix karaoke sweep rendering on opaque backgrounds so plain and highlighted glyphs use the same antialiasing path when normal and highlight colors are identical. (hope it passes the github tests lmao なななななななななななな)
+
 ## [2026-11-01.3]
 
 ### Added

@@ -323,7 +323,10 @@ class AudioController:
 
         def cycle_shuffle_mode(self):
             self.shuffle_enabled = not self.shuffle_enabled
+            self.playback_settings["shuffle_enabled"] = self.shuffle_enabled
+            save_playback_settings(self.playback_settings)
             self._update_shuffle_button_text()
+            self.update_transport_buttons()
 
 
         def _update_shuffle_button_text(self):

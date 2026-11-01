@@ -23,6 +23,7 @@ from core.settings import KARAOKE_SWEEP_STYLES
 from lyrics.karaoke_effects import eased_progress, sweep_effect_pen, text_color_pen, word_lift_amount
 from lyrics.karaoke_layout import annotate_next_timed_starts
 from lyrics.formatting import style_at
+from lyrics.romaji import all_romaji_texts, romanized_readings
 
 _FURIGANA_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="LRCPlus-Yomi")
 
@@ -859,6 +860,7 @@ class FuriganaWidget(QWidget):
             reading = override_map.get(index)
             if reading is not None:
                 item["reading"] = reading or None
+                item["ruby_source"] = "manual"
             updated.append(item)
 
         return updated
@@ -1116,6 +1118,8 @@ class FuriganaWidget(QWidget):
                         "timing_group": owner["karaoke_group"],
                         "ruby_source": ruby_source or "manual",
                         "_romaji_word_start": bool(token.get("_romaji_word_start", False)),
+                        "_romaji_particle": bool(token.get("_romaji_particle", False)),
+                        "_reading_group": (x, y),
                     })
                     rendered_explicit_ranges.add(range_index)
                     continue
@@ -1149,6 +1153,8 @@ class FuriganaWidget(QWidget):
                     "ruby_source": source if reading else None,
                     "_romaji_word_start": bool(token.get("_romaji_word_start", False))
                     if piece_index == 0 else False,
+                    "_romaji_particle": bool(token.get("_romaji_particle", False)),
+                    "_reading_group": (token_start, token_end),
                 })
 
         if not prepared and raw_segments:
@@ -1164,6 +1170,8 @@ class FuriganaWidget(QWidget):
                     "timing_group": item["karaoke_group"],
                     "ruby_source": item["reading_source"],
                     "_romaji_word_start": bool(item.get("_romaji_word_start", False)),
+                    "_romaji_particle": bool(item.get("_romaji_particle", False)),
+                    "_reading_group": (item["start_offset"], item["end_offset"]),
                 })
 
         if not prepared and text:
@@ -1770,8 +1778,9 @@ class FuriganaWidget(QWidget):
         offset = 0
         for segment in self.segments:
             text = str(segment.get("text", ""))
+            reading_group = segment.get("_reading_group", (offset, offset + len(text)))
             if "\n" not in text and not self.style_spans:
-                yield segment
+                yield {**segment, "_reading_group": reading_group}
                 offset += len(text)
                 continue
             boundaries = {0, len(text)}
@@ -1792,6 +1801,8 @@ class FuriganaWidget(QWidget):
                 piece = dict(segment)
                 piece["text"] = text[start:end]
                 piece["reading"] = part_reading
+                piece["_reading_group"] = reading_group
+                piece["_romaji_word_start"] = bool(segment.get("_romaji_word_start", False)) and start == 0
                 piece["bold"], piece["italic"], piece["strike"], piece["underline"] = style_at(self.style_spans, offset + start)
                 if piece["text"] == "\n":
                     piece.update(text="", reading=None, _line_break=True)
@@ -1939,11 +1950,11 @@ class FuriganaWidget(QWidget):
 
         # If the previous timed segment ended in ``っ``, double the first
         # consonant of this segment's next mora.  Do this after conversion so
-        # digraphs such as ``ち`` -> ``chi`` become ``cchi``.
+        # Hepburn uses t before ch: ``っ`` + ``ち`` becomes ``tchi``.
         if leading_sokuon and converted:
             first = converted[0]
             if first.isalpha() and first.lower() not in "aeiou":
-                converted = first + converted
+                converted = ("t" if converted.startswith("ch") else first) + converted
 
         converted = _normalize_all_romaji_punctuation(converted)
         return converted, trailing_sokuon
@@ -2021,10 +2032,11 @@ class FuriganaWidget(QWidget):
                 key[1],
             )
             default_reading_metrics = QFontMetrics(self.reading_font)
-            for piece in prepared:
+            reading_texts = romanized_readings(prepared) if self.show_romaji else []
+            for index, piece in enumerate(prepared):
                 reading_metrics = (QFontMetrics(self._styled_font(self.reading_font, piece))
                                    if piece.get("bold") or piece.get("italic") else default_reading_metrics)
-                reading = self._reading_text_for_display(piece.get("reading"))
+                reading = reading_texts[index] if self.show_romaji else self._reading_text_for_display(piece.get("reading"))
                 piece["_display_reading"] = reading
                 piece["_display_reading_width"] = (
                     reading_metrics.horizontalAdvance(reading) if reading else 0
@@ -2048,15 +2060,16 @@ class FuriganaWidget(QWidget):
         total_width = 0
 
         previous_text = ""
-        pending_sokuon = False
+        visual_segments = list(self._visual_source_segments())
+        romaji_texts = all_romaji_texts(visual_segments) if self.all_romaji else []
+        reading_texts = romanized_readings(visual_segments) if self.show_romaji else []
         row_width = 0
-        for index, segment in enumerate(self._visual_source_segments()):
+        for index, segment in enumerate(visual_segments):
             if segment.get("_line_break"):
                 prepared.append(dict(segment, width=0, base_width=0, reading_width=0, gap_before=0))
                 total_width = max(total_width, row_width)
                 row_width = 0
                 previous_text = ""
-                pending_sokuon = False
                 continue
             segment_base_metrics = base_metrics
             segment_reading_metrics = reading_metrics
@@ -2064,25 +2077,17 @@ class FuriganaWidget(QWidget):
                 segment_base_metrics = QFontMetrics(self._styled_font(self.base_font, segment))
                 segment_reading_metrics = QFontMetrics(self._styled_font(self.reading_font, segment))
             if self.all_romaji:
-                text, segment_sokuon = self._display_text(segment, pending_sokuon)
+                text = romaji_texts[index]
             else:
-                text, segment_sokuon = self._display_text(segment)
-            if (
-                self.all_romaji
-                and segment.get("_romaji_word_start", False)
-                and previous_text
-                and not pending_sokuon
-                and not previous_text[-1].isspace()
-                and self._romaji_needs_word_space(text)
-            ):
-                text = " " + text
+                text, _ = self._display_text(segment)
             base_width = segment_base_metrics.horizontalAdvance(text)
             reading_width = 0
             reading = segment.get("reading")
             ruby_visible = bool((self.show_ruby or self.show_romaji) and reading)
 
             if ruby_visible:
-                reading_width = segment_reading_metrics.horizontalAdvance(reading)
+                displayed_reading = reading_texts[index] if self.show_romaji else reading
+                reading_width = segment_reading_metrics.horizontalAdvance(displayed_reading)
 
             width = max(base_width, reading_width)
 
@@ -2114,7 +2119,6 @@ class FuriganaWidget(QWidget):
             if ruby_visible:
                 row_width += self.PADDING
             previous_text = text
-            pending_sokuon = segment_sokuon
         total_width = max(total_width, row_width)
 
         # All-Romaji is much wider than Japanese. Fit only overflowing lines by

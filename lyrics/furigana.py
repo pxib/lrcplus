@@ -1,8 +1,8 @@
 """Japanese furigana generation via the Yomi API.
 
 The app intentionally keeps this module dependency-light: requests is enough.
-If the service is unavailable, callers receive the original text without ruby
-instead of failing or requiring a 248 MB local dictionary.
+If the service is unavailable, callers keep the original text and locally
+resolvable number readings instead of requiring a 248 MB local dictionary.
 """
 import re
 import threading
@@ -12,6 +12,7 @@ import json
 import math
 import requests
 
+from lyrics.japanese_numbers import number_spans
 from lyrics.reading_providers import (
     available_reading_providers,
     generate_reading_segments,
@@ -136,7 +137,7 @@ _YOMI_REQUEST_LOCK = threading.Lock()
 
 
 
-# ASCII Hepburn-style kana romanization used for display-only romaji.
+# Hepburn consonants with explicit vowel kana retained for singing.
 # This intentionally operates on an already-resolved reading so kanji
 # ambiguity is handled by the furigana generator, not by the romanizer.
 _KANA_ROMAJI = {
@@ -157,6 +158,7 @@ _KANA_ROMAJI = {
     "ぱ":"pa","ぴ":"pi","ぷ":"pu","ぺ":"pe","ぽ":"po",
     "ゔ":"vu",
     "ぁ":"a","ぃ":"i","ぅ":"u","ぇ":"e","ぉ":"o",
+    "ゃ":"ya","ゅ":"yu","ょ":"yo","ゎ":"wa","ゕ":"ka","ゖ":"ke",
 }
 _KANA_DIGRAPHS = {
     "きゃ":"kya","きゅ":"kyu","きょ":"kyo",
@@ -173,30 +175,63 @@ _KANA_DIGRAPHS = {
     "てぃ":"ti","でぃ":"di","とぅ":"tu","どぅ":"du",
     "うぃ":"wi","うぇ":"we","うぉ":"wo",
     "ゔぁ":"va","ゔぃ":"vi","ゔぇ":"ve","ゔぉ":"vo",
+    "ぢゃ":"ja","ぢゅ":"ju","ぢょ":"jo",
+    "ふぁ":"fa","ふぃ":"fi","ふぇ":"fe","ふぉ":"fo","ふゅ":"fyu",
+    "しぇ":"she","じぇ":"je","ちぇ":"che","いぇ":"ye",
+    "つぁ":"tsa","つぃ":"tsi","つぇ":"tse","つぉ":"tso",
+    "てゅ":"tyu","でゅ":"dyu","ゔゅ":"vyu",
+    "くぁ":"kwa","ぐぁ":"gwa","くゎ":"kwa","ぐゎ":"gwa",
 }
 
 def kana_to_romaji(text):
-    """Convert hiragana/katakana readings to simple ASCII romaji.
+    """Convert kana to ASCII romaji while retaining vowels needed for singing.
 
     Non-kana text is preserved.  The conversion is deliberately display-only:
     no attempt is made to infer how kanji should be read.
     """
-    text = katakana_to_hiragana(str(text or ""))
-    out = []
+    return kana_to_romaji_parts([text])[0]
+
+
+def kana_to_romaji_parts(parts):
+    """Romanize with kana context across chunks while retaining their owners.
+
+    Karaoke may split しゃ, っ + て, or ヒー between timestamps. Convert the
+    entire reading together, then keep each letter with its timed source chunk.
+    """
+    parts = [katakana_to_hiragana(unicodedata.normalize("NFKC", str(part or ""))) for part in parts]
+    characters, owners = [], []
+    for index, part in enumerate(parts):
+        for char in part:
+            # A timestamp can separate a kana from its dakuten/handakuten.
+            # Compose across that boundary, retaining the base kana's owner.
+            if characters and unicodedata.combining(char):
+                composed = unicodedata.normalize("NFC", characters[-1] + char)
+                if len(composed) == 1:
+                    characters[-1] = composed
+                    continue
+            characters.append(char)
+            owners.append(index)
+    text = "".join(characters)
+    out = ["" for _ in parts]
+
+    def emit(value, owner):
+        out[owner] += value
+
     i = 0
-    sokuon = False
+    last_vowel = ""
     while i < len(text):
         ch = text[i]
+        owner = owners[i]
         if ch == "っ":
-            sokuon = True
+            following = _KANA_DIGRAPHS.get(text[i+1:i+3]) or _KANA_ROMAJI.get(text[i+1:i+2], "")
+            if following and following[0] in "bcdfghjklmnpqrstvwxyz":
+                emit("t" if following.startswith("ch") else following[0], owner)
+            last_vowel = ""
             i += 1
             continue
         if ch == "ー":
-            # Repeat the most recent vowel for a katakana long-vowel mark.
-            joined = "".join(out)
-            last_vowel = next((c for c in reversed(joined) if c in "aeiou"), "")
             if last_vowel:
-                out.append(last_vowel)
+                emit(last_vowel, owner)
             i += 1
             continue
 
@@ -208,30 +243,31 @@ def kana_to_romaji(text):
 
         if roma is None:
             # Preserve punctuation, spaces, Latin text, emoji, etc.
-            if sokuon and ch.strip():
-                sokuon = False
-            out.append(ch)
+            emit(ch, owner)
+            last_vowel = ""
             i += 1
             continue
 
-        if sokuon:
-            # Geminate the first consonant.  Don't geminate vowel-initial
-            # morae; apostrophe handling for ん is dealt with separately.
-            first = roma[0]
-            if first.lower() in "bcdfghjklmnpqrstvwxyz":
-                out.append(first)
-            sokuon = False
-
-        # Render ん as n' before vowel/y to avoid ambiguity (e.g. しんよう).
+        # Traditional nasal assimilation, retaining n' before a vowel or y.
         if ch == "ん":
             next_text = text[i+consumed:i+consumed+1]
             next_romaji = _KANA_ROMAJI.get(next_text, "")
             if next_romaji and next_romaji[0] in "aeiouy":
                 roma = "n'"
+            elif next_romaji and next_romaji[0] in "bmp":
+                roma = "m"
 
-        out.append(roma)
+        if consumed == 2 and owners[i+1] != owner:
+            # The small kana owns the vowel: し | ゃ becomes sh | a.
+            emit(roma[:-1], owner)
+            emit(roma[-1], owners[i+1])
+        else:
+            emit(roma, owner)
+        last_vowel = roma[-1] if roma[-1] in "aeiou" else ""
         i += consumed
-    return "".join(out)
+    # Preserve every vowel, including across timing boundaries. A lyric can
+    # sing のう as no-u, so reducing ou/oo/uu would erase a sung mora.
+    return out
 
 
 def is_kanji(char):
@@ -333,6 +369,47 @@ def katakana_to_hiragana(text):
     )
 
 
+def _is_decorative_symbol(char):
+    # Keep linguistic marks (々, ー), kana, punctuation and whitespace.
+    # Wave dash is punctuation in Unicode but acts as a stretch mark in lyrics.
+    return unicodedata.category(char).startswith("S") or char == "\u301c"
+
+
+def _restore_symbols(surface, segments):
+    """Put ignored symbols back without assigning them automatic readings."""
+    result = []
+    source_position = 0
+    for segment in segments:
+        base = segment["text"]
+        ranges = []
+        pieces = []
+        base_position = 0
+        while base_position < len(base):
+            start = source_position
+            symbol = _is_decorative_symbol(surface[source_position])
+            while source_position < len(surface):
+                char = surface[source_position]
+                if _is_decorative_symbol(char) != symbol:
+                    break
+                if not symbol:
+                    if base_position == len(base):
+                        break
+                    base_position += 1
+                source_position += 1
+            piece = surface[start:source_position]
+            pieces.append((piece, symbol))
+            ranges.append((base_position - len(piece), base_position) if not symbol else (base_position, base_position))
+
+        readings = split_reading_by_text_ranges(base, segment.get("reading"), ranges)
+        result.extend(
+            {"text": piece, "reading": None if symbol else reading}
+            for (piece, symbol), reading in zip(pieces, readings)
+        )
+    if source_position < len(surface):
+        result.append({"text": surface[source_position:], "reading": None})
+    return result
+
+
 def split_reading_by_text_ranges(text, reading, ranges):
     """Split one token reading across sub-ranges of its source text.
 
@@ -374,6 +451,14 @@ def split_reading_by_text_ranges(text, reading, ranges):
 
 def token_to_furigana_segments(surface, reading):
     """Map a tokenizer's reading onto the kanji portions of one token."""
+
+    if any(_is_decorative_symbol(char) for char in surface):
+        analysis_surface = "".join(char for char in surface if not _is_decorative_symbol(char))
+        if not analysis_surface:
+            return [{"text": surface, "reading": None}]
+        return _restore_symbols(
+            surface, token_to_furigana_segments(analysis_surface, reading)
+        )
 
     reading = katakana_to_hiragana(reading)
 
@@ -673,21 +758,50 @@ def mecab_analyze(text):
             reading = getattr(feature, "kana", None) or getattr(feature, "pron", None)
             if not reading:
                 reading = getattr(feature, "pronBase", None)
-            words.append({"surface": surface, "reading": str(reading or "")})
+            words.append({
+                "surface": surface,
+                "reading": str(reading or ""),
+                "pos": [str(getattr(feature, f"pos{i}", "")) for i in range(1, 5)],
+                "conjugation_type": str(getattr(feature, "cType", "")),
+            })
         return words
     except Exception as error:
         print(f"[MeCab] FAILED {text!r}: {error}")
         return None
 
 def _analyze(text):
+    # Tokenize through decorative symbols so 日～々 is read as 日々. Restore
+    # original surfaces afterwards for alignment, editing and karaoke timing.
+    source = str(text or "")
+    positions = [i for i, char in enumerate(source) if not _is_decorative_symbol(char)]
+    text = "".join(source[i] for i in positions)
+    if not text:
+        return []
     parser = get_active_parser()
+    words = None
     if parser == "mecab_local":
         words = mecab_analyze(text)
         if words is not None:
             print(f"[Furigana] Using MeCab local for {text!r}")
-            return words
-        print("[Furigana] Local MeCab unavailable; falling back to Yomi")
-    return yomi_analyze(text)
+        else:
+            print("[Furigana] Local MeCab unavailable; falling back to Yomi")
+    if words is None:
+        words = yomi_analyze(text)
+    if not words or text == source:
+        return words
+    result = []
+    cursor = 0
+    for word in words:
+        surface = str(word.get("surface", "") or "")
+        found_at = text.find(surface, cursor) if surface else -1
+        if found_at < 0:
+            # Preserve the existing alignment fallback on malformed responses.
+            result.append(word)
+            continue
+        cursor = found_at + len(surface)
+        original = source[positions[found_at]:positions[cursor - 1] + 1]
+        result.append({**word, "surface": original})
+    return result
 
 def yomi_word_surfaces(text):
     """Return tokenizer-like surfaces for karaoke auto-separation."""
@@ -763,9 +877,104 @@ def analyze_lyric_words(lines):
     return result
 
 
+def _word_pos(word):
+    value = word.get("pos") or word.get("part_of_speech") or word.get("pos1") or []
+    return re.split(r"[,\s-]+", value) if isinstance(value, str) else list(value)
+
+
+def _romaji_joins_previous(word, previous):
+    """Join inflectional endings, rather than exposing tokenizer short units."""
+    if previous is None:
+        return False
+    surface = str(word.get("surface", ""))
+    previous_surface = str(previous.get("surface", ""))
+    pos = _word_pos(word)
+    previous_pos = _word_pos(previous)
+    if "接頭辞" in previous_pos or "接尾辞" in pos:
+        return True
+    if "助動詞" in pos:
+        conjugation = str(word.get("conjugation_type", ""))
+        # Copular だ/です and adverbial に remain separate words.
+        if conjugation:
+            return conjugation not in {"助動詞-ダ", "助動詞-デス"}
+        return surface not in {"だ", "です", "に", "な", "なら", "で"}
+    if surface in {"て", "で"}:
+        if previous_pos:
+            return any(kind in previous_pos for kind in ("動詞", "形容詞", "助動詞"))
+        # Yomi responses may omit grammar. て is an inflectional connector;
+        # voiced で needs an onbin stem, avoiding noun + locative で.
+        return surface == "て" or previous_surface.endswith(("ん", "い"))
+    if not pos:
+        return surface in {
+            "た", "たい", "たく", "たかっ", "ない", "なく", "なかっ",
+            "ます", "まし", "ませ", "れる", "られる", "せる", "させる",
+        } and previous_surface.endswith(tuple("いきぎしじちにびみりえけげせぜてでねべめれっく"))
+    return False
+
+
+def _with_number_readings(text, segments):
+    """Annotate each complete Japanese quantity, independently of token splits.
+
+    These are automatic reading tokens, before karaoke timestamps and manual
+    ruby are applied by the renderer. Grouping 1人 and 20歳 keeps their irregular
+    readings on the full base rather than leaving a second counter reading.
+    """
+    if "".join(str(segment.get("text", "")) for segment in segments) != text:
+        return segments
+    offsets = []
+    position = 0
+    for segment in segments:
+        end = position + len(str(segment.get("text", "")))
+        offsets.append((position, end, segment))
+        position = end
+    numbers = []
+    for start, end, reading in number_spans(text):
+        if reading is None:
+            continue
+        owners = [segment for a, b, segment in offsets if a < end and start < b]
+        if any(segment.get("reading") and (
+                segment.get("ruby_source") == "manual" or segment.get("reading_source") == "manual") for segment in owners):
+            continue
+        numbers.append((start, end, reading))
+    if not numbers:
+        return segments
+
+    result = []
+
+    def append_original(start, end):
+        for a, b, segment in offsets:
+            left, right = max(start, a), min(end, b)
+            if left >= right:
+                continue
+            piece = dict(segment)
+            piece["text"] = text[left:right]
+            if left != a or right != b:
+                piece["reading"] = split_reading_by_text_ranges(
+                    text[a:b], segment.get("reading"), [(left - a, right - a)]
+                )[0]
+                piece["_romaji_word_start"] = bool(segment.get("_romaji_word_start", False)) and left == a
+            result.append(piece)
+
+    cursor = 0
+    for start, end, reading in numbers:
+        append_original(cursor, start)
+        owner_start, _, owner = next(item for item in offsets if item[0] <= start < item[1])
+        result.append({
+            **owner,
+            "text": text[start:end],
+            "reading": reading,
+            "_romaji_word_start": bool(owner.get("_romaji_word_start", False)) if start == owner_start else True,
+            "_romaji_particle": False,
+        })
+        cursor = end
+    append_original(cursor, len(text))
+    return result
+
+
 def _build_segments_from_words(text, words, should_continue=None):
     segments = []
     source_position = 0
+    previous_word = None
     for word in words:
         if should_continue and not should_continue():
             return _fallback(text)
@@ -781,6 +990,7 @@ def _build_segments_from_words(text, words, should_continue=None):
             break
         if found_at > source_position:
             segments.append({"text": text[source_position:found_at], "reading": None})
+            previous_word = None
         reading = word.get("reading_raw") or word.get("reading")
         if isinstance(reading, str) and reading and reading != "*":
             parts = token_to_furigana_segments(surface, reading)
@@ -792,14 +1002,19 @@ def _build_segments_from_words(text, words, should_continue=None):
         # often have no spaces between words.  The marker is display metadata
         # only and never changes the source lyric.
         if parts:
-            parts[0]["_romaji_word_start"] = True
+            parts[0]["_romaji_word_start"] = not _romaji_joins_previous(word, previous_word)
+            pos = _word_pos(word)
+            particle = surface in {"は", "へ", "を"} and (not pos or "助詞" in pos)
+            for part in parts:
+                part["_romaji_particle"] = particle
             for part in parts[1:]:
                 part["_romaji_word_start"] = False
         segments.extend(parts)
         source_position = found_at + len(surface)
+        previous_word = word if surface.strip() and not any(char.isspace() for char in surface) else None
     if source_position < len(text):
         segments.append({"text": text[source_position:], "reading": None})
-    return segments or _fallback(text)
+    return _with_number_readings(text, segments or _fallback(text))
 
 def _split_segments_by_lines(segments, line_count):
     result = [[] for _ in range(line_count)]
@@ -814,6 +1029,7 @@ def _split_segments_by_lines(segments, line_count):
                     "text": piece,
                     "reading": reading,
                     "_romaji_word_start": word_start and i == 0,
+                    "_romaji_particle": bool(segment.get("_romaji_particle", False)),
                 })
             if i < len(pieces) - 1:
                 line_index += 1
@@ -883,7 +1099,7 @@ def prefetch_furigana_batches(lines, batch_size=10, progress_callback=None, shou
             if should_continue and not should_continue():
                 break
             words = _analyze(text)
-            segments = _build_segments_from_words(text, words, should_continue) if words else _fallback(text)
+            segments = _build_segments_from_words(text, words, should_continue) if words else _with_number_readings(text, _fallback(text))
             _cache_furigana_segments(text, segments or _fallback(text))
             completed += 1
             if progress_callback:
@@ -911,7 +1127,8 @@ def prefetch_furigana_batches(lines, batch_size=10, progress_callback=None, shou
                     cursor += count
                     _cache_furigana_segments(text, segments or _fallback(text))
             else:
-                for text in batch: _cache_furigana_segments(text,_fallback(text))
+                for text in batch:
+                    _cache_furigana_segments(text, _with_number_readings(text, _fallback(text)))
             completed += len(batch)
             if progress_callback: progress_callback(completed,total)
     return completed,total
@@ -953,9 +1170,8 @@ def build_furigana_segments(text, progress_callback=None, should_continue=None, 
             segments = build_pinyin_segments(text)
         elif mode == "furigana" or (mode == "auto" and language == "japanese"):
             words = _analyze(text)
-            if not words:
-                return _fallback(text)
-            segments = _build_segments_from_words(text, words, should_continue)
+            segments = (_build_segments_from_words(text, words, should_continue)
+                        if words else _with_number_readings(text, _fallback(text)))
         else:
             segments = _fallback(text)
 

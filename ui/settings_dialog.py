@@ -1707,6 +1707,7 @@ class SettingsDialog(QDialog):
                 self.precise_timestamp_fps.currentData()
             ),
             "play_mode": self.play_mode_combo.currentData(),
+            "shuffle_enabled": self.playback_settings.get("shuffle_enabled", False),
             "shuffle_mode": self.shuffle_mode_combo.currentData(),
             "after_playback": self.after_playback_combo.currentData(),
             "output_device": self.output_device_combo.currentData(),
