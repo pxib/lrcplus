@@ -130,7 +130,7 @@ def _parse_content(content, start_time, split_newlines=False):
     return result
 
 
-def load_lrcx(path):
+def load_lrcx(path, *, infer_ends=True):
     """Load LRCX v1.
 
     Syntax:
@@ -140,6 +140,9 @@ def load_lrcx(path):
     The line timestamp is the implicit timestamp for the first chunk. Ruby
     annotations can appear anywhere inside a chunk and multiple annotations
     may be adjacent without corrupting the surrounding lyric text.
+
+    Editors use infer_ends=False so a following line's timestamp remains a
+    dynamic fallback instead of becoming an authored terminal boundary.
     """
     lines = []
 
@@ -283,7 +286,7 @@ def load_lrcx(path):
         key=lambda item: (item[1].start, item[0]),
     )
     for timeline_index, (original_index, lyric) in enumerate(timeline):
-        if lyric.end is None:
+        if infer_ends and lyric.end is None:
             lyric.end = (
                 timeline[timeline_index + 1][1].start
                 if timeline_index + 1 < len(timeline)

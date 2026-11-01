@@ -47,7 +47,7 @@ STARTUP_DEFAULTS = {
 
 PLAYBACK_DEFAULTS = {
     "precise_timestamp_fps": 30,
-    "play_mode": "playlist",
+    "play_mode": "library",
     "shuffle_mode": "tracks",
     "after_playback": "next_track",
     "output_device": "",

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QInputDialog, QMessageBox
 
 from core.music_library import LibraryTrack
 from core.playlists import load_saved_playlists
-from core.settings import get_playback_settings, save_startup_settings
+from core.settings import get_playback_settings, save_playback_settings, save_startup_settings
 from ui.main_window import Player
 from ui.playlist_dialog import PlaylistDialog
 
@@ -52,6 +52,7 @@ class FakeMedia:
 
 @pytest.fixture
 def queue_player(qapp, monkeypatch):
+    save_playback_settings({"play_mode": "playlist"})
     window = Player()
     real_media = window.media_player
     window.media_player = FakeMedia()
@@ -236,6 +237,85 @@ def test_duplicate_entries_advance_by_occurrence(queue_player, tracks):
     window.previous_track()
     assert window.current_audio_path == a
     assert window.current_index == 2
+
+
+def test_library_source_plays_and_advances_without_changing_queue(queue_player, tracks):
+    window = queue_player
+    window.replace_queue([tracks[3], tracks[3]])
+    window.library_tracks = [LibraryTrack(str(path), path.stem) for path in tracks[:3]]
+    window._populate_library_view()
+    combo = window.playback_source_combo
+    combo.setCurrentIndex(combo.findData("library"))
+    assert get_playback_settings()["play_mode"] == "library"
+    window._play_library_item(window.library_table.topLevelItem(0).child(0))
+    assert window.media_player.isPlaying()
+    window.next_track()
+    assert window.current_audio_path == tracks[1]
+    window.previous_track()
+    assert window.current_audio_path == tracks[0]
+    window.media_player.status = QMediaPlayer.MediaStatus.EndOfMedia
+    window.handle_media_status(QMediaPlayer.MediaStatus.EndOfMedia)
+    assert window.current_audio_path == tracks[1]
+    window.shuffle_enabled = True
+    window.next_track()
+    assert window.current_audio_path in (tracks[0], tracks[2])
+    assert window.playlist == [tracks[3], tracks[3]]
+
+
+def test_play_starts_library_without_loading_a_queue(queue_player, tracks):
+    window = queue_player
+    window.library_tracks = [LibraryTrack(str(path), path.stem) for path in tracks]
+    window.set_playback_source("library")
+    assert window.play_button.isEnabled()
+    window.play_button.click()
+    assert window.current_audio_path == tracks[0]
+    assert window.media_player.isPlaying()
+    assert window.playlist == []
+
+
+@pytest.mark.parametrize("after", ["next_track", "repeat_all", "repeat_track"])
+def test_library_end_behavior_uses_library_instead_of_queue(queue_player, tracks, after):
+    window = queue_player
+    window.replace_queue([tracks[3]])
+    window.library_tracks = [LibraryTrack(str(path), path.stem) for path in tracks[:3]]
+    window.set_playback_source("library")
+    window.playback_settings["after_playback"] = after
+    window.load_audio(tracks[2])
+    window.media_player.play()
+    window.media_player.status = QMediaPlayer.MediaStatus.EndOfMedia
+    window.handle_media_status(QMediaPlayer.MediaStatus.EndOfMedia)
+    assert window.current_audio_path == (tracks[0] if after == "repeat_all" else tracks[2])
+    assert window.media_player.isPlaying() == (after != "next_track")
+    assert window.playlist == [tracks[3]]
+
+
+def test_source_change_preserves_playback_and_enqueue_updates_selector(queue_player, tracks):
+    window = queue_player
+    window.replace_queue(tracks)
+    window.play_queue_index(1)
+    window.media_player.time = 12345
+    loads = list(window.media_player.loads)
+    window.set_playback_source("library")
+    window.enqueue_tracks([tracks[0]], play_next=True)
+    assert window.playback_source_combo.currentData() == "playlist"
+    assert window.media_player.loads == loads
+    assert window.media_player.time == 12345
+    assert window.media_player.isPlaying()
+
+
+def test_editing_queue_during_library_playback_keeps_current_song(queue_player, tracks):
+    window = queue_player
+    window.replace_queue(tracks)
+    window.play_queue_index(1)
+    window.set_playback_source("library")
+    window.media_player.time = 12345
+    loads = list(window.media_player.loads)
+    window.remove_queue_tracks([1])
+    window.clear_queue()
+    assert window.current_audio_path == tracks[1]
+    assert window.media_player.loads == loads
+    assert window.media_player.time == 12345
+    assert window.media_player.isPlaying()
 
 
 def test_reordering_preserves_current_occurrence_playback_and_position(queue_player, tracks):

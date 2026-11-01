@@ -7,6 +7,19 @@ from ui.main_window import Player
 from ui.player_dialogs import PitchChangerDialog
 
 
+@pytest.mark.parametrize("saved_source", [None, "playlist", "library"])
+def test_playback_source_defaults_to_library_and_restores_choice(qapp, saved_source):
+    if saved_source is not None:
+        save_playback_settings({"play_mode": saved_source})
+    window = Player()
+    try:
+        assert window.playback_source_combo.currentData() == (saved_source or "library")
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
 @pytest.mark.parametrize("saved_pitch", [0, 5])
 def test_player_starts_and_pitch_dialog_controls_work(qapp, monkeypatch, saved_pitch):
     save_playback_settings({

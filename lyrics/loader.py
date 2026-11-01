@@ -10,12 +10,12 @@ from lyrics.parser import load_lrc, get_lrc_generation_mode
 PLAYER_LYRIC_LINE_LIMIT = 5000
 
 
-def load_lyrics(path):
-    """Load .lrc or .lrcx and return normalized LyricLine objects."""
+def load_lyrics(path, *, infer_ends=True):
+    """Load lyrics; editors can leave implicit ends unresolved while retiming."""
     path = Path(path)
 
     if path.suffix.lower() == ".lrcx":
-        return load_lrcx(path)
+        return load_lrcx(path, infer_ends=infer_ends)
 
     if path.suffix.lower() == ".lrc":
         # Respect the declared document format even when an LRCX document was
@@ -24,7 +24,7 @@ def load_lyrics(path):
             for raw_line in file:
                 header = raw_line.strip()
                 if header.lower() == "[format:lrcx]":
-                    return load_lrcx(path)
+                    return load_lrcx(path, infer_ends=infer_ends)
                 if header and not (header.startswith("[") and header[1:2].isalpha()):
                     break
         return [LyricLine(start=timestamp, text=text) for timestamp, text in load_lrc(path)]

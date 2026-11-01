@@ -28,6 +28,7 @@ from lyrics.writer import format_timestamp, serialize_lrc, serialize_lrcx
 from lyrics.timing import parse_timestamp
 from lyrics.editor_source import extract_metadata, parse_editor_source
 from lyrics.karaoke_timing import next_lyric_start, segment_end
+from lyrics.furigana import get_cached_furigana_segments
 from core.debug import debug_print
 from core.file_io import atomic_write_text
 from lyrics.lrcx_parser import get_lrcx_offset
@@ -103,6 +104,9 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             else None
         )
         self.player = parent
+        self._editing_song_path = self._normalise_song_path(
+            getattr(parent, "current_audio_path", None)
+        )
         self.karaoke_enabled = bool(
             parent is not None
             and getattr(parent, "plugin_manager", None) is not None
@@ -141,6 +145,12 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         self._reading_generation_epoch = 0
         self._reading_generation_finished.connect(
             self._on_reading_generation_finished
+        )
+        self._line_reading_timer = QTimer(self)
+        self._line_reading_timer.setSingleShot(True)
+        self._line_reading_timer.setInterval(200)
+        self._line_reading_timer.timeout.connect(
+            lambda: self._refresh_auto_readings_for_line(self._current_line_index())
         )
         self.lyrics_offset_ms = get_lrcx_offset(self.lrc_path) if self.lrc_path.suffix.lower() == ".lrcx" else 0.0
 
@@ -484,6 +494,9 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         path = getattr(self.player, "current_audio_path", None)
         return Path(path) if path else None
 
+    def _is_editing_current_song(self):
+        return self._normalise_song_path(self._current_song_path()) == self._editing_song_path
+
     def _serialise_with_attachment(self, contents):
         """Persist the optional song association as ordinary lyrics metadata."""
         lines = [
@@ -668,7 +681,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             return
         try:
             self.attached_song_path = self._read_attached_song_path(self.lrc_path)
-            self.lines = load_lyrics(self.lrc_path)
+            self.lines = load_lyrics(self.lrc_path, infer_ends=False)
             if self.lrc_path.suffix.lower() != ".txt":
                 self._document_metadata = extract_metadata(self.lrc_path.read_text(encoding="utf-8-sig"))
             persisted_mode = get_lyrics_generation_mode(self.lrc_path)
@@ -800,6 +813,12 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
 
         Sorting changes only the list presentation. self.lines is never sorted.
         """
+        # Every editable Karaoke row must refer to a canonical model segment,
+        # including plain LRC/TXT lines that arrive without any segments.
+        if self.karaoke_enabled:
+            for line in self.lines:
+                if not line.segments:
+                    line.segments = [LyricSegment(line.start, line.text)]
         timeline = sorted(enumerate(self.lines), key=lambda item: (item[1].start, item[0]))
         self._playback_line_starts = [line.start for _, line in timeline]
         self._playback_line_rows = [row for row, _ in timeline]
@@ -950,7 +969,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             self._playback_line_starts = starts
             self._playback_line_rows = rows
 
-        position = position_ms / 1000.0
+        position = self._audio_to_lyric_seconds(position_ms)
         timeline_index = bisect_right(starts, position) - 1
         if timeline_index >= 0:
             occurrence_start = starts[timeline_index]
@@ -994,7 +1013,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
 
         # If the playback callback has not fired yet, calculate it directly.
         if row < 0 and self.player is not None and hasattr(self.player, "media_player"):
-            position = self.player.media_player.position() / 1000.0
+            position = self._audio_to_lyric_seconds(self.player.media_player.position())
             starts = self._playback_line_starts
             rows = self._playback_line_rows
             if len(starts) != len(self.lines) or len(rows) != len(self.lines):
@@ -1104,15 +1123,15 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
 
     def _refresh_auto_readings_for_line(self, line_index):
         """Warm the selected line asynchronously instead of freezing the UI."""
-        if self._closed or self._current_generation_mode() != "auto":
+        if self._closed:
             return
-        if not (0 <= line_index < len(self.lines)):
+        if line_index is None or not (0 <= line_index < len(self.lines)):
             return
         if self._current_line_index() != line_index:
             return
 
         text = str(self.lines[line_index].text or "")
-        if text:
+        if text and get_cached_furigana_segments(text) is None:
             self._start_background_reading_generation([text], line_index)
 
     def load_selected_line(self, row):
@@ -1159,7 +1178,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         if self.karaoke_enabled:
             self.refresh_separation_preview()
 
-        # Run Auto providers once the selection has settled.  This is important
+        # Run reading providers once the selection has settled. This is important
         # for optional providers such as Korean Romanization: opening the song
         # may work, but switching away and back must also regenerate/restore
         # the selected line's readings.
@@ -1174,25 +1193,18 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         self.loading = True
         blocker = QSignalBlocker(self.segment_table)
         try:
-            segments = line.segments or [LyricSegment(line.start, line.text)]
-            line_index = self._current_line_index()
+            if not line.segments:
+                line.segments = [LyricSegment(line.start, line.text)]
+            segments = line.segments
+            fallback_end = next_lyric_start(self.lines, line)
             self.segment_table.setRowCount(len(segments))
             for row, segment in enumerate(segments):
                 self.segment_table.setItem(
                     row, 0, QTableWidgetItem(format_timestamp(segment.start))
                 )
-                if getattr(segment, "end", None) is not None:
-                    end_time = segment.end
-                elif row + 1 < len(segments):
-                    end_time = segments[row + 1].start
-                elif line.end is not None:
-                    end_time = line.end
-                elif 0 <= line_index < len(self.lines) - 1:
-                    end_time = self.lines[line_index + 1].start
-                else:
-                    end_time = segment.start
+                end_time = segment_end(line, row, fallback_end)
                 self.segment_table.setItem(
-                    row, 1, QTableWidgetItem(format_timestamp(end_time))
+                    row, 1, QTableWidgetItem(format_timestamp(end_time) if end_time is not None else "")
                 )
                 self.segment_table.setItem(row, 2, QTableWidgetItem(segment.text))
                 segment_spans = list(getattr(segment, "ruby_spans", []) or [])
@@ -1287,6 +1299,10 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         if line is not None:
             self._refresh_ruby_preview(line)
             self._populate_furigana_editor(line)
+            line_index = self._current_line_index()
+            QTimer.singleShot(
+                0, lambda: self._refresh_auto_readings_for_line(line_index)
+            )
 
     def generate_readings_for_current_timestamp(self):
         """Generate automatic reading data for the selected lyric only."""
@@ -1467,13 +1483,10 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         if not text:
             return []
 
-        try:
-            tokens = build_furigana_segments(text) if build_furigana_segments is not None else []
-        except Exception:
-            tokens = []
-
-        if not tokens:
-            tokens = [{"text": text, "reading": None}]
+        # Display paths must never wait for a provider or its request lock.
+        # Selection/background workers fill this cache and refresh the widgets
+        # when ready; authored ruby is available immediately even on a miss.
+        tokens = get_cached_furigana_segments(text)
 
         # Collect manual/generated ruby spans in line-text coordinates without
         # exposing karaoke boundaries to the editor.
@@ -1499,6 +1512,18 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
                 if include_generated or source != "generated":
                     spans.append((cursor, cursor + segment_len, str(segment.ruby), source))
             cursor += segment_len
+
+        if not tokens:
+            boundaries = sorted({
+                0, len(text),
+                *(max(0, min(len(text), boundary))
+                  for start, end, _, _ in spans for boundary in (start, end)),
+            })
+            tokens = [
+                {"text": text[start:end], "reading": None}
+                for start, end in zip(boundaries, boundaries[1:])
+                if start < end
+            ]
 
         # Overlay explicit ruby on the natural reading tokens. For a token such
         # as 描き, the manual span normally covers 描 only; the row still remains
@@ -1539,7 +1564,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         return tokens if any(token.get("reading") for token in tokens) else []
 
     def _refresh_ruby_preview(self, line):
-        stored = self._stored_reading_tokens(line)
+        stored = self._furigana_editor_tokens(line)
         if stored:
             self.ruby_preview.setText("  ".join(
                 f"{part['text']}({part['reading']})"
@@ -1547,18 +1572,6 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
                 for part in stored
             ))
             return
-
-        if build_furigana_segments is not None and line.text:
-            try:
-                parts = build_furigana_segments(line.text)
-                self.ruby_preview.setText("  ".join(
-                    f"{part.get('text', '')}({part.get('reading')})"
-                    if part.get("reading") else part.get("text", "")
-                    for part in parts
-                ))
-                return
-            except Exception:
-                pass
 
         self.ruby_preview.setText(
             "No stored readings. Automatic generation follows the selected mode."
@@ -1570,6 +1583,18 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         self._push_undo_state()
         self.lyrics_offset_ms = float(value)
         self._mark_document_dirty()
+        self._refresh_lyrics_waveform_markers()
+        self._refresh_karaoke_waveform_editor()
+        self._refresh_karaoke_preview()
+        media = getattr(self.player, "media_player", None)
+        if media is not None:
+            self._update_playback_line_style(media.position())
+
+    def _audio_to_lyric_seconds(self, position_ms):
+        return (float(position_ms) - self.lyrics_offset_ms) / 1000.0
+
+    def _lyric_to_audio_ms(self, seconds):
+        return round(float(seconds) * 1000.0 + self.lyrics_offset_ms)
 
     def _update_furigana_editor_availability(self, line):
         """Keep one furigana editor authoritative for each line.
@@ -1603,19 +1628,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         try:
             self.furigana_table.setRowCount(0)
 
-            # Prefer readings already attached to the line. This is essential
-            # for automatic provider generation: those generated segments have already
-            # been produced successfully, and regenerating here used to replace
-            # them with the generic fallback and show one empty row.
-            tokens = self._stored_reading_tokens(line)
-            if not tokens:
-                try:
-                    tokens = (
-                        build_furigana_segments(line.text)
-                        if line.text else []
-                    )
-                except Exception:
-                    tokens = []
+            tokens = self._furigana_editor_tokens(line)
 
             for token in tokens:
                 text_value = str(token.get("text", ""))
@@ -1921,7 +1934,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             return
 
         self._push_undo_state()
-        position = self.player.media_player.position() / 1000.0
+        position = max(0.0, self._audio_to_lyric_seconds(self.player.media_player.position()))
         self.loading = True
         self.line_time.setValue(position)
         self.loading = False
@@ -2024,6 +2037,8 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             self._build_separator_buttons(line)
         self._refresh_ruby_preview(line)
         self._update_lyric_search()
+        # Wait for typing to settle before requesting readings for new text.
+        self._line_reading_timer.start()
         if self.karaoke_enabled:
             self._refresh_karaoke_preview()
 
@@ -2790,7 +2805,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
                 elif self.player is not None and hasattr(self.player, "media_player"):
                     duration = self.player.media_player.duration()
                     if duration > 0:
-                        line_end = duration / 1000.0
+                        line_end = self._audio_to_lyric_seconds(duration)
                 if line_end is None:
                     line_end = line.segments[-1].start if line.segments else line.start
             self.karaoke_renderer_preview.set_segments(
@@ -2808,11 +2823,11 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         if position_ms is None and self.player is not None and hasattr(self.player, "media_player"):
             position_ms = self.player.media_player.position()
         if position_ms is None:
-            position_ms = int(line.start * 1000)
+            position_ms = self._lyric_to_audio_ms(line.start)
 
         # This is the only per-position operation required for the preview.
         self.karaoke_renderer_preview.set_karaoke_position(
-            position_ms / 1000.0
+            self._audio_to_lyric_seconds(position_ms)
         )
 
     def preview_position_changed(self, position_ms):
@@ -2922,7 +2937,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         if not self.karaoke_enabled:
             self.lyrics_waveform.set_karaoke_timing(None, None, -1)
         self.lyrics_waveform.set_lyric_times(
-            [getattr(line, "start", 0.0) for line in self.lines]
+            [self._lyric_to_audio_ms(line.start) / 1000.0 for line in self.lines]
         )
         self._refresh_selected_lyric_waveform_boundary()
 
@@ -2938,12 +2953,12 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
 
         line = self.lines[index]
         selected_start = float(getattr(line, "start", 0.0))
-        start_ms = int(round(selected_start * 1000))
+        start_ms = self._lyric_to_audio_ms(selected_start)
 
         # Use the actual yellow-marker timestamps shown on the waveform.
         # Identical timestamps collapse to one visual marker.
         later_markers = sorted({
-            int(round(float(getattr(other, "start", 0.0)) * 1000))
+            self._lyric_to_audio_ms(other.start)
             for other in self.lines
             if float(getattr(other, "start", 0.0)) > selected_start
         })
@@ -2957,9 +2972,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         hard_index = index + 2
         hard_boundary_ms = None
         if hard_index < len(self.lines):
-            hard_boundary_ms = int(round(
-                float(getattr(self.lines[hard_index], "start", line.start)) * 1000
-            ))
+            hard_boundary_ms = self._lyric_to_audio_ms(self.lines[hard_index].start)
 
         if end_ms is None and self.lyrics_waveform._duration_ms > 0:
             end_ms = min(
@@ -2977,7 +2990,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         index, line = self._current_line()
         if line is None:
             return
-        value_ms = max(0, int(value_ms))
+        value_ms = max(0, round(float(value_ms) - self.lyrics_offset_ms))
         start_ms = int(round(float(line.start) * 1000))
         selected_start = float(getattr(line, "start", 0.0))
         later_markers = sorted({
@@ -3009,9 +3022,14 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             blocker = QSignalBlocker(self.line_time)
             self.line_time.setValue(value_ms / 1000.0)
             del blocker
-        self.lyrics_waveform.set_selected_lyric_timing(start_ms if handle == "end" else value_ms, value_ms if handle == "end" else (
-            int(round(float(self.lines[index + 1].start) * 1000)) if index + 1 < len(self.lines) else min(self.lyrics_waveform._duration_ms, start_ms + 5000)
-        ))
+        preview_end_ms = value_ms if handle == "end" else (
+            round(self.lines[index + 1].start * 1000) if index + 1 < len(self.lines)
+            else min(self.lyrics_waveform._duration_ms - self.lyrics_offset_ms, start_ms + 5000)
+        )
+        self.lyrics_waveform.set_selected_lyric_timing(
+            self._lyric_to_audio_ms((start_ms if handle == "end" else value_ms) / 1000.0),
+            self._lyric_to_audio_ms(preview_end_ms / 1000.0),
+        )
         self.lyrics_waveform.update()
 
     def _refresh_lyrics_waveform(self):
@@ -3054,7 +3072,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         # deselected until the row is clicked again.
         waveform.clear_selected_lyric_timing()
 
-        line_start_ms = int(round(float(line.start) * 1000))
+        line_start_ms = self._lyric_to_audio_ms(line.start)
 
         # The karaoke line's real right boundary is the NEXT LYRIC timestamp,
         # not the last karaoke segment's current end. That is the reference
@@ -3062,7 +3080,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         next_line_start = next_lyric_start(self.lines, line)
 
         if next_line_start is not None:
-            line_end_ms = int(round(float(next_line_start) * 1000))
+            line_end_ms = self._lyric_to_audio_ms(next_line_start)
         elif waveform._duration_ms > 0:
             # Last lyric: audio end is the only natural hard boundary.
             line_end_ms = int(waveform._duration_ms)
@@ -3071,19 +3089,23 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             fallback_end = getattr(last, "end", None)
             if fallback_end is None:
                 fallback_end = getattr(last, "start", line.start)
-            line_end_ms = int(round(float(fallback_end) * 1000))
+            line_end_ms = self._lyric_to_audio_ms(fallback_end)
 
         line_end_ms = max(line_start_ms + 1, line_end_ms)
 
         ranges = []
         for i, segment in enumerate(line.segments):
-            seg_end = segment_end(line, i, line_end_ms / 1000.0)
+            seg_end = segment_end(line, i, self._audio_to_lyric_seconds(line_end_ms))
             label = getattr(segment, "text", None)
             if label is None:
                 label = getattr(segment, "lyric", None)
             if label is None:
                 label = getattr(segment, "value", "")
-            ranges.append((segment.start, seg_end, label))
+            ranges.append((
+                self._lyric_to_audio_ms(segment.start) / 1000.0,
+                self._lyric_to_audio_ms(seg_end) / 1000.0,
+                label,
+            ))
 
         waveform.set_karaoke_segments(
             ranges, row, line_start_ms, line_end_ms, line_identity=index
@@ -3116,8 +3138,8 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         old_end = float(old_end)
         if old_end <= old_start:
             return
-        new_start = float(value_ms) / 1000.0 if handle == "start" else old_start
-        new_end = float(value_ms) / 1000.0 if handle == "end" else old_end
+        new_start = self._audio_to_lyric_seconds(value_ms) if handle == "start" else old_start
+        new_end = self._audio_to_lyric_seconds(value_ms) if handle == "end" else old_end
         if new_end <= new_start:
             return
 
@@ -3152,11 +3174,12 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             return
         if handle not in {"start", "end", "linked_start", "linked_end"}:
             return
+        value_ms = float(value_ms) - self.lyrics_offset_ms
         old = line.segments[row]
         hard_end = next_lyric_start(self.lines, line)
         duration_ms = getattr(self.karaoke_waveform, "_duration_ms", 0)
         if duration_ms > 0:
-            audio_end = duration_ms / 1000.0
+            audio_end = self._audio_to_lyric_seconds(duration_ms)
             hard_end = min(hard_end, audio_end) if hard_end is not None else audio_end
         self._karaoke_bounds_warning = None
         updates = []
@@ -3489,7 +3512,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         if self.player is None or not hasattr(self.player, "media_player"):
             return
 
-        position = self.player.media_player.position() / 1000.0
+        position = max(0.0, self._audio_to_lyric_seconds(self.player.media_player.position()))
         self.current_time.setValue(position)
 
         row = self.segment_table.currentRow()
@@ -3787,7 +3810,8 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
 
         return features
 
-    def _choose_lrc_save(self):
+    def _choose_lrc_save(self, target=None):
+        target = Path(target) if target is not None else self.lrc_path
         features = self._lrcx_only_features()
 
         # A normal LRC edit (changing lyric text or its single line timestamp)
@@ -3795,7 +3819,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         # Only show the LRCX warning when the document actually contains data
         # that plain LRC cannot represent.
         if not features:
-            return self.lrc_path
+            return target
 
         box = QMessageBox(self)
         box.setWindowTitle("LRCX features detected")
@@ -3804,7 +3828,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         if features:
             feature_list = "\n".join(f"• {feature}" for feature in features)
             box.setText(
-                "This .lrc file contains features that plain LRC cannot store."
+                "These lyrics contain features that plain LRC cannot store."
             )
             box.setInformativeText(
                 "The following data will be lost if you keep the file as .lrc:\n\n"
@@ -3825,7 +3849,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         clicked = box.clickedButton()
 
         if clicked is lrcx_button:
-            default = str(self.lrc_path.with_suffix(".lrcx"))
+            default = str(target.with_suffix(".lrcx"))
             path, _ = QFileDialog.getSaveFileName(
                 self,
                 "Save Lyrics as LRCX",
@@ -3835,7 +3859,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             return Path(path) if path else None
 
         if clicked is lrc_button:
-            return self.lrc_path
+            return target
 
         return None
 
@@ -3885,8 +3909,8 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             target = self._choose_txt_conversion_save()
             if target is None:
                 return
-        elif target.suffix.lower() == ".lrc" and self.document_dirty:
-            target = self._choose_lrc_save()
+        if target.suffix.lower() == ".lrc" and self.document_dirty:
+            target = self._choose_lrc_save(target)
             if target is None:
                 return
         try:
@@ -3920,6 +3944,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
                 )
         self.document_dirty = False
         self._source_dirty = False
+        self._update_save_button_state()
         self._update_document_title()
         self._discard_autosave()
 
@@ -3939,6 +3964,8 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             self._refresh_player_song_association(changed_song)
         elif callable(loader):
             def _refresh_saved_lyrics(path=target, owner=parent):
+                if not self._is_editing_current_song():
+                    return
                 try:
                     owner.load_lrc_file(str(path))
                     owner.current_lyrics_path = Path(path)
@@ -3995,6 +4022,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         self._discard_autosave()
         self._reading_generation_epoch += 1
         self._autosave_timer.stop()
+        self._line_reading_timer.stop()
         self._precise_display_timer.stop()
         # The player deletes the closed dialog. Stop its decoder threads before
         # Qt destroys their parent widgets and QThread objects.

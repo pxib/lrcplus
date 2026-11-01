@@ -796,7 +796,7 @@ class SettingsDialog(QDialog):
         self.play_mode_combo = QComboBox()
         self.play_mode_combo.addItem("Queue", "playlist")
         self.play_mode_combo.addItem("Library", "library")
-        play_mode = self.playback_settings.get("play_mode", "playlist")
+        play_mode = self.playback_settings.get("play_mode", "library")
         index = self.play_mode_combo.findData(play_mode)
         self.play_mode_combo.setCurrentIndex(index if index >= 0 else 0)
         self._add_labeled(layout, "Play Mode:", self.play_mode_combo)

@@ -1,6 +1,20 @@
 # Changelog
 Versions uses dates with optional revisions.
 
+## [2026-11-01.3]
+
+### Added
+- Added an option to play from Library and Queue.
+
+### Fixed
+- Furigana generation now no longer freezes the entire program when you open the editor while it's generating.
+- Preserve karaoke chunks with identical start times when saving, reloading Source, or recovering unsaved edits.
+- Apply and save karaoke timing edits on plain LRC files, including playback stamping and boundary nudging.
+- Keep implicit karaoke endings tied to the next lyric when retiming, while preserving explicitly authored endings.
+- Apply the lyrics offset consistently to editor previews, waveform markers, segment playback, and playback stamping.
+- Warn before discarding karaoke timing or other LRCX features when converting TXT lyrics to LRC.
+- Prevent saving or closing the lyrics editor from replacing the current song's lyrics after playback advances to another song.
+
 ## [2026-11-01.2]
 
 ### Changes

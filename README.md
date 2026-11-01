@@ -4,6 +4,12 @@ media player
 
 idk
 
+Choose **Play from: Library** beside Shuffle to play through your full music
+library without building a playlist. Previous, Next, Shuffle, and automatic
+track advancement use that source. Library is the default for new settings;
+your choice is remembered. Choose **Queue / Playlist** to follow a queue instead.
+Adding tracks to the queue or loading a saved playlist selects that source.
+
 In the library, choose **Lyrics** beside the search box to find songs by words
 or phrases in local `.lrc`, `.lrcx`, and `.txt` lyrics. Matching ignores case,
 timestamps, and lyric formatting. It uses configured lyric folders and explicit

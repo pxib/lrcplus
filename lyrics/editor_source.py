@@ -61,7 +61,7 @@ def parse_editor_source(text, suffix):
     with tempfile.TemporaryDirectory(prefix="lyrics-source-") as directory:
         path = Path(directory) / ("source" + suffix)
         path.write_text(text, encoding="utf-8")
-        lines = load_lyrics(path)
+        lines = load_lyrics(path, infer_ends=False)
         mode = get_lyrics_generation_mode(path)
         offset = get_lrcx_offset(path) if suffix != ".txt" else 0.0
     attachment = re.search(r"(?mi)^\[attach:(.*?)\]\s*$", text) if suffix != ".txt" else None

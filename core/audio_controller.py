@@ -70,11 +70,12 @@ class AudioController:
                     and path_key(self.playlist[current]) == path_key(audio_path)):
                 self.current_index = next((i for i, entry in enumerate(self.playlist)
                                            if path_key(entry) == path_key(audio_path)), -1)
-                if self.current_index < 0:
+                if self.current_index < 0 and self.playback_settings.get("play_mode", "library") == "playlist":
                     self.playlist.append(audio_path)
                     self.current_index = len(self.playlist) - 1
-            self._priority_queue_indices = [i for i in getattr(self, "_priority_queue_indices", [])
-                                            if i != self.current_index]
+            if self.playback_settings.get("play_mode", "library") == "playlist":
+                self._priority_queue_indices = [i for i in getattr(self, "_priority_queue_indices", [])
+                                                if i != self.current_index]
 
             self.current_line = -1
             self.last_lyric_text = None
@@ -148,6 +149,10 @@ class AudioController:
 
         def toggle_playback(self):
             if not self.current_audio_path:
+                paths = self._playback_paths()
+                if paths:
+                    index = self._choose_shuffle_index(paths, -1) if self.shuffle_enabled else 0
+                    self._load_playback_index(paths, index)
                 return
 
             if self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
@@ -176,9 +181,25 @@ class AudioController:
 
 
         def _playback_paths(self):
-            if getattr(self, "playback_settings", {}).get("play_mode", "playlist") == "library":
+            if getattr(self, "playback_settings", {}).get("play_mode", "library") == "library":
                 return [Path(track.path) for track in getattr(self, "library_tracks", [])]
             return list(getattr(self, "playlist", []))
+
+
+        def set_playback_source(self, source):
+            if source not in {"library", "playlist"}:
+                return
+            self.playback_settings["play_mode"] = source
+            save_playback_settings(self.playback_settings)
+            self._update_playback_source_control()
+            self.update_transport_buttons()
+
+
+        def _update_playback_source_control(self):
+            combo = getattr(self, "playback_source_combo", None)
+            if combo is not None:
+                with QSignalBlocker(combo):
+                    combo.setCurrentIndex(combo.findData(self.playback_settings.get("play_mode", "library")))
 
 
         def _active_index(self, paths):
@@ -186,7 +207,7 @@ class AudioController:
                 return -1
             try:
                 index = getattr(self, "current_index", -1)
-                if (getattr(self, "playback_settings", {}).get("play_mode", "playlist") == "playlist"
+                if (getattr(self, "playback_settings", {}).get("play_mode", "library") == "playlist"
                         and 0 <= index < len(paths)
                         and path_key(paths[index]) == path_key(self.current_audio_path)):
                     return index
@@ -236,7 +257,7 @@ class AudioController:
         def _load_playback_index(self, paths, index):
             if not 0 <= index < len(paths):
                 return False
-            if getattr(self, "playback_settings", {}).get("play_mode", "playlist") == "playlist":
+            if getattr(self, "playback_settings", {}).get("play_mode", "library") == "playlist":
                 self.current_index = index
                 self._priority_queue_indices = [i for i in getattr(self, "_priority_queue_indices", []) if i != index]
             self.load_audio(str(paths[index]))
@@ -274,7 +295,7 @@ class AudioController:
             if current < 0:
                 current = -1
             priority = getattr(self, "_priority_queue_indices", [])
-            if (getattr(self, "playback_settings", {}).get("play_mode", "playlist") == "playlist"
+            if (getattr(self, "playback_settings", {}).get("play_mode", "library") == "playlist"
                     and priority):
                 target = priority.pop(0)
             elif getattr(self, "shuffle_enabled", False):
@@ -292,8 +313,9 @@ class AudioController:
             for button in (self.previous_button, self.rewind_button, self.play_button, self.stop_button, self.forward_button):
                 button.setEnabled(has_track)
             paths = self._playback_paths()
+            self.play_button.setEnabled(has_track or bool(paths))
             current = self._active_index(paths)
-            priority = (getattr(self, "playback_settings", {}).get("play_mode", "playlist") == "playlist"
+            priority = (getattr(self, "playback_settings", {}).get("play_mode", "library") == "playlist"
                         and bool(getattr(self, "_priority_queue_indices", [])))
             can_next = has_track and (priority or self.shuffle_enabled and len(paths) > 1 or current + 1 < len(paths))
             self.next_button.setEnabled(can_next)
@@ -763,7 +785,7 @@ class AudioController:
 
             # An explicit Play next request also takes precedence over shuffle
             # and can point earlier in the list after a manual reorder.
-            if (getattr(self, "playback_settings", {}).get("play_mode", "playlist") == "playlist"
+            if (getattr(self, "playback_settings", {}).get("play_mode", "library") == "playlist"
                     and getattr(self, "_priority_queue_indices", [])):
                 self.next_track()
                 return

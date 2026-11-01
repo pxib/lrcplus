@@ -566,6 +566,20 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             volume_layout = QHBoxLayout()
             volume_layout.setContentsMargins(0, 0, 0, 0)
             volume_layout.setSpacing(8)
+            self.playback_source_combo = QComboBox()
+            self.playback_source_combo.setAccessibleName("Playback source")
+            self.playback_source_combo.addItem("Library", "library")
+            self.playback_source_combo.addItem("Queue / Playlist", "playlist")
+            self.playback_source_combo.setToolTip(
+                "Choose the tracks used by Play, Previous, Next, and Shuffle. "
+                "Library plays your full music library. Queue / Playlist follows your queue."
+            )
+            self._update_playback_source_control()
+            self.playback_source_combo.currentIndexChanged.connect(
+                lambda _index: self.set_playback_source(self.playback_source_combo.currentData())
+            )
+            volume_layout.addWidget(QLabel("Play from"))
+            volume_layout.addWidget(self.playback_source_combo)
             volume_layout.addWidget(self.shuffle_button)
             volume_layout.addSpacing(8)
             volume_layout.addWidget(self.pitch_options_button)
@@ -789,6 +803,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
 
             self.easter_eggs = EasterEggs(self)
             self._restore_startup_state()
+            self.update_transport_buttons()
 
 
         def _seek_from_waveform(self, position_ms):
@@ -1398,6 +1413,8 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             self.library_tracks = list(tracks)
             save_music_library(self.library_folders, [track.to_dict() for track in self.library_tracks], self.library_column_state)
             self._populate_library_view()
+
+            self.update_transport_buttons()
 
 
         def _restore_startup_state(self):
@@ -2306,6 +2323,8 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                     )
                     self._apply_output_device(self.playback_settings)
                     self._update_shuffle_button_text()
+                    self._update_playback_source_control()
+                    self.update_transport_buttons()
 
                     self.karaoke_settings = dialog.get_karaoke_settings()
                     save_karaoke_settings(self.karaoke_settings)
@@ -2383,7 +2402,8 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 # Association edits refresh through save_document; loading the
                 # editor's old file here would undo a newly selected target.
                 if (dialog.exec() == QDialog.DialogCode.Accepted
-                        and getattr(dialog, "_association_changed_song", None) is None):
+                        and getattr(dialog, "_association_changed_song", None) is None
+                        and dialog._is_editing_current_song()):
                     saved_path = getattr(dialog, "result_path", lyrics_path)
                     self.load_lrc_file(str(saved_path))
                     self.current_lyrics_path = Path(saved_path)

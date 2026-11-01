@@ -164,6 +164,7 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
 
         parts = []
         active_timestamp = line.start
+        has_karaoke_marker = False
         text_offset = 0
 
         # Karaoke is an explicit document property. In particular, automatic
@@ -201,12 +202,14 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
 
             # Ruby is serialized inside the existing karaoke chunk, so it
             # never creates or changes karaoke boundaries.
-            if segment.start != active_timestamp:
+            if segment.start != active_timestamp or (preserve_karaoke_boundaries and segment_index > 0):
                 parts.append(f"<{format_timestamp(segment.start)}>")
                 active_timestamp = segment.start
+                has_karaoke_marker = True
 
             if getattr(segment, "instant", False):
                 parts.append("<instant>")
+                has_karaoke_marker = True
             parts.append(text)
 
             # End timestamps are karaoke structure only. Reading generation
@@ -233,9 +236,11 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
                             if end_time != float(active_timestamp):
                                 parts.append(f"<{format_timestamp(end_time)}>")
                                 active_timestamp = end_time
+                                has_karaoke_marker = True
                         elif end_time != float(next_start):
                             parts.append(f"<{format_timestamp(end_time)}>")
                             active_timestamp = end_time
+                            has_karaoke_marker = True
 
         if (
             preserve_karaoke_boundaries
@@ -243,6 +248,12 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
             and (not segments or getattr(segments[-1], "end", None) != line.end)
         ):
             parts.append(f"<{format_timestamp(float(line.end))}>")
+            has_karaoke_marker = True
+
+        # Even a single untimed chunk can be explicitly marked as karaoke.
+        # Without an angle-bracket marker the loader would treat it as plain text.
+        if preserve_karaoke_boundaries and not has_karaoke_marker:
+            parts.insert(0, f"<{format_timestamp(line.start)}>")
 
         serialized_line = prefix + "".join(parts)
         output.append(serialized_line)

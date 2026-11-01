@@ -41,7 +41,7 @@ class KaraokeEditorToolsMixin:
         if boundary is None:
             self.karaoke_hint.setText("Set an End timestamp before nudging this boundary.")
             return
-        value_ms = round(boundary * 1000 + direction * self.karaoke_nudge_step.value())
+        value_ms = self._lyric_to_audio_ms(boundary) + round(direction * self.karaoke_nudge_step.value())
         self._waveform_drag_row = -1
         self._waveform_karaoke_timing_changed("start" if column == 0 else "end", value_ms)
         self._waveform_karaoke_timing_finished()
@@ -55,13 +55,16 @@ class KaraokeEditorToolsMixin:
             return
         fallback = next_lyric_start(self.lines, line)
         if fallback is None and media.duration() > 0:
-            fallback = media.duration() / 1000.0
+            fallback = self._audio_to_lyric_seconds(media.duration())
         end = segment_end(line, row, fallback)
         start = line.segments[row].start
         if end is None or end <= start:
             self.karaoke_hint.setText("Set an End timestamp after this segment's Start to preview it.")
             return
-        self.play_waveform_segment(round(start * 1000), round(end * 1000))
+        self.play_waveform_segment(
+            max(0, self._lyric_to_audio_ms(start)),
+            self._lyric_to_audio_ms(end),
+        )
 
     def _update_karaoke_timing_cells(self, updates):
         blocker = QSignalBlocker(self.segment_table)

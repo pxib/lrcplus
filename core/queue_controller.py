@@ -3,7 +3,6 @@
 from pathlib import Path
 
 from core.playlists import path_key
-from core.settings import save_playback_settings
 
 
 class QueueControllerMixin:
@@ -12,10 +11,8 @@ class QueueControllerMixin:
         self.queue_changed.emit()
 
     def _activate_queue(self):
-        if self.playback_settings.get("play_mode", "playlist") != "playlist":
-            settings = dict(self.playback_settings, play_mode="playlist")
-            save_playback_settings(settings)
-            self.playback_settings = settings
+        if self.playback_settings.get("play_mode", "library") != "playlist":
+            self.set_playback_source("playlist")
 
     def enqueue_tracks(self, paths, *, play_next=False):
         paths = [Path(path).expanduser().resolve() for path in paths]
@@ -83,7 +80,7 @@ class QueueControllerMixin:
         if not self.playlist:
             self.clear_queue()
             return
-        if current in removed:
+        if current in removed and self.playback_settings.get("play_mode", "library") == "playlist":
             was_playing = self.media_player.isPlaying()
             self.current_index = min(sum(i < current for i in remaining), len(self.playlist) - 1)
             self.load_audio(str(self.playlist[self.current_index]))
@@ -94,10 +91,13 @@ class QueueControllerMixin:
         self._notify_queue_changed()
 
     def clear_queue(self):
-        self._cancel_lyrics_search()
         self.playlist = []
         self.current_index = -1
         self._priority_queue_indices = []
+        if self.playback_settings.get("play_mode", "library") == "library":
+            self._notify_queue_changed()
+            return
+        self._cancel_lyrics_search()
         self.stop_playback()
         self.current_audio_path = None
         self.current_lyrics_path = None
