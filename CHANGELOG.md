@@ -13,6 +13,11 @@ Versions uses dates with optional revisions.
 - Detect `-exp` prerelease tags and versioned Windows ZIP roots; reuse the installed updater when a compatible package omits its own updater executable.
 - Improve text contrast for selected Settings tabs and mode buttons.
 
+## [2026-11-02.2]
+
+### Changes
+- Unit-specific quick presets for semitone, octave, and percentage pitch shifts.
+
 ## [2026-11-01.4]
 
 ### Added
