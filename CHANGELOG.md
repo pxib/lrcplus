@@ -3,10 +3,10 @@ Versions uses dates with optional revisions.
 
 ## [2026-11-02.2]
 
-### Added
+### Changes
 - Unit-specific quick presets for semitone, octave, and percentage pitch shifts.
 
-## [2026-11-02]
+## [2026-11-02] (updater-test branch)
 
 ### Added
 - Updater (Testing)
