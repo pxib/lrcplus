@@ -2,7 +2,7 @@
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy, QTest
 
 from core.fonts import library_font
 from lyrics.models import LyricLine, LyricSegment
@@ -186,7 +186,8 @@ def test_animated_seek_finishes_at_measured_destination_and_can_be_interrupted(v
     widget.set_lyrics(document())
     widget.set_scroll_animation_speed(40)
     widget.set_current_line(4000)
-    QTest.qWait(100)
+    finished = QSignalSpy(widget.scroll_animation.finished)
+    assert finished.wait(1000)
     assert widget.scroll_animation is None
     assert 4000 in widget._mounted_rows
     assert abs(widget._line_center(4000) - widget._scroll_axis().value() - widget._viewport_extent() / 2) <= 2
