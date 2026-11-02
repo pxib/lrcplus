@@ -34,6 +34,13 @@ __all__ = [
 
 
 def main() -> int:
+    update_health_token = None
+    for argument in sys.argv[1:]:
+        if argument.startswith("--lrcplus-update-health="):
+            update_health_token = argument.partition("=")[2]
+            sys.argv.remove(argument)
+            break
+
     app = QApplication(sys.argv)
     control_wheel_filter = ControlWheelFilter(app)
     app.installEventFilter(control_wheel_filter)
@@ -54,6 +61,12 @@ def main() -> int:
     plugin_manager.set_host_window(window)
     plugin_manager.emit("app_ready", window=window)
     window.show()
+    if update_health_token:
+        from core.updater import acknowledge_update_health
+        QTimer.singleShot(
+            8000,
+            lambda token=update_health_token: acknowledge_update_health(token),
+        )
     from ui.dependency_settings import show_dependency_notice
     QTimer.singleShot(0, lambda: show_dependency_notice(plugin_manager, window))
 

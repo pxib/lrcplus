@@ -45,6 +45,14 @@ STARTUP_DEFAULTS = {
     "restore_playlist": False,
 }
 
+UPDATE_DEFAULTS = {
+    "automatic_check": True,
+    "channel": "stable",
+    "skipped_version": "",
+    "last_checked": "",
+    "last_attempt": "",
+}
+
 PLAYBACK_DEFAULTS = {
     "precise_timestamp_fps": 30,
     "play_mode": "library",
@@ -329,6 +337,32 @@ def save_startup_settings(values):
             )
         ),
     }
+    save_all_settings(payload)
+
+
+def get_update_settings(payload=None):
+    payload = load_all_settings() if payload is None else payload
+    values = payload.get("updates", {})
+    if not isinstance(values, dict):
+        values = {}
+    channel = values.get("channel", UPDATE_DEFAULTS["channel"])
+    if not isinstance(channel, str) or channel not in {"stable", "prerelease"}:
+        channel = UPDATE_DEFAULTS["channel"]
+    automatic_check = values.get("automatic_check", UPDATE_DEFAULTS["automatic_check"])
+    if not isinstance(automatic_check, bool):
+        automatic_check = UPDATE_DEFAULTS["automatic_check"]
+    return {
+        "automatic_check": automatic_check,
+        "channel": channel,
+        "skipped_version": str(values.get("skipped_version", "") or ""),
+        "last_checked": str(values.get("last_checked", "") or ""),
+        "last_attempt": str(values.get("last_attempt", "") or ""),
+    }
+
+
+def save_update_settings(values):
+    payload = load_all_settings()
+    payload["updates"] = get_update_settings({"updates": dict(values or {})})
     save_all_settings(payload)
 
 

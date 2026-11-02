@@ -144,7 +144,7 @@ SETTINGS_DIALOG_STYLE = """
         padding: 7px 11px;
     }
     QDialog QTabBar::tab:selected {
-        color: @ACCENT_TEXT@;
+        color: @TEXT@;
         background: @ACCENT_SOFT@;
     }
     QDialog QPushButton#themeModeButton {
@@ -156,7 +156,7 @@ SETTINGS_DIALOG_STYLE = """
         min-height: 20px;
     }
     QDialog QPushButton#themeModeButton:checked {
-        color: @ACCENT_TEXT@;
+        color: @TEXT@;
         background: @ACCENT_SOFT@;
         border-color: @ACCENT_BORDER@;
     }

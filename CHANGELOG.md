@@ -1,15 +1,22 @@
 # Changelog
 Versions uses dates with optional revisions.
 
+## [2026-11-02.4]
+
+### Added
+- **Highly Experimental:** Add a Windows updater that checks GitHub Releases and installs verified updates through a standalone helper with staged replacement and rollback.
+
+### Changed
+- Report the Karaoke plugin version as `1.0.0`.
+
+### Fixed
+- Detect `-exp` prerelease tags and versioned Windows ZIP roots; reuse the installed updater when a compatible package omits its own updater executable.
+- Improve text contrast for selected Settings tabs and mode buttons.
+
 ## [2026-11-02.2]
 
 ### Changes
 - Unit-specific quick presets for semitone, octave, and percentage pitch shifts.
-
-## [2026-11-02] (updater-test branch)
-
-### Added
-- Updater (Testing)
 
 ## [2026-11-01.4]
 
