@@ -187,6 +187,21 @@ class CoverPreviewDialog(QDialog):
 class PitchChangerDialog(QDialog):
     """Compact, live pitch-shift controls with selectable display units."""
 
+    QUICK_PITCH_PRESETS = {
+        "Semitones": (
+            ("-12 st", -12), ("-7 st", -7), ("-5 st", -5), ("-2 st", -2),
+            ("Reset", 0), ("+2 st", 2), ("+5 st", 5), ("+7 st", 7), ("+12 st", 12),
+        ),
+        "Octaves": (
+            ("-2 oct", -2), ("-1 oct", -1), ("-0.5 oct", -0.5), ("-0.25 oct", -0.25),
+            ("Reset", 0), ("+0.25 oct", 0.25), ("+0.5 oct", 0.5), ("+1 oct", 1), ("+2 oct", 2),
+        ),
+        "Percent": (
+            ("50%", 50), ("75%", 75), ("90%", 90), ("95%", 95), ("Reset", 100),
+            ("105%", 105), ("110%", 110), ("125%", 125), ("150%", 150),
+        ),
+    }
+
     def __init__(self, semitones, mode, on_change, parent=None, *, speed_percent=100,
                  link_pitch_to_speed=False, on_speed_change=None,
                  on_link_change=None):
@@ -240,9 +255,9 @@ class PitchChangerDialog(QDialog):
         self.value_spin.setToolTip("Pitch shift in semitones")
 
         self.slider = QSlider(Qt.Orientation.Horizontal)
-        self.slider.setRange(-240, 240)
+        self.slider.setRange(-2400, 2400)
         self.slider.setSingleStep(1)
-        self.slider.setPageStep(10)
+        self.slider.setPageStep(100)
         self.slider.setToolTip("Drag to shift pitch; each major interval is one semitone")
 
         extremes = QHBoxLayout()
@@ -257,27 +272,19 @@ class PitchChangerDialog(QDialog):
         quick_layout = QHBoxLayout()
         quick_layout.setSpacing(6)
         self.quick_pitch_buttons = []
-        for label, shift in (("-12", -12), ("-7", -7), ("-5", -5), ("-2", -2),
-                             ("Reset", 0), ("+2", 2), ("+5", 5), ("+7", 7), ("+12", 12)):
-            button = QPushButton(label)
-            button.setToolTip("Reset to concert pitch" if shift == 0 else f"Set to {shift:+d} semitones")
-            button.clicked.connect(lambda _checked=False, value=shift: self.set_value(value))
+        for index in range(len(self.QUICK_PITCH_PRESETS["Semitones"])):
+            button = QPushButton()
+            button.clicked.connect(
+                lambda _checked=False, preset_index=index: self._apply_quick_pitch_preset(preset_index)
+            )
             quick_layout.addWidget(button)
             self.quick_pitch_buttons.append(button)
 
         fine_layout = QHBoxLayout()
-        down_button = QToolButton()
-        down_button.setText("-")
-        down_button.setToolTip("Lower by 0.1 semitone")
-        up_button = QToolButton()
-        up_button.setText("+")
-        up_button.setToolTip("Raise by 0.1 semitone")
         self.fine_tune_label = QLabel("Fine tune")
         fine_layout.addWidget(self.fine_tune_label)
         fine_layout.addStretch(1)
-        fine_layout.addWidget(down_button)
         fine_layout.addWidget(self.value_spin)
-        fine_layout.addWidget(up_button)
 
         close_button = QPushButton("Done")
         close_button.clicked.connect(self.accept)
@@ -309,14 +316,13 @@ class PitchChangerDialog(QDialog):
             self._on_speed_change = lambda _value: None
         self._on_link_change = on_link_change
         self.link_pitch_checkbox.toggled.connect(self._on_link_toggled)
-        down_button.clicked.connect(lambda: self.set_value(self.slider.value() / 10.0 - 0.1))
-        up_button.clicked.connect(lambda: self.set_value(self.slider.value() / 10.0 + 0.1))
+        self._update_quick_pitch_buttons(self.unit_combo.currentText())
         self.set_value(semitones, notify=False)
 
         self._pitch_controls = [
             self.units_label, self.unit_combo, self.readout, self.interval,
-            self.slider, low, high, self.fine_tune_label, down_button,
-            self.value_spin, up_button, *self.quick_pitch_buttons,
+            self.slider, low, high, self.fine_tune_label, self.value_spin,
+            *self.quick_pitch_buttons,
         ]
         self._set_pitch_controls_enabled(not link_pitch_to_speed)
 
@@ -339,10 +345,10 @@ class PitchChangerDialog(QDialog):
         self._on_speed_change(value)
 
     def set_value(self, value, notify=True):
-        value = max(-24.0, min(24.0, round(float(value), 1)))
+        value = max(-24.0, min(24.0, round(float(value), 2)))
         self.slider.blockSignals(True)
         self.value_spin.blockSignals(True)
-        self.slider.setValue(round(value * 10))
+        self.slider.setValue(round(value * 100))
         self.value_spin.setValue(self._value_in_units(value))
         self.slider.blockSignals(False)
         self.value_spin.blockSignals(False)
@@ -351,7 +357,7 @@ class PitchChangerDialog(QDialog):
             self._on_change(self.unit_combo.currentText(), self._value_in_units(value))
 
     def _from_slider(self, value):
-        self.set_value(value / 10.0)
+        self.set_value(value / 100.0)
 
     def _from_spin(self, value):
         mode = self.unit_combo.currentText()
@@ -365,7 +371,30 @@ class PitchChangerDialog(QDialog):
 
     def _on_units_changed(self, mode):
         self._configure_value_spin()
-        self.set_value(self.slider.value() / 10.0)
+        self._update_quick_pitch_buttons(mode)
+        self.set_value(self.slider.value() / 100.0)
+
+    def _update_quick_pitch_buttons(self, mode):
+        presets = self.QUICK_PITCH_PRESETS[mode]
+        for button, (label, value) in zip(self.quick_pitch_buttons, presets):
+            button.setText(label)
+            if label == "Reset":
+                button.setToolTip("Reset to concert pitch")
+            elif mode == "Percent":
+                button.setToolTip(f"Set pitch frequency to {value}% of the original")
+            else:
+                button.setToolTip(f"Set pitch shift to {value:+g} {mode.lower()}")
+
+    def _apply_quick_pitch_preset(self, index):
+        mode = self.unit_combo.currentText()
+        _label, value = self.QUICK_PITCH_PRESETS[mode][index]
+        if mode == "Octaves":
+            semitones = value * 12.0
+        elif mode == "Percent":
+            semitones = 12.0 * math.log2(value / 100.0)
+        else:
+            semitones = value
+        self.set_value(semitones)
 
     def _value_in_units(self, semitones):
         mode = self.unit_combo.currentText()
@@ -406,7 +435,7 @@ class PitchChangerDialog(QDialog):
         elif mode == "Percent":
             self.readout.setText(f"{display_value:.1f}%")
         else:
-            self.readout.setText(f"{display_value:+.1f} st")
+            self.readout.setText(f"{display_value:+.2f} st")
         rounded = round(value)
         names = {
             0: "Concert pitch",
@@ -425,7 +454,7 @@ class PitchChangerDialog(QDialog):
         detail = f"{interval}"
         if cents:
             detail += f" ({cents:+d} cents)"
-        self.interval.setText(f"{detail} ({value:+.1f} st) | {ratio:.3f}x frequency")
+        self.interval.setText(f"{detail} ({value:+.2f} st) | {ratio:.3f}x frequency")
 
 
 class LibraryScanWorker(QThread):
@@ -437,4 +466,3 @@ class LibraryScanWorker(QThread):
 
     def run(self):
         self.completed.emit(scan_folders(self.folders))
-
