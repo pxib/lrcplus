@@ -32,6 +32,17 @@ datas = [
     (str(PROJECT_ROOT / "core" / "dependency_probe.py"), "core"),
 ]
 
+updater_exe = PROJECT_ROOT / "dist" / "LRCPlusUpdater.exe"
+release_manifest = PROJECT_ROOT / "build" / "lrcplus-update.json"
+if not updater_exe.is_file() or not release_manifest.is_file():
+    raise FileNotFoundError(
+        "Build the standalone updater and release manifest first with tools/build_release.py."
+    )
+datas.extend([
+    (str(updater_exe), "."),
+    (str(release_manifest), "."),
+])
+
 # Preserve versions so the dependency manager can protect app-provided libraries.
 for line in (PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines():
     if line.strip() and not line.lstrip().startswith("#"):

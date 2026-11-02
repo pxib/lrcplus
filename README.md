@@ -70,3 +70,6 @@ access them. Availability, previews, and quotas depend on your Musixmatch access
 The preview preserves the supplied text and copyright information. **Use Selected
 Lyrics** saves an `.lrc` (synced) or `.txt` (plain) file next to the current audio
 file, including Musixmatch attribution, and loads it into the player.
+
+Windows release builds and the automatic update process are documented in
+[docs/updating.md](docs/updating.md).

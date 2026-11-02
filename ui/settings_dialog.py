@@ -1,4 +1,4 @@
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QDateTime, QLocale, QPoint, Qt, Signal
 from PySide6.QtMultimedia import QMediaDevices
 from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPolygon
 from PySide6.QtWidgets import (
@@ -167,6 +167,8 @@ class PluginSettingsDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
+    check_updates_requested = Signal()
+
     def __init__(
         self,
         folders,
@@ -179,6 +181,7 @@ class SettingsDialog(QDialog):
         current_file=None,
         plugin_manager=None,
         parent=None,
+        update_settings=None,
     ):
         super().__init__(parent)
 
@@ -202,6 +205,7 @@ class SettingsDialog(QDialog):
         self.local_overrides = dict(local_overrides or {})
         self.current_file = current_file
         self.plugin_manager = plugin_manager
+        self.update_settings = dict(update_settings or {})
         self.plugin_toggles = {}
 
         _apply_settings_dialog_style(
@@ -234,6 +238,60 @@ class SettingsDialog(QDialog):
             bool(self.startup_settings.get("restore_playlist", False))
         )
         general_layout.addWidget(self.restore_playlist_checkbox)
+
+        updates_heading = QLabel("<b>Updates</b>")
+        general_layout.addWidget(updates_heading)
+        self.automatic_update_checkbox = QCheckBox(
+            "Check for updates automatically"
+        )
+        self.automatic_update_checkbox.setChecked(
+            bool(self.update_settings.get("automatic_check", True))
+        )
+        general_layout.addWidget(self.automatic_update_checkbox)
+
+        update_channel_row = QHBoxLayout()
+        update_channel_row.addWidget(QLabel("Update channel"))
+        self.update_channel_combo = QComboBox()
+        self.update_channel_combo.addItem("Stable", "stable")
+        self.update_channel_combo.addItem("Prerelease", "prerelease")
+        channel = self.update_settings.get("channel", "stable")
+        self.update_channel_combo.setCurrentIndex(
+            max(0, self.update_channel_combo.findData(channel))
+        )
+        update_channel_row.addWidget(self.update_channel_combo)
+        update_channel_row.addStretch(1)
+        general_layout.addLayout(update_channel_row)
+        prerelease_note = QLabel(
+            "Prerelease builds are experimental and may contain bugs."
+        )
+        prerelease_note.setWordWrap(True)
+        general_layout.addWidget(prerelease_note)
+
+        update_actions = QHBoxLayout()
+        self.check_updates_button = QPushButton("Check for Updates")
+        self.check_updates_button.clicked.connect(
+            self.check_updates_requested.emit
+        )
+        update_actions.addWidget(self.check_updates_button)
+        last_checked = str(self.update_settings.get("last_checked", "") or "")
+        if last_checked:
+            checked_at = QDateTime.fromString(
+                last_checked, Qt.DateFormat.ISODateWithMs
+            )
+            if not checked_at.isValid():
+                checked_at = QDateTime.fromString(
+                    last_checked, Qt.DateFormat.ISODate
+                )
+            last_checked_text = (
+                QLocale().toString(checked_at.toLocalTime(), QLocale.FormatType.ShortFormat)
+                if checked_at.isValid() else "Unknown"
+            )
+        else:
+            last_checked_text = "Never"
+        self.last_checked_label = QLabel(f"Last checked: {last_checked_text}")
+        self.last_checked_label.setWordWrap(True)
+        update_actions.addWidget(self.last_checked_label, 1)
+        general_layout.addLayout(update_actions)
 
         general_layout.addStretch()
 
@@ -1640,6 +1698,13 @@ class SettingsDialog(QDialog):
         return {
             "remember_window": self.remember_window_checkbox.isChecked(),
             "restore_playlist": self.restore_playlist_checkbox.isChecked(),
+        }
+
+    def get_update_settings(self):
+        return {
+            **self.update_settings,
+            "automatic_check": self.automatic_update_checkbox.isChecked(),
+            "channel": self.update_channel_combo.currentData(),
         }
 
 
