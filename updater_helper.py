@@ -145,6 +145,27 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _ensure_installer_files(
+    staged_root: Path,
+    install_dir: Path,
+    version: str,
+    architecture: str,
+) -> None:
+    updater_path = staged_root / "LRCPlusUpdater.exe"
+    if not updater_path.is_file():
+        installed_updater = install_dir / "LRCPlusUpdater.exe"
+        if installed_updater.is_symlink() or not installed_updater.is_file():
+            raise UpdateError("The update package has no updater and the installed updater is unavailable.")
+        shutil.copy2(installed_updater, updater_path)
+
+    manifest_path = staged_root / "lrcplus-update.json"
+    if not manifest_path.exists():
+        manifest_path.write_text(json.dumps({
+            "version": version,
+            "architecture": architecture,
+        }, indent=2), encoding="utf-8")
+
+
 def _process_image_path(process_id: int) -> str:
     if os.name != "nt":
         raise UpdateError("The standalone updater is supported on Windows only.")
@@ -373,6 +394,9 @@ def install_update(request_path: Path, *, wait_for_process: bool = True) -> Path
     verified_root = extract_update_archive(
         request["archive"], verified_parent,
         expected_version=version, architecture=request["architecture"],
+    )
+    _ensure_installer_files(
+        verified_root, install_dir, version, request["architecture"]
     )
     _copy_preserved_files(install_dir, verified_root)
 

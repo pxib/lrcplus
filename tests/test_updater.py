@@ -161,6 +161,30 @@ def test_prerelease_lookup_selects_newest_version_including_stable(monkeypatch):
     assert result.prerelease is True
 
 
+def test_exp_tag_compares_as_prerelease_and_matches_unsuffixed_asset(monkeypatch, tmp_path):
+    release_data = _release("v2026-11-02.5")
+    release_data["tag_name"] = "v2026-11-02.5-exp"
+    release_data["prerelease"] = True
+    release_data["assets"][0]["browser_download_url"] = (
+        "https://github.com/pxib/lrcplus/releases/download/v2026-11-02.5-exp/"
+        "LRCPlus-v2026-11-02.5-Windows-x64.zip"
+    )
+    monkeypatch.setattr(updater, "_github_json", lambda _url: [release_data])
+
+    release = updater.find_update("2026-11-02.3", "prerelease", "x64")
+
+    assert release is not None
+    assert release.version == updater.parse_version("2026-11-02.5-exp")
+    assert release.version < updater.parse_version("2026-11-02.5")
+    assert release.package_version == "2026-11-02.5"
+    request = updater.build_handoff_request(
+        tmp_path / "LRCPlus", release, "x64", 1234,
+        current_version="2026-11-02.3",
+    )
+    assert request["version"] == "2026-11-02.5"
+    assert request["asset_name"] == "LRCPlus-v2026-11-02.5-Windows-x64.zip"
+
+
 def test_update_lookup_never_offers_same_or_older_version(monkeypatch):
     monkeypatch.setattr(updater, "_github_json", lambda _url: _release("v2026-11-01.4"))
 
@@ -193,6 +217,21 @@ def test_release_asset_must_match_tag_and_architecture():
 
     with pytest.raises(updater.UpdateError):
         updater._to_release(release_data, "x64")
+
+
+def test_updater_fallback_prefers_staged_then_uses_installed_helper(tmp_path):
+    staged = tmp_path / "staged" / "LRCPlus"
+    installed = tmp_path / "installed" / "LRCPlus"
+    staged.mkdir(parents=True)
+    installed.mkdir(parents=True)
+    installed_helper = installed / "LRCPlusUpdater.exe"
+    installed_helper.write_bytes(b"installed helper")
+
+    assert updater.find_updater_executable(staged, installed) == installed_helper
+
+    staged_helper = staged / "LRCPlusUpdater.exe"
+    staged_helper.write_bytes(b"staged helper")
+    assert updater.find_updater_executable(staged, installed) == staged_helper
 
 
 def test_update_settings_persist_without_replacing_other_preferences(tmp_path, monkeypatch):
@@ -351,6 +390,35 @@ def test_extract_valid_update_package(tmp_path):
     assert (extracted / "_internal" / "runtime.dll").exists()
 
 
+def test_extract_accepts_exact_versioned_legacy_release_root(tmp_path):
+    root = "LRCPlus-v2026-11-02.0-Windows-x64"
+    archive_path = tmp_path / "legacy-layout.zip"
+    archive_path.write_bytes(_zip_bytes([
+        (f"{root}/LRCPlus.exe", b"application"),
+        (f"{root}/_internal/runtime.dll", b"runtime"),
+    ]))
+
+    extracted = updater.extract_update_archive(
+        archive_path, tmp_path / "stage", expected_version="2026-11-02.0", architecture="x64"
+    )
+
+    assert (extracted / "LRCPlus.exe").read_bytes() == b"application"
+    assert not (extracted / "LRCPlusUpdater.exe").exists()
+    assert not (extracted / "lrcplus-update.json").exists()
+
+
+def test_extract_rejects_unexpected_versioned_root(tmp_path):
+    archive_path = tmp_path / "wrong-root.zip"
+    archive_path.write_bytes(_zip_bytes([
+        ("LRCPlus-v2026-11-02.1-Windows-x64/LRCPlus.exe", b"application"),
+    ]))
+
+    with pytest.raises(updater.UpdateError, match="unsafe path"):
+        updater.extract_update_archive(
+            archive_path, tmp_path / "stage", expected_version="2026-11-02.0", architecture="x64"
+        )
+
+
 @pytest.mark.parametrize("extra", [
     [("LRCPlus/../../outside.txt", b"escape")],
     [("LRCPlus/lrcplus.exe", b"case collision")],
@@ -432,7 +500,7 @@ def test_download_cancellation_removes_partial_file(tmp_path, monkeypatch):
     assert not (tmp_path / "release.zip.part").exists()
 
 
-def _update_transaction(tmp_path, monkeypatch):
+def _update_transaction(tmp_path, monkeypatch, *, legacy_layout=False):
     data_root = tmp_path / "user-data"
     monkeypatch.setenv("LRCPLUS_DATA_DIR", str(data_root))
     transaction = data_root / "updates" / "transactions" / uuid.uuid4().hex
@@ -440,13 +508,22 @@ def _update_transaction(tmp_path, monkeypatch):
     install_dir = tmp_path / "install" / "LRCPlus"
     (install_dir / "plugins" / "community" / "custom_plugin").mkdir(parents=True)
     (install_dir / "LRCPlus.exe").write_bytes(b"old application")
+    (install_dir / "LRCPlusUpdater.exe").write_bytes(b"old trusted updater")
     (install_dir / "lrc_player_settings.json").write_text("{}", encoding="utf-8")
     (install_dir / "user-notes.txt").write_text("keep me", encoding="utf-8")
     (install_dir / "plugins" / "community" / "custom_plugin" / "plugin.py").write_text(
         "USER_PLUGIN = True", encoding="utf-8"
     )
     archive_path = transaction / "release.zip"
-    archive_path.write_bytes(_zip_bytes(_valid_package_files()))
+    package_files = _valid_package_files()
+    if legacy_layout:
+        root = "LRCPlus-v2026-11-02.0-Windows-x64"
+        package_files = [
+            (f"{root}/{name.split('/', 1)[1]}", content)
+            for name, content in package_files
+            if not name.casefold().endswith(("lrcplusupdater.exe", "lrcplus-update.json"))
+        ]
+    archive_path.write_bytes(_zip_bytes(package_files))
     request = {
         "install_dir": str(install_dir),
         "version": "2026-11-02.0",
@@ -488,6 +565,26 @@ def test_standalone_installer_preserves_user_files_and_retains_backup(tmp_path, 
     assert (install_dir / "plugins" / "core" / "lyrics_display" / "plugin.py").read_bytes() == b"new core plugin"
     assert (install_dir.parent / f"LRCPlus.backup-{transaction.name}" / "LRCPlus.exe").read_bytes() == b"old application"
     assert json.loads((transaction / "journal.json").read_text(encoding="utf-8"))["phase"] == "healthy"
+
+
+def test_standalone_installer_reuses_existing_updater_for_legacy_release(tmp_path, monkeypatch):
+    _data_root, transaction, install_dir, request_path = _update_transaction(
+        tmp_path, monkeypatch, legacy_layout=True
+    )
+    monkeypatch.setattr(updater_helper, "_schedule_recovery", lambda _transaction: None)
+    monkeypatch.setattr(updater_helper, "_remove_recovery", lambda _transaction_id: None)
+    monkeypatch.setattr(
+        updater_helper.subprocess, "Popen",
+        lambda _args, **_kwargs: (
+            (transaction / "health.json").write_text("{}", encoding="utf-8") or _StartedProcess()
+        ),
+    )
+
+    updater_helper.install_update(request_path, wait_for_process=False)
+
+    assert (install_dir / "LRCPlusUpdater.exe").read_bytes() == b"old trusted updater"
+    manifest = json.loads((install_dir / "lrcplus-update.json").read_text(encoding="utf-8"))
+    assert manifest == {"version": "2026-11-02.0", "architecture": "x64"}
 
 
 def test_standalone_installer_rolls_back_if_new_app_cannot_launch(tmp_path, monkeypatch):

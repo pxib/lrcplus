@@ -30,7 +30,7 @@ GITHUB_REPOSITORY = "pxib/lrcplus"
 API_ROOT = f"https://api.github.com/repos/{GITHUB_REPOSITORY}"
 MAX_ASSET_SIZE = 2 * 1024**3
 _DATE_VERSION = re.compile(
-    r"^v?(\d{4})-(\d{2})-(\d{2})\.(\d+)((?:a|b|rc)\d+|\.post\d+|\.dev\d+)?$",
+    r"^v?(\d{4})-(\d{2})-(\d{2})\.(\d+)((?:a|b|rc)\d+|\.post\d+|\.dev\d+|-exp)?$",
     re.IGNORECASE,
 )
 _SHA256 = re.compile(r"^sha256:([0-9a-f]{64})$", re.IGNORECASE)
@@ -66,6 +66,17 @@ class Release:
     html_url: str
     asset: ReleaseAsset
 
+    @property
+    def package_version(self) -> str:
+        return package_version_from_tag(self.tag)
+
+
+def package_version_from_tag(tag: str) -> str:
+    if not isinstance(tag, str):
+        raise UpdateError("The release version is not text.")
+    version = tag[1:] if tag[:1].lower() == "v" else tag
+    return version[:-4] if version.casefold().endswith("-exp") else version
+
 
 def build_handoff_request(
     install_dir: Path,
@@ -76,8 +87,8 @@ def build_handoff_request(
     current_version: str = APP_VERSION,
 ) -> dict:
     """Build the exact validated request consumed by the standalone helper."""
-    version = release.tag[1:] if release.tag[:1].lower() == "v" else release.tag
-    target = parse_version(version)
+    version = release.package_version
+    target = parse_version(release.tag)
     current = parse_version(current_version)
     if target <= current:
         raise UpdateError("The update version must be newer than the installed version.")
@@ -98,6 +109,15 @@ def build_handoff_request(
         "size": release.asset.size,
         "process_id": process_id,
     }
+
+
+def find_updater_executable(staged_root: Path, install_root: Path) -> Path:
+    """Use the staged updater when present, otherwise the trusted installed one."""
+    for root in (Path(staged_root), Path(install_root)):
+        candidate = root / "LRCPlusUpdater.exe"
+        if candidate.is_file() and not candidate.is_symlink():
+            return candidate
+    raise UpdateError("The update package and current installation both lack LRCPlusUpdater.exe.")
 
 
 def log_update_event(message: str) -> None:
@@ -152,7 +172,8 @@ def parse_version(value: str) -> Version:
             date(int(year), int(month), int(day))
         except ValueError as error:
             raise UpdateError(f"Unsupported release version: {value!r}.") from error
-        raw = f"{year}.{int(month)}.{int(day)}.{int(revision)}{suffix or ''}"
+        version_suffix = ".dev0" if suffix and suffix.casefold() == "-exp" else suffix or ""
+        raw = f"{year}.{int(month)}.{int(day)}.{int(revision)}{version_suffix}"
     elif raw[:1].lower() == "v":
         raw = raw[1:]
     try:
@@ -211,8 +232,10 @@ def _select_asset(release: dict, architecture: str) -> ReleaseAsset:
     if not isinstance(assets, list):
         raise UpdateError("The release has no valid application assets.")
     tag = release.get("tag_name")
+    if not isinstance(tag, str):
+        raise UpdateError("GitHub returned a release without a valid tag.")
     parse_version(tag)
-    tag_text = tag[1:] if tag[:1].lower() == "v" else tag
+    tag_text = package_version_from_tag(tag)
     expected_name = f"LRCPlus-v{tag_text}-Windows-{architecture}.zip"
     matches = []
     for item in assets:
@@ -247,6 +270,8 @@ def _to_release(data: dict, architecture: str) -> Release:
     if not isinstance(data.get("prerelease", False), bool):
         raise UpdateError("GitHub returned an invalid prerelease status.")
     tag = data.get("tag_name")
+    if not isinstance(tag, str):
+        raise UpdateError("GitHub returned a release without a valid tag.")
     version = parse_version(tag)
     name = data.get("name")
     body = data.get("body")
@@ -377,12 +402,15 @@ def extract_update_archive(
     expected_version: str,
     architecture: str,
 ) -> Path:
-    """Validate and extract the documented LRCPlus/<files> release layout."""
+    """Validate supported release roots and extract into a normalized LRCPlus folder."""
     archive = Path(archive)
     staging_parent = Path(staging_parent).resolve()
     if architecture not in {"x64", "arm64"}:
         raise UpdateError("The update package architecture is unsupported.")
     expected = parse_version(expected_version)
+    version_text = expected_version[1:] if expected_version[:1].lower() == "v" else expected_version
+    versioned_root = f"LRCPlus-v{version_text}-Windows-{architecture}"
+    allowed_roots = {"LRCPlus", versioned_root}
     staging_parent.mkdir(parents=True, exist_ok=True)
     app_root = staging_parent / "LRCPlus"
     if app_root.exists():
@@ -399,15 +427,19 @@ def extract_update_archive(
 
             seen = set()
             files = set()
+            archive_root = None
             for item in entries:
                 raw_name = item.filename.replace("\\", "/")
                 path = PurePosixPath(raw_name)
                 parts = path.parts
+                raw_parts = raw_name.rstrip("/").split("/")
                 if (not raw_name or "\x00" in raw_name or path.is_absolute()
-                        or not parts or parts[0] != "LRCPlus"
-                        or any(part in {"", ".", ".."} for part in parts)
+                        or not parts or parts[0] not in allowed_roots
+                        or (archive_root is not None and parts[0] != archive_root)
+                        or any(part in {"", ".", ".."} for part in raw_parts)
                         or any(":" in part for part in parts)):
                     raise UpdateError("The update archive contains an unsafe path.")
+                archive_root = parts[0]
                 key = "/".join(parts).casefold()
                 if key in seen:
                     raise UpdateError("The update archive contains duplicate or conflicting paths.")
@@ -423,7 +455,9 @@ def extract_update_archive(
                 if not item.is_dir():
                     files.add("/".join(parts[1:]).casefold())
 
-            required = {"lrcplus.exe", "lrcplusupdater.exe", "lrcplus-update.json"}
+            required = {"lrcplus.exe"}
+            if archive_root == "LRCPlus":
+                required.update({"lrcplusupdater.exe", "lrcplus-update.json"})
             if not required.issubset(files):
                 raise UpdateError("The update archive is missing required application files.")
 
@@ -444,11 +478,12 @@ def extract_update_archive(
                     shutil.copyfileobj(source, output, length=1024 * 1024)
 
         manifest_path = app_root / "lrcplus-update.json"
-        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if (not isinstance(manifest_data, dict)
-                or manifest_data.get("version") != expected_version
-                or manifest_data.get("architecture") != architecture):
-            raise UpdateError("The update package version or architecture did not match the release.")
+        if manifest_path.exists():
+            manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if (not isinstance(manifest_data, dict)
+                    or manifest_data.get("version") != expected_version
+                    or manifest_data.get("architecture") != architecture):
+                raise UpdateError("The update package version or architecture did not match the release.")
         return app_root
     except UpdateError:
         shutil.rmtree(app_root, ignore_errors=True)

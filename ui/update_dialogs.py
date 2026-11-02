@@ -54,7 +54,7 @@ class UpdateDownloadWorker(QThread):
         if match is None:
             raise UpdateError("The release archive has an unsupported platform name.")
         self.architecture = match.group(1).lower()
-        self.version_text = release.tag[1:] if release.tag[:1].lower() == "v" else release.tag
+        self.version_text = release.package_version
 
     def cancel(self):
         self.cancel_event.set()

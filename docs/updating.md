@@ -44,11 +44,11 @@ python tools/build_release.py
 
 The script builds the one-file standard-library updater first, generates the version/architecture manifest, builds the existing one-folder application, and creates the ZIP and checksum under `dist/release/`. Review and test both assets, then upload them to a GitHub Release in `pxib/lrcplus` whose tag is `APP_VERSION` (optionally prefixed with `v`). Mark ordinary releases stable and experimental releases as prereleases. After uploading, verify that GitHub's release API reports a non-empty `sha256:...` `digest` for the ZIP asset; otherwise the client will reject the release.
 
-The release ZIP must preserve the top-level `LRCPlus/` directory. Do not upload source archives as application assets. The release API currently returns no published releases, so the first updater-enabled build must be distributed manually to existing users; their currently installed versions do not contain this updater code. The built distribution includes the updater for subsequent in-app updates.
+The release ZIP must preserve the top-level `LRCPlus/` directory. Do not upload source archives as application assets. Existing installations without the updater must receive an updater-enabled build manually once; subsequent compatible releases can update in-app.
 
 ## Version tags
 
-PEP 440 versions are accepted, including `v` prefixes. LRCPlus's `YYYY-MM-DD.N` form is normalized to the equivalent numeric PEP 440 release `YYYY.MM.DD.N`; prerelease suffixes such as `rc1`, `a1`, or `b1` retain their ordering. Invalid calendar dates and ambiguous identifiers are rejected. Stable checks use GitHub's latest-stable endpoint. Prerelease checks scan published releases and select the greatest compatible version, including stable releases. Equal or older versions are never offered.
+PEP 440 versions are accepted, including `v` prefixes. LRCPlus's `YYYY-MM-DD.N` form is normalized to the equivalent numeric PEP 440 release `YYYY.MM.DD.N`; prerelease suffixes such as `rc1`, `a1`, and `b1` retain their ordering. The exact `-exp` suffix is treated as a `.dev0` prerelease for comparison, so tag `v2026-11-02.5-exp` is newer than `.3` but older than final `.5`. Since release assets may omit `-exp`, the updater matches the archive and manifest using package version `2026-11-02.5` while retaining the full tag for release ordering and display. Invalid calendar dates and ambiguous identifiers are rejected. Stable checks use GitHub's latest-stable endpoint. Prerelease checks scan published releases and select the greatest compatible version, including stable releases. Equal or older versions are never offered.
 
 ## Preservation and recovery
 

@@ -64,7 +64,11 @@ from core.settings import (
     save_music_library,
 )
 from core.recent import get_recent_songs
-from core.updater import log_update_event
+from core.updater import (
+    build_handoff_request,
+    find_updater_executable,
+    log_update_event,
+)
 from core.music_library import LibraryTrack, read_track, scan_folders
 from lyrics.widgets import FuriganaWidget, ScrollingLyricsWidget
 from lyrics.waveform import WaveformWidget, find_ffmpeg
@@ -876,6 +880,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             root.addWidget(self.library_lyrics_status)
 
             self.library_folder_label = QLabel()
+            self.library_folder_label.setObjectName("libraryFolderLabel")
             self.library_folder_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             root.addWidget(self.library_folder_label)
 
@@ -1039,7 +1044,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                     background: @RAISED@;
                 }
                 QPushButton#workspaceButton:checked {
-                    color: @ACCENT_TEXT@;
+                    color: @TEXT@;
                     background: @ACCENT_SOFT@;
                     border-color: @ACCENT_BORDER@;
                 }
@@ -1068,6 +1073,9 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                     padding: 8px 10px;
                     selection-background-color: @ACCENT@;
                 }
+                QLabel#libraryFolderLabel {
+                    color: @TEXT@;
+                }
                 QTreeWidget#libraryTable {
                     color: @TEXT@;
                     background: @SURFACE@;
@@ -1080,7 +1088,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                     padding: 4px 3px;
                 }
                 QTreeWidget#libraryTable::item:selected {
-                    color: @ACCENT_TEXT@;
+                    color: @TEXT@;
                     background: @ACCENT_SOFT@;
                 }
                 QTreeWidget#libraryTable QHeaderView::section {
@@ -2472,23 +2480,17 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             if self._close_after_update_cancel:
                 return
             try:
-                helper_source = staged_root / "LRCPlusUpdater.exe"
-                helper_path = transaction / "LRCPlusUpdater.exe"
-                shutil.copy2(helper_source, helper_path)
                 install_root = (
                     Path(sys.executable).resolve().parent
                     if getattr(sys, "frozen", False)
                     else Path(__file__).resolve().parents[1]
                 )
-                version_text = release.tag[1:] if release.tag[:1].lower() == "v" else release.tag
-                request = {
-                    "install_dir": str(install_root),
-                    "version": version_text,
-                    "architecture": worker.architecture,
-                    "sha256": release.asset.sha256,
-                    "size": release.asset.size,
-                    "process_id": os.getpid(),
-                }
+                helper_source = find_updater_executable(staged_root, install_root)
+                helper_path = transaction / "LRCPlusUpdater.exe"
+                shutil.copy2(helper_source, helper_path)
+                request = build_handoff_request(
+                    install_root, release, worker.architecture, os.getpid()
+                )
                 request_path = transaction / "request.json"
                 atomic_write_text(request_path, json.dumps(request, indent=2))
                 flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)

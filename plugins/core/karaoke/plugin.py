@@ -21,7 +21,7 @@ class _DisplayVisibilityFilter(QObject):
 
 class KaraokePlugin:
     name = "Karaoke"
-    version = "0.1.0"
+    version = "1.0.0"
     description = "Highlights timed lyric segments in the main player."
 
     def on_load(self, context):
