@@ -1,0 +1,74 @@
+lrcplus
+
+聽歌程序
+
+我唔識講話
+
+## LRCLIB
+
+LRCPlus 同 LRCLIB 合作，用嚟搜尋同埋取得同步同埋純文字歌詞。API 整合獲得 LRCLIB 嘅 API 使用條款授權。
+
+[查看官方 API 授權](https://lrclib.net/developers/authorizations/zTywhWzql6kFvrFMcWui-xuV0qYCVO3FzKQKPwZGf7U)
+
+## 靈感
+
+多謝 [foobar2000](https://www.foobar2000.org/) 同 [OpenLyrics](https://github.com/jacquesh/foo_openlyrics) 嘅 foobar2000 [元件](https://www.foobar2000.org/components/view/foo_openlyrics)，令呢件事變成可能。<3
+
+## 外掛程式開發
+
+LRCPlus 支援各種外掛程式，可以喺唔修改核心程式碼嘅情況下擴充播放器功能。
+
+**目前 API (今のAPI):** v4 (支援 v1–v4)
+
+外掛程式可以：
+- 監聽同發送應用程式事件。
+- 控制播放（播放、暫停、跳轉）。
+- 存取同分析歌詞。
+- 新增自訂閱讀／標音（羅馬字）供應者。
+- 新增選單動作同播放按鈕。
+- 建立自訂設定介面。
+- 儲存持久性設定。
+- 同其他外掛程式共享服務。
+- 匯入音訊檔案並附加歌詞 (v4)。
+- 宣告由 LRCPlus 管理嘅 Python 依賴項目。
+
+**新手上路：** 建立一個包含 `plugin.py` 嘅外掛程式資料夾，入面需要有 `PLUGIN_CLASS`。建議同時提供 `manifest.json`。
+
+**依賴項目：** LRCPlus 可以安裝同管理外掛程式嘅依賴項目、解決版本衝突，仲識得喺安裝失敗時自動復原。
+
+**相容性：** 繼續支援舊版外掛程式，當外掛程式卸載時，其專屬資源亦會自動清理。
+
+完整文件請參閱 [PLUGIN_API.md](https://github.com/pxib/lrcplus/blob/release/PLUGIN_API.md)。
+
+## LRCX 格式
+
+LRCX (`.lrcx`) 係 LRC 嘅升級版，支援卡拉OK風格嘅字詞時間軸、振假名（注音）、文字格式設定，以及多行顯示，同時保持同一般歌詞嘅相容性。
+
+### 主要功能
+
+- 行時間戳記：`[00:12.500]` 決定歌詞行由邊度開始。
+- 卡拉OK時間軸：`<00:12.800>` 將個別字詞或片段同音樂同步。
+- 旁註／振假名（Ruby / Furigana）：`{金曜日|きんようび}` 喺文字上方顯示讀音。
+- 文字格式：支援粗體、斜體、刪除線、底線以及各種樣式嘅組合。
+- 引用區塊：`> ` 加上帶有垂直引號欄嘅縮排歌詞。
+- 視覺換行：`{\n}` 將歌詞分拆成多行顯示，而唔會建立新嘅時間戳記。
+- 明確結束時間：空白嘅時間戳記可以標示字詞幾時結束、保留停頓，或者決定一行歌詞幾時消失。
+- 中繼資料：支援傳統 LRC 標籤，例如 `[ar:]`、`[ti:]` 同 `[al:]`。
+
+### 範例
+
+```
+[00:12.500]<00:12.500>**{君|きみ}**<00:13.000>の<00:13.500>*声*<00:14.000>{届|とど}かない<00:15.200>
+```
+
+### 相容性
+
+原本嘅 `.lrc` 檔案仍然用到。當 `.lrc` 同 `.lrcx` 同時存在時，LRCPlus 會自動優先採用 `.lrcx`。現有嘅歌詞顯示亦會保持相容。
+
+詳情請參閱 [文件](https://github.com/pxib/lrcplus/blob/release/LRCX_SPEC.md)。
+
+## 結局
+呢個專案我已經搞咗大約 3 個月喇。當初我有個想法，想喺 OpenLyrics 上面加入日文振假名，於是就去安裝 Visual Studio IDE 同埋 [foobar2000 SDK](https://www.foobar2000.org/SDK)。點知，*佢嘅運作方式同我想像中完全唔同。* 版本唔夾、缺少依賴項目，真係勁麻煩。（我又唔識 C++。）
+所以我索性解除安裝，仲心諗：*「如果我自己用 Python 寫一個會點呢？」* 於是就整咗個「Furigana Player」。呢個係第一代原型，你只要[喺主畫面嘅 LRCPlus 文字上面點擊 7 次](https://github.com/pxib/lrcplus/blob/release/assets/apps/furiganaplayer.py)就可以去到嗰度！之後我一路繼續開發，就去到今日呢個地步喇。:3
+
+我大概會一路繼續做落去，直到自己滿意為止，不過暫時……大家就盡情享受呢個更新啦！:D
