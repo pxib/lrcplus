@@ -101,10 +101,10 @@ def test_workspace_shortcuts_switch_between_library_and_lyrics(workspace, qapp):
     window.show()
     qapp.processEvents()
 
-    window.shortcut_lyrics.activated()
+    window.shortcut_lyrics.activated.emit()
     qapp.processEvents()
     assert window.workspace_stack.currentWidget() is window.lyrics_page
 
-    window.shortcut_library.activated()
+    window.shortcut_library.activated.emit()
     qapp.processEvents()
     assert window.workspace_stack.currentWidget() is window.library_page
