@@ -68,7 +68,7 @@ Regular `.lrc` files still work. When both `.lrc` and `.lrcx` exist, LRCPlus aut
 Please refer to the [documentation](https://github.com/pxib/lrcplus/blob/release/LRCX_SPEC.md) for more details.
 
 ## Finally
-I've been working on this project for around 3 months now. When I first had an idea to add Japanese furigana onto OpenLyrics, I went ahead to install the Visual Studio IDE and the foobar2000 SDK. But, *it didn't work in a way I expected.* Version mismatches, missing dependencies and it was such a hassle. (I didn't know C++ either.)
-So I uninstalled it and thought: *"What if I made my own in Python?"* and made "Furigana Player." It was the first prototype and you can visit that by clicking on the LRCPlus text 7 times in the main screen! I continued to work on it until we got here. :3
+I've been working on this project for around 3 months now. When I first had an idea to add Japanese furigana onto OpenLyrics, I went ahead to install the Visual Studio IDE and the [foobar2000 SDK](https://www.foobar2000.org/SDK). But, *it didn't work in a way I expected.* Version mismatches, missing dependencies and it was such a hassle. (I didn't know C++ either.)
+So I uninstalled it and thought: *"What if I made my own in Python?"* and made "Furigana Player." It was the first prototype and you can visit that by [clicking on the LRCPlus text 7 times in the main screen!](https://github.com/pxib/lrcplus/blob/release/assets/apps/furiganaplayer.py) I continued to work on it until we got here. :3
 
 I will probably work on this until I'm satisfied with it, but for now... enjoy the updates! :D
