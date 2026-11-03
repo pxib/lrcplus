@@ -10,6 +10,7 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 ### Changed
 
 - Booru tags are now hidden for Custom and Album cover only, and remain visible when the selected source may use Booru artwork, including as a fallback.
+- No longer recursively searches every configured folder whenever it needs a new background for a track.
 
 ### Fixed
 

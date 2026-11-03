@@ -1790,46 +1790,47 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 "album_first",
             )
             if source == "custom":
-                image_paths = []
-                supported_extensions = {
-                    ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp",
-                }
-                for folder in self.appearance_settings.get(
-                    "custom_background_folders", []
-                ):
-                    try:
-                        image_paths.extend(
-                            path
-                            for path in Path(folder).expanduser().rglob("*")
-                            if path.is_file()
-                            and path.suffix.lower() in supported_extensions
-                        )
-                    except OSError as error:
-                        print(
-                            f"[Background] Could not scan custom folder "
-                            f"{folder!r}: {error!r}"
-                        )
+                folders = tuple(
+                    self.appearance_settings.get("custom_background_folders", [])
+                )
+
+                # Rebuild only when the configured folders change.
+                if getattr(self, "_custom_artwork_folders", None) != folders:
+                    supported_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
+                    image_paths = []
+
+                    for folder in folders:
+                        try:
+                            image_paths.extend(
+                                path
+                                for path in Path(folder).expanduser().rglob("*")
+                                if path.is_file()
+                                and path.suffix.lower() in supported_extensions
+                            )
+                        except (OSError, ValueError) as error:
+                            print(f"[Background] Scan failed: {error!r}")
+
+                    self._custom_background_cache = image_paths
+                    self._custom_artwork_folders = folders
+
+                image_paths = self._custom_background_cache
 
                 if not image_paths:
-                    print("[Background] No images found in custom folders")
                     self.lyrics_background.clear_artwork()
                     return
 
                 custom_path = random.choice(image_paths)
+
                 try:
                     image_data = custom_path.read_bytes()
-                except OSError as error:
-                    print(
-                        f"[Background] Could not read custom image "
-                        f"{str(custom_path)!r}: {error!r}"
-                    )
-                    self.lyrics_background.clear_artwork()
-                else:
                     if not self.lyrics_background.set_artwork_bytes(image_data):
-                        print(
-                            f"[Background] Could not decode custom image: "
-                            f"{str(custom_path)!r}"
-                        )
+                        self.lyrics_background.clear_artwork()
+                except (OSError, ValueError) as error:
+                    print(f"[Background] Image read failed: {error!r}")
+                    if custom_path in image_paths:
+                        image_paths.remove(custom_path)
+                    self.lyrics_background.clear_artwork()
+
                 return
 
             embedded = None
