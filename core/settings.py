@@ -376,6 +376,7 @@ APPEARANCE_DEFAULTS = {
     "background_blur": 12,
     "background_darkness": 155,
     "artwork_source": "album_first",
+    "custom_background_folders": [],
     "booru_tags": "scenery",
     "empty_timestamp_placeholder_enabled": True,
     "empty_timestamp_placeholder": "♪ {countdown}",
@@ -403,6 +404,14 @@ def get_appearance_settings(payload=None):
     theme_mode = values.get("theme_mode")
     if theme_mode not in {"light", "dark"}:
         theme_mode = APPEARANCE_DEFAULTS["theme_mode"]
+    custom_folders = values.get("custom_background_folders", [])
+    if not isinstance(custom_folders, list):
+        custom_folders = []
+    custom_folders = list(dict.fromkeys(
+        folder.strip()
+        for folder in custom_folders
+        if isinstance(folder, str) and folder.strip()
+    ))
 
     return {
         "theme_mode": theme_mode,
@@ -450,9 +459,11 @@ def get_appearance_settings(payload=None):
                 "booru_first",
                 "album_only",
                 "booru_only",
+                "custom",
             }
             else APPEARANCE_DEFAULTS["artwork_source"]
         ),
+        "custom_background_folders": custom_folders,
         "booru_tags": " ".join(
             str(
                 values.get(

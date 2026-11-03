@@ -3,6 +3,20 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ## [2026-11-03.2]
 
+### Added
+
+- Custom background folders, select any folder containing images to show it behind the lyrics.
+
+### Changed
+
+- Booru tags are now hidden for Custom and Album cover only, and remain visible when the selected source may use Booru artwork, including as a fallback.
+
+### Fixed
+
+- Updated outdated notes to use the theme’s muted color. (yes, its from early development shut up)
+
+## [2026-11-03.2]
+
 ### Fixed
 
 - Fixed mock not having _clear_shuffle_history(), so the callback crashes before it reaches load_audio(). (oh the github actions gods pls forgive)

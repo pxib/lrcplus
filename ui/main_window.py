@@ -1789,6 +1789,48 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 "artwork_source",
                 "album_first",
             )
+            if source == "custom":
+                image_paths = []
+                supported_extensions = {
+                    ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp",
+                }
+                for folder in self.appearance_settings.get(
+                    "custom_background_folders", []
+                ):
+                    try:
+                        image_paths.extend(
+                            path
+                            for path in Path(folder).expanduser().rglob("*")
+                            if path.is_file()
+                            and path.suffix.lower() in supported_extensions
+                        )
+                    except OSError as error:
+                        print(
+                            f"[Background] Could not scan custom folder "
+                            f"{folder!r}: {error!r}"
+                        )
+
+                if not image_paths:
+                    print("[Background] No images found in custom folders")
+                    self.lyrics_background.clear_artwork()
+                    return
+
+                custom_path = random.choice(image_paths)
+                try:
+                    image_data = custom_path.read_bytes()
+                except OSError as error:
+                    print(
+                        f"[Background] Could not read custom image "
+                        f"{str(custom_path)!r}: {error!r}"
+                    )
+                    self.lyrics_background.clear_artwork()
+                else:
+                    if not self.lyrics_background.set_artwork_bytes(image_data):
+                        print(
+                            f"[Background] Could not decode custom image: "
+                            f"{str(custom_path)!r}"
+                        )
+                return
 
             embedded = None
             if source != "booru_only":
@@ -2690,6 +2732,12 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
 
             try:
                 if dialog.exec() == QDialog.DialogCode.Accepted:
+                    previous_artwork_source = self.appearance_settings.get(
+                        "artwork_source", "album_first"
+                    )
+                    previous_custom_folders = self.appearance_settings.get(
+                        "custom_background_folders", []
+                    )
                     self.startup_settings = dialog.get_startup_settings()
                     save_startup_settings(self.startup_settings)
 
@@ -2700,6 +2748,19 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                     save_appearance_settings(self.appearance_settings)
                     self._apply_main_window_style()
                     self._apply_appearance_settings()
+                    if self.current_audio_path and (
+                        previous_artwork_source
+                        != self.appearance_settings.get(
+                            "artwork_source", "album_first"
+                        )
+                        or previous_custom_folders
+                        != self.appearance_settings.get(
+                            "custom_background_folders", []
+                        )
+                    ):
+                        self.update_background_for_audio(
+                            self.current_audio_path
+                        )
 
                     self.playback_settings = dialog.get_playback_settings()
                     self.shuffle_enabled = self.playback_settings.get("shuffle_enabled", False)

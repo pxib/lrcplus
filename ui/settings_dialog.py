@@ -389,6 +389,7 @@ class SettingsDialog(QDialog):
             "Booru only",
             "booru_only",
         )
+        self.artwork_source_combo.addItem("Custom", "custom")
         current_source = self.appearance_settings.get(
             "artwork_source",
             "album_first",
@@ -398,7 +399,43 @@ class SettingsDialog(QDialog):
         artwork_source_row.addWidget(self.artwork_source_combo, 1)
         appearance_layout.addLayout(artwork_source_row)
 
-        booru_tags_row = QHBoxLayout()
+        self.custom_folders_row_widget = QWidget()
+        custom_folders_row = QHBoxLayout(self.custom_folders_row_widget)
+        custom_folders_row.setContentsMargins(0, 0, 0, 0)
+        custom_folders_row.addWidget(QLabel("Custom folders"))
+        self.custom_background_folders_list = QListWidget()
+        self.custom_background_folders_list.setMaximumHeight(76)
+        self.custom_background_folders_list.setToolTip(
+            "A random image from these folders, including subfolders, is "
+            "used for each track."
+        )
+        for folder in self.appearance_settings.get(
+            "custom_background_folders", []
+        ):
+            self.custom_background_folders_list.addItem(folder)
+        custom_folders_row.addWidget(self.custom_background_folders_list, 1)
+        custom_folder_buttons = QVBoxLayout()
+        self.add_custom_background_folder_button = QPushButton("Add folder...")
+        self.add_custom_background_folder_button.clicked.connect(
+            self._add_custom_background_folder
+        )
+        custom_folder_buttons.addWidget(
+            self.add_custom_background_folder_button
+        )
+        self.remove_custom_background_folder_button = QPushButton("Remove")
+        self.remove_custom_background_folder_button.clicked.connect(
+            self._remove_custom_background_folder
+        )
+        custom_folder_buttons.addWidget(
+            self.remove_custom_background_folder_button
+        )
+        custom_folder_buttons.addStretch(1)
+        custom_folders_row.addLayout(custom_folder_buttons)
+        appearance_layout.addWidget(self.custom_folders_row_widget)
+
+        self.booru_tags_row_widget = QWidget()
+        booru_tags_row = QHBoxLayout(self.booru_tags_row_widget)
+        booru_tags_row.setContentsMargins(0, 0, 0, 0)
         booru_tags_row.addWidget(QLabel("Booru tags"))
         self.booru_tags_edit = QLineEdit(
             self.appearance_settings.get("booru_tags", "scenery")
@@ -408,7 +445,17 @@ class SettingsDialog(QDialog):
             "Safebooru search tags. A random matching image is chosen."
         )
         booru_tags_row.addWidget(self.booru_tags_edit, 1)
-        appearance_layout.addLayout(booru_tags_row)
+        appearance_layout.addWidget(self.booru_tags_row_widget)
+        self.custom_background_folders_list.currentRowChanged.connect(
+            self._update_custom_folder_controls
+        )
+        self.artwork_source_combo.currentIndexChanged.connect(
+            self._update_custom_folder_controls
+        )
+        self.background_enabled_checkbox.toggled.connect(
+            self._update_custom_folder_controls
+        )
+        self._update_custom_folder_controls()
 
         blur_mode_row = QHBoxLayout()
         blur_mode_row.addWidget(QLabel("Blur quality"))
@@ -534,7 +581,12 @@ class SettingsDialog(QDialog):
         placeholder_hint = QLabel(
             "Example: ♪ {countdown}  →  ♪ 12.5"
         )
-        placeholder_hint.setStyleSheet("color: palette(mid); font-style: italic;")
+        muted_color = build_theme_palette(
+            self.theme_mode, self.theme_color
+        )["muted"]
+        placeholder_hint.setStyleSheet(
+            f"color: {muted_color}; font-style: italic;"
+        )
         appearance_layout.addWidget(placeholder_hint)
         self.empty_timestamp_placeholder_edit.setEnabled(
             self.empty_timestamp_placeholder_checkbox.isChecked()
@@ -1142,7 +1194,12 @@ class SettingsDialog(QDialog):
                 "while karaoke timing is active."
             )
             karaoke_notice.setWordWrap(True)
-            karaoke_notice.setStyleSheet("color: palette(mid); font-style: italic;")
+            muted_color = build_theme_palette(
+                self.theme_mode, self.theme_color
+            )["muted"]
+            karaoke_notice.setStyleSheet(
+                f"color: {muted_color}; font-style: italic;"
+            )
             layout.addWidget(karaoke_notice)
 
         highlight_animation = QComboBox()
@@ -1418,6 +1475,45 @@ class SettingsDialog(QDialog):
         _apply_settings_dialog_style(
             self, self.theme_mode, self.theme_color
         )
+
+    def _update_custom_folder_controls(self, *_args):
+        enabled = (
+            self.background_enabled_checkbox.isChecked()
+            and self.artwork_source_combo.currentData() == "custom"
+        )
+        source = self.artwork_source_combo.currentData()
+        self.custom_folders_row_widget.setVisible(source == "custom")
+        self.booru_tags_row_widget.setVisible(
+            source in {"album_first", "booru_first", "booru_only"}
+        )
+        self.custom_background_folders_list.setEnabled(enabled)
+        self.add_custom_background_folder_button.setEnabled(enabled)
+        self.remove_custom_background_folder_button.setEnabled(
+            enabled
+            and self.custom_background_folders_list.currentRow() >= 0
+        )
+
+    def _add_custom_background_folder(self):
+        current = self.custom_background_folders_list.currentItem()
+        start = current.text() if current else ""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Choose custom background folder", start
+        )
+        if not folder:
+            return
+        existing = {
+            self.custom_background_folders_list.item(index).text()
+            for index in range(self.custom_background_folders_list.count())
+        }
+        if folder not in existing:
+            self.custom_background_folders_list.addItem(folder)
+        self._update_custom_folder_controls()
+
+    def _remove_custom_background_folder(self):
+        row = self.custom_background_folders_list.currentRow()
+        if row >= 0:
+            self.custom_background_folders_list.takeItem(row)
+        self._update_custom_folder_controls()
 
     def _choose_theme_color(self):
         color = QColorDialog.getColor(
@@ -1714,6 +1810,12 @@ class SettingsDialog(QDialog):
             "theme_color": self.theme_color,
             "background_enabled": self.background_enabled_checkbox.isChecked(),
             "background_layout": self.background_layout_combo.currentData(),
+            "custom_background_folders": [
+                self.custom_background_folders_list.item(index).text()
+                for index in range(
+                    self.custom_background_folders_list.count()
+                )
+            ],
             "artwork_source": self.artwork_source_combo.currentData(),
             "booru_tags": self.booru_tags_edit.text().strip() or "scenery",
             "background_blur_mode": self.background_blur_mode_combo.currentData(),

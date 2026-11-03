@@ -3,6 +3,7 @@ from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
 from PySide6.QtGui import QColor, QPainter, QPixmap
 
 from core.settings import get_appearance_settings, save_appearance_settings
+from ui.main_window import Player
 from ui.artwork_background import ArtworkBackgroundWidget
 from ui.settings_dialog import SettingsDialog
 
@@ -105,6 +106,30 @@ def test_background_layout_setting_persists(mode):
     assert get_appearance_settings()["background_layout"] == mode
 
 
+def test_custom_background_folders_setting_persists():
+    folders = ["C:/images/first", "C:/images/second"]
+    save_appearance_settings({
+        "artwork_source": "custom",
+        "custom_background_folders": folders,
+    })
+    appearance = get_appearance_settings()
+    assert appearance["artwork_source"] == "custom"
+    assert appearance["custom_background_folders"] == folders
+
+
+@pytest.mark.parametrize("folders", [None, "C:/images", {}, [None, "", 42]])
+def test_invalid_custom_background_folders_use_empty_default(folders):
+    assert get_appearance_settings({
+        "appearance": {"custom_background_folders": folders},
+    })["custom_background_folders"] == []
+
+
+def test_invalid_artwork_source_uses_default():
+    assert get_appearance_settings({
+        "appearance": {"artwork_source": "unknown"},
+    })["artwork_source"] == "album_first"
+
+
 @pytest.mark.parametrize("mode", [None, "unknown", [], {}])
 def test_invalid_background_layout_uses_fit(mode):
     assert get_appearance_settings({"appearance": {"background_layout": mode}})["background_layout"] == "fit"
@@ -125,5 +150,95 @@ def test_background_layout_control_loads_saves_and_follows_enabled(qapp):
         assert combo.isEnabled()
         combo.setCurrentIndex(combo.findData("fill"))
         assert dialog.get_appearance_settings()["background_layout"] == "fill"
+        assert dialog.artwork_source_combo.findData("custom") >= 0
+        assert dialog.custom_folders_row_widget.isHidden()
+        assert not dialog.booru_tags_row_widget.isHidden()
+        dialog.artwork_source_combo.setCurrentIndex(
+            dialog.artwork_source_combo.findData("custom")
+        )
+        assert not dialog.custom_folders_row_widget.isHidden()
+        assert dialog.booru_tags_row_widget.isHidden()
+        assert dialog.custom_background_folders_list.isEnabled()
+        assert dialog.add_custom_background_folder_button.isEnabled()
+        dialog.artwork_source_combo.setCurrentIndex(
+            dialog.artwork_source_combo.findData("album_only")
+        )
+        assert dialog.custom_folders_row_widget.isHidden()
+        assert dialog.booru_tags_row_widget.isHidden()
+        dialog.artwork_source_combo.setCurrentIndex(
+            dialog.artwork_source_combo.findData("booru_only")
+        )
+        assert dialog.custom_folders_row_widget.isHidden()
+        assert not dialog.booru_tags_row_widget.isHidden()
+        dialog.background_enabled_checkbox.setChecked(False)
+        assert not dialog.custom_background_folders_list.isEnabled()
     finally:
         dialog.deleteLater()
+
+
+def test_custom_background_folder_control_loads_and_saves_folders(qapp):
+    dialog = SettingsDialog([], {}, appearance_settings={
+        "artwork_source": "custom",
+        "custom_background_folders": ["C:/images/custom", "C:/images/other"],
+    })
+    try:
+        folders = dialog.get_appearance_settings()["custom_background_folders"]
+        assert folders == ["C:/images/custom", "C:/images/other"]
+        dialog.custom_background_folders_list.setCurrentRow(0)
+        dialog._remove_custom_background_folder()
+        assert dialog.get_appearance_settings()["custom_background_folders"] == [
+            "C:/images/other",
+        ]
+    finally:
+        dialog.deleteLater()
+
+
+def test_custom_background_folder_picker_adds_folder(qapp, monkeypatch, tmp_path):
+    dialog = SettingsDialog([], {}, appearance_settings={
+        "artwork_source": "custom",
+    })
+    try:
+        monkeypatch.setattr(
+            "ui.settings_dialog.QFileDialog.getExistingDirectory",
+            lambda *_args: str(tmp_path),
+        )
+        dialog._add_custom_background_folder()
+        dialog._add_custom_background_folder()
+        assert dialog.get_appearance_settings()["custom_background_folders"] == [
+            str(tmp_path),
+        ]
+    finally:
+        dialog.deleteLater()
+
+
+def test_custom_source_uses_an_image_from_selected_folders(
+    tmp_path, monkeypatch
+):
+    image = tmp_path / "subfolder" / "custom.png"
+    image.parent.mkdir()
+    image.write_bytes(b"custom image")
+    applied = []
+    cleared = []
+    invalidated = []
+    player = type("PlayerStub", (), {
+        "appearance_settings": {
+            "artwork_source": "custom",
+            "custom_background_folders": [str(tmp_path)],
+        },
+        "_invalidate_booru_request": lambda self: invalidated.append(True),
+        "lyrics_background": type("BackgroundStub", (), {
+            "set_artwork_bytes": lambda self, data: applied.append(data) or True,
+            "clear_artwork": lambda self: cleared.append(True),
+        })(),
+    })()
+    monkeypatch.setattr(
+        "ui.main_window.extract_embedded_cover",
+        lambda _path: pytest.fail("track artwork should not be loaded"),
+    )
+    monkeypatch.setattr("ui.main_window.random.choice", lambda images: images[0])
+
+    Player.update_background_for_audio(player, "C:/music/song.mp3")
+
+    assert invalidated == [True]
+    assert applied == [b"custom image"]
+    assert cleared == []
