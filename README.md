@@ -4,72 +4,66 @@ media player
 
 idk
 
-Choose **Play from: Library** beside Shuffle to play through your full music
-library without building a playlist. Previous, Next, Shuffle, and automatic
-track advancement use that source. Library is the default for new settings;
-your choice is remembered. Choose **Queue / Playlist** to follow a queue instead.
-Adding tracks to the queue or loading a saved playlist selects that source.
+## LRCLIB
 
-In the library, choose **Lyrics** beside the search box to find songs by words
-or phrases in local `.lrc`, `.lrcx`, and `.txt` lyrics. Matching ignores case,
-timestamps, and lyric formatting. It uses configured lyric folders and explicit
-attachments, and searches in the background. TXT files must be beside the audio
-with the same filename stem, explicitly attached, or currently loaded for that
-song. Choose **Track details** to search
-titles, artists, albums, and filenames again. **Rescan** refreshes an active
-lyric search after files are added or edited.
-The **Matching lyrics** column shows the first matching line with the matched
-words in bold. It appears beside the title when searching lyrics.
+LRCPlus integrates with LRCLIB for searching and retrieving synchronized and plain-text lyrics. API integration is authorized by LRCLIB under its API Terms of Use.
 
-Lyrics search is available from **Lyrics → Search Lyrics**. Choose LRCLIB,
-NetEase Cloud Music, QQ Music, KuGou, Kuwo, or Musixmatch. All sources except
-Musixmatch require no API key or authentication token.
-Each provider keeps its query, results, selected row, and loaded previews while
-the search dialog is open. Switching providers restores them without searching
-again; closing the dialog clears these cached results.
+[View official API authorization](https://lrclib.net/developers/authorizations/zTywhWzql6kFvrFMcWui-xuV0qYCVO3FzKQKPwZGf7U)
 
-The Chinese providers search by artist and song title, including Japanese titles.
-Timing is checked automatically in the background for all results. The **Timing**
-column progresses from **Checking** to **Words**, **Lines**, or **Plain**. Selecting
-a result prioritizes its lookup and shows its cached lyrics when ready. Failed
-lookups show **Unavailable** or **Error**; hover over the cell for the reason.
-Recording duration is displayed when supplied by the provider.
-If a search fails, finds no results, or cannot load lyrics, the dialog suggests
-removing the artist name and searching with just the song title.
+## Inspiration
 
-NetEase prefers YRC word timing and falls back to LRC when YRC is unavailable.
-KuGou downloads KRC word timing. Both preserve millisecond word starts, word ends,
-and pauses when saved as `.lrcx`. QQ Music and Kuwo provide line-timed `.lrc`;
-untimed lyrics save as `.txt`. Kuwo can mix original and translated lines, so the
-app keeps all returned lyric rows and notes this below the preview.
-If Kuwo's mobile lyric endpoint returns service code `301`, the app tries its
-alternate web lyric endpoint for the same recording.
+Thank you to [foobar2000](https://www.foobar2000.org/) and [OpenLyrics](https://github.com/jacquesh/foo_openlyrics) foobar2000 [component](https://www.foobar2000.org/components/view/foo_openlyrics) for making this possible. <3
 
-Search and preview requests run in the background. Header tags, title/artist
-intro lines, and writing credits are removed from fetched lyrics. Source
-information is displayed below the preview rather than added to Chinese-provider
-lyric files. KRC decoding has compressed and decompressed size limits and needs
-no extra dependencies.
+## Plugin Development
 
-Musixmatch defaults to an authentication
-token, using the same app endpoint as OpenLyrics for foobar2000. Paste an existing
-token or set the `MUSIXMATCH_TOKEN` environment variable before launching the app.
-Use **Show** to reveal the masked value. If a token expires, paste a replacement.
-Tokens are remembered in memory until the app exits.
+LRCPlus supports plugins that extend the player without modifying its core code.
 
-All-zero token values are rejected as placeholders.
+**Current API:** v4 (supports v1–v4)
 
-The **Developer API key** authentication option also accepts your own
-[developer API key](https://developer.musixmatch.com/) or the `MUSIXMATCH_API_KEY`
-environment variable. Developer keys and app tokens use separate endpoints
-and cannot be substituted for one another.
+Plugins can:
+- Listen to and emit application events.
+- Control playback (play, pause, seek).
+- Access and analyze lyrics.
+- Add custom reading/romanization providers.
+- Add menu actions and playback buttons.
+- Create custom settings interfaces.
+- Store persistent settings.
+- Share services with other plugins.
+- Import audio files and attach lyrics (v4).
+- Declare Python dependencies managed by LRCPlus.
 
-Musixmatch results load their lyrics when selected. Synced lyrics are preferred;
-plain lyrics are used when subtitles are unavailable or your credentials cannot
-access them. Availability, previews, and quotas depend on your Musixmatch access.
-The preview preserves the supplied text and copyright information. **Use Selected
-Lyrics** saves an `.lrc` (synced) or `.txt` (plain) file next to the current audio
-file, including Musixmatch attribution, and loads it into the player.
+**Getting started:** Create a plugin folder containing `plugin.py` with a `PLUGIN_CLASS`. A `manifest.json` is recommended.
 
-Windows release builds and the automatic update process are documented in
-[docs/updating.md](docs/updating.md).
+**Dependencies:** LRCPlus can install and manage plugin dependencies, resolve version conflicts, and recover from failed installations.
+
+**Compatibility:** Older plugins remain supported, and plugin-owned resources are automatically cleaned up when unloaded.
+
+For full documentation, see [PLUGIN_API.md](https://github.com/pxib/lrcplus/blob/release/PLUGIN_API.md).
+
+## LRCX format
+
+LRCX (`.lrcx`) is an enhanced version of LRC that supports karaoke-style word timing, furigana, text formatting, and multiple display rows without breaking compatibility with regular lyrics.
+
+### Main features
+
+- Line timestamps: `[00:12.500]` determines when a lyric line starts.
+- Karaoke timing: `<00:12.800>` synchronizes individual words or segments with the music.
+- Ruby / Furigana: `{金曜日|きんようび}` displays readings above characters.
+- Text formatting: Supports bold, italic, strikethrough, underline, and combinations of styles.
+- Blockquotes: `> ` adds an indented lyric with a vertical quote bar.
+- Visual newlines: `{\n}` splits lyrics into multiple display rows without creating new timestamps.
+- Explicit end times: Empty timestamps can mark when a word ends, preserve pauses, or determine when a line disappears.
+- Metadata: Supports traditional LRC tags such as `[ar:]`, `[ti:]`, and `[al:]`.
+
+### Example
+
+```
+[00:12.500]<00:12.500>**{君|きみ}**<00:13.000>の
+<00:13.500>*声*<00:14.000>{届|とど}かない<00:15.200>
+```
+
+### Compatibility
+
+Regular `.lrc` files still work. When both `.lrc` and `.lrcx` exist, LRCPlus automatically prefers `.lrcx`. Existing lyric displays remain compatible.
+
+Please refer to the [documentation](https://github.com/pxib/lrcplus/blob/release/LRCX_SPEC.md) for more details.
