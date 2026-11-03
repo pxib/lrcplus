@@ -838,6 +838,22 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 self.toggle_mute
             )
 
+            self.shortcut_library = QShortcut(
+                QKeySequence("Ctrl+1"),
+                self,
+            )
+            self.shortcut_library.activated.connect(
+                lambda: self.workspace_stack.setCurrentWidget(self.library_page)
+            )
+
+            self.shortcut_lyrics = QShortcut(
+                QKeySequence("Ctrl+2"),
+                self,
+            )
+            self.shortcut_lyrics.activated.connect(
+                lambda: self.workspace_stack.setCurrentWidget(self.lyrics_page)
+            )
+
             self.easter_eggs = EasterEggs(self)
             self._restore_startup_state()
             self.update_transport_buttons()
@@ -984,8 +1000,20 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             menu.exec(header.mapToGlobal(pos))
 
         def _set_library_column_visible(self, logical, visible):
+            if visible:
+                self._restore_library_column_width(logical)
             self.library_table.setColumnHidden(logical, not visible)
             self._save_library_column_state()
+
+        def _restore_library_column_width(self, logical):
+            if self.library_table.columnWidth(logical) > 0:
+                return
+            default_widths = {
+                0: 62, 1: 42, 2: 330, 3: 260, 4: 85, 5: 75,
+                6: 90, 7: 85, 8: 90, 9: 180, 10: 360, 11: 150,
+                self.library_lyrics_column: 340,
+            }
+            self.library_table.setColumnWidth(logical, default_widths[logical])
 
         def _apply_library_column_state(self):
             state = self.library_column_state or {}
@@ -1014,6 +1042,9 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             if not isinstance(order, list) or lyric_column not in order:
                 header.moveSection(header.visualIndex(lyric_column), header.visualIndex(2) + 1)
             header.setSectionHidden(lyric_column, self.library_search_filter.currentData() != "lyrics")
+            for logical in range(len(self.library_columns)):
+                if not header.isSectionHidden(logical):
+                    self._restore_library_column_width(logical)
 
         def _save_library_column_state(self):
             if not hasattr(self, "library_table") or not hasattr(self, "library_columns"):

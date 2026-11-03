@@ -261,6 +261,78 @@ def test_existing_column_layouts_keep_their_indexes_and_new_column_is_near_title
     assert header.visualIndex(column) == header.visualIndex(2) + 1
 
 
+def test_lyrics_filter_moves_saved_end_column_beside_title(window):
+    header = window.library_table.header()
+    column = window.library_lyrics_column
+    window.library_column_state = {
+        "order": list(range(len(window.library_columns))),
+        "hidden": [6, 7],
+        "widths": {},
+    }
+    window._apply_library_column_state()
+    assert header.visualIndex(column) > header.visualIndex(2) + 1
+
+    window.library_search_filter.setCurrentIndex(1)
+
+    assert not window.library_table.isColumnHidden(column)
+    assert header.visualIndex(column) == header.visualIndex(2) + 1
+
+
+def test_lyrics_filter_restores_column_with_saved_zero_width(window):
+    column = window.library_lyrics_column
+    window.library_column_state = {
+        "order": list(range(len(window.library_columns))),
+        "hidden": [column],
+        "widths": {str(column): 0},
+    }
+    window._apply_library_column_state()
+    assert window.library_table.columnWidth(column) == 0
+
+    window.library_search_filter.setCurrentIndex(1)
+
+    assert not window.library_table.isColumnHidden(column)
+    assert window.library_table.columnWidth(column) == 340
+
+
+def test_enabled_columns_with_saved_zero_width_are_restored(window):
+    zero_width_columns = [6, 7, 8, 9, 10]
+    window.library_column_state = {
+        "order": list(range(len(window.library_columns))),
+        "hidden": [*zero_width_columns, window.library_lyrics_column],
+        "widths": {str(column): 0 for column in zero_width_columns},
+    }
+    window._apply_library_column_state()
+
+    assert all(
+        window.library_table.columnWidth(column) == 0
+        for column in zero_width_columns
+    )
+    window._set_library_column_visible(6, True)
+    window._set_library_column_visible(7, True)
+
+    assert window.library_table.columnWidth(6) == 90
+    assert window.library_table.columnWidth(7) == 85
+    assert not window.library_table.isColumnHidden(6)
+    assert not window.library_table.isColumnHidden(7)
+    assert window.library_table.isColumnHidden(8)
+
+
+def test_visible_columns_with_saved_zero_width_are_restored_on_load(window):
+    zero_width_columns = [6, 7, 8, 9, 10]
+    window.library_column_state = {
+        "order": list(range(len(window.library_columns))),
+        "hidden": [window.library_lyrics_column],
+        "widths": {str(column): 0 for column in zero_width_columns},
+    }
+
+    window._apply_library_column_state()
+
+    assert all(
+        window.library_table.columnWidth(column) > 0
+        for column in zero_width_columns
+    )
+
+
 def test_column_renders_first_japanese_match(window, qapp, tmp_path):
     Path(window.library_tracks[0].path).with_suffix(".lrc").write_text(
         "[00:01]Intro\n[00:02]好きだよ。\n[00:03]好きだね。", encoding="utf-8",

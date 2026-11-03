@@ -1,12 +1,25 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [2026-11-03.2]
+
+### Fixed
+
+- Fixed mock not having _clear_shuffle_history(), so the callback crashes before it reaches load_audio(). (oh the github actions gods pls forgive)
+- Fixed zero-wdith columns on srtttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt
+Fixed zero-width columns on startup.
+
+### Added
+
+- Ctrl + 1 and 2 now switches tabs from Library to Lyrics.
+
 ## [2026-11-03]
 
 ### Added
 
 - Show loading and outcome indicators for local lyric searches, Lyrics search providers, and music library scans.
 - Mark lyrics search results with unknown timing using a question-mark icon.
+- Added Ctrl+1 to switch to the Library view and Ctrl+2 to switch to the Lyrics view.
 
 ### Changed
 

@@ -94,3 +94,17 @@ def test_hidden_library_receives_no_paint_events(workspace, qapp):
     window.workspace_stack.setCurrentWidget(window.library_page)
     qapp.processEvents()
     assert counter.count > count
+
+
+def test_workspace_shortcuts_switch_between_library_and_lyrics(workspace, qapp):
+    window, _loaded = workspace
+    window.show()
+    qapp.processEvents()
+
+    window.shortcut_lyrics.activated()
+    qapp.processEvents()
+    assert window.workspace_stack.currentWidget() is window.lyrics_page
+
+    window.shortcut_library.activated()
+    qapp.processEvents()
+    assert window.workspace_stack.currentWidget() is window.library_page

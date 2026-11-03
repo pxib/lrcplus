@@ -107,9 +107,21 @@ class LibraryLyricsSearchMixin:
         self.library_search.setPlaceholderText(
             "Search words in local lyrics..." if lyrics else "Search library..."
         )
-        self.library_table.setColumnHidden(self.library_lyrics_column, not lyrics)
+        if lyrics:
+            self._show_library_lyrics_column()
+        else:
+            self.library_table.setColumnHidden(self.library_lyrics_column, True)
         self._reset_library_lyrics_search()
         self._filter_library_view()
+
+    def _show_library_lyrics_column(self):
+        header = self.library_table.header()
+        lyric_visual = header.visualIndex(self.library_lyrics_column)
+        title_visual = header.visualIndex(2)
+        if lyric_visual != title_visual + 1:
+            header.moveSection(lyric_visual, title_visual + 1)
+        self.library_table.setColumnHidden(self.library_lyrics_column, False)
+        self._restore_library_column_width(self.library_lyrics_column)
 
     def _reset_library_lyrics_search(self):
         self._library_lyrics_cancel.set()

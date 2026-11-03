@@ -18,6 +18,7 @@ def test_recent_dialog_is_deleted_after_every_open(tmp_path, qapp, monkeypatch, 
     loaded = []
     destroyed = []
     parent.load_audio = loaded.append
+    parent._clear_shuffle_history = lambda: None
 
     def finish(dialog):
         dialog.destroyed.connect(lambda: destroyed.append(True))
@@ -64,6 +65,7 @@ def test_opening_recents_does_not_measure_every_hidden_title(tmp_path, qapp, mon
     loaded = []
     parent = QWidget()
     parent.load_audio = loaded.append
+    parent._clear_shuffle_history = lambda: None
 
     class TrackingDelegate(QStyledItemDelegate):
         def sizeHint(self, option, index):
