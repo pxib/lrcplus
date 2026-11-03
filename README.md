@@ -12,4 +12,4 @@ LRCPlus integrates with LRCLIB for searching and retrieving synchronized and pla
 
 ## Inspiration
 
-Thank you to [foobar2000](https://www.foobar2000.org/) and [OpenLyrics](https://github.com/jacquesh/foo_openlyrics) foobar2000 component for making this possible. <3
+Thank you to [foobar2000](https://www.foobar2000.org/) and [OpenLyrics](https://github.com/jacquesh/foo_openlyrics) foobar2000 [component](https://www.foobar2000.org/components/view/foo_openlyrics) for making this possible. <3
