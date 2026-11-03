@@ -1,21 +1,43 @@
 # Changelog
-Versions uses dates with optional revisions.
+Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
+
+## [2026-11-03]
+
+### Added
+
+- Show loading and outcome indicators for local lyric searches, Lyrics search providers, and music library scans.
+- Mark lyrics search results with unknown timing using a question-mark icon.
+
+### Changed
+
+- Reactivated scroll wheel on seekbar and volume bar. Made up and down arrow keys affect the volume.
+- Now remembers previous tracks when proceeding to next track.
+
+### Fixed
+
+- Keep karaoke segment starts and ends in sync when a lyric timestamp is changed.
+- Lyrics text now wraps around.
+
 
 ## [2026-11-02.4]
 
 ### Added
+
 - **Highly Experimental:** Add a Windows updater that checks GitHub Releases and installs verified updates through a standalone helper with staged replacement and rollback.
 
 ### Changed
+
 - Report the Karaoke plugin version as `1.0.0`.
 
 ### Fixed
+
 - Detect `-exp` prerelease tags and versioned Windows ZIP roots; reuse the installed updater when a compatible package omits its own updater executable.
 - Improve text contrast for selected Settings tabs and mode buttons.
 
 ## [2026-11-02.2]
 
-### Changes
+### Changed
+
 - Unit-specific quick presets for semitone, octave, and percentage pitch shifts.
 
 ## [2026-11-01.4]

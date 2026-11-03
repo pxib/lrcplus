@@ -67,3 +67,13 @@ def test_adjusting_volume_while_muted_updates_restored_percentage(qapp):
 
     assert controls.volume_slider.value() == 65
     assert controls.volume_percentage_label.text() == "65%"
+
+
+def test_volume_slider_can_move_through_100_percent(qapp):
+    controls = VolumeControls()
+    controls.volume_slider.setValue(90)
+
+    for volume in (95, 100, 105, 110):
+        controls.volume_slider.setValue(volume)
+        assert controls.volume_slider.value() == volume
+        assert controls.volume_percentage_label.text() == f"{volume}%"

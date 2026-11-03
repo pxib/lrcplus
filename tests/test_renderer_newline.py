@@ -141,3 +141,32 @@ def test_scrolling_rows_reserve_height_for_all_visual_lines(qapp, monkeypatch):
         widget.clear()
         widget.close()
         widget.deleteLater()
+
+
+def test_scrolling_rows_wrap_long_lyrics_to_the_viewport(qapp, monkeypatch):
+    from lyrics.models import LyricLine
+
+    monkeypatch.setattr("lyrics.furigana_widget.get_cached_furigana_segments",
+                        lambda text: [{"text": text, "reading": None}])
+    widget = ScrollingLyricsWidget()
+    try:
+        widget.resize(360, 400)
+        widget.set_font(library_font(qapp.font()).family(), size=24, ruby_size=12)
+        widget.show()
+        widget.set_lyrics([
+            LyricLine(0.65, "A long lyric line that should wrap instead of running off the screen"),
+            LyricLine(3.05, "Next lyric"),
+        ])
+        qapp.processEvents()
+
+        first = widget._mounted_rows[0]
+        second = widget._mounted_rows[1]
+        baselines = {piece["base_y"] for piece in first._prepare_segments()}
+        assert len(baselines) > 1
+        assert first.height() > second.height()
+        assert max(baselines) < first.height()
+        assert widget._line_start(1) >= first.height()
+    finally:
+        widget.clear()
+        widget.close()
+        widget.deleteLater()

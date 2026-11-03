@@ -189,6 +189,8 @@ class AudioController:
         def set_playback_source(self, source):
             if source not in {"library", "playlist"}:
                 return
+            if self.playback_settings.get("play_mode", "library") != source:
+                self._clear_shuffle_history()
             self.playback_settings["play_mode"] = source
             save_playback_settings(self.playback_settings)
             self._update_playback_source_control()
@@ -265,6 +267,18 @@ class AudioController:
             return True
 
 
+        def _clear_shuffle_history(self):
+            self._shuffle_history = []
+            self._shuffle_forward_history = []
+
+
+        def _resolve_history_index(self, entry, paths):
+            index, key = entry
+            if 0 <= index < len(paths) and path_key(paths[index]) == key:
+                return index
+            return next((i for i, path in enumerate(paths) if path_key(path) == key), None)
+
+
         def previous_track(self):
             paths = self._playback_paths()
             if not paths:
@@ -277,6 +291,15 @@ class AudioController:
             if current < 0:
                 return
             if getattr(self, "shuffle_enabled", False):
+                history = getattr(self, "_shuffle_history", [])
+                while history:
+                    target = self._resolve_history_index(history.pop(), paths)
+                    if target is not None:
+                        self._shuffle_forward_history.append(
+                            (current, path_key(paths[current]))
+                        )
+                        self._load_playback_index(paths, target)
+                        return
                 target = self._choose_shuffle_index(paths, current, -1)
             else:
                 target = current - 1
@@ -298,7 +321,23 @@ class AudioController:
             if (getattr(self, "playback_settings", {}).get("play_mode", "library") == "playlist"
                     and priority):
                 target = priority.pop(0)
+                if getattr(self, "shuffle_enabled", False):
+                    if current >= 0:
+                        self._shuffle_history.append((current, path_key(paths[current])))
+                    self._shuffle_forward_history.clear()
             elif getattr(self, "shuffle_enabled", False):
+                forward_history = getattr(self, "_shuffle_forward_history", [])
+                while forward_history:
+                    target = self._resolve_history_index(forward_history.pop(), paths)
+                    if target is not None:
+                        if current >= 0:
+                            self._shuffle_history.append(
+                                (current, path_key(paths[current]))
+                            )
+                        self._load_playback_index(paths, target)
+                        return
+                if current >= 0:
+                    self._shuffle_history.append((current, path_key(paths[current])))
                 target = self._choose_shuffle_index(paths, current, 1)
             else:
                 target = current + 1
@@ -323,6 +362,7 @@ class AudioController:
 
         def cycle_shuffle_mode(self):
             self.shuffle_enabled = not self.shuffle_enabled
+            self._clear_shuffle_history()
             self.playback_settings["shuffle_enabled"] = self.shuffle_enabled
             save_playback_settings(self.playback_settings)
             self._update_shuffle_button_text()
@@ -600,12 +640,6 @@ class AudioController:
 
 
         def handle_volume_change(self, value):
-            value = snap_volume_percentage(value)
-            if self.volume_slider.value() != value:
-                self.volume_slider.blockSignals(True)
-                self.volume_slider.setValue(value)
-                self.volume_slider.blockSignals(False)
-
             if value > 0:
                 self.last_volume = value
             self.playback_settings["volume"] = value
@@ -902,4 +936,3 @@ class AudioController:
                 )
                 return f"-{self.format_time(remaining_ms)}"
             return self.format_time(position_ms)
-

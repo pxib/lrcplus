@@ -1,13 +1,23 @@
 """Library search controls and background lyric matching."""
 
+from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAbstractTextDocumentLayout, QFont, QPalette, QTextCharFormat, QTextCursor, QTextDocument, QTextOption
-from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QStyle, QStyledItemDelegate, QStyleOptionViewItem
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import (
+    QAbstractTextDocumentLayout, QFont, QMovie, QPalette, QPixmap,
+    QTextCharFormat, QTextCursor, QTextDocument, QTextOption,
+)
+from PySide6.QtWidgets import (
+    QApplication, QComboBox, QHBoxLayout, QLabel, QStyle, QStyledItemDelegate,
+    QStyleOptionViewItem, QWidget,
+)
 
 from core.background_job import BackgroundJob
 from core.library_lyrics import LibraryLyricsIndex, normalize_lyric_query
+
+
+APP_ROOT = Path(__file__).resolve().parents[1]
 
 
 class LyricMatchDelegate(QStyledItemDelegate):
@@ -60,9 +70,29 @@ class LibraryLyricsSearchMixin:
         self.library_search_filter.addItem("Lyrics", "lyrics")
         self.library_search_filter.setToolTip("Choose whether to search track details or local lyric text")
         toolbar.addWidget(self.library_search_filter)
+        self.library_lyrics_status_widget = QWidget()
+        status_layout = QHBoxLayout(self.library_lyrics_status_widget)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(6)
+        self.library_lyrics_loading = QLabel()
+        self.library_lyrics_loading.setAccessibleName("Searching lyrics")
+        self.library_lyrics_loading.setFixedSize(24, 24)
+        self.library_lyrics_movie = QMovie(
+            str(APP_ROOT / "assets" / "media" / "loading.gif"),
+            parent=self.library_lyrics_loading,
+        )
+        self.library_lyrics_movie.setScaledSize(QSize(24, 24))
+        self.library_lyrics_loading.setMovie(self.library_lyrics_movie)
+        self.library_lyrics_result = QLabel()
+        self.library_lyrics_result.setFixedSize(24, 24)
+        self.library_lyrics_result.hide()
         self.library_lyrics_status = QLabel()
         self.library_lyrics_status.setWordWrap(True)
         self.library_lyrics_status.hide()
+        status_layout.addWidget(self.library_lyrics_loading)
+        status_layout.addWidget(self.library_lyrics_result)
+        status_layout.addWidget(self.library_lyrics_status, 1)
+        self.library_lyrics_status_widget.hide()
         self._library_lyrics_index = LibraryLyricsIndex()
         self._library_lyrics_job = BackgroundJob(self, "library-lyrics")
         self._library_lyrics_cancel = Event()
@@ -86,7 +116,11 @@ class LibraryLyricsSearchMixin:
         self._library_lyrics_job.cancel()
         self._library_lyrics_query = None
         self._library_lyrics_matches = {}
+        self.library_lyrics_movie.stop()
+        self.library_lyrics_loading.hide()
+        self.library_lyrics_result.hide()
         self.library_lyrics_status.hide()
+        self.library_lyrics_status_widget.hide()
 
     def _search_library_lyrics(self, query):
         query = normalize_lyric_query(query)
@@ -96,6 +130,10 @@ class LibraryLyricsSearchMixin:
             self._library_lyrics_cancel = Event()
             self.library_lyrics_status.setText("Searching local lyrics...")
             self.library_lyrics_status.show()
+            self.library_lyrics_result.hide()
+            self.library_lyrics_loading.show()
+            self.library_lyrics_status_widget.show()
+            self.library_lyrics_movie.start()
             current = None
             if self.current_audio_path and self.current_lyrics_path:
                 current = (str(self.current_audio_path), str(self.current_lyrics_path))
@@ -111,6 +149,19 @@ class LibraryLyricsSearchMixin:
         if (self.library_search_filter.currentData() != "lyrics"
                 or normalize_lyric_query(self.library_search.text()) != query):
             return
+        self.library_lyrics_movie.stop()
+        self.library_lyrics_loading.hide()
+        icon = "success.png" if matches else "fail.png"
+        self.library_lyrics_result.setPixmap(
+            QPixmap(str(APP_ROOT / "assets" / "media" / icon)).scaled(
+                QSize(24, 24), Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        self.library_lyrics_result.setAccessibleName(
+            "Lyrics found" if matches else "No lyrics found"
+        )
+        self.library_lyrics_result.show()
         self._library_lyrics_matches = matches
         self.library_lyrics_status.setText(f"{len(matches)} song(s) match the lyrics.")
         self._filter_library_view()
@@ -118,5 +169,14 @@ class LibraryLyricsSearchMixin:
     def _library_lyrics_failed(self, error):
         if (self.library_search_filter.currentData() == "lyrics"
                 and normalize_lyric_query(self.library_search.text()) == self._library_lyrics_query):
+            self.library_lyrics_movie.stop()
+            self.library_lyrics_loading.hide()
+            self.library_lyrics_result.setPixmap(
+                QPixmap(str(APP_ROOT / "assets" / "media" / "error.png")).scaled(
+                    QSize(24, 24), Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+            self.library_lyrics_result.setAccessibleName("Lyrics search error")
+            self.library_lyrics_result.show()
             self.library_lyrics_status.setText(f"Could not search local lyrics: {error}")
-

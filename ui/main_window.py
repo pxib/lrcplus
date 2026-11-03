@@ -14,7 +14,7 @@ from time import monotonic
 from threading import Event
 
 from PySide6.QtCore import Qt, QUrl, QTimer, Signal, QThread, QSize, QRect
-from PySide6.QtGui import QAction, QKeySequence, QShortcut, QPixmap, QPainter
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QShortcut, QMovie, QPixmap, QPainter
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QButtonGroup, QComboBox, QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
@@ -163,6 +163,8 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             self.playlist = []
             self.current_index = -1
             self._priority_queue_indices = []
+            self._shuffle_history = []
+            self._shuffle_forward_history = []
             self.lrc_search_paths = load_lrc_search_folders()
             # Persistent music library. Playback controls remain separate from
             # the library; the library is the primary workspace.
@@ -345,12 +347,17 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 Qt.Orientation.Horizontal
             )
             self.seek_slider.setRange(0, 0)
+            self.seek_slider.setSingleStep(5000)
+            self.seek_slider.setPageStep(5000)
             self.seek_slider.setFixedHeight(20)
             self.seek_slider.sliderPressed.connect(
                 self.start_seeking
             )
             self.seek_slider.sliderReleased.connect(
                 self.finish_seeking
+            )
+            self.seek_slider.wheelSeekRequested.connect(
+                self._seek_from_waveform
             )
             
             # Interactive waveform overview. It mirrors the seek bar but also
@@ -371,7 +378,10 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             self.volume_slider = QSlider(
                 Qt.Orientation.Horizontal
             )
+            self.volume_slider.setObjectName("volumeSlider")
             self.volume_slider.setRange(0, 300)
+            self.volume_slider.setSingleStep(5)
+            self.volume_slider.setPageStep(5)
             self.volume_slider.setValue(self.last_volume)
             self.volume_slider.setFixedWidth(120)
             self.volume_percentage_label = QLabel(f"{self.last_volume}%")
@@ -877,12 +887,28 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             toolbar.addWidget(rescan)
             root.addLayout(toolbar)
 
-            root.addWidget(self.library_lyrics_status)
+            root.addWidget(self.library_lyrics_status_widget)
 
+            scan_status = QHBoxLayout()
+            scan_status.setContentsMargins(0, 0, 0, 0)
+            scan_status.setSpacing(6)
+            self.library_scan_indicator = QLabel()
+            self.library_scan_indicator.setObjectName("libraryScanIndicator")
+            self.library_scan_indicator.setFixedSize(20, 20)
+            self.library_scan_indicator.setAccessibleName("Library scan status")
+            self.library_scan_movie = QMovie(
+                str(Path(__file__).resolve().parents[1] / "assets" / "media" / "loading.gif"),
+                parent=self.library_scan_indicator,
+            )
+            self.library_scan_movie.setScaledSize(QSize(20, 20))
+            self.library_scan_indicator.setMovie(self.library_scan_movie)
+            self.library_scan_indicator.hide()
             self.library_folder_label = QLabel()
             self.library_folder_label.setObjectName("libraryFolderLabel")
             self.library_folder_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            root.addWidget(self.library_folder_label)
+            scan_status.addWidget(self.library_scan_indicator)
+            scan_status.addWidget(self.library_folder_label, 1)
+            root.addLayout(scan_status)
 
             self.library_columns = [
                 ("cover", "Album cover"), ("track", "#"),
@@ -1393,6 +1419,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             path = item.data(0, Qt.ItemDataRole.UserRole)
             if not path:
                 return
+            self._clear_shuffle_history()
             self.load_audio(path)
             self.media_player.play()
 
@@ -1431,22 +1458,49 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
         def rescan_music_library(self):
             if self._library_scan_worker is not None and self._library_scan_worker.isRunning():
                 return
+            self._set_library_scan_indicator("loading")
             self.library_folder_label.setText("Scanning music library...")
             self.library_table.setEnabled(False)
             worker = LibraryScanWorker(self.library_folders, self)
             self._library_scan_worker = worker
             worker.completed.connect(self._library_scan_finished)
+            worker.failed.connect(self._library_scan_failed)
             worker.finished.connect(lambda: self.library_table.setEnabled(True))
             worker.start()
+
+        def _set_library_scan_indicator(self, state):
+            self.library_scan_movie.stop()
+            self.library_scan_indicator.hide()
+            if state == "loading":
+                self.library_scan_indicator.show()
+                self.library_scan_movie.start()
+                return
+            if state in {"success", "error"}:
+                icon, accessible_name = (
+                    ("success.png", "Library scan complete")
+                    if state == "success"
+                    else ("error.png", "Library scan error")
+                )
+                self.library_scan_indicator.setPixmap(QPixmap(
+                    str(Path(__file__).resolve().parents[1] / "assets" / "media" / icon)
+                ).scaled(
+                    QSize(20, 20), Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                ))
+                self.library_scan_indicator.setAccessibleName(accessible_name)
+                self.library_scan_indicator.show()
 
         def _library_scan_finished(self, tracks):
             self._library_cover_cache.clear()
             self.library_tracks = list(tracks)
             save_music_library(self.library_folders, [track.to_dict() for track in self.library_tracks], self.library_column_state)
             self._populate_library_view()
-
+            self._set_library_scan_indicator("success")
             self.update_transport_buttons()
 
+        def _library_scan_failed(self, error):
+            self._set_library_scan_indicator("error")
+            self.library_folder_label.setText(f"Could not scan music library: {error}")
 
         def _restore_startup_state(self):
             payload = load_all_settings()
@@ -1755,6 +1809,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             if not paths:
                 return
 
+            self._clear_shuffle_history()
             self.playlist = [Path(path) for path in paths]
             self.current_index = 0
             self._priority_queue_indices = []
@@ -1893,8 +1948,31 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             splitter.setStretchFactor(1, 1)
             layout.addWidget(splitter, 1)
 
-            status = QLabel("", dialog)
-            layout.addWidget(status)
+            status_widget = QWidget(dialog)
+            status_layout = QHBoxLayout(status_widget)
+            status_layout.setContentsMargins(0, 0, 0, 0)
+            status_layout.setSpacing(6)
+            search_loading = QLabel(status_widget)
+            search_loading.setObjectName("lyricsSearchLoading")
+            search_loading.setAccessibleName("Searching lyrics")
+            search_loading.setFixedSize(24, 24)
+            search_movie = QMovie(
+                str(Path(__file__).resolve().parents[1] / "assets" / "media" / "loading.gif"),
+                parent=search_loading,
+            )
+            search_movie.setScaledSize(QSize(24, 24))
+            search_loading.setMovie(search_movie)
+            search_result = QLabel(status_widget)
+            search_result.setObjectName("lyricsSearchResult")
+            search_result.setFixedSize(24, 24)
+            status = QLabel("", status_widget)
+            status.setWordWrap(True)
+            status_layout.addWidget(search_loading)
+            status_layout.addWidget(search_result)
+            status_layout.addWidget(status, 1)
+            layout.addWidget(status_widget)
+            search_loading.hide()
+            search_result.hide()
 
             buttons = QHBoxLayout()
             use_button = QPushButton("Use Selected Lyrics", dialog)
@@ -1916,6 +1994,28 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             cooldown_timer = QTimer(dialog)
             cooldown_timer.setInterval(100)
             provider_errors = (LRCLibError, MusixmatchError, LyricsProviderError)
+
+            def set_search_indicator(state):
+                search_movie.stop()
+                search_loading.hide()
+                search_result.hide()
+                if state == "loading":
+                    search_loading.show()
+                    search_movie.start()
+                elif state in {"success", "empty", "error"}:
+                    icon, accessible_name = {
+                        "success": ("success.png", "Lyrics found"),
+                        "empty": ("fail.png", "No lyrics found"),
+                        "error": ("error.png", "Lyrics search error"),
+                    }[state]
+                    search_result.setPixmap(QPixmap(str(
+                        Path(__file__).resolve().parents[1] / "assets" / "media" / icon
+                    )).scaled(
+                        QSize(24, 24), Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    ))
+                    search_result.setAccessibleName(accessible_name)
+                    search_result.show()
 
             def lookup_failure(message):
                 return f"{message}\nTry removing the artist name and searching with just the song title."
@@ -2049,6 +2149,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 search_job.cancel()
                 preview_queue.cancel()
                 search_in_progress = False
+                set_search_indicator(None)
                 results.setRowCount(0)
                 records.clear()
                 update_preview()
@@ -2129,6 +2230,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 search_cancel.set()
                 preview_queue.cancel()
                 search_cancel = Event()
+                set_search_indicator("loading")
                 status.setText(f"Searching {source}...")
                 results.setRowCount(0)
                 preview.clear()
@@ -2153,6 +2255,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 nonlocal search_in_progress
                 search_in_progress = False
                 if isinstance(payload, provider_errors):
+                    set_search_indicator("error")
                     setattr(self, cooldown_attribute(), max(
                         getattr(self, cooldown_attribute(), 0), monotonic() + payload.retry_after,
                     ))
@@ -2168,11 +2271,13 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 check_result_timing()
                 populate_results()
                 if records:
+                    set_search_indicator("success")
                     status.setText(
                         f"{len(records)} result(s). "
                         "Select one to inspect the lyrics."
                     )
                 else:
+                    set_search_indicator("empty")
                     status.setText(lookup_failure("No lyrics found."))
 
             def populate_results(selected_row=0):
@@ -2203,6 +2308,14 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                             table_item.setFont(content_font(results.font(), str(value)))
                         if column == 3:
                             table_item.setToolTip(item.get("_preview_error", ""))
+                            if value == "Unknown":
+                                table_item.setIcon(QIcon(
+                                    str(Path(__file__).resolve().parents[1]
+                                        / "assets" / "media" / "uncertain.png")
+                                ))
+                                table_item.setToolTip(
+                                    "Timing information is unknown."
+                                )
                         results.setItem(
                             row_index, column, table_item
                         )
@@ -2216,6 +2329,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             def search_failed(error):
                 nonlocal search_in_progress
                 search_in_progress = False
+                set_search_indicator("error")
                 update_search_button()
                 status.setText(lookup_failure(f"Search failed: {error}"))
 
@@ -2558,6 +2672,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
 
                     self.playback_settings = dialog.get_playback_settings()
                     self.shuffle_enabled = self.playback_settings.get("shuffle_enabled", False)
+                    self._clear_shuffle_history()
                     save_playback_settings(self.playback_settings)
                     self.waveform_widget.setVisible(
                         self.playback_settings.get("show_waveform", True)
@@ -2744,6 +2859,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                     return
                 audio_path = list_widget.currentItem().data(Qt.ItemDataRole.UserRole)
                 if audio_path and Path(audio_path).exists():
+                    self._clear_shuffle_history()
                     self.load_audio(audio_path)
                     dialog.accept()
 
@@ -2821,4 +2937,3 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 parent=self,
             )
             dialog.exec()
-

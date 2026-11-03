@@ -262,6 +262,23 @@ def test_library_source_plays_and_advances_without_changing_queue(queue_player, 
     assert window.playlist == [tracks[3], tracks[3]]
 
 
+def test_shuffle_previous_returns_to_track_before_next(queue_player, tracks, monkeypatch):
+    window = queue_player
+    window.replace_queue(tracks)
+    window.play_queue_index(0)
+    window.shuffle_enabled = True
+    monkeypatch.setattr(window, "_choose_shuffle_index", lambda paths, current, direction=1: 1)
+
+    window.next_button.click()
+    assert window.current_audio_path == tracks[1]
+
+    window.previous_button.click()
+    assert window.current_audio_path == tracks[0]
+
+    window.next_button.click()
+    assert window.current_audio_path == tracks[1]
+
+
 def test_play_starts_library_without_loading_a_queue(queue_player, tracks):
     window = queue_player
     window.library_tracks = [LibraryTrack(str(path), path.stem) for path in tracks]

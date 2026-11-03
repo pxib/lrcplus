@@ -63,6 +63,7 @@ class QueueControllerMixin:
         if not 0 <= index < len(self.playlist):
             return
         self._activate_queue()
+        self._clear_shuffle_history()
         self.current_index = index
         self._priority_queue_indices = [i for i in getattr(self, "_priority_queue_indices", []) if i != index]
         self.load_audio(str(self.playlist[index]))

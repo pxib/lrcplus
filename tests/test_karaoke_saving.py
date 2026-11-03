@@ -128,6 +128,9 @@ def test_offset_applies_to_preview_markers_stamping_and_nudging(editor, monkeypa
     assert editor.lines[0].segments[0].start == 2.5
     editor.mark_current_line_playback_time()
     assert editor.lines[0].start == 2.5
+    assert editor.lines[0].segments[0].start == 3.0
+    assert editor.lines[0].segments[0].end == 4.0
+    assert editor.lines[0].end == 4.5
 
 
 @pytest.mark.parametrize("offset", [-500, 500])
@@ -155,6 +158,9 @@ def test_lyric_waveform_commits_offset_coordinates(editor, offset):
     assert editor.lyrics_waveform._selected_lyric_start_ms == 2500 + offset
     editor.commit_line_timestamp()
     assert editor.lines[0].start == 2.5
+    assert editor.lines[0].segments[0].start == 2.7
+    assert editor.lines[0].segments[0].end == 4.0
+    assert editor.lines[0].end == 4.5
     editor._waveform_lyric_timing_changed("end", 5500 + offset)
     editor.commit_line_timestamp()
     assert editor.lines[1].start == 5.5

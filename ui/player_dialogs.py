@@ -24,6 +24,14 @@ from core.music_library import scan_folders
 class ClickableSlider(QSlider):
     """Click or drag to seek, using the current style's handle geometry."""
 
+    wheelSeekRequested = Signal(int)
+
+    def wheelEvent(self, event):
+        previous_value = self.value()
+        super().wheelEvent(event)
+        if self.value() != previous_value:
+            self.wheelSeekRequested.emit(self.value())
+
     def _mouse_value(self, point, offset=None):
         option = QStyleOptionSlider()
         self.initStyleOption(option)
@@ -459,10 +467,16 @@ class PitchChangerDialog(QDialog):
 
 class LibraryScanWorker(QThread):
     completed = Signal(list)
+    failed = Signal(str)
 
     def __init__(self, folders, parent=None):
         super().__init__(parent)
         self.folders = list(folders)
 
     def run(self):
-        self.completed.emit(scan_folders(self.folders))
+        try:
+            tracks = scan_folders(self.folders)
+        except Exception as error:
+            self.failed.emit(str(error))
+        else:
+            self.completed.emit(tracks)

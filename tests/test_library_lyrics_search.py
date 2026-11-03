@@ -195,6 +195,56 @@ def test_lyrics_mode_filters_albums_and_clearing_restores_expansion(window, qapp
     assert first.isHidden() and not second.isHidden()
 
 
+def test_loading_animation_runs_during_search_and_stops_when_finished(window, qapp, monkeypatch):
+    entered, release = Event(), Event()
+    original = window._library_lyrics_index.search
+
+    def blocked(*args):
+        entered.set()
+        assert release.wait(5)
+        return original(*args)
+
+    monkeypatch.setattr(window._library_lyrics_index, "search", blocked)
+    window.library_search_filter.setCurrentIndex(1)
+    window.library_search.setText("phrase 0")
+    window._filter_library_view()
+    try:
+        assert entered.wait(2)
+        assert window.library_lyrics_movie.isValid()
+        assert window.library_lyrics_movie.state() == window.library_lyrics_movie.MovieState.Running
+        assert not window.library_lyrics_loading.isHidden()
+        assert window.library_lyrics_result.isHidden()
+        release.set()
+        wait_for(qapp, lambda: window.library_lyrics_status.text() == "1 song(s) match the lyrics.")
+        assert window.library_lyrics_movie.state() == window.library_lyrics_movie.MovieState.NotRunning
+        assert window.library_lyrics_loading.isHidden()
+        assert not window.library_lyrics_result.isHidden()
+        assert window.library_lyrics_result.accessibleName() == "Lyrics found"
+
+        window.library_search.setText("no such phrase")
+        window._filter_library_view()
+        wait_for(qapp, lambda: window.library_lyrics_status.text() == "0 song(s) match the lyrics.")
+        assert window.library_lyrics_result.accessibleName() == "No lyrics found"
+    finally:
+        release.set()
+
+
+def test_library_scan_indicator_shows_loading_success_and_error(window):
+    window._set_library_scan_indicator("loading")
+    assert not window.library_scan_indicator.isHidden()
+    assert window.library_scan_movie.state() == window.library_scan_movie.MovieState.Running
+
+    window._set_library_scan_indicator("success")
+    assert window.library_scan_movie.state() == window.library_scan_movie.MovieState.NotRunning
+    assert not window.library_scan_indicator.isHidden()
+    assert window.library_scan_indicator.accessibleName() == "Library scan complete"
+    assert not window.library_scan_indicator.pixmap().isNull()
+
+    window._library_scan_failed("permission denied")
+    assert window.library_scan_indicator.accessibleName() == "Library scan error"
+    assert window.library_folder_label.text() == "Could not scan music library: permission denied"
+
+
 def test_existing_column_layouts_keep_their_indexes_and_new_column_is_near_title(window):
     header = window.library_table.header()
     old_order = [3, 2, 0, 1, *range(4, 12)]

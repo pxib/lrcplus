@@ -37,6 +37,21 @@ def test_changing_timestamp_preserves_multiline_text(editor):
     assert "Multiline lyrics" in editor._lrcx_only_features()
 
 
+def test_changing_karaoke_line_timestamp_moves_its_timing(editor):
+    line = LyricLine(
+        2, "Hello", [LyricSegment(2.2, "Hello", end=3.5)], end=4,
+        has_karaoke=True,
+    )
+    editor.lines[0] = line
+    editor._populate_lines(preserve_line_index=0)
+
+    editor.line_time.setValue(3)
+
+    assert line.start == 3
+    assert (line.segments[0].start, line.segments[0].end) == (3.2, 4.5)
+    assert line.end == 5
+
+
 @pytest.mark.parametrize("karaoke", [True, False])
 def test_insert_newline_at_cursor_is_undoable_and_survives_save(make_lyrics_editor, karaoke):
     from lyrics.lrcx_parser import load_lrcx

@@ -1851,6 +1851,17 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
                 "There is no explicit furigana to reset. Automatic readings are already being used.",
             )
 
+    @staticmethod
+    def _shift_line_timing(line, delta):
+        if abs(delta) <= 1e-9:
+            return
+        if line.end is not None:
+            line.end += delta
+        for segment in line.segments:
+            segment.start += delta
+            if segment.end is not None:
+                segment.end += delta
+
     def commit_line_timestamp(self):
         """Commit the selected lyric timestamp, including provisional B timing.
 
@@ -1870,6 +1881,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             position = float(preview_ms) / 1000.0
             if preview_handle == "start":
                 self._push_undo_state()
+                self._shift_line_timing(line, position - line.start)
                 line.start = position
                 self.document_dirty = True
                 self.loading = True
@@ -1938,6 +1950,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         self.loading = True
         self.line_time.setValue(position)
         self.loading = False
+        self._shift_line_timing(line, position - line.start)
         line.start = position
         self.document_dirty = True
         self._update_save_button_state()
@@ -2008,15 +2021,11 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             return
         self._push_undo_state(line_index=index)
         delta = self.line_time.value() - line.start
+        self._shift_line_timing(line, delta)
         line.start = self.line_time.value()
         markup, line.is_blockquote = parse_quote_prefix(self.line_text.toPlainText())
         line.text, line.style_spans, _offsets = parse_emphasis(markup.replace(r"{\n}", "\n"))
         self.quote_button.setChecked(line.is_blockquote)
-        if not line.has_karaoke:
-            for segment in line.segments:
-                segment.start += delta
-                if segment.end is not None:
-                    segment.end += delta
         # Text edits invalidate old segment boundaries rather than silently
         # leaving mismatched karaoke text behind.
         if line.segments and "".join(s.text for s in line.segments) != line.text:

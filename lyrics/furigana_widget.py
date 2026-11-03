@@ -143,8 +143,7 @@ class FuriganaWidget(QWidget):
         self.ruby_padding = 2
         self.reserve_ruby_space = False
 
-        # Optional multi-line layout. Disabled by default so the main lyrics
-        # display keeps its existing behavior; the editor preview enables it.
+        # Optional multi-line layout used by editor previews and scrolling lyrics.
         self.wrap_text = False
         self.wrap_max_lines = 0  # 0 = derive from available widget height
 
@@ -385,10 +384,11 @@ class FuriganaWidget(QWidget):
         """Enable width-aware multi-line rendering for constrained previews.
 
         max_lines=0 derives a sensible cap from the widget's current height.
+        max_lines<0 allows all wrapped lines.
         Anything beyond the final allowed line is represented by an ellipsis.
         """
         self.wrap_text = bool(enabled)
-        self.wrap_max_lines = max(0, int(max_lines or 0))
+        self.wrap_max_lines = int(max_lines or 0)
         self.update()
 
     def set_font(self, family="", size=32, ruby_size=None):
@@ -1564,7 +1564,16 @@ class FuriganaWidget(QWidget):
                 + self.PADDING
             )
             return QSize(max(1, width), max(1, total))
-        return QSize(max(0, self.minimumWidth()), total * (self.lyric.count("\n") + 1))
+        rows = self.lyric.count("\n") + 1
+        if self.wrap_text:
+            prepared = self._prepare_segments()
+            visual_rows = {
+                round(float(piece["base_y"]), 3)
+                for piece in prepared
+                if piece.get("base_y") is not None
+            }
+            rows = max(rows, len(visual_rows))
+        return QSize(max(0, self.minimumWidth()), total * rows)
 
     def minimumSizeHint(self):
         return self.sizeHint()
@@ -1578,7 +1587,13 @@ class FuriganaWidget(QWidget):
         available = max(1, self.width() - 20 - indent)
         base_height, ruby_height, ruby_gap, line_height = self._content_metrics()
         max_lines = self.wrap_max_lines
-        if max_lines <= 0:
+        if max_lines < 0:
+            max_lines = max(
+                1,
+                sum(len(str(piece.get("text", ""))) for piece in prepared)
+                + explicit_rows,
+            )
+        elif max_lines == 0:
             # Use the real drawable height. A small tolerance prevents
             # ellipsizing a line that is still visibly inside the bottom edge.
             drawable_height = max(
@@ -2938,4 +2953,3 @@ class FuriganaWidget(QWidget):
 
         painter.restore()
         painter.end()
-

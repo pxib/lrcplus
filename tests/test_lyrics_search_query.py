@@ -57,7 +57,7 @@ def test_lyrics_search_query_falls_back_when_metadata_cannot_be_read(
     assert main_window._lyrics_search_query(audio_path) == "filename-title"
 
 
-@pytest.mark.parametrize("outcome", ["results", "error", "cancel"])
+@pytest.mark.parametrize("outcome", ["results", "unknown", "empty", "error", "cancel"])
 def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
     entered, release = threading.Event(), threading.Event()
     now = [100.0]
@@ -75,7 +75,13 @@ def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
         return SimpleNamespace(
             status_code=200, headers={}, close=lambda: None,
             raise_for_status=lambda: None,
-            json=lambda: [{"trackName": "Song", "syncedLyrics": "[00:01]Hello"}],
+            json=lambda: [] if outcome == "empty" else [
+                {
+                    "trackName": "Song",
+                    "syncedLyrics": "[00:01]Hello" if outcome == "results" else "",
+                    "hasSyncedLyrics": None if outcome == "unknown" else True,
+                }
+            ],
         )
 
     def interact(dialog):
@@ -83,8 +89,13 @@ def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
         query.setText("Song")
         button = next(b for b in dialog.findChildren(QPushButton) if b.text() == "Search")
         table = dialog.findChild(QTableWidget)
+        loading = dialog.findChild(QLabel, "lyricsSearchLoading")
+        result = dialog.findChild(QLabel, "lyricsSearchResult")
         button.click()
         assert entered.wait(2)
+        assert not loading.isHidden()
+        assert loading.movie().state() == loading.movie().MovieState.Running
+        assert result.isHidden()
         assert len(worker_threads) == 1
         assert worker_threads[0] != threading.get_ident()
         assert not button.isEnabled()
@@ -100,6 +111,7 @@ def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
         deadline = time.monotonic() + 5
         while not any(
             label.text() == "1 result(s). Select one to inspect the lyrics."
+            or label.text().startswith("No lyrics found.")
             or "Search failed:" in label.text()
             for label in dialog.findChildren(QLabel)
         ) and time.monotonic() < deadline:
@@ -107,12 +119,29 @@ def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
             time.sleep(0.005)
         assert not button.isEnabled()
         assert button.text() == "Search (5s)"
+        assert loading.isHidden()
         query.returnPressed.emit()
         assert len(worker_threads) == 1
-        if outcome == "results":
-            assert table.rowCount() == 1
-            assert table.item(0, 0).text() == "Song"
+        if outcome in {"results", "unknown", "empty"}:
+            assert not result.isHidden()
+            assert result.accessibleName() == (
+                "No lyrics found" if outcome == "empty" else "Lyrics found"
+            )
+            if outcome in {"results", "unknown"}:
+                assert table.rowCount() == 1
+                assert table.item(0, 0).text() == "Song"
+                timing = table.item(0, 3)
+                if outcome == "unknown":
+                    assert timing.text() == "Unknown"
+                    assert not timing.icon().isNull()
+                    assert timing.toolTip() == "Timing information is unknown."
+                else:
+                    assert timing.text() == "Lines"
+            else:
+                assert table.rowCount() == 0
         else:
+            assert not result.isHidden()
+            assert result.accessibleName() == "Lyrics search error"
             assert any("Search failed: Network unavailable" in label.text()
                        for label in dialog.findChildren(QLabel))
         now[0] += 4.9

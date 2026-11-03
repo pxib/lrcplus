@@ -190,7 +190,8 @@ class ScrollingLyricsWidget(QWidget):
                      self.ruby_padding, self.padding, self.vertical_padding,
                      getattr(self, "karaoke_line_entrance", False),
                      getattr(self, "karaoke_word_lift", False),
-                     self.scroll_area.viewport().height() if vertical else 0)
+                     self.scroll_area.viewport().height() if vertical else 0,
+                     self.scroll_area.viewport().width() if not vertical else 0)
         if signature == self._geometry_signature:
             return
         self._geometry_signature = signature
@@ -217,7 +218,19 @@ class ScrollingLyricsWidget(QWidget):
                 extent = (top_margin + base_height + bottom_margin
                           + self.padding + (reading_height + self.ruby_padding if reading_height else 0))
                 text = str(lyric.text if hasattr(lyric, "text") else lyric[1])
-                extent = (extent - self.padding) * (text.count("\n") + 1) + self.padding
+                line_height = extent - self.padding
+                available_width = max(
+                    1,
+                    self.scroll_area.viewport().width()
+                    - 20
+                    - (self.font_size if getattr(lyric, "is_blockquote", False) else 0),
+                )
+                metrics = QFontMetrics(font)
+                wrapped_lines = sum(
+                    max(1, math.ceil(metrics.horizontalAdvance(line) / available_width))
+                    for line in text.split("\n")
+                )
+                extent = line_height * wrapped_lines + self.padding
             self._extents.append(max(1, extent))
 
     def _measure_row(self, row):
@@ -232,8 +245,8 @@ class ScrollingLyricsWidget(QWidget):
             width += row._quote_indent()
             row.setFixedWidth(max(1, int(width)))
             return row.width()
-        row.setMinimumWidth(1)
-        row.setMaximumWidth(16777215)
+        row.setFixedWidth(max(1, self.scroll_area.viewport().width()))
+        row.set_text_wrapping(True, -1)
         row.setFixedHeight(max(1, row.minimumSizeHint().height() + self.padding))
         return row.height()
 
@@ -789,6 +802,8 @@ class ScrollingLyricsWidget(QWidget):
     def _create_row(self, lyric, index):
         row = FuriganaWidget(self.manual_overrides)
         row.set_direction(self.direction)
+        if self.direction != "vertical":
+            row.set_text_wrapping(True, -1)
         row.set_vertical_padding(self.vertical_padding)
         row.set_alignment(self.alignment)
         # Centered Slide mode may enter from either side. Pick once per
@@ -1097,4 +1112,3 @@ class ScrollingLyricsWidget(QWidget):
             if index == self.current_line and 0 <= index < self.lyric_count:
                 self._scroll_to_line(index, animate=False)
         animation.deleteLater()
-
