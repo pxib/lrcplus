@@ -23,6 +23,7 @@ from core.settings import KARAOKE_SWEEP_STYLES
 from lyrics.karaoke_effects import eased_progress, sweep_effect_pen, text_color_pen, word_lift_amount
 from lyrics.karaoke_layout import annotate_next_timed_starts
 from lyrics.formatting import style_at
+from lyrics.line_breaks import reading_source
 from lyrics.romaji import all_romaji_texts, romanized_readings
 
 _FURIGANA_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="LRCPlus-Yomi")
@@ -208,6 +209,7 @@ class FuriganaWidget(QWidget):
 
         self.base_font = QFont()
         self.style_spans = []
+        self.translation_lines = []
         self.is_blockquote = False
         self.base_font.setPointSize(self.BASE_FONT_SIZE)
 
@@ -865,7 +867,7 @@ class FuriganaWidget(QWidget):
 
         return updated
 
-    def set_segments(self, text, segments, line_end=None, style_spans=None, is_blockquote=False):
+    def set_segments(self, text, segments, line_end=None, style_spans=None, is_blockquote=False, translation_lines=None):
         """Display lyric segments while generating readings from the full lyric.
 
         Karaoke boundaries are timing metadata only.  Automatic reading
@@ -874,13 +876,16 @@ class FuriganaWidget(QWidget):
         Explicit LRCX ruby remains authoritative.
         """
         source = str(text)
-        text = source.lstrip()
+        text = source.lstrip(" \t\r") if translation_lines else source.lstrip()
         skipped = len(source) - len(text)
         self.style_spans = [(max(0, a - skipped), b - skipped, *styles)
                             for a, b, *styles in (style_spans or []) if b > skipped]
         self.lyric = text
+        skipped_rows = source[:skipped].count("\n")
+        self.translation_lines = [row - skipped_rows for row in (translation_lines or []) if row >= skipped_rows]
+        reading_key = reading_source(text, self.translation_lines)
         self.is_blockquote = bool(is_blockquote)
-        self.loading_text = text
+        self.loading_text = reading_key
         self.karaoke_line_end = line_end
 
         raw_segments = []
@@ -963,7 +968,7 @@ class FuriganaWidget(QWidget):
         # scrolling mounts new viewport rows. Consume cached results here; the
         # active lyric renderer generates missing readings lazily in its
         # background worker.
-        whole_tokens = get_cached_furigana_segments(text) if text else []
+        whole_tokens = get_cached_furigana_segments(reading_key) if text else []
         if whole_tokens is None:
             whole_tokens = [{"text": text, "reading": None}] if text else []
 
@@ -975,15 +980,15 @@ class FuriganaWidget(QWidget):
             # the cached whole-line result.
             if (
                 text
-                and self._karaoke_furigana_pending != text
+                and self._karaoke_furigana_pending != reading_key
             ):
-                self.loading_text = text
-                self._karaoke_furigana_pending = text
+                self.loading_text = reading_key
+                self._karaoke_furigana_pending = reading_key
                 original_segments = list(source_segments)
 
                 def parse_karaoke():
                     try:
-                        return build_furigana_segments(text)
+                        return build_furigana_segments(reading_key)
                     except Exception as error:
                         print(
                             f"[Yomi] Lyric furigana processing failed for {text!r}: {error!r}"
@@ -1004,7 +1009,7 @@ class FuriganaWidget(QWidget):
                         )
                         result = [{"text": text, "reading": None}]
                     self._emit_readings_ready(
-                        text,
+                        reading_key,
                         {"karaoke": original_segments, "segments": result, "line_end": line_end},
                     )
 
@@ -1181,15 +1186,18 @@ class FuriganaWidget(QWidget):
         self._update_content_geometry()
         self.update()
 
-    def set_lyric(self, text, generate=True, style_spans=None, is_blockquote=False):
+    def set_lyric(self, text, generate=True, style_spans=None, is_blockquote=False, translation_lines=None):
         # Preserve whitespace in the source/model, but ignore optional
         # leading whitespace after an LRC timestamp when rendering.
         source = str(text)
-        text = source.lstrip()
+        text = source.lstrip(" \t\r") if translation_lines else source.lstrip()
         skipped = len(source) - len(text)
         self.style_spans = [(max(0, a - skipped), b - skipped, *styles)
                             for a, b, *styles in (style_spans or []) if b > skipped]
         self.lyric = text
+        skipped_rows = source[:skipped].count("\n")
+        self.translation_lines = [row - skipped_rows for row in (translation_lines or []) if row >= skipped_rows]
+        reading_key = reading_source(text, self.translation_lines)
         self.is_blockquote = bool(is_blockquote)
 
         # Janome tokenization is local and fast, so processing it in the GUI
@@ -1205,7 +1213,7 @@ class FuriganaWidget(QWidget):
             self.update()
             return
 
-        cached = get_cached_furigana_segments(text)
+        cached = get_cached_furigana_segments(reading_key)
         if cached is not None:
             self.loading_text = None
             self.segments = self.apply_manual_overrides(cached)
@@ -1219,7 +1227,7 @@ class FuriganaWidget(QWidget):
             self.update()
             return
 
-        if text == getattr(self, "loading_text", None):
+        if reading_key == getattr(self, "loading_text", None):
             self.update()
             return
 
@@ -1231,15 +1239,15 @@ class FuriganaWidget(QWidget):
         # All Romaji enabled at launch: toggling the setting later forces a
         # geometry/update pass after the cache is ready, making it appear as if
         # re-enabling Romaji fixed the problem.
-        if text == getattr(self, "loading_text", None):
+        if reading_key == getattr(self, "loading_text", None):
             self.update()
             return
 
-        self.loading_text = text
+        self.loading_text = reading_key
 
         def parse():
             try:
-                return build_furigana_segments(text)
+                return build_furigana_segments(reading_key)
             except Exception as error:
                 print(f"[Yomi] Furigana processing failed for {text!r}: {error!r}")
                 return [{"text": text, "reading": None}]
@@ -1255,7 +1263,7 @@ class FuriganaWidget(QWidget):
             except Exception as error:
                 print(f"[Yomi] Worker failed for {text!r}: {error!r}")
                 result = [{"text": text, "reading": None}]
-            self._emit_readings_ready(text, result)
+            self._emit_readings_ready(reading_key, result)
 
         future.add_done_callback(finished)
 
@@ -1279,21 +1287,22 @@ class FuriganaWidget(QWidget):
                 f"[Furigana] Ready: {len(generated_segments)} reading tokens for {text!r} (segment mapping)"
             )
 
-            if text != self.lyric:
+            if text != reading_source(self.lyric, self.translation_lines):
                 if self._karaoke_furigana_pending == text:
                     self._karaoke_furigana_pending = None
                 return
 
             self._karaoke_furigana_pending = None
             self.loading_text = None
-            self.set_segments(text, karaoke_segments, line_end=line_end,
-                              style_spans=self.style_spans, is_blockquote=self.is_blockquote)
+            self.set_segments(self.lyric, karaoke_segments, line_end=line_end,
+                              style_spans=self.style_spans, is_blockquote=self.is_blockquote,
+                              translation_lines=self.translation_lines)
             return
 
         print(f"[Furigana] Ready: {len(segments)} reading tokens for {text!r}")
 
         # Ignore an old request if the lyric has already changed.
-        if text != self.lyric:
+        if text != reading_source(self.lyric, self.translation_lines):
             return
 
         self.loading_text = None
@@ -1532,7 +1541,9 @@ class FuriganaWidget(QWidget):
         if self.direction == "vertical":
             self.setMinimumHeight(1)
         else:
-            self.setMinimumHeight(total * (self.lyric.count("\n") + 1))
+            height = (self.sizeHint().height() if self.translation_lines
+                      else total * (self.lyric.count("\n") + 1))
+            self.setMinimumHeight(height)
         self.updateGeometry()
 
         # A scrolling lyric row may have a fixed height in its parent.  When a
@@ -1565,6 +1576,9 @@ class FuriganaWidget(QWidget):
             )
             return QSize(max(1, width), max(1, total))
         rows = self.lyric.count("\n") + 1
+        if self.translation_lines:
+            self._prepare_segments()
+            return QSize(max(0, self.minimumWidth()), self._horizontal_layout_height)
         if self.wrap_text:
             prepared = self._prepare_segments()
             visual_rows = {
@@ -1613,6 +1627,7 @@ class FuriganaWidget(QWidget):
         max_lines = max(max_lines, explicit_rows)
         rows = [[]]
         row_widths = [0.0]
+        translation_rows = [False]
         truncated = False
 
         def add_piece(piece):
@@ -1622,11 +1637,12 @@ class FuriganaWidget(QWidget):
             if piece.get("_line_break"):
                 rows.append([])
                 row_widths.append(0.0)
+                translation_rows.append(bool(piece.get("_next_translation")))
                 return
             width = piece["width"]
             gap = piece.get("gap_before", 0)
             piece_metrics = (QFontMetrics(self._styled_font(self.base_font, piece))
-                             if piece.get("bold") or piece.get("italic") else base_metrics)
+                             if piece.get("bold") or piece.get("italic") or piece.get("translation") else base_metrics)
 
             # Start a new visual row when the next piece would overflow.
             if self.wrap_text and rows[-1] and row_widths[-1] + gap + width > available:
@@ -1635,6 +1651,7 @@ class FuriganaWidget(QWidget):
                     return
                 rows.append([])
                 row_widths.append(0.0)
+                translation_rows.append(bool(piece.get("translation")))
                 gap = 0
                 piece["gap_before"] = 0
 
@@ -1688,6 +1705,7 @@ class FuriganaWidget(QWidget):
                 return
 
             rows[-1].append(piece)
+            translation_rows[-1] = bool(piece.get("translation"))
             row_widths[-1] += gap + width
             if (self.show_ruby or self.show_romaji) and piece.get("reading"):
                 row_widths[-1] += self.PADDING
@@ -1696,7 +1714,9 @@ class FuriganaWidget(QWidget):
             add_piece(dict(segment))
 
         if truncated and rows and rows[-1]:
-            ellipsis_width = base_metrics.horizontalAdvance("…")
+            ellipsis_metrics = (QFontMetrics(self._styled_font(self.base_font, {"translation": True}))
+                                if translation_rows[-1] else base_metrics)
+            ellipsis_width = ellipsis_metrics.horizontalAdvance("…")
             while rows[-1] and row_widths[-1] + ellipsis_width > available:
                 removed = rows[-1].pop()
                 row_widths[-1] -= removed["width"] + removed.get("gap_before", 0)
@@ -1714,12 +1734,25 @@ class FuriganaWidget(QWidget):
                     "start": None,
                     "karaoke_group": None,
                     "_ellipsis": True,
+                    "translation": translation_rows[-1],
                 })
                 row_widths[-1] += ellipsis_width
 
         wrapped = []
+        y_offset = 0
         for row_index, row in enumerate(rows):
+            translation = translation_rows[row_index]
+            row_base_metrics = (QFontMetrics(self._styled_font(self.base_font, {"translation": True}))
+                                if translation else base_metrics)
+            row_base_height = row_base_metrics.height() if translation else base_height
+            reading_height = ruby_height or (reading_metrics.height() if self._has_visible_romaji() else 0)
+            if translation and not any(piece.get("reading") for piece in row):
+                reading_height = 0
+            row_ruby_gap = ruby_gap if reading_height else 0
+            row_height = (self.TOP_MARGIN + row_base_height + reading_height
+                          + row_ruby_gap + self.BOTTOM_MARGIN) if translation else line_height
             if not row:
+                y_offset += row_height
                 continue
             total_width = row_widths[row_index]
             if self.alignment == "left":
@@ -1729,8 +1762,6 @@ class FuriganaWidget(QWidget):
             else:
                 x = max(float(indent), indent + (self.width() - indent - total_width) / 2.0)
 
-            y_offset = row_index * line_height
-            reading_height = ruby_height or (reading_metrics.height() if self._has_visible_romaji() else 0)
             if reading_height and self.ruby_position == "above":
                 reading_y = (
                     self.TOP_MARGIN
@@ -1741,21 +1772,21 @@ class FuriganaWidget(QWidget):
                     self.TOP_MARGIN
                     + y_offset
                     + reading_height
-                    + ruby_gap
-                    + base_metrics.ascent()
+                    + row_ruby_gap
+                    + row_base_metrics.ascent()
                 )
             elif reading_height:
-                base_y = self.TOP_MARGIN + y_offset + base_metrics.ascent()
+                base_y = self.TOP_MARGIN + y_offset + row_base_metrics.ascent()
                 reading_y = (
-                    self.TOP_MARGIN + y_offset + base_height + ruby_gap
-                    + base_metrics.descent() + reading_metrics.ascent()
+                    self.TOP_MARGIN + y_offset + row_base_height + row_ruby_gap
+                    + row_base_metrics.descent() + reading_metrics.ascent()
                 )
             else:
                 reading_y = None
                 base_y = (
                     self.TOP_MARGIN
                     + y_offset
-                    + base_metrics.ascent()
+                    + row_base_metrics.ascent()
                 )
 
             romaji_y = reading_y if self.show_romaji else None
@@ -1786,16 +1817,20 @@ class FuriganaWidget(QWidget):
                     x += self.PADDING
                 wrapped.append(segment)
 
+            y_offset += row_height
+
+        self._horizontal_layout_height = max(1, y_offset)
         return wrapped
 
     def _visual_source_segments(self):
         """Split structural newlines for layout while retaining reading/timing ownership."""
         offset = 0
+        row = 0
         for segment in self.segments:
             text = str(segment.get("text", ""))
             reading_group = segment.get("_reading_group", (offset, offset + len(text)))
             if "\n" not in text and not self.style_spans:
-                yield {**segment, "_reading_group": reading_group}
+                yield {**segment, "_reading_group": reading_group, "translation": row in self.translation_lines}
                 offset += len(text)
                 continue
             boundaries = {0, len(text)}
@@ -1815,19 +1850,27 @@ class FuriganaWidget(QWidget):
             for (start, end), part_reading in zip(ranges, readings):
                 piece = dict(segment)
                 piece["text"] = text[start:end]
+                piece["translation"] = row in self.translation_lines
                 piece["reading"] = part_reading
                 piece["_reading_group"] = reading_group
                 piece["_romaji_word_start"] = bool(segment.get("_romaji_word_start", False)) and start == 0
                 piece["bold"], piece["italic"], piece["strike"], piece["underline"] = style_at(self.style_spans, offset + start)
                 if piece["text"] == "\n":
                     piece.update(text="", reading=None, _line_break=True)
+                    row += 1
+                    piece["_next_translation"] = row in self.translation_lines
                 yield piece
             offset += len(text)
 
     def _styled_font(self, font, segment):
-        if not any(segment.get(style) for style in ("bold", "italic", "strike", "underline")):
+        if not segment.get("translation") and not any(segment.get(style) for style in ("bold", "italic", "strike", "underline")):
             return font
         styled = QFont(font)
+        if segment.get("translation"):
+            if font.pointSizeF() > 0:
+                styled.setPointSizeF(max(1.0, font.pointSizeF() * 0.75))
+            else:
+                styled.setPixelSize(max(1, round(font.pixelSize() * 0.75)))
         styled.setBold(font.bold() or bool(segment.get("bold")))
         styled.setItalic(font.italic() or bool(segment.get("italic")))
         styled.setStrikeOut(font.strikeOut() or bool(segment.get("strike")))
@@ -2015,7 +2058,7 @@ class FuriganaWidget(QWidget):
         # changes. Snapshot dictionaries because plugins can edit them in place.
         key = (
             self.lyric, [dict(segment) for segment in self.segments],
-            list(self.style_spans),
+            list(self.style_spans), tuple(self.translation_lines),
             self.is_blockquote,
             self.base_font.key(), self.reading_font.key(),
             self.width(), self.height(), self.direction, self.alignment,
@@ -2050,7 +2093,7 @@ class FuriganaWidget(QWidget):
             reading_texts = romanized_readings(prepared) if self.show_romaji else []
             for index, piece in enumerate(prepared):
                 reading_metrics = (QFontMetrics(self._styled_font(self.reading_font, piece))
-                                   if piece.get("bold") or piece.get("italic") else default_reading_metrics)
+                                   if piece.get("bold") or piece.get("italic") or piece.get("translation") else default_reading_metrics)
                 reading = reading_texts[index] if self.show_romaji else self._reading_text_for_display(piece.get("reading"))
                 piece["_display_reading"] = reading
                 piece["_display_reading_width"] = (
@@ -2065,6 +2108,7 @@ class FuriganaWidget(QWidget):
         return [dict(piece) for piece in self._prepared_layout]
 
     def _build_prepared_segments(self):
+        self._horizontal_layout_height = self._content_metrics()[3] * (self.lyric.count("\n") + 1)
         if not self.lyric:
             return []
 
@@ -2088,11 +2132,11 @@ class FuriganaWidget(QWidget):
                 continue
             segment_base_metrics = base_metrics
             segment_reading_metrics = reading_metrics
-            if segment.get("bold") or segment.get("italic"):
+            if segment.get("bold") or segment.get("italic") or segment.get("translation"):
                 segment_base_metrics = QFontMetrics(self._styled_font(self.base_font, segment))
                 segment_reading_metrics = QFontMetrics(self._styled_font(self.reading_font, segment))
             if self.all_romaji:
-                text = romaji_texts[index]
+                text = segment["text"] if segment.get("translation") else romaji_texts[index]
             else:
                 text, _ = self._display_text(segment)
             base_width = segment_base_metrics.horizontalAdvance(text)
@@ -2192,7 +2236,7 @@ class FuriganaWidget(QWidget):
                 if not text_value:
                     continue
                 source_metrics = (QFontMetrics(self._styled_font(self.base_font, source))
-                                  if source.get("bold") or source.get("italic") else base_metrics)
+                                  if source.get("bold") or source.get("italic") or source.get("translation") else base_metrics)
 
                 chars = list(text_value)
                 reading_value = (

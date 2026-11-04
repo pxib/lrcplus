@@ -4,6 +4,7 @@ aubio-ledfx>=0.4.12
 packaging>=24
 Pillow
 requests>=2,<3
+opencc-python-reimplemented>=0.1.7,<0.2
 mutagen>=1,<2
 pytest
 numpy

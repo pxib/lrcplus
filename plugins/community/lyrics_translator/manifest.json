@@ -1,0 +1,7 @@
+{
+  "name": "Lyrics Translator",
+  "version": "1.2.0",
+  "description": "Translate lyric rows with optional offline Argos or Azure, Google Cloud, DeepL and MyMemory.",
+  "api_version": 6,
+  "dependencies": [{"requirement": "argostranslate==1.11.0", "import_name": "argostranslate", "optional": true}]
+}

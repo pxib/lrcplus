@@ -49,6 +49,7 @@ def _load_rubberband():
     signatures = {
         "new": (ctypes.c_void_p, [ctypes.c_uint, ctypes.c_uint, ctypes.c_int,
                                   ctypes.c_double, ctypes.c_double]),
+        "set_pitch_scale": (None, [ctypes.c_void_p, ctypes.c_double]),
         "delete": (None, [ctypes.c_void_p]),
         "get_engine_version": (ctypes.c_int, [ctypes.c_void_p]),
         "get_preferred_start_pad": (ctypes.c_uint, [ctypes.c_void_p]),
@@ -85,9 +86,9 @@ class RubberBandPitchStream:
     def __init__(self, channels, sample_rate, semitones):
         self._library = library = _load_rubberband()
         self.channels = channels
-        # RealTime | ThreadingNever | PitchHighQuality | ChannelsTogether |
-        # EngineFiner. Use the standard analysis window for music quality.
-        options = 0x00000001 | 0x00010000 | 0x02000000 | 0x10000000 | 0x20000000
+        # RealTime | ThreadingNever | PitchHighConsistency | ChannelsTogether |
+        # EngineFiner | WindowShort for responsive live pitch changes.
+        options = 0x00000001 | 0x00010000 | 0x04000000 | 0x10000000 | 0x20000000 | 0x00100000
         self._handle = library.rubberband_new(
             sample_rate, channels, options, 1.0, 2.0 ** (semitones / 12.0),
         )
@@ -103,13 +104,16 @@ class RubberBandPitchStream:
         required = library.rubberband_get_samples_required(self._handle)
         # The silent input below already supplies `pad` frames of analysis
         # context. Count only the remaining context and trimmed output delay,
-        # plus two blocks for variable output and partial decoder callbacks.
-        # This changes buffering only; the R3 analysis settings stay intact.
+        # plus four blocks for variable output during live pitch changes and
+        # partial decoder callbacks.
         self.latency_frames = max(
-            BLOCK_FRAMES, required + self._trim - pad + 2 * BLOCK_FRAMES,
+            BLOCK_FRAMES, required + self._trim - pad + 4 * BLOCK_FRAMES,
         )
         for start in range(0, pad, BLOCK_FRAMES):
             self.process(np.zeros((min(BLOCK_FRAMES, pad - start), channels), np.float32))
+
+    def set_semitones(self, semitones):
+        self._library.rubberband_set_pitch_scale(self._handle, 2.0 ** (semitones / 12.0))
 
     def process(self, frames):
         planar = np.ascontiguousarray(frames.T, dtype=np.float32)
@@ -139,6 +143,9 @@ class PedalboardPitchStream:
         self._sample_rate = sample_rate
         # Pedalboard's wrapper primes a full second of silence internally.
         self.latency_frames = int(sample_rate * 1.25) + 2 * BLOCK_FRAMES
+
+    def set_semitones(self, semitones):
+        self._effect.semitones = semitones
 
     def process(self, frames):
         return self._effect(

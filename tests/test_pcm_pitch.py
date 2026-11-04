@@ -75,7 +75,7 @@ def test_irregular_callbacks_do_not_add_silence_or_grow_pitch_queue(monkeypatch)
     assert np.all(result[8000:] == 0.25)
 
 
-@pytest.mark.parametrize("reset_mode", ["seek", "bypass", "pitch", "format"])
+@pytest.mark.parametrize("reset_mode", ["seek", "bypass", "octave", "format"])
 def test_pitch_discontinuities_cannot_replay_old_audio(reset_mode):
     sample_format = QAudioFormat.SampleFormat.Float
     data = np.full((12000, 2), 0.25, dtype=np.float32).tobytes()
@@ -86,8 +86,8 @@ def test_pitch_discontinuities_cannot_replay_old_audio(reset_mode):
         reset_pcm_pitch_state()
     elif reset_mode == "bypass":
         assert apply_pcm_pitch_to_bytes(data, sample_format, 2, 48000, 0) == data
-    elif reset_mode == "pitch":
-        shift = -5
+    elif reset_mode == "octave":
+        shift = -12
     else:
         sample_format = QAudioFormat.SampleFormat.Int16
         dtype = np.int16
@@ -221,9 +221,9 @@ def test_stalled_sink_keeps_recent_audio_with_bounded_delay(playback):
     playback._current_pcm_gain = 1.5
     for index in range(30):
         playback.write(value=index / 100)
-    assert len(playback._pcm_pending) <= playback.audio_format.bytesForDuration(120000)
+    assert len(playback._pcm_pending) <= playback.audio_format.bytesForDuration(60000)
     assert len(playback._pcm_pending) % playback.audio_format.bytesPerFrame() == 0
-    assert playback._pcm_sink.buffer_size == playback.audio_format.bytesForDuration(60000)
+    assert playback._pcm_sink.buffer_size == playback.audio_format.bytesForDuration(30000)
     pending = np.frombuffer(playback._pcm_pending, dtype=np.float32)
     assert pending[-1] == pytest.approx(0.29 * 1.5)
     assert pending[0] > 0.2  # Old queued audio was discarded.
@@ -239,7 +239,7 @@ def test_control_changes_flush_stale_audio_and_keep_decoder_connected(playback, 
     output = playback._pcm_buffer_output
     assert playback._pcm_pending
     if change == "pitch":
-        playback.handle_pitch_change("Semitones", -5)
+        playback.handle_pitch_change("Semitones", -12)
     elif change == "speed":
         playback.handle_speed_change(125)
     else:
@@ -414,3 +414,36 @@ def test_smaller_startup_reserve_preserves_identical_processed_audio(monkeypatch
     shorter = render(0)
     previous = render(2048)  # The context previously counted twice at +5 st.
     np.testing.assert_array_equal(shorter[:len(previous)], previous)
+
+
+def test_active_pitch_change_keeps_history_and_output_route(playback):
+    for _ in range(10):
+        playback.write()
+    sink = playback._pcm_sink
+    effect = apply_pcm_pitch_to_bytes._effect
+    playback.handle_pitch_change("Semitones", -5)
+    playback.write()
+    assert playback._pcm_sink is sink
+    assert not sink.deleted
+    assert apply_pcm_pitch_to_bytes._effect is effect
+    assert apply_pcm_pitch_to_bytes._started
+
+
+def test_live_pitch_change_reaches_new_frequency_without_recreation():
+    rate = 48000
+    effect = None
+    result = []
+    for start in range(0, rate * 3, 1024):
+        tone = (0.25 * np.sin(2 * np.pi * 440 * np.arange(start, start + 1024) / rate))
+        shifted = apply_pcm_pitch_to_bytes(
+            np.column_stack((tone, tone)).astype(np.float32).tobytes(),
+            QAudioFormat.SampleFormat.Float, 2, rate, 5 if start < rate else -5,
+        )
+        if effect is None:
+            effect = apply_pcm_pitch_to_bytes._effect
+        assert apply_pcm_pitch_to_bytes._effect is effect
+        result.append(np.frombuffer(shifted, np.float32).reshape(-1, 2))
+    steady = np.concatenate(result)[rate * 2:, 0]
+    spectrum = abs(np.fft.rfft(steady * np.hanning(len(steady))))
+    frequency = np.argmax(spectrum) * rate / len(steady)
+    assert frequency == pytest.approx(440 * 2 ** (-5 / 12), rel=0.002)

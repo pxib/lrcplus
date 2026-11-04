@@ -97,8 +97,8 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
         self._pan_timer.timeout.connect(self._advance_pan)
         self.set_text_wrapping(True)
 
-    def set_lyric(self, lyric):
-        super().set_lyric(lyric)
+    def set_lyric(self, lyric, **kwargs):
+        super().set_lyric(lyric, **kwargs)
         self._stop_pan()
         QTimer.singleShot(0, self._configure_pan)
 
@@ -371,12 +371,15 @@ class FloatingLyricsWindow(QWidget):
     def export_settings(self):
         return dict(self.settings)
 
-    def set_text(self, text):
+    def set_text(self, text, translation_lines=()):
         text = str(text or "")
-        if getattr(self, "_current_text", None) == text:
+        translation_lines = tuple(translation_lines)
+        if (getattr(self, "_current_text", None) == text
+                and getattr(self, "_translation_lines", ()) == translation_lines):
             return
         self._current_text = text
-        self.lyric_widget.set_lyric(text)
+        self._translation_lines = translation_lines
+        self.lyric_widget.set_lyric(text, translation_lines=translation_lines)
 
     def set_furigana_enabled(self, enabled):
         self.lyric_widget.set_ruby_visible(enabled)
@@ -682,6 +685,11 @@ class FloatingLyricsPlugin:
         self.floating.set_furigana_enabled(getattr(self.window, "show_ruby", True))
 
         index = getattr(self.window, "current_line", -1)
+        lyric_lines = getattr(self.window, "lyric_lines", []) or []
+        if 0 <= index < len(lyric_lines):
+            line = lyric_lines[index]
+            self.floating.set_text(line.text, translation_lines=getattr(line, "translation_lines", []))
+            return
         lyrics = getattr(self.window, "lyrics", []) or []
         if 0 <= index < len(lyrics):
             entry = lyrics[index]

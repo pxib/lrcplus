@@ -96,82 +96,103 @@ def apply_pcm_rate_to_bytes(data, sample_format, channels, rate):
     return processed.tobytes()
 
 
+class PcmPitchProcessor:
+    """One playback stream, owned by its processing thread."""
+
+    def process(self, data, sample_format, channels, sample_rate, semitones):
+        """Shift decoded PCM pitch while preserving its playback duration."""
+        shift = float(semitones)
+        if abs(shift) < 0.001:
+            self.reset()
+            return data
+        if sample_format == QAudioFormat.SampleFormat.Float:
+            dtype, floating = np.float32, True
+        elif sample_format == QAudioFormat.SampleFormat.Int16:
+            dtype, floating = np.int16, False
+        elif sample_format == QAudioFormat.SampleFormat.Int32:
+            dtype, floating = np.int32, False
+        else:
+            raise ValueError("Pitch processing requires floating-point, 16-bit, or 32-bit PCM.")
+        samples = np.frombuffer(data, dtype=dtype)
+        channels = max(1, int(channels))
+        frame_count = len(samples) // channels
+        if frame_count == 0:
+            return data
+        frames = samples[:frame_count * channels].reshape(frame_count, channels).astype(np.float32)
+        if not floating:
+            frames /= float(-np.iinfo(dtype).min)
+        state = (channels, int(sample_rate), sample_format)
+        reset_effect = (getattr(self, "_state", None) != state
+                        or abs(shift - getattr(self, "_shift", shift)) >= 12.0)
+        if reset_effect:
+            self.reset()
+            effect = create_pitch_stream(channels, int(sample_rate), shift)
+            self._state = state
+            self._input = np.empty((0, channels), dtype=np.float32)
+            self._pending = np.empty((0, channels), dtype=np.float32)
+            self._started = False
+            self._effect = effect
+            self._startup_remaining = effect.latency_frames
+        if not reset_effect and self._shift != shift:
+            self._effect.set_semitones(shift)
+        self._shift = shift
+        input_buffer = np.concatenate((self._input, frames), axis=0)
+        output = [self._pending]
+        # Fixed internal blocks make the result independent of Qt callback sizes.
+        # Keep the same processor alive: no repeated resets or synthetic joins.
+        consumed = len(input_buffer) - len(input_buffer) % BLOCK_FRAMES
+        for start in range(0, consumed, BLOCK_FRAMES):
+            output.append(self._effect.process(
+                input_buffer[start:start + BLOCK_FRAMES],
+            ))
+        pending = np.concatenate(output, axis=0)
+        input_buffer = input_buffer[consumed:]
+        self._input = input_buffer
+        # Preserve duration with one startup reserve, then drain every sample in
+        # order. The controller keeps native playback audible during startup.
+        shifted = np.zeros_like(frames)
+        padding = min(frame_count, self._startup_remaining)
+        self._startup_remaining -= padding
+        if frame_count > padding:
+            available = min(frame_count - padding, pending.shape[0])
+            if available:
+                shifted[padding:padding + available] = pending[:available]
+                pending = pending[available:]
+                self._started = True
+        self._pending = pending
+        if floating:
+            result = np.clip(shifted, -1.0, 1.0).astype(dtype)
+        else:
+            limits = np.iinfo(dtype)
+            result = np.clip(
+                np.rint(shifted.astype(np.float64) * float(-limits.min)),
+                limits.min, limits.max,
+            ).astype(dtype)
+        return result.tobytes()
+
+
+    def reset(self):
+        """Drop buffered samples so seeks and format changes cannot replay stale audio."""
+        effect = getattr(self, "_effect", None)
+        if effect is not None:
+            effect.close()
+        self._state = None
+        self._input = np.empty((0, 0), dtype=np.float32)
+        self._pending = np.empty((0, 0), dtype=np.float32)
+        self._started = False
+        self._effect = None
+        self._startup_remaining = 0
+
+
+_default_pitch_processor = PcmPitchProcessor()
+
+
 def apply_pcm_pitch_to_bytes(data, sample_format, channels, sample_rate, semitones):
-    """Shift decoded PCM pitch while preserving its playback duration."""
-    shift = float(semitones)
-    if abs(shift) < 0.001:
-        reset_pcm_pitch_state()
-        return data
-    if sample_format == QAudioFormat.SampleFormat.Float:
-        dtype, floating = np.float32, True
-    elif sample_format == QAudioFormat.SampleFormat.Int16:
-        dtype, floating = np.int16, False
-    elif sample_format == QAudioFormat.SampleFormat.Int32:
-        dtype, floating = np.int32, False
-    else:
-        raise ValueError("Pitch processing requires floating-point, 16-bit, or 32-bit PCM.")
-    samples = np.frombuffer(data, dtype=dtype)
-    channels = max(1, int(channels))
-    frame_count = len(samples) // channels
-    if frame_count == 0:
-        return data
-    frames = samples[:frame_count * channels].reshape(frame_count, channels).astype(np.float32)
-    if not floating:
-        frames /= float(-np.iinfo(dtype).min)
-    state = (channels, int(sample_rate), sample_format, shift)
-    reset_effect = getattr(apply_pcm_pitch_to_bytes, "_state", None) != state
-    if reset_effect:
-        reset_pcm_pitch_state()
-        effect = create_pitch_stream(channels, int(sample_rate), shift)
-        apply_pcm_pitch_to_bytes._state = state
-        apply_pcm_pitch_to_bytes._input = np.empty((0, channels), dtype=np.float32)
-        apply_pcm_pitch_to_bytes._pending = np.empty((0, channels), dtype=np.float32)
-        apply_pcm_pitch_to_bytes._started = False
-        apply_pcm_pitch_to_bytes._effect = effect
-        apply_pcm_pitch_to_bytes._startup_remaining = effect.latency_frames
-    input_buffer = np.concatenate((apply_pcm_pitch_to_bytes._input, frames), axis=0)
-    output = [apply_pcm_pitch_to_bytes._pending]
-    # Fixed internal blocks make the result independent of Qt callback sizes.
-    # Keep the same processor alive: no repeated resets or synthetic joins.
-    consumed = len(input_buffer) - len(input_buffer) % BLOCK_FRAMES
-    for start in range(0, consumed, BLOCK_FRAMES):
-        output.append(apply_pcm_pitch_to_bytes._effect.process(
-            input_buffer[start:start + BLOCK_FRAMES],
-        ))
-    pending = np.concatenate(output, axis=0)
-    input_buffer = input_buffer[consumed:]
-    apply_pcm_pitch_to_bytes._input = input_buffer
-    # Preserve duration with one startup reserve, then drain every sample in
-    # order. The controller keeps native playback audible during startup.
-    shifted = np.zeros_like(frames)
-    padding = min(frame_count, apply_pcm_pitch_to_bytes._startup_remaining)
-    apply_pcm_pitch_to_bytes._startup_remaining -= padding
-    if frame_count > padding:
-        available = min(frame_count - padding, pending.shape[0])
-        if available:
-            shifted[padding:padding + available] = pending[:available]
-            pending = pending[available:]
-            apply_pcm_pitch_to_bytes._started = True
-    apply_pcm_pitch_to_bytes._pending = pending
-    if floating:
-        result = np.clip(shifted, -1.0, 1.0).astype(dtype)
-    else:
-        limits = np.iinfo(dtype)
-        result = np.clip(
-            np.rint(shifted.astype(np.float64) * float(-limits.min)),
-            limits.min, limits.max,
-        ).astype(dtype)
-    return result.tobytes()
+    result = _default_pitch_processor.process(data, sample_format, channels, sample_rate, semitones)
+    apply_pcm_pitch_to_bytes.__dict__.update(_default_pitch_processor.__dict__)
+    return result
 
 
 def reset_pcm_pitch_state():
-    """Drop buffered samples so seeks and pitch changes cannot replay stale audio."""
-    effect = getattr(apply_pcm_pitch_to_bytes, "_effect", None)
-    if effect is not None:
-        effect.close()
-    apply_pcm_pitch_to_bytes._state = None
-    apply_pcm_pitch_to_bytes._input = np.empty((0, 0), dtype=np.float32)
-    apply_pcm_pitch_to_bytes._pending = np.empty((0, 0), dtype=np.float32)
-    apply_pcm_pitch_to_bytes._started = False
-    apply_pcm_pitch_to_bytes._effect = None
-    apply_pcm_pitch_to_bytes._startup_remaining = 0
+    _default_pitch_processor.reset()
+    apply_pcm_pitch_to_bytes.__dict__.update(_default_pitch_processor.__dict__)

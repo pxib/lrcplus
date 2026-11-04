@@ -90,3 +90,79 @@ def test_pitch_quick_presets_follow_selected_units(qapp):
         dialog.close()
         dialog.deleteLater()
         qapp.processEvents()
+
+
+@pytest.mark.parametrize("mode,text,spin_value,semitones", [
+    ("Semitones", "+3", 3.0, 3.0),
+    ("Octaves", "+0.25", 0.25, 3.0),
+    ("Percent", "125", 125.0, round(12 * math.log2(1.25), 2)),
+])
+@pytest.mark.parametrize("key_name", ["Key_Return", "Key_Enter"])
+def test_fine_tune_enter_commits_current_units_without_activating_preset(
+        qapp, mode, text, spin_value, semitones, key_name):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    changes = []
+    dialog = PitchChangerDialog(0, mode, lambda *args: changes.append(args))
+    try:
+        dialog.show()
+        qapp.processEvents()
+        dialog.value_spin.setFocus()
+        dialog.value_spin.selectAll()
+        QTest.keyClicks(dialog.value_spin, text)
+        QTest.keyClick(dialog.value_spin, getattr(Qt.Key, key_name))
+        qapp.processEvents()
+        assert dialog.isVisible()
+        assert dialog.value_spin.value() == pytest.approx(spin_value)
+        assert dialog.slider.value() == round(semitones * 100)
+        assert changes == [(mode, spin_value)]
+        assert mode.lower().rstrip("s") in dialog.value_spin.toolTip().lower()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
+def test_pitch_drag_coalesces_updates_and_applies_final_value(qapp):
+    from PySide6.QtTest import QTest
+
+    changes = []
+    dialog = PitchChangerDialog(0, "Semitones", lambda *args: changes.append(args))
+    try:
+        dialog.slider.setSliderDown(True)
+        for value in range(1, 501):
+            dialog.slider.setValue(value)
+        assert not changes
+        assert dialog.slider.value() == 500
+        for _ in range(200):
+            if changes:
+                break
+            QTest.qWait(10)
+        assert changes == [("Semitones", 5.0)]
+        dialog.slider.setValue(550)
+        dialog.slider.setSliderDown(False)
+        assert changes[-1] == ("Semitones", 5.5)
+        assert not dialog._pitch_update_timer.isActive()
+    finally:
+        dialog.close()
+
+
+def test_pitch_preferences_save_once_after_adjustments(qapp, monkeypatch):
+    from PySide6.QtTest import QTest
+    from ui import main_window
+
+    window = Player()
+    saved = []
+    monkeypatch.setattr(main_window, "save_playback_settings", lambda values: saved.append(dict(values)))
+    try:
+        for value in range(1, 11):
+            window.handle_pitch_change("Semitones", value / 10)
+        assert not saved
+        QTest.qWait(400)
+        assert len(saved) == 1
+        assert saved[0]["pitch_value"] == 1.0
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()

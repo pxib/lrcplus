@@ -1,6 +1,7 @@
 """Decode native word lyrics and preserve their millisecond timing in LRCX."""
 import base64
 import binascii
+import json
 from dataclasses import dataclass
 import re
 import zlib
@@ -86,6 +87,37 @@ def parse_word_lyrics(text, kind):
         if words:
             lines.append(WordLine(start, start + duration, tuple(words), bool(markers)))
     return lines
+
+
+def krc_translations(text):
+    """KRC translation metadata indexes the original rows, including credits."""
+    try:
+        starts = [int(match[1]) for line in text.splitlines() if (match := _LINE.match(line))]
+    except ValueError:
+        return {}
+    for line in text.splitlines():
+        if not line.startswith("[language:") or not line.endswith("]"):
+            continue
+        try:
+            payload = json.loads(base64.b64decode(line[10:-1], validate=True))
+        except (ValueError, UnicodeError, RecursionError):
+            continue
+        if not isinstance(payload, dict) or not isinstance(payload.get("content"), list):
+            continue
+        for entry in payload["content"]:
+            if not isinstance(entry, dict) or type(entry.get("type")) is not int or entry["type"] != 1:
+                continue
+            rows = entry.get("lyricContent")
+            if not isinstance(rows, list) or len(rows) != len(starts):
+                continue
+            if not all(isinstance(row, list) and len(row) == 1 and isinstance(row[0], str) for row in rows):
+                continue
+            # Duplicate starts cannot identify a unique source row.
+            if len(set(starts)) != len(starts):
+                continue
+            return {start: row[0].strip() for start, row in zip(starts, rows)
+                    if row[0].strip() and row[0].strip() != "//"}
+    return {}
 
 
 def timestamp_ms(value):

@@ -20,13 +20,15 @@ from PySide6.QtWidgets import (
     QButtonGroup, QComboBox, QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
     QInputDialog, QMainWindow, QScrollArea, QStackedWidget, QLineEdit, QDoubleSpinBox,
     QMessageBox, QPushButton, QProgressBar, QSlider, QToolButton, QVBoxLayout, QWidget,
-    QGraphicsView, QGraphicsScene,
+    QGraphicsView, QGraphicsScene, QCheckBox, QTabBar,
     QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QTreeWidget, QTreeWidgetItem, QAbstractItemView, QStyledItemDelegate,
 )
 
+from core.pcm_playback import PcmPlayback
 from core.audio_controller import AudioController, snap_volume_percentage
 from core.background_job import BackgroundJob
 from core.lyrics_preview_queue import LyricsPreviewQueue
+from core.lyrics_translations import converted_translations, translation_preview
 from core.lrclib import LRCLibError, search as search_lrclib
 from core.musixmatch import (
     MusixmatchError, search as search_musixmatch,
@@ -84,6 +86,7 @@ from ui.lrc_editor import LrcEditorDialog
 from ui.lyrics_preview import LyricsPreview
 from ui.queue_actions import QueueActionsMixin
 from ui.library_lyrics_search import LibraryLyricsSearchMixin, LyricMatchDelegate
+from ui.library_sorting import LIBRARY_SORT_ROLE, LibraryTreeItem
 from ui.audio_devices import AudioDeviceControllerMixin
 from ui.artwork_background import ArtworkBackgroundWidget, extract_embedded_cover, load_embedded_cover_thumbnail
 from ui.player_dialogs import (ClickableSlider, ClickableTimeLabel, AlbumCoverDelegate, CoverPreviewView, CoverPreviewDialog, PitchChangerDialog, LibraryScanWorker)
@@ -149,6 +152,15 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             self._pcm_sink = None
             self._pcm_sink_io = None
             self._pcm_pending = bytearray()
+            self._pcm_worker = PcmPlayback(self)
+            self._pcm_worker.route_started.connect(self._activate_pcm_route)
+            self._pcm_worker.failed.connect(self._pcm_output_failed)
+            self._playback_save_timer = QTimer(self)
+            self._playback_save_timer.setSingleShot(True)
+            self._playback_save_timer.setInterval(300)
+            self._playback_save_timer.timeout.connect(
+                lambda: save_playback_settings(self.playback_settings)
+            )
             self.pitch_settings = {"mode": "Semitones", "value": 0}
             self.pitch_semitones = 0.0
             self._pcm_drain_timer = QTimer(self)
@@ -980,6 +992,8 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             self.library_table.setColumnWidth(11, 150)
             self.library_table.setColumnWidth(self.library_lyrics_column, 340)
             self._apply_library_column_state()
+            self.library_table.setSortingEnabled(True)
+            header.sortIndicatorChanged.connect(lambda *_: self._save_library_column_state())
             header.sectionResized.connect(lambda *_: self._save_library_column_state())
             header.sectionMoved.connect(lambda *_: self._save_library_column_state())
             root.addWidget(self.library_table, 1)
@@ -988,6 +1002,15 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
         def _show_library_column_menu(self, pos):
             header = self.library_table.header()
             menu = QMenu(self)
+            logical = header.logicalIndexAt(pos)
+            if logical >= 0:
+                for label, order in (("Sort ascending", Qt.SortOrder.AscendingOrder),
+                                     ("Sort descending", Qt.SortOrder.DescendingOrder)):
+                    action = menu.addAction(label)
+                    action.setCheckable(True)
+                    action.setChecked(header.sortIndicatorSection() == logical and header.sortIndicatorOrder() == order)
+                    action.triggered.connect(lambda _checked=False, column=logical, direction=order: self.library_table.sortItems(column, direction))
+                menu.addSeparator()
             columns_menu = menu.addMenu("Columns")
             for logical, (key, label) in enumerate(self.library_columns):
                 action = columns_menu.addAction(label)
@@ -1045,6 +1068,11 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             for logical in range(len(self.library_columns)):
                 if not header.isSectionHidden(logical):
                     self._restore_library_column_width(logical)
+            sort_column = state.get("sort_column", -1)
+            if not isinstance(sort_column, int) or not -1 <= sort_column < len(self.library_columns):
+                sort_column = -1
+            direction = Qt.SortOrder.DescendingOrder if state.get("sort_descending", False) else Qt.SortOrder.AscendingOrder
+            header.setSortIndicator(sort_column, direction)
 
         def _save_library_column_state(self):
             if not hasattr(self, "library_table") or not hasattr(self, "library_columns"):
@@ -1054,12 +1082,15 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 "hidden": [i for i in range(len(self.library_columns)) if header.isSectionHidden(i)],
                 "widths": {str(i): self.library_table.columnWidth(i) for i in range(len(self.library_columns))},
                 "order": [header.logicalIndex(v) for v in range(len(self.library_columns))],
+                "sort_column": header.sortIndicatorSection(),
+                "sort_descending": header.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder,
             }
             self.library_column_state = state
             save_music_library(self.library_folders, [t.to_dict() for t in self.library_tracks], state)
 
         def _reset_library_columns(self):
             header = self.library_table.header()
+            header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
             for logical in range(len(self.library_columns)):
                 header.setSectionHidden(logical, logical >= 6)
                 current = header.visualIndex(logical)
@@ -1289,6 +1320,8 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 self._reset_library_lyrics_search()
                 self._library_lyrics_index.invalidate()
             self._library_filter_groups = []
+            sorting_enabled = self.library_table.isSortingEnabled()
+            self.library_table.setSortingEnabled(False)
             self.library_table.clear()
             grouped = {}
             for track in self.library_tracks:
@@ -1307,7 +1340,9 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 # the Album cover column.
                 parent_values = ["" for _ in self.library_columns]
                 parent_values[2] = heading  # Title / track artist
-                parent = QTreeWidgetItem(parent_values)
+                parent = LibraryTreeItem(parent_values)
+                parent.setData(3, LIBRARY_SORT_ROLE, (artist + " / " + album).casefold())
+                parent.setData(4, LIBRARY_SORT_ROLE, date.casefold())
                 parent.setFirstColumnSpanned(False)
                 parent.setExpanded(True)
                 parent.setData(0, Qt.ItemDataRole.UserRole, None)
@@ -1317,7 +1352,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 filter_rows = []
                 self._library_filter_groups.append((parent, filter_rows))
                 for track in tracks:
-                    item = QTreeWidgetItem([
+                    item = LibraryTreeItem([
                         "",
                         track.track_number or "",
                         track.display_title,
@@ -1332,6 +1367,10 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                         __import__("datetime").datetime.fromtimestamp(track.modified).strftime("%Y-%m-%d %H:%M:%S") if track.modified else "",
                     ])
                     item.setData(0, Qt.ItemDataRole.UserRole, track.path)
+                    for column, value in ((1, self._library_track_number(track.track_number)),
+                                          (5, track.duration), (7, track.bitrate),
+                                          (8, track.file_size), (11, track.modified)):
+                        item.setData(column, LIBRARY_SORT_ROLE, value)
                     haystack = " ".join([track.display_title, track.artist, track.album, track.album_artist, track.date, track.path]).casefold()
                     filter_rows.append((item, haystack))
                     # Artwork is intentionally deferred until the row is visible.
@@ -1340,6 +1379,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
 
             folder_text = "; ".join(self.library_folders) if self.library_folders else "No music folders yet. Add a folder to build your library."
             self.library_folder_label.setText(f"Library folders: {folder_text}")
+            self.library_table.setSortingEnabled(sorting_enabled)
             # Do not auto-resize the cover column here: the user controls its width.
             self._filter_library_view()
 
@@ -2005,6 +2045,35 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             preview_layout = QVBoxLayout(preview_panel)
             preview_layout.setContentsMargins(0, 0, 0, 0)
             preview_layout.addWidget(QLabel("Preview / Inspect Lyrics"))
+            include_translations = QCheckBox("Include translations", preview_panel)
+            include_translations.setAccessibleName("Include translations")
+            include_translations.setEnabled(False)
+            include_translations.setToolTip(
+                "Show and save provider translations below the original lyrics as LRCX. Available in the Original tab."
+            )
+            preview_tabs = QTabBar(preview_panel)
+            preview_tabs.setAccessibleName("Lyric preview version")
+            preview_tabs.setExpanding(False)
+            preview_tabs.setDrawBase(False)
+            preview_tabs.addTab("Original")
+            preview_tabs.addTab("Translated")
+            preview_tabs.setTabEnabled(1, False)
+            translation_script = QComboBox(preview_panel)
+            translation_script.setAccessibleName("Chinese translation script")
+            translation_script.addItem("As provided", "provided")
+            translation_script.addItem("Simplified", "simplified")
+            translation_script.addItem("Traditional", "traditional")
+            translation_script.setEnabled(False)
+            translation_script.setToolTip(
+                "Convert Chinese translations in the preview and saved lyrics. Original lyrics stay as provided."
+            )
+            preview_controls = QHBoxLayout()
+            preview_controls.addWidget(include_translations)
+            preview_controls.addWidget(preview_tabs)
+            preview_controls.addStretch(1)
+            preview_controls.addWidget(QLabel("Chinese:", preview_panel))
+            preview_controls.addWidget(translation_script)
+            preview_layout.addLayout(preview_controls)
 
             preview = LyricsPreview(preview_panel)
             preview.setPlaceholderText(
@@ -2143,6 +2212,10 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 use_button.setEnabled(False)
                 attribution.clear()
                 item = selected_record()
+                has_translation = bool(item and item.get("translatedLyrics"))
+                translation_script.setEnabled(has_translation)
+                preview_tabs.setTabEnabled(1, has_translation)
+                include_translations.setEnabled(has_translation and preview_tabs.currentIndex() == 0)
                 if item is None:
                     preview.clear()
                     return
@@ -2158,8 +2231,15 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                 synced = item.get("syncedLyrics") or ""
                 plain = item.get("plainLyrics") or ""
 
-                if synced:
-                    preview.setPlainText(synced)
+                if preview_tabs.currentIndex() == 1 and has_translation:
+                    variant = converted_translations(item, translation_script.currentData())
+                    preview.setPlainText(translation_preview(variant))
+                elif synced:
+                    if has_translation and include_translations.isChecked():
+                        variant = converted_translations(item, translation_script.currentData())
+                        preview.setPlainText(variant["translatedLyrics"])
+                    else:
+                        preview.setPlainText(synced)
                 elif plain:
                     preview.setPlainText(plain)
                 else:
@@ -2171,9 +2251,17 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                     notes = [f"Lyrics provided by {item['source']}", item.get("copyright"), item.get("sourceUrl")]
                     if item["source"] == "Kuwo":
                         notes.append("Kuwo may include original and translated lines together.")
+                    if item.get("translationCount"):
+                        notes.append(f"Provider translations available for {item['translationCount']} line(s).")
+                    elif item["source"] in ("NetEase Cloud Music", "QQ Music", "KuGou"):
+                        notes.append("No aligned provider translation is available for this result.")
                     credit = "\n".join(filter(None, notes))
                     attribution.setFont(content_font(attribution.font(), credit))
                     attribution.setText(credit)
+
+            include_translations.toggled.connect(update_preview)
+            preview_tabs.currentChanged.connect(update_preview)
+            translation_script.currentIndexChanged.connect(update_preview)
 
             def fetch_preview(item, key, mode, cancel):
                 try:
@@ -2413,6 +2501,10 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                     status.setText("Select a result first.")
                     return
 
+                if include_translations.isChecked() and item.get("translatedLyrics"):
+                    item = converted_translations(item, translation_script.currentData())
+                    item = {**item, "syncedLyrics": item["translatedLyrics"], "lyricsFormat": "lrcx"}
+
                 synced = item.get("syncedLyrics")
                 plain = item.get("plainLyrics")
 
@@ -2449,16 +2541,31 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
                                for suffix in (".lrc", ".lrcx", ".txt"))
                     )
                     if has_lyrics:
-                        answer = QMessageBox.warning(
-                            dialog,
+                        warning = QMessageBox(
+                            QMessageBox.Icon.Warning,
                             "Overwrite Lyrics",
                             f'"{self.current_audio_path.name}" already has lyrics.\n\n'
                             f"Replace them with the selected lyrics from {provider.currentText()}?\n"
                             f"An existing file at {destination} will be overwritten.",
                             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                            QMessageBox.StandardButton.Cancel,
+                            dialog,
                         )
-                        if answer != QMessageBox.StandardButton.Yes:
+                        save_as = warning.addButton("Save as...", QMessageBox.ButtonRole.ActionRole)
+                        warning.setDefaultButton(QMessageBox.StandardButton.Cancel)
+                        warning.setEscapeButton(QMessageBox.StandardButton.Cancel)
+                        warning.exec()
+                        if warning.clickedButton() is save_as:
+                            suffix = destination.suffix
+                            filename, _ = QFileDialog.getSaveFileName(
+                                dialog, "Save Lyrics As", str(destination),
+                                f"Lyrics (*{suffix})",
+                            )
+                            if not filename:
+                                return
+                            destination = Path(filename)
+                            if not destination.suffix:
+                                destination = destination.with_suffix(suffix)
+                        elif warning.standardButton(warning.clickedButton()) != QMessageBox.StandardButton.Yes:
                             return
                     if item.get("source") == "Musixmatch":
                         credit = "\n".join(filter(None, [f"Lyrics provided by {item['source']}", item.get("copyright"), item.get("sourceUrl")]))
@@ -3008,6 +3115,7 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             self._save_startup_state()
 
             self.lyric_widget.stop_workers()
+            self.waveform_widget._stop_worker()
 
             self._close_audio_device_dialog()
             self.media_player.stop()
@@ -3015,6 +3123,8 @@ class Player(LibraryLyricsSearchMixin, QueueActionsMixin, QueueControllerMixin, 
             save_playback_settings(self.playback_settings)
             self.media_player.setAudioBufferOutput(None)
             self._stop_pcm_sink()
+            self._pcm_worker.close()
+            self._playback_save_timer.stop()
 
             event.accept()
 

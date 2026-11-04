@@ -34,3 +34,5 @@ class LyricLine:
     style_spans: list[tuple[int, int, bool, bool, bool, bool]] = field(default_factory=list)
     # A single quote level applies to the whole timestamp, including newlines.
     is_blockquote: bool = False
+    # Zero-based visual rows introduced by a translation break {\nt}.
+    translation_lines: list[int] = field(default_factory=list)

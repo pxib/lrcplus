@@ -4,6 +4,51 @@ Checked on 2026-10-31. These are results from direct requests to the providers,
 without an account or developer API key. NetEase YRC with LRC fallback, KuGou KRC,
 and Kuwo LRC are now implemented, along with the dialog's per-provider cache.
 
+## Translation import (2026-11-04)
+
+Search Lyrics now offers an optional **Include translations** checkbox. Original
+lyrics remain the default. Selecting the checkbox saves the combined lyrics as
+LRCX, with each translation introduced by `{\nt}`. Adjacent **Original | Translated**
+tabs independently choose which text is previewed. The same cached provider
+response serves both previews, so switching tabs does not make more requests.
+In Original, Include translations also shows the combined `{\nt}` output.
+In Translated, the checkbox is greyed out while retaining its selection.
+
+A **Chinese** selector converts translation text to Simplified or Traditional
+Chinese using local [OpenCC dictionaries](https://github.com/yichen0831/opencc-python).
+It defaults to **As provided** and affects both the translated preview and bilingual
+import. Conversion always starts from the cached provider translation, so returning
+to As provided restores the exact source text. Originals and timing markup are
+never sent through conversion. The runtime and test requirements include
+`opencc-python-reimplemented`, and the executable specification bundles its
+configuration and dictionary files.
+
+- NetEase retains timed `ytlrc` and `tlyric` branches and chooses the branch with
+  the most exact timestamp matches. See this
+  [NetEase provider implementation](https://github.com/1-Dot/ivlyrics-netease-cloud-music).
+- QQ Music decodes the separate base64 `trans` field, including HTML entities.
+  See [Listen1's QQ lyric implementation](https://github.com/listen1/listen1_chrome_extension/blob/master/js/provider/qq.js).
+- KuGou decodes translation entries (`type: 1`) in KRC's base64 JSON `language`
+  tag. Rows are paired before credit removal to retain their original indices;
+  romanization entries are excluded. See the
+  [KRC parser reference](https://github.com/chenmozhijin/LDDC/blob/main/LDDC/core/parser/krc.py).
+
+Only exact timestamp matches are attached. Ambiguous duplicate timestamps and
+inconsistent KRC row counts are skipped. Malformed optional translations do not
+prevent importing usable original lyrics. Original word starts, word ends, and
+line ends are retained; translated word-timed rows use the original line start
+and an instant display marker, without interpolated karaoke timing.
+
+Live read-only checks returned 56 aligned translated rows for NetEase song
+`1409311773` (LRC), 30 for `1824020871` (YRC), and 65 for the first KuGou
+candidate for YOASOBI's 夜に駆ける (KRC). Sampled QQ results returned usable
+original lyrics without aligned translations. Availability and translation
+language vary by recording. No downloaded lyrics are included in this report.
+
+Kuwo still preserves its mixed rows: duplicate timestamps alone cannot establish
+which row is a translation. LRCLIB and Musixmatch do not expose translation
+imports through this implementation. This feature does not translate text itself.
+
 ## Live results
 
 | Source | Timing | Verified response | App output |

@@ -1,6 +1,8 @@
 import re
+from io import StringIO
 
 from lyrics.models import LyricLine, LyricSegment
+from lyrics.line_breaks import decode_line_breaks
 from lyrics.formatting import parse_emphasis, parse_quote_prefix
 from lyrics.parser import GENERATION_MODE_RE, normalize_generation_mode
 
@@ -131,6 +133,11 @@ def _parse_content(content, start_time, split_newlines=False):
 
 
 def load_lrcx(path, *, infer_ends=True):
+    with open(path, "r", encoding="utf-8-sig") as file:
+        return parse_lrcx(file.read(), infer_ends=infer_ends)
+
+
+def parse_lrcx(text, *, infer_ends=True):
     """Load LRCX v1.
 
     Syntax:
@@ -146,7 +153,7 @@ def load_lrcx(path, *, infer_ends=True):
     """
     lines = []
 
-    with open(path, "r", encoding="utf-8-sig") as file:
+    with StringIO(text.lstrip("\ufeff")) as file:
         for raw_line in file:
             line = raw_line.rstrip("\r\n")
             if not line or METADATA_RE.match(line):
@@ -159,6 +166,7 @@ def load_lrcx(path, *, infer_ends=True):
             line_start = _timestamp(line_matches[0])
             content = line[line_matches[-1].end():]
             content, is_blockquote = parse_quote_prefix(content)
+            content, translation_lines = decode_line_breaks(content)
             segment_matches = list(SEGMENT_TIMESTAMP_RE.finditer(content))
             # Karaoke is explicit in LRCX: segment timestamps or instant tags.
             has_karaoke = bool(segment_matches) or INSTANT_TAG in content
@@ -272,6 +280,7 @@ def load_lrcx(path, *, infer_ends=True):
                     has_karaoke=has_karaoke,
                     style_spans=style_spans,
                     is_blockquote=is_blockquote,
+                    translation_lines=translation_lines,
                 )
             )
 

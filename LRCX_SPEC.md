@@ -93,6 +93,37 @@ marker at the cursor. You can also type it or press Enter. The editor displays
 saved line breaks as markers; previews and playback display actual line breaks.
 Save as `.lrcx` to preserve them.
 
+### Translation rows
+
+Use `{\nt}` (newline translation) to introduce a translation row:
+
+```text
+[00:12.500]Original lyric{\nt}Translated lyric
+```
+
+It shares the lyric timestamp and displays at 75% of the main lyric font size.
+Translation rows use compact spacing without an empty automatic-reading band.
+Automatic reading generation skips translation rows, and All Romaji preserves
+their original text. The translation marker is preserved when editing and saving `.lrcx`.
+It can be mixed with ordinary `{\n}` breaks and karaoke timestamps. Enter the
+marker with **Insert Translation {\nt}** beside Insert Newline, or type it
+directly in the Lyrics field or source view; it does not generate or
+download a translation.
+
+In **Search Lyrics**, enable **Include translations** to import aligned
+translations supplied by NetEase Cloud Music, QQ Music, or KuGou. The option
+starts unchecked and becomes available when a result has matching translated
+rows. Use the adjacent **Original | Translated** tabs to inspect either text;
+in Original, checking Include translations previews the combined lyrics using
+`{\nt}`. In Translated, only the translation is shown and the checkbox is disabled.
+Its selection is retained when switching tabs and controls whether
+**Use Selected Lyrics** saves both as `.lrcx`.
+The **Chinese** selector offers **As provided**, **Simplified**, and **Traditional**.
+Conversion applies to translation text in the preview and saved lyrics, leaving
+original lyrics and timing unchanged. As provided restores the provider's exact text.
+The translation language is supplied by the provider.
+Unmatched rows remain untranslated; this does not perform machine translation.
+
 ## Segment end times
 
 A segment ends when the next segment begins. The final segment's end can later be resolved from the next lyric line by the karaoke renderer.

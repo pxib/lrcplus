@@ -1,7 +1,7 @@
 # LRCPlus Plugin API
 
-> **Current API version:** 4
-> **Supported plugin API versions:** 1–4
+> **Current API version:** 6
+> **Supported plugin API versions:** 1–6
 
 The LRCPlus Plugin API lets plugins integrate with the player without importing internal UI or manager code.
 
@@ -13,6 +13,7 @@ Plugins can currently:
 - store persistent plugin settings;
 - register plugin settings widgets in Settings > Plugins;
 - register automatic lyric-reading providers;
+- register translation providers in the lyrics editor;
 - add menu actions;
 - add buttons to the main playback controls;
 - inspect and control playback;
@@ -728,6 +729,32 @@ Returns a detached list of dictionaries containing each lyric line's `text`
 and `start_ms` timestamp. The snapshot can be passed to
 `context.api.analyze_lyric_words(lines)`.
 
+## Translation documents (v5)
+
+```python
+document = context.api.get_current_lyrics_document()
+preview = context.api.render_lyrics_translations(document, {0: "Translated line"})
+context.api.save_lyrics_translations(document, {0: "Translated line"}, "C:/Music/song.en.machine.lrcx")
+```
+
+`get_current_lyrics_document()` reads the current timed LRC/LRCX file into a detached
+snapshot. It returns `audio_path`, `lyrics_path`, lossless `lrcx`, `metadata`,
+`offset_ms`, `generation_mode`, and `lines`. Each line contains its zero-based
+`index`, `start_ms`, original `text`, and `has_translation`. Blank rows remain in
+the snapshot; indices do not shift when timestamps repeat or rows are skipped.
+No timed lyrics raises `ValueError`; file errors propagate.
+
+`render_lyrics_translations(document, translations)` returns LRCX without writing.
+The mapping uses integer source indices and plain translation text. Existing
+translation rows cannot be replaced. Original ruby, styles, timing, offsets and
+metadata are preserved. Plugins should review/edit the result before saving.
+
+`save_lyrics_translations(...)` writes a separate `.lrcx` with atomic backup and
+associates it with the snapshot's audio through `attach_lyrics`. Call it on the
+GUI thread after the user chooses the destination. The source lyric path is
+rejected. Saving never retargets a result to a different song that started playing
+while translation ran. Optional translation engines belong in worker processes.
+
 ## Analyze lyric words
 
 ```python
@@ -834,6 +861,11 @@ An entry can also declare `"requires": ["setuptools>=65,<82"]` for supporting
 libraries not correctly declared by an upstream package. These are installed and
 resolved with the selected dependency. Cantonese Readings uses this for the legacy
 `pkg_resources` import in Wordseg.
+Set `"optional": true` on a dependency when only one feature needs it. The
+dependency remains installable through Settings but does not prevent the plugin
+loading when missing or incompatible. The plugin must handle that feature's
+absence itself. Lyrics Translator uses this for its optional Argos engine, so
+cloud providers stay usable without installing Argos.
 The manager resolves a shared environment against all declared version constraints
 and preserves the versions of app-provided libraries. App-provided libraries
 cannot be replaced or removed through this UI.
@@ -861,7 +893,7 @@ downloads and package installation require internet access.
 The private runtime also supplies standard-library modules and native extensions
 that PyInstaller did not include in the base application.
 
-Missing or incompatible declared dependencies prevent the affected plugin from
+Missing or incompatible required dependencies prevent the affected plugin from
 loading, with an aggregated setup notice for enabled plugins. Import checks run
 in a separate process so even a native-library crash cannot terminate the player.
 
@@ -967,6 +999,10 @@ Suggested `manifest.json`:
 | `add_main_window_button(...)` | Add a plugin-owned main-window button |
 | `get_current_track()` | Get the current track path |
 | `get_current_lyrics()` | Get a snapshot of current lyric lines |
+| `get_current_lyrics_document()` | Export a detached timed-lyric document (v5) |
+| `render_lyrics_translations(document, translations)` | Preview translation rows as LRCX (v5) |
+| `save_lyrics_translations(document, translations, destination)` | Save and attach a separate translated copy (v5) |
+| `register_translation_provider(id, name, panel_factory)` | Add a provider to the editor's Translations tab (v6) |
 | `analyze_lyric_words(lines)` | Analyze lyric words and readings |
 | `get_position()` | Get playback position in milliseconds |
 | `get_duration()` | Get track duration in milliseconds |
@@ -1057,6 +1093,27 @@ Keeping those systems separate prevents automatic romanization or furigana from 
 ---
 
 # Version history
+
+## API v6
+
+Translation plugins call `api.register_translation_provider(id, name, panel_factory)`
+to add an entry to the shared Translations tab's provider selector (API v6).
+The host calls the selected factory with
+`(editor, document_loader, apply_translations)` when the Translations tab is
+first opened, and embeds the returned widget in that tab. `document_loader()`
+captures the in-memory lyrics, including unsaved edits. The panel calls
+`apply_translations(document, translations)` on the GUI thread when the user
+chooses Apply. The editor validates that the document is still current, then
+applies the translations as one undoable edit without writing a file. The editor
+calls the panel's `shutdown()` when closing to stop any helper process. Panels
+should provide `has_unapplied_translations()` to report review drafts or running
+translation work. The editor checks every instantiated provider panel before
+closing and offers Discard or Cancel, defaulting to Cancel. Applying translations
+should clear that draft state; applied lyrics use the normal document save warning.
+The Translations tab is hidden when no providers are registered. Registrations are
+removed automatically on plugin unload. Each provider retains its own panel and
+draft when switching; no automatic provider fallback occurs. Plugins must stop
+and disable their existing panels on unload.
 
 ## API v2
 

@@ -1,7 +1,30 @@
 from pathlib import Path
+import pytest
 from lyrics.lrcx_parser import load_lrcx
 from lyrics.models import LyricLine, LyricSegment
 from lyrics.writer import serialize_lrcx
+
+
+@pytest.mark.parametrize("boundary", ["", "<00:11.000>"])
+def test_translation_break_roundtrip_with_formatting_and_ruby(tmp_path, boundary):
+    path = tmp_path / "translation.lrcx"
+    path.write_text(
+        r"[00:10.000]> **{君|きみ}**{\nt}" + boundary
+        + r"*You*{\n}Other{\nt}Translation" + "\n",
+        encoding="utf-8",
+    )
+    line = load_lrcx(path, infer_ends=False)[0]
+    assert line.text == "君\nYou\nOther\nTranslation"
+    assert line.translation_lines == [1, 3]
+    assert line.is_blockquote
+    assert line.has_karaoke == bool(boundary)
+    saved = serialize_lrcx([line])
+    assert saved.count(r"{\nt}") == 2
+    assert saved.count(r"{\n}") == 1
+    assert r"{君|きみ}" in saved
+    path.write_text(saved, encoding="utf-8")
+    reloaded = load_lrcx(path, infer_ends=False)[0]
+    assert reloaded == line
 
 
 def test_lrcx_multiline_plain_roundtrip(tmp_path):

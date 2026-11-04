@@ -5,6 +5,7 @@ from pathlib import Path
 from lyrics.loader import load_lyrics
 from lyrics.furigana import build_furigana_segments
 from lyrics.models import LyricSegment
+from lyrics.line_breaks import encode_line_breaks, reading_source
 from lyrics.formatting import format_emphasis
 from core.file_io import atomic_write_text
 
@@ -56,7 +57,7 @@ def _manual_segments(line, manual_overrides):
         )
 
     try:
-        tokens = build_furigana_segments(line.text)
+        tokens = build_furigana_segments(reading_source(line.text, line.translation_lines))
     except Exception:
         # If tokenization fails, do not destroy existing LRCX data.
         return list(line.segments) or [
@@ -166,6 +167,7 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
         active_timestamp = line.start
         has_karaoke_marker = False
         text_offset = 0
+        visual_row = 0
 
         # Karaoke is an explicit document property. In particular, automatic
         # separation may create several chunks that initially share the same
@@ -196,9 +198,12 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
             # Structural visual newlines are represented by the literal
             # LRCX marker {\n}; they are not timestamp boundaries.
             if text == "\n":
-                parts.append(r"{\n}")
+                parts.append(encode_line_breaks(text, line.translation_lines, visual_row))
+                visual_row += 1
                 continue
-            text = text.replace("\n", r"{\n}")
+            newline_count = text.count("\n")
+            text = encode_line_breaks(text, line.translation_lines, visual_row)
+            visual_row += newline_count
 
             # Ruby is serialized inside the existing karaoke chunk, so it
             # never creates or changes karaoke boundaries.
@@ -232,7 +237,15 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
                     if end_time < float(segment.start):
                         end_time = None
                     if end_time is not None:
-                        if next_start is None:
+                        if next_segment is not None and next_segment.text == "\n":
+                            # A newline consumes the following timestamp's
+                            # content. Keep an empty boundary before it so the
+                            # preceding word's authored end survives a save.
+                            boundary = f"<{format_timestamp(end_time)}>"
+                            parts.extend((boundary, boundary))
+                            active_timestamp = end_time
+                            has_karaoke_marker = True
+                        elif next_start is None:
                             if end_time != float(active_timestamp):
                                 parts.append(f"<{format_timestamp(end_time)}>")
                                 active_timestamp = end_time

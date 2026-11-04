@@ -740,9 +740,11 @@ class KaraokeScreenPlugin(QObject):
                             current,
                             segments,
                             line_end,
+                            translation_lines=getattr(lyric_line, "translation_lines", []),
                         )
                     else:
-                        screen.current_lyric.set_lyric(current, generate=True)
+                        screen.current_lyric.set_lyric(current, generate=True,
+                            translation_lines=getattr(lyric_line, "translation_lines", []))
                 else:
                     screen.current_lyric.set_lyric(current, generate=True)
                 self._screen_line_index = index
@@ -764,9 +766,11 @@ class KaraokeScreenPlugin(QObject):
                     line_end = getattr(lyric_line, "end", None)
                     if line_end is None and upcoming_index + 1 < len(lyric_lines):
                         line_end = lyric_lines[upcoming_index + 1].start
-                    screen.next_lyric.set_segments(upcoming, segments, line_end)
+                    screen.next_lyric.set_segments(upcoming, segments, line_end,
+                        translation_lines=getattr(lyric_line, "translation_lines", []))
                 else:
-                    screen.next_lyric.set_lyric(upcoming, generate=True)
+                    screen.next_lyric.set_lyric(upcoming, generate=True,
+                        translation_lines=getattr(lyric_line, "translation_lines", []))
             else:
                 screen.next_lyric.set_lyric(upcoming, generate=True)
             self._screen_next_text = upcoming

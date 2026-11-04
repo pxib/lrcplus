@@ -198,7 +198,7 @@ class LrcEditorUiMixin:
         self.line_text.setAcceptRichText(False)
         self.line_text.setPlaceholderText("Lyric text")
         self.line_text.setToolTip(
-            r"Use **bold**, *italic*, ~~strikethrough~~, <u>underline</u>, > at the start for a quote, and {\n} for a line break."
+            r"Use **bold**, *italic*, ~~strikethrough~~, <u>underline</u>, > at the start for a quote, {\n} for a line break, and {\nt} for a translation row."
         )
         self.line_text.textChanged.connect(self.line_details_changed)
         self.insert_newline_button = QPushButton(r"Insert Newline {\n}")
@@ -208,8 +208,16 @@ class LrcEditorUiMixin:
             "Insert a line break at the lyric cursor, keeping the same lyric timestamp."
         )
         self.insert_newline_button.clicked.connect(self.insert_lyric_newline)
+        self.insert_translation_button = QPushButton(r"Insert Translation {\nt}")
+        self.insert_translation_button.setAutoDefault(False)
+        self.insert_translation_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.insert_translation_button.setToolTip(
+            "Start a smaller translation row at the lyric cursor, keeping the same timestamp."
+        )
+        self.insert_translation_button.clicked.connect(self.insert_lyric_translation)
         lyric_tools = QHBoxLayout()
         lyric_tools.addWidget(self.insert_newline_button)
+        lyric_tools.addWidget(self.insert_translation_button)
         self.lyric_style_buttons = []
         self.lyric_style_shortcuts = []
         for label, marker, closing, key in (
@@ -307,6 +315,14 @@ class LrcEditorUiMixin:
         detail_layout.addLayout(line_buttons)
         lyrics_layout.addWidget(detail, 1)
         self.tabs.addTab(lyrics_page, "Lyrics")
+
+        self.translation_page = None
+        self.translation_panel = None
+        manager = getattr(self.player, "plugin_manager", None)
+        if manager is not None and getattr(manager, "translation_providers", {}):
+            self.translation_page = QWidget()
+            QVBoxLayout(self.translation_page).setContentsMargins(0, 0, 0, 0)
+            self.tabs.addTab(self.translation_page, "Translations")
 
         # -------------------------- Generation -------------------------
         # Reading generation is global for the editor, so it belongs here
@@ -636,19 +652,31 @@ class LrcEditorUiMixin:
 
         advanced_layout.addWidget(association_frame)
 
-        readings_frame = QFrame()
-        readings_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        readings_layout = QVBoxLayout(readings_frame)
-        readings_title = QLabel("Readings")
-        readings_font = readings_title.font()
-        readings_font.setBold(True)
-        readings_title.setFont(readings_font)
-        readings_layout.addWidget(readings_title)
-        reset_all_readings = QPushButton("Reset All Readings")
-        reset_all_readings.setToolTip("Remove every saved/manual/generated reading and return to automatic generation.")
-        reset_all_readings.clicked.connect(self.reset_all_readings_advanced)
-        readings_layout.addWidget(reset_all_readings)
-        advanced_layout.addWidget(readings_frame)
+        self.danger_frame = QFrame()
+        self.danger_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        danger_layout = QVBoxLayout(self.danger_frame)
+        danger_title = QLabel("Danger")
+        danger_font = danger_title.font()
+        danger_font.setBold(True)
+        danger_title.setFont(danger_font)
+        danger_layout.addWidget(danger_title)
+        danger_hint = QLabel("These actions affect every lyric line. Confirm before clearing; use Undo to restore.")
+        danger_hint.setWordWrap(True)
+        danger_layout.addWidget(danger_hint)
+        for label, description, callback in (
+            ("Clear Karaoke Tags", "Remove all karaoke timing and instant-fill flags. Keep lyric text, line timestamps, and furigana.", self.clear_all_karaoke),
+            ("Clear Furigana", "Remove all saved furigana, including inline readings. Automatic readings can be generated again.", self.reset_all_readings_advanced),
+            ("Clear Translations", "Remove all translation rows while keeping original lyrics, timing, furigana, and formatting.", self.clear_all_translations),
+            ("Clear Formatting", "Remove bold, italic, strikethrough, underline, and blockquotes from every line.", self.clear_all_formatting),
+        ):
+            button = QPushButton(label)
+            button.setToolTip(description)
+            button.clicked.connect(callback)
+            danger_layout.addWidget(button)
+            hint = QLabel(description)
+            hint.setWordWrap(True)
+            danger_layout.addWidget(hint)
+        advanced_layout.addWidget(self.danger_frame)
         advanced_layout.addStretch()
         self.tabs.addTab(advanced_page, "Advanced")
         self._update_song_association_ui()
@@ -726,7 +754,7 @@ class LrcEditorUiMixin:
             workspace.addWidget(self.karaoke_preview_panel)
             workspace.setStretchFactor(2, 0)
 
-        # Keep Reset Karaoke available only while actually editing karaoke.
+        # Document-wide cleanup actions live in Advanced > Danger.
         self.reset_karaoke_button = None
         self.karaoke_shortcuts_button = None
         if self.karaoke_enabled:
@@ -737,12 +765,6 @@ class LrcEditorUiMixin:
             self.karaoke_shortcuts_button.clicked.connect(
                 self.show_karaoke_shortcuts
             )
-
-            self.reset_karaoke_button = QPushButton("Reset Karaoke")
-            self.reset_karaoke_button.setToolTip(
-                "Clear all karaoke timing and instant-fill flags while keeping lyrics and ruby."
-            )
-            self.reset_karaoke_button.clicked.connect(self.clear_all_karaoke)
 
         self.undo_button = QPushButton("Undo")
         self.redo_button = QPushButton("Redo")
@@ -760,6 +782,11 @@ class LrcEditorUiMixin:
 
         buttons = QHBoxLayout()
         buttons.addStretch()
+        self.quota_button = QPushButton("Quota")
+        self.quota_button.setToolTip("Show quota estimates for the selected translation provider.")
+        self.quota_button.clicked.connect(self.show_translation_quota)
+        self.quota_button.hide()
+        buttons.addWidget(self.quota_button)
         if self.karaoke_shortcuts_button is not None:
             buttons.addWidget(self.karaoke_shortcuts_button)
         if self.reset_karaoke_button is not None:

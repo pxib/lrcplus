@@ -165,6 +165,7 @@ def test_frozen_runtime_supplies_missing_standard_library_modules(tmp_path, monk
     {}, ["koroman"], [{"requirement": "koroman"}],
     [{"requirement": "x @ https://example.com/x.whl", "import_name": "x"}],
     [{"requirement": "x", "import_name": "x.y"}],
+    [{"requirement": "x", "import_name": "x", "optional": "true"}],
 ])
 def test_invalid_dependency_declarations_are_rejected(value):
     with pytest.raises(DependencyError):

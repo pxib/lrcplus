@@ -6,6 +6,7 @@ from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import QVBoxLayout, QWidget, QScrollArea
 from core.settings import KARAOKE_SWEEP_STYLES
 from lyrics.furigana import get_cached_furigana_segments
+from lyrics.line_breaks import reading_source
 from lyrics.widgets import FuriganaWidget
 
 class ScrollingLyricsWidget(QWidget):
@@ -855,6 +856,7 @@ class ScrollingLyricsWidget(QWidget):
                     getattr(lyric, "end", None),
                     style_spans=lyric.style_spans,
                     is_blockquote=lyric.is_blockquote,
+                    translation_lines=lyric.translation_lines,
                 )
             else:
                 source_text = str(lyric.text)
@@ -868,7 +870,7 @@ class ScrollingLyricsWidget(QWidget):
                     else source_text
                 )
                 row.set_lyric(display_text, generate=False,
-                              style_spans=lyric.style_spans, is_blockquote=lyric.is_blockquote)
+                              style_spans=lyric.style_spans, is_blockquote=lyric.is_blockquote, translation_lines=lyric.translation_lines)
                 if not source_text.strip():
                     row._lyrics_plus_placeholder_source_empty = True
         else:
@@ -1018,7 +1020,8 @@ class ScrollingLyricsWidget(QWidget):
                 if has_timing_metadata:
                     continue
 
-                cached = get_cached_furigana_segments(row.lyric)
+                cached = get_cached_furigana_segments(
+                    reading_source(row.lyric, getattr(row, "translation_lines", [])))
                 if cached is not None:
                     row.segments = row.apply_manual_overrides(cached)
                     row._update_content_geometry()

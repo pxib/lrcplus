@@ -16,7 +16,7 @@ def find_ffmpeg():
     return shutil.which("ffmpeg")
 
 
-def _waveform_peaks_from_pcm(pcm_file, samples):
+def _waveform_peaks_from_pcm(pcm_file, samples, cancelled=None):
     pcm_file.seek(0, 2)
     total_bytes = pcm_file.tell()
     total = total_bytes // 2
@@ -27,6 +27,8 @@ def _waveform_peaks_from_pcm(pcm_file, samples):
     peaks = []
     scale = 32768.0 * 32768.0
     for index in range(bucket_count):
+        if cancelled is not None and cancelled():
+            return [], 0
         start = (index * total) // bucket_count
         end = max(start + 1, ((index + 1) * total) // bucket_count)
         pcm_file.seek(start * 2)
@@ -127,7 +129,7 @@ class _WaveformWorker(QThread):
                     raise RuntimeError(stderr.decode("utf-8", "replace").strip() or "ffmpeg could not decode the audio.")
 
                 peaks, total = _waveform_peaks_from_pcm(
-                    decoded_audio, self.samples
+                    decoded_audio, self.samples, self._is_cancelled
                 )
             if total <= 0:
                 raise RuntimeError("No audio samples were decoded.")
@@ -162,6 +164,7 @@ class WaveformWidget(QWidget):
         self._position_ms = 0
         self._lyric_times = []
         self._worker = None
+        self._retired_workers = set()
         self._hover_ms = None
         self._loading = False
         self._karaoke_start_ms = None
@@ -212,7 +215,7 @@ class WaveformWidget(QWidget):
         self._position_ms = 0
         self._error = None
         self._loading = False
-        self._stop_worker()
+        self._stop_worker(wait=False)
 
         if find_ffmpeg() is None:
             self._error = "ffmpeg was not found."
@@ -473,23 +476,35 @@ class WaveformWidget(QWidget):
         self._lyric_times = sorted(set(values))
         self.update()
 
-    def _stop_worker(self):
+    def _stop_worker(self, wait=True):
         worker = self._worker
         self._worker = None
 
         if worker is not None:
+            self._retired_workers.add(worker)
             try:
                 worker.cancel()
-                worker.wait()
             except RuntimeError:
                 # Qt may already have destroyed the QThread wrapper.
-                pass
+                self._retired_workers.discard(worker)
+
+        # Switching tracks must not wait for ffmpeg or peak calculation.
+        # Keep cancelled threads owned and alive until their finished signal.
+        # Shutdown still joins them before the widget can be destroyed.
+        if wait:
+            for retired in tuple(self._retired_workers):
+                try:
+                    retired.wait()
+                except RuntimeError:
+                    pass
+                self._retired_workers.discard(retired)
 
     def _worker_finished(self):
         # Keep the QThread object alive until Qt delivers the signal handlers,
         # then release it safely.
         worker = self.sender()
         if worker is not None:
+            self._retired_workers.discard(worker)
             worker.deleteLater()
             if worker is self._worker:
                 self._worker = None

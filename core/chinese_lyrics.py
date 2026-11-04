@@ -14,7 +14,8 @@ import requests
 
 from core.app_info import APP_NAME, APP_VERSION, PROJECT_URL
 from core.lrclib import _retry_after
-from core.native_lyrics import decode_krc, parse_word_lyrics, timestamp_ms, to_lrcx
+from core.native_lyrics import decode_krc, parse_word_lyrics, timestamp_ms, to_lrcx, krc_translations
+from core.lyrics_translations import timed_translations, with_translations
 
 
 PROVIDERS = ("NetEase Cloud Music", "QQ Music", "KuGou", "Kuwo")
@@ -371,6 +372,7 @@ def fetch_lyrics(record, cancel=None):
     if cancel.is_set():
         return result
     source = record.get("source")
+    translations = []
     if source == "NetEase Cloud Music":
         try:
             payload = _request(source, "https://music.163.com/api/song/lyric/v1", cancel, method="get", params={
@@ -382,18 +384,25 @@ def fetch_lyrics(record, cancel=None):
             payload = {}
         if cancel.is_set():
             return result
+        for key in ("ytlrc", "tlyric"):
+            branch = payload.get(key)
+            if isinstance(branch, dict):
+                translations.append(timed_translations(clean_lyrics(_text(branch.get("lyric")), record)))
         yrc = payload.get("yrc", {})
         if isinstance(yrc, dict) and isinstance(yrc.get("lyric"), str) and yrc["lyric"].strip() and not payload.get("nolyric") and not payload.get("uncollected"):
             try:
                 word_result = _word_result(record, yrc["lyric"], "yrc")
                 if word_result["lyricsFormat"] == "lrcx":
-                    return word_result
+                    return with_translations(word_result, *translations)
             except LyricsProviderError:
                 pass  # Keep usable line lyrics when YRC is absent or malformed.
         if "lrc" not in payload and not payload.get("nolyric") and not payload.get("uncollected"):
             payload = _request(source, "https://music.163.com/api/song/lyric", cancel, params={
                 "id": record["id"], "tv": -1, "kv": -1, "lv": -1, "os": "pc",
             })
+            branch = payload.get("tlyric")
+            if isinstance(branch, dict):
+                translations.append(timed_translations(clean_lyrics(_text(branch.get("lyric")), record)))
         lrc = payload.get("lrc", {})
         if not isinstance(lrc, dict):
             raise LyricsProviderError(f"{source} returned invalid lyrics.")
@@ -409,6 +418,11 @@ def fetch_lyrics(record, cancel=None):
             text = unescape(base64.b64decode("".join(encoded.split()), validate=True).decode("utf-8-sig"))
         except (binascii.Error, ValueError, UnicodeError):
             raise LyricsProviderError("QQ Music returned invalid lyrics.") from None
+        try:
+            translated = unescape(base64.b64decode("".join(_text(payload.get("trans")).split()), validate=True).decode("utf-8-sig"))
+        except (binascii.Error, ValueError, UnicodeError):
+            translated = ""
+        translations.append(timed_translations(clean_lyrics(translated, record)))
     elif source == "KuGou":
         lyric_id, access_key = record["id"], record.get("accessKey")
         if not access_key and record.get("songHash"):
@@ -429,8 +443,9 @@ def fetch_lyrics(record, cancel=None):
             text = decode_krc(payload.get("content"))
         except ValueError:
             raise LyricsProviderError("KuGou returned an invalid or oversized KRC file.") from None
+        translations.append(krc_translations(text))
         try:
-            return _word_result(record, text, "krc")
+            return with_translations(_word_result(record, text, "krc"), *translations)
         except LyricsProviderError:
             # Some KRC files contain backwards word offsets, including credits.
             # Keep their usable line lyrics instead of rejecting the recording.
@@ -456,4 +471,4 @@ def fetch_lyrics(record, cancel=None):
         raise LyricsProviderError("Unknown lyrics source.")
     if cancel.is_set():
         return result
-    return _line_result(record, text)
+    return with_translations(_line_result(record, text), *translations)

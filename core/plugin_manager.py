@@ -59,6 +59,7 @@ class PluginManager:
         self.services: dict[str, tuple[str, Any]] = {}
         self.listeners: dict[str, list[tuple[str, Callable[..., Any]]]] = {}
         self.reading_providers: dict[str, str] = {}
+        self.translation_providers: dict[str, dict[str, Any]] = {}
         self._host_window = None
         self._owned_actions: list[tuple[str, Any, Any]] = []
         self._pending_menu_actions: list[tuple[str, str, str, Callable[..., Any], str | None, bool]] = []
@@ -277,6 +278,24 @@ class PluginManager:
             for line in lines
         ]
 
+    def get_current_lyrics_document(self) -> dict[str, Any]:
+        from core.translation_document import snapshot_document
+        player = self._player()
+        return snapshot_document(self.get_current_track(), getattr(player, "current_lyrics_path", None))
+
+    def save_lyrics_translations(self, document, translations, destination) -> str:
+        from core.file_io import atomic_write_text
+        from core.translation_document import render_translations
+        path = Path(destination).expanduser().resolve()
+        if path.suffix.lower() != ".lrcx":
+            raise ValueError("Save translations as an LRCX file.")
+        if path == Path(document["lyrics_path"]).resolve():
+            raise ValueError("Choose a separate file to preserve the original lyrics.")
+        content = render_translations(document, translations)
+        atomic_write_text(path, content, backup=True)
+        self.attach_lyrics(document["audio_path"], str(path))
+        return str(path)
+
     def analyze_lyric_words(
         self,
         lyrics: list[dict[str, Any]],
@@ -482,6 +501,16 @@ class PluginManager:
             raise ValueError(f"Service {name!r} already registered by {existing_owner!r}")
         self.services[name] = (owner, value)
 
+    def register_translation_provider(self, provider_id, name, panel_factory, owner):
+        provider_id, name = str(provider_id).strip(), str(name).strip()
+        if not provider_id or not name or not callable(panel_factory):
+            raise ValueError("Translation providers need an ID, name, and callable panel factory.")
+        if provider_id in self.translation_providers:
+            raise ValueError(f"Translation provider {provider_id!r} is already registered.")
+        self.translation_providers[provider_id] = {
+            "name": name, "factory": panel_factory, "owner": owner,
+        }
+
     def get_service(self, name: str, default: Any = None) -> Any:
         entry = self.services.get(name)
         return default if entry is None else entry[1]
@@ -497,6 +526,10 @@ class PluginManager:
                 self.log(plugin_id, f"event {event_name!r} failed: {error!r}")
 
     def _remove_owned(self, plugin_id: str) -> None:
+        self.translation_providers = {
+            key: value for key, value in self.translation_providers.items()
+            if value["owner"] != plugin_id
+        }
         self._pending_menu_actions = [item for item in self._pending_menu_actions if item[0] != plugin_id]
         self._pending_buttons = [item for item in self._pending_buttons if item[0] != plugin_id]
         self._settings_widgets = [

@@ -1,17 +1,19 @@
-"""Public LRCPlus Plugin API v4.
+"""Public LRCPlus Plugin API v6.
 
 The API deliberately exposes stable capabilities instead of requiring plugins
 to import internal LRCPlus modules or poke at the main window directly.
 Version 3 keeps earlier capabilities and adds main-window buttons and lyric
 word analysis alongside events, services, settings, menu actions and playback.
 Version 4 adds local audio imports and lyric attachments without restarting playback.
+Version 5 adds lossless lyric documents and preview/save helpers for translations.
+Version 6 adds plugin-owned translation providers for the shared editor workspace.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable
 
-PLUGIN_API_VERSION = 4
+PLUGIN_API_VERSION = 6
 MIN_PLUGIN_API_VERSION = 1
 
 
@@ -98,6 +100,14 @@ class LRCPlusAPI:
         )
 
     # ----------------------------- lyrics ------------------------------
+    def register_translation_provider(self, provider_id: str, name: str, panel_factory: Callable) -> None:
+        """Register a translation panel factory (v6); removed on plugin unload.
+
+        Factory arguments: editor, document_loader, apply_translations.
+        The returned QWidget must provide shutdown() to cancel its work.
+        """
+        self._manager.register_translation_provider(provider_id, name, panel_factory, self.plugin_id)
+
     def register_reading_provider(
         self,
         provider_id: str,
@@ -183,6 +193,22 @@ class LRCPlusAPI:
     def get_current_lyrics(self) -> list[dict[str, Any]]:
         """Return a detached snapshot of the current lyric lines."""
         return self._manager.get_current_lyrics()
+
+    def get_current_lyrics_document(self) -> dict[str, Any]:
+        """Export a detached, lossless timed-lyric document (v5)."""
+        return self._manager.get_current_lyrics_document()
+
+    def render_lyrics_translations(self, document: dict, translations: dict[int, str]) -> str:
+        """Preview translations as LRCX without modifying files (v5)."""
+        from core.translation_document import render_translations
+        return render_translations(document, translations)
+
+    def save_lyrics_translations(self, document: dict, translations: dict[int, str], destination: str) -> str:
+        """Save a separate LRCX file and associate it with the source audio (v5).
+
+        Call on the GUI thread after the user selects the output destination.
+        """
+        return self._manager.save_lyrics_translations(document, translations, destination)
 
     def analyze_lyric_words(
         self,

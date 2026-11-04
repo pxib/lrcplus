@@ -1,6 +1,39 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [2026-11-04]
+
+### Added
+
+- Added ascending and descending sorting to the music library columns.
+- LRCX translation rows using `{\nt}`, with smaller text and an Insert Translation button in the lyrics editor.
+- Import aligned translations from NetEase, QQ Music, and KuGou. Search Lyrics now includes Original / Translated preview tabs and Simplified / Traditional Chinese conversion for translations.
+- **Lyrics Translator:** a Translations tab in the lyrics editor with optional offline Argos Translate (poor quality), Azure AI Translator, Google Cloud Translation, DeepL API, and MyMemory.
+- Translate missing rows or Ctrl/Shift-selected rows, review and edit the results, then apply them as one undoable edit. Repeated lyrics are translated once per run. (Lyrics Translator)
+- A Quota button showing provider-specific rough usage estimates, selected-row estimates, and characters sent from the current tab. (Lyrics Translator)
+- Save translation API keys with Windows account-bound encryption and restore them on the next launch. Clear a key's field to remove its saved value. (Lyrics Translator)
+- Plugin API v6 translation-provider registration and optional dependency declarations that allow plugins to load without every engine installed.
+- The lyrics overwrite warning dialog now has a "Save as..." button.
+- Added an Advanced > Danger section in the lyrics editor with Clear Karaoke Tags, Clear Furigana, Clear Translations, and Clear Formatting actions, each with confirmation and Undo/Redo support.
+
+### Changed
+
+- Merge the cloud translation plugin into Lyrics Translator, preserving existing settings and encrypted keys. Argos remains optional, so cloud providers work without its dependencies. (Lyrics Translator)
+- Make the language arrow a swap button, and preserve selected languages when refreshing installed models. (Lyrics Translator)
+
+### Fixed
+
+- Clear inline furigana spans when clearing all readings. Clearing translations preserves original lyrics, timing, furigana, and formatting.
+- Keep the pitch changer responsive while dragging controls by coalescing live updates and settings saves, and reusing the pitch processor for fine adjustments.
+- Fix Enter in the pitch fine-tune field activating the first preset and overwriting the typed value. Preserve entries in the selected units and show the correct unit tooltip.
+- Prevent processed audio from stuttering during rapid window switching by moving audio scheduling and device writes onto a dedicated audio thread, with bounded queues to limit delay.
+- Prevent song switches from blocking the interface while the previous waveform decoder exits. Cancel obsolete waveform calculations and ignore results from earlier tracks.
+- Keep translation rows out of automatic reading generation, including the karaoke screen and Floating Lyrics. Preserve their smaller font and remove the extra empty reading gap. (Lyrics Translator)
+- Preserve original lyric formatting, readings, offsets, and karaoke word/line endings when adding translations or saving bilingual LRCX files again. (Lyrics Translator)
+- Warn before closing with unapplied translations or running work, including Save & Close and drafts from other providers. Reloading lyrics and closing the standalone translator also warn before discarding drafts. (Lyrics Translator)
+- Preserve unselected drafts during partial translation, keep drafts associated with their original language pair when edited, and recognize successfully saved standalone results as saved. (Lyrics Translator)
+- Prevent deferred translation workers from starting after shutdown, while allowing the standalone translator to reopen normally. (Lyrics Translator)
+
 ## [2026-11-03.3]
 
 ### Added

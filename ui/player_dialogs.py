@@ -217,6 +217,10 @@ class PitchChangerDialog(QDialog):
         self.setWindowTitle("Pitch changer")
         self.setMinimumWidth(380)
         self._on_change = on_change
+        self._pitch_update_timer = QTimer(self)
+        self._pitch_update_timer.setSingleShot(True)
+        self._pitch_update_timer.setInterval(40)
+        self._pitch_update_timer.timeout.connect(self._notify_pitch_change)
 
         heading = QLabel("Pitch changer")
         heading.setStyleSheet("font-size: 19px; font-weight: 600;")
@@ -260,7 +264,6 @@ class PitchChangerDialog(QDialog):
         self.value_spin = QDoubleSpinBox()
         self._configure_value_spin()
         self.value_spin.setKeyboardTracking(False)
-        self.value_spin.setToolTip("Pitch shift in semitones")
 
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(-2400, 2400)
@@ -282,6 +285,7 @@ class PitchChangerDialog(QDialog):
         self.quick_pitch_buttons = []
         for index in range(len(self.QUICK_PITCH_PRESETS["Semitones"])):
             button = QPushButton()
+            button.setAutoDefault(False)
             button.clicked.connect(
                 lambda _checked=False, preset_index=index: self._apply_quick_pitch_preset(preset_index)
             )
@@ -295,6 +299,7 @@ class PitchChangerDialog(QDialog):
         fine_layout.addWidget(self.value_spin)
 
         close_button = QPushButton("Done")
+        close_button.setAutoDefault(False)
         close_button.clicked.connect(self.accept)
 
         layout = QVBoxLayout(self)
@@ -314,6 +319,7 @@ class PitchChangerDialog(QDialog):
         layout.addLayout(fine_layout)
         layout.addWidget(close_button)
 
+        self.slider.sliderReleased.connect(self._notify_pitch_change)
         self.slider.valueChanged.connect(self._from_slider)
         self.value_spin.valueChanged.connect(self._from_spin)
         self.unit_combo.currentTextChanged.connect(self._on_units_changed)
@@ -362,10 +368,21 @@ class PitchChangerDialog(QDialog):
         self.value_spin.blockSignals(False)
         self._refresh_labels(value)
         if notify:
+            self._pitch_update_timer.stop()
             self._on_change(self.unit_combo.currentText(), self._value_in_units(value))
 
+    def _notify_pitch_change(self):
+        self._pitch_update_timer.stop()
+        self._on_change(self.unit_combo.currentText(),
+                        self._value_in_units(self.slider.value() / 100.0))
+
     def _from_slider(self, value):
-        self.set_value(value / 100.0)
+        if self.slider.isSliderDown():
+            self.set_value(value / 100.0, notify=False)
+            if not self._pitch_update_timer.isActive():
+                self._pitch_update_timer.start()
+        else:
+            self.set_value(value / 100.0)
 
     def _from_spin(self, value):
         mode = self.unit_combo.currentText()

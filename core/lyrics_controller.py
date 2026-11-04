@@ -23,6 +23,7 @@ from lyrics.furigana import (
     detect_lyrics_collection_language,
 )
 from lyrics.models import LyricSegment
+from lyrics.line_breaks import reading_source
 from core.settings import (
     get_lyrics_attachment,
     load_lrc_search_folders,
@@ -74,12 +75,14 @@ class LyricsController(LyricsSearchMixin):
                 line_end,
                 style_spans=line.style_spans,
                 is_blockquote=line.is_blockquote,
+                translation_lines=line.translation_lines,
             )
         else:
             self.lyric_widget.set_lyric(
                 self.lyric_widget.lyric, generate=False,
                 style_spans=getattr(self.lyric_widget, "style_spans", []),
                 is_blockquote=getattr(self.lyric_widget, "is_blockquote", False),
+                translation_lines=getattr(self.lyric_widget, "translation_lines", []),
             )
 
     def refresh_lyrics_settings_for_current_file(self):
@@ -361,10 +364,12 @@ class LyricsController(LyricsSearchMixin):
                         line_end,
                         style_spans=line.style_spans,
                         is_blockquote=line.is_blockquote,
+                        translation_lines=line.translation_lines,
                     )
                 else:
                     self.lyric_widget.set_lyric(current_text, style_spans=getattr(line, "style_spans", []),
-                                                is_blockquote=getattr(line, "is_blockquote", False))
+                                                is_blockquote=getattr(line, "is_blockquote", False),
+                                                translation_lines=getattr(line, "translation_lines", []))
 
             self.highlight_current_lyric()
 
@@ -375,7 +380,7 @@ class LyricsController(LyricsSearchMixin):
         request_id = self._furigana_prefetch_id
 
         lines = [
-            line.text
+            reading_source(line.text, line.translation_lines)
             for line in self.lyric_lines
             if str(line.text).strip()
         ]
@@ -848,9 +853,10 @@ class LyricsController(LyricsSearchMixin):
                     line_end,
                     style_spans=line.style_spans,
                     is_blockquote=line.is_blockquote,
+                    translation_lines=line.translation_lines,
                 )
             else:
-                self.lyric_widget.set_lyric(text, style_spans=line.style_spans, is_blockquote=line.is_blockquote)
+                self.lyric_widget.set_lyric(text, style_spans=line.style_spans, is_blockquote=line.is_blockquote, translation_lines=line.translation_lines)
 
             self.lyric_widget.set_current_line(True)
             self.lyric_widget.start_line_entrance()

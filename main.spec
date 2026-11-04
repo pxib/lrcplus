@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_delvewheel_libs_directory, copy_metadata
+from PyInstaller.utils.hooks import collect_data_files, collect_delvewheel_libs_directory, copy_metadata
 from packaging.requirements import Requirement
 
 
@@ -31,6 +31,7 @@ datas = [
     (str(PROJECT_ROOT / "plugins"), "plugins"),
     (str(PROJECT_ROOT / "core" / "dependency_probe.py"), "core"),
 ]
+datas += collect_data_files("opencc")
 
 updater_exe = PROJECT_ROOT / "dist" / "LRCPlusUpdater.exe"
 release_manifest = PROJECT_ROOT / "build" / "lrcplus-update.json"
@@ -72,7 +73,8 @@ a = Analysis(
 
     datas=datas,
 
-    hiddenimports=[],
+    # Translation panels are created by plugins loaded from real files.
+    hiddenimports=["ui.translation_panel", "PySide6.QtNetwork"],
 
     hookspath=[],
     hooksconfig=[],
@@ -86,6 +88,8 @@ a = Analysis(
         # Optional plugin engines are installed through Settings > Dependencies.
         "koroman",
         "pycantonese",
+        "argostranslate",
+        "ctranslate2",
         "pypresence",
         "fugashi",
         "unidic_lite",

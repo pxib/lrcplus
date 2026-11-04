@@ -131,6 +131,7 @@ class Dependency:
     requirement: str
     import_name: str
     requires: tuple[str, ...] = ()
+    optional: bool = False
 
     @property
     def name(self):
@@ -155,11 +156,14 @@ def parse_dependencies(value):
             if not isinstance(support, list) or not all(isinstance(item, str) for item in support):
                 raise ValueError("requires must be a list of supporting package requirements")
             support = tuple(str(Requirement(item)) for item in support)
+            optional = entry.get("optional", False)
+            if type(optional) is not bool:
+                raise ValueError("optional must be a boolean")
             if any(Requirement(item).url or Requirement(item).extras or Requirement(item).marker for item in support):
                 raise ValueError("supporting requirements must use package names and version constraints")
         except (KeyError, TypeError, ValueError, InvalidRequirement) as error:
             raise DependencyError(f"Invalid plugin dependency: {error}") from error
-        result.append(Dependency(str(requirement), name, support))
+        result.append(Dependency(str(requirement), name, support, optional))
     return result
 
 
@@ -401,7 +405,7 @@ class DependencyManager:
         return [
             f"{dependency.requirement}: {self.status(dependency.name)['text']}"
             for dependency in parse_dependencies(plugin.get("dependencies", []))
-            if self.status(dependency.name)["state"] != "available"
+            if not dependency.optional and self.status(dependency.name)["state"] != "available"
         ]
 
     def check(self, name):

@@ -13,6 +13,7 @@ import math
 import requests
 
 from lyrics.japanese_numbers import number_spans
+from lyrics.line_breaks import decode_line_breaks, original_reading_text
 from lyrics.reading_providers import (
     available_reading_providers,
     generate_reading_segments,
@@ -301,7 +302,7 @@ def detect_lyrics_language(text):
     ``unknown``. Unsupported or symbol-only text remains ``unknown`` so
     existing provider fallback behavior stays intact.
     """
-    text = str(text or "")
+    text = original_reading_text(str(text or ""))
     has_hanzi = False
     has_latin = False
 
@@ -330,7 +331,7 @@ def detect_lyrics_collection_language(lines):
     has_latin = False
 
     for value in lines:
-        for char in str(value or ""):
+        for char in original_reading_text(str(value or "")):
             if "\u3040" <= char <= "\u309f" or "\u30a0" <= char <= "\u30ff":
                 return "japanese"
             if _is_hanzi(char):
@@ -1048,6 +1049,26 @@ def prefetch_furigana_batches(lines, batch_size=10, progress_callback=None, shou
             unique.append(text); seen.add(text)
     total = len(unique); completed = 0
     if progress_callback: progress_callback(completed, total)
+    if any(r"{\nt}" in text for text in unique):
+        # Warm original rows together so batch-capable providers keep their
+        # normal song-level batching, without ever receiving translation text.
+        sources = []
+        for text in unique:
+            if r"{\nt}" in text:
+                visible, translations = decode_line_breaks(text)
+                sources.extend(value for row, value in enumerate(visible.split("\n"))
+                               if row not in translations and value)
+            else:
+                sources.append(text)
+        prefetch_furigana_batches(sources, batch_size=batch_size,
+                                 should_continue=should_continue, force=force)
+        for text in unique:
+            if should_continue and not should_continue(): break
+            if r"{\nt}" in text:
+                build_furigana_segments(text, should_continue=should_continue, force=force)
+            completed += 1
+            if progress_callback: progress_callback(completed, total)
+        return completed, total
     japanese = []
     mode = get_reading_mode()
 
@@ -1140,6 +1161,23 @@ def build_furigana_segments(text, progress_callback=None, should_continue=None, 
         return []
     if should_continue and not should_continue():
         return _fallback(text)
+
+    if r"{\nt}" in text:
+        cached = get_cached_furigana_segments(text)
+        if cached is not None:
+            return cached
+        visible, translations = decode_line_breaks(text)
+        segments = []
+        for row, value in enumerate(visible.split("\n")):
+            if row:
+                segments.append({"text": "\n", "reading": None})
+            if row in translations:
+                segments.append({"text": value, "reading": None})
+            elif value:
+                segments.extend(build_furigana_segments(
+                    value, should_continue=should_continue, force=force))
+        _cache_furigana_segments(text, segments)
+        return segments
 
     mode = get_reading_mode()
     language = detect_lyrics_language(text)

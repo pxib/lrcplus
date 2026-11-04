@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from lyrics.loader import load_lyrics, get_lyrics_generation_mode
 from lyrics.models import LyricLine, LyricSegment
+from lyrics.line_breaks import decode_line_breaks, encode_line_breaks, reading_source, original_reading_text
 from lyrics.formatting import format_emphasis, parse_emphasis, parse_quote_prefix
 from lyrics.writer import format_timestamp, serialize_lrc, serialize_lrcx
 from lyrics.timing import parse_timestamp
@@ -322,6 +323,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         if hasattr(self, "line_text"):
             self.line_text.clear()
             self.insert_newline_button.setEnabled(False)
+            self.insert_translation_button.setEnabled(False)
             self.quote_button.setChecked(False)
             for button in self.lyric_style_buttons:
                 button.setEnabled(False)
@@ -740,16 +742,23 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         elif index == source_index and not self._source_dirty:
             self.sync_source_from_model()
         # parentWidget() is the source page in this layout.
-        # Source is a full-width raw workspace.  Hide the entire navigation
-        # panel, including the oversized "Go to Current Lyric" button.
+        # Source and Translations have their own document navigation.
+        full_width = index == source_index or (
+            self.translation_page is not None and index == self.tabs.indexOf(self.translation_page)
+        )
         panel = getattr(self, "line_list_panel", None)
         if panel is not None:
-            panel.setVisible(index != source_index)
+            panel.setVisible(not full_width)
         else:
-            self.line_list.setVisible(index != source_index)
+            self.line_list.setVisible(not full_width)
         self._set_share_selection_active(
             index == self.tabs.indexOf(self.share_page)
         )
+        on_translations = self.translation_page is not None and index == self.tabs.indexOf(self.translation_page)
+        if hasattr(self, "quota_button"):
+            self.quota_button.setVisible(on_translations)
+        if on_translations:
+            self._ensure_translation_panel()
         self._update_tab_specific_controls()
 
     def _set_share_selection_active(self, active):
@@ -1130,9 +1139,10 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         if self._current_line_index() != line_index:
             return
 
-        text = str(self.lines[line_index].text or "")
-        if text and get_cached_furigana_segments(text) is None:
-            self._start_background_reading_generation([text], line_index)
+        line = self.lines[line_index]
+        text = str(line.text or "")
+        if text and get_cached_furigana_segments(reading_source(text, line.translation_lines)) is None:
+            self._start_background_reading_generation([reading_source(text, line.translation_lines)], line_index)
 
     def load_selected_line(self, row):
         self._karaoke_bounds_warning = None
@@ -1141,6 +1151,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         else:
             row = -1
         self.insert_newline_button.setEnabled(0 <= row < len(self.lines))
+        self.insert_translation_button.setEnabled(0 <= row < len(self.lines))
         for button in self.lyric_style_buttons:
             button.setEnabled(0 <= row < len(self.lines))
         self.loading = True
@@ -1160,7 +1171,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         line = self.lines[row]
         self._update_detected_language()
         self.line_time.setValue(line.start)
-        markup = format_emphasis(line.text, line.style_spans).replace("\n", r"{\n}")
+        markup = encode_line_breaks(format_emphasis(line.text, line.style_spans), line.translation_lines)
         self.line_text.setPlainText(("> " if line.is_blockquote else "") + markup)
         self.quote_button.setChecked(line.is_blockquote)
         if self.karaoke_enabled:
@@ -1238,7 +1249,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         """Update language display, caching expensive provider detection."""
         if not hasattr(self, "detected_language_label"):
             return
-        lines = tuple(str(line.text or "") for line in self.lines if str(line.text or ""))
+        lines = tuple(reading_source(line.text, line.translation_lines) for line in self.lines if str(line.text or ""))
         mode = self._current_generation_mode() if hasattr(self, "_current_generation_mode") else None
         cache_key = (lines, mode)
         if cache_key == self._detected_language_cache_key:
@@ -1259,7 +1270,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
                 providers = {
                     str(provider_id)
                     for text in lines
-                    if (provider_id := find_reading_provider(text, language="unknown"))
+                    if (provider_id := find_reading_provider(original_reading_text(text), language="unknown"))
                 }
                 if len(providers) == 1:
                     detected = next(iter(providers)).replace("_", " ").replace("-", " ").title()
@@ -1340,7 +1351,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             return
 
         try:
-            tokens = build_furigana_segments(source_text, force=True)
+            tokens = build_furigana_segments(reading_source(source_text, line.translation_lines), force=True)
         except Exception as error:
             debug_print(f"[Generation] Failed for {source_text!r}: {error}")
             QMessageBox.warning(
@@ -1427,7 +1438,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             if not source_text:
                 continue
             try:
-                tokens = build_furigana_segments(source_text, force=True)
+                tokens = build_furigana_segments(reading_source(source_text, line.translation_lines), force=True)
             except Exception as error:
                 debug_print(f"[Generation] Failed for {source_text!r}: {error}")
                 errors += 1
@@ -1467,7 +1478,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         if self._closed or build_furigana_segments is None or self._current_generation_mode() != "auto":
             return
         self._start_background_reading_generation(
-            [line.text for line in self.lines if line.text],
+            [reading_source(line.text, line.translation_lines) for line in self.lines if line.text],
             -1,
         )
 
@@ -1486,7 +1497,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         # Display paths must never wait for a provider or its request lock.
         # Selection/background workers fill this cache and refresh the widgets
         # when ready; authored ruby is available immediately even on a miss.
-        tokens = get_cached_furigana_segments(text)
+        tokens = get_cached_furigana_segments(reading_source(text, line.translation_lines))
 
         # Collect manual/generated ruby spans in line-text coordinates without
         # exposing karaoke boundaries to the editor.
@@ -1789,9 +1800,11 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             self.loading = False
 
     def reset_all_readings_advanced(self):
+        if not self.lines:
+            return
         answer = QMessageBox.question(
             self,
-            "Reset All Readings",
+            "Clear Furigana",
             "Remove all readings from every lyric line? Automatic readings can be generated again.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
@@ -1801,12 +1814,11 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         self._push_undo_state()
         changed = False
         for line in self.lines:
-            for index, segment in enumerate(line.segments or []):
-                if segment.ruby or getattr(segment, "ruby_source", None):
-                    line.segments[index] = LyricSegment(
-                        segment.start, segment.text, None, segment.instant,
-                        segment.end, None,
-                    )
+            for segment in line.segments or []:
+                if segment.ruby or segment.ruby_source or segment.ruby_spans:
+                    segment.ruby = None
+                    segment.ruby_source = None
+                    segment.ruby_spans = []
                     changed = True
         if clear_reading_segment_cache is not None:
             clear_reading_segment_cache()
@@ -1817,6 +1829,91 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
             self.load_selected_line(row)
         if self._current_generation_mode() == "auto":
             self._schedule_auto_reading_generation()
+
+    def clear_all_translations(self):
+        if not any(line.translation_lines for line in self.lines):
+            return
+        answer = QMessageBox.question(
+            self,
+            "Clear Translations",
+            "Remove translation rows from every lyric line? Original lyrics will be kept.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._push_undo_state()
+        for line in self.lines:
+            if not line.translation_lines:
+                continue
+            # Project text offsets onto the retained rows. Apply the same map
+            # to formatting and ruby so translations can appear between originals.
+            keep = [False] * len(line.text)
+            offset = 0
+            retained = False
+            for row, text in enumerate(line.text.split("\n")):
+                if row not in line.translation_lines:
+                    if retained:
+                        keep[offset - 1] = True
+                    keep[offset:offset + len(text)] = [True] * len(text)
+                    retained = True
+                offset += len(text) + 1
+            positions = [0]
+            for kept in keep:
+                positions.append(positions[-1] + int(kept))
+            new_text = "".join(char for char, kept in zip(line.text, keep) if kept)
+            line.style_spans = [
+                (positions[a], positions[b], *style)
+                for a, b, *style in line.style_spans
+                if positions[a] < positions[b]
+            ]
+            segments = []
+            offset = 0
+            for segment in line.segments:
+                end = offset + len(segment.text)
+                text = "".join(char for char, kept in zip(segment.text, keep[offset:end]) if kept)
+                if text:
+                    replacement = copy.deepcopy(segment)
+                    replacement.text = text
+                    replacement.visual_line = new_text[:positions[offset]].count("\n")
+                    replacement.ruby_spans = [
+                        (positions[offset + a] - positions[offset],
+                         positions[offset + b] - positions[offset], reading)
+                        for a, b, reading in segment.ruby_spans
+                        if positions[offset + a] < positions[offset + b]
+                    ]
+                    if any(not keep[offset + i] and char != "\n"
+                           for i, char in enumerate(segment.text)):
+                        replacement.ruby = None
+                        replacement.ruby_source = None
+                    segments.append(replacement)
+                offset = end
+            line.text = new_text
+            line.segments = segments
+            line.translation_lines = []
+        self._populate_lines(preserve_line_index=self._current_line()[0])
+        self._mark_document_dirty()
+
+    def clear_all_formatting(self):
+        if not any(line.style_spans or line.is_blockquote for line in self.lines):
+            return
+        answer = QMessageBox.question(
+            self,
+            "Clear Formatting",
+            "Remove text formatting and blockquotes from every lyric line?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._push_undo_state()
+        for line in self.lines:
+            line.style_spans = []
+            line.is_blockquote = False
+        self._mark_document_dirty()
+        row = self.line_list.currentRow()
+        if row >= 0:
+            self.load_selected_line(row)
 
     def reset_all_furigana(self):
         self._push_undo_state()
@@ -1976,9 +2073,56 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
                 )
 
     def insert_lyric_newline(self):
+        self._insert_lyric_break(r"{\n}")
+
+    def _translation_document(self):
+        from core.translation_document import document_from_lines
+        return document_from_lines(
+            self.lines, self._editing_song_path, self.lrc_path,
+            self.lyrics_offset_ms, self._generation_mode, self._document_metadata,
+        )
+
+    def _translation_document_for_panel(self):
+        if not self._commit_pending_source():
+            raise ValueError("Correct the source lyrics before translating.")
+        return self._translation_document()
+
+    def show_translation_quota(self):
+        if self.translation_panel is not None:
+            self.translation_panel.show_quota()
+
+    def _ensure_translation_panel(self):
+        if self.translation_panel is not None:
+            return
+        manager = getattr(self.player, "plugin_manager", None)
+        if manager is None or not getattr(manager, "translation_providers", {}):
+            return
+        from ui.translation_workspace import TranslationWorkspace
+        self.translation_panel = TranslationWorkspace(
+            manager, self, self._translation_document_for_panel, self._apply_lyrics_translations)
+        self.translation_page.layout().addWidget(self.translation_panel)
+
+    def _apply_lyrics_translations(self, document, translations):
+        from core.translation_document import render_translations
+        from lyrics.lrcx_parser import parse_lrcx
+        if self._closed or self._source_dirty or document != self._translation_document():
+            raise ValueError("The lyrics changed. Reopen translation to use the current document.")
+        lines = parse_lrcx(render_translations(document, translations), infer_ends=False)
+        selected = self._current_line_index()
+        self._push_undo_state()
+        self._reading_generation_epoch += 1
+        self.lines = lines
+        self.karaoke_dirty = any(line.has_karaoke for line in self.lines)
+        self._populate_lines(preserve_line_index=selected)
+        self._mark_document_dirty()
+
+    def insert_lyric_translation(self):
+        self._insert_lyric_break(r"{\nt}")
+
+    def _insert_lyric_break(self, marker):
         if self.loading or self._current_line()[1] is None:
             return
-        self.line_text.insertPlainText(r"{\n}")
+        self.line_text.insertPlainText(marker)
         self.line_text.setFocus()
 
     def insert_lyric_emphasis(self, marker, closing_marker=None):
@@ -2024,7 +2168,8 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         self._shift_line_timing(line, delta)
         line.start = self.line_time.value()
         markup, line.is_blockquote = parse_quote_prefix(self.line_text.toPlainText())
-        line.text, line.style_spans, _offsets = parse_emphasis(markup.replace(r"{\n}", "\n"))
+        markup, line.translation_lines = decode_line_breaks(markup)
+        line.text, line.style_spans, _offsets = parse_emphasis(markup)
         self.quote_button.setChecked(line.is_blockquote)
         # Text edits invalidate old segment boundaries rather than silently
         # leaving mismatched karaoke text behind.
@@ -2320,6 +2465,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         )
         clear_button = box.addButton("Clear Karaoke", QMessageBox.ButtonRole.DestructiveRole)
         cancel_button = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel_button)
         box.exec()
         if box.clickedButton() is not clear_button:
             return
@@ -2363,7 +2509,8 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
         row = self.line_list.currentRow()
         if row >= 0:
             self.load_selected_line(row)
-        self.karaoke_hint.setText("Karaoke timing cleared. Ruby and lyric text were kept.")
+        if hasattr(self, "karaoke_hint"):
+            self.karaoke_hint.setText("Karaoke timing cleared. Ruby and lyric text were kept.")
 
     def reset_current_separation(self):
         _, line = self._current_line()
@@ -2823,6 +2970,7 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
                 line_end,
                 style_spans=line.style_spans,
                 is_blockquote=line.is_blockquote,
+                translation_lines=line.translation_lines,
             )
             self._preview_segments_line_index = index
             if line_changed:
@@ -4010,19 +4158,23 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
 
     def reject(self):
         if self._confirm_close():
-            self._discard_autosave()
-            super().reject()
+            self.done(QDialog.DialogCode.Rejected)
 
     def closeEvent(self, event):
         if not self._confirm_close():
             event.ignore()
             return
-        self._discard_autosave()
-        self.done(QDialog.DialogCode.Rejected)
-        event.accept()
+        if self.done(QDialog.DialogCode.Rejected) is False:
+            event.ignore()
+        else:
+            event.accept()
 
     def done(self, result):
+        if self.translation_panel is not None and not self.translation_panel.confirm_close():
+            return False
         self._closed = True
+        if self.translation_panel is not None:
+            self.translation_panel.shutdown()
         if self._segment_preview_range is not None:
             media = getattr(self.player, "media_player", None)
             if media is not None:
@@ -4051,3 +4203,4 @@ class LrcEditorDialog(KaraokeEditorToolsMixin, LyricsEditorSearchMixin, LyricsTi
                 except (AttributeError, RuntimeError, TypeError):
                     pass
         super().done(result)
+        return True

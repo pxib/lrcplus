@@ -18,7 +18,7 @@ Thank you to [foobar2000](https://www.foobar2000.org/) and [OpenLyrics](https://
 
 LRCPlus supports plugins that extend the player without modifying its core code.
 
-**Current API (今のAPI):** v4 (supports v1–v4)
+**Current API (今のAPI):** v6 (supports v1–v6)
 
 Plugins can:
 - Listen to and emit application events.

@@ -394,7 +394,15 @@ class AudioController:
                 self.is_seeking = False
 
 
+        def _activate_pcm_route(self):
+            self._pcm_route_active = True
+            self.audio_output.setVolume(0.0)
+
+
         def _stop_pcm_sink(self):
+            worker = getattr(self, "_pcm_worker", None)
+            if getattr(worker, "owns_output", False):
+                worker.reset()
             self._pcm_drain_timer.stop()
             self._pcm_pending.clear()
             self._pcm_route_active = False
@@ -409,7 +417,11 @@ class AudioController:
 
         def _flush_pcm_output(self):
             self._stop_pcm_sink()
-            reset_pcm_pitch_state()
+            worker = getattr(self, "_pcm_worker", None)
+            if worker is None:
+                reset_pcm_pitch_state()
+            elif not getattr(worker, "owns_output", False):
+                worker.reset()
             if hasattr(self, "volume_slider"):
                 self.audio_output.setVolume(self.volume_slider.value() / 100.0)
 
@@ -444,12 +456,27 @@ class AudioController:
             self._current_pcm_gain = volume_to_gain(value)
             pitch_active = abs(self._pcm_pitch_shift()) >= 0.001
             rate_active = self._pcm_rate_active()
+            worker = getattr(self, "_pcm_worker", None)
+            owns_output = getattr(worker, "owns_output", False)
+            if owns_output:
+                worker.configure(
+                    self.audio_output.device(), self.playback_speed,
+                    self._pcm_pitch_shift(), self._current_pcm_gain,
+                    enabled=(value > 100 or pitch_active or rate_active)
+                            and not getattr(self, "_audio_output_unavailable", False)
+                            and getattr(self, "_audio_device_dialog", None) is None,
+                    playing=self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState,
+                )
             if value <= 100 and not pitch_active and not rate_active:
                 output = self._pcm_buffer_output
                 self.media_player.setAudioBufferOutput(None)
                 self._pcm_buffer_output = None
                 self._stop_pcm_sink()
-                reset_pcm_pitch_state()
+                worker = getattr(self, "_pcm_worker", None)
+                if worker is not None:
+                    worker.reset()
+                else:
+                    reset_pcm_pitch_state()
                 if output is not None:
                     output.deleteLater()
                 self.audio_output.setVolume(value / 100.0)
@@ -463,7 +490,14 @@ class AudioController:
                 output = QAudioBufferOutput(
                     self.audio_output.device().preferredFormat(), self
                 )
-                output.audioBufferReceived.connect(self._write_pcm_buffer)
+                if owns_output:
+                    # Qt emits from its audio renderer. Enqueue directly there;
+                    # the callback only copies data into the audio mailbox.
+                    output.audioBufferReceived.connect(
+                        worker.receive_buffer, Qt.ConnectionType.DirectConnection,
+                    )
+                else:
+                    output.audioBufferReceived.connect(self._write_pcm_buffer)
                 self._pcm_buffer_output = output
 
             if self.media_player.audioBufferOutput() is not output:
@@ -481,6 +515,10 @@ class AudioController:
 
 
         def _write_pcm_buffer(self, buffer):
+            worker = getattr(self, "_pcm_worker", None)
+            if getattr(worker, "owns_output", False):
+                worker.receive_buffer(buffer)
+                return
             if (getattr(self, "_audio_output_unavailable", False)
                     or getattr(self, "_audio_device_dialog", None) is not None):
                 return
@@ -494,6 +532,11 @@ class AudioController:
                 return
 
             audio_format = buffer.format()
+            worker = getattr(self, "_pcm_worker", None)
+            if worker is not None:
+                worker.submit(data, audio_format, self.playback_speed,
+                              self._pcm_pitch_shift(), self._current_pcm_gain)
+                return
             try:
                 pcm = apply_pcm_rate_to_bytes(
                     data, audio_format.sampleFormat(), audio_format.channelCount(),
@@ -508,11 +551,18 @@ class AudioController:
                     pcm = apply_pcm_gain_to_bytes(
                         pcm, audio_format.sampleFormat(), self._current_pcm_gain,
                     )
-                # Native playback covers the processor's initial context. Do
-                # not queue silence in the sink while waiting for that context.
-                if (abs(self._pcm_pitch_shift()) >= 0.001
-                        and not getattr(apply_pcm_pitch_to_bytes, "_started", False)):
-                    return
+                self._accept_processed_pcm((pcm, audio_format,
+                    abs(self._pcm_pitch_shift()) < 0.001
+                    or getattr(apply_pcm_pitch_to_bytes, "_started", False)))
+            except (ValueError, RuntimeError, OSError) as error:
+                self._pcm_output_failed(error)
+
+
+        def _accept_processed_pcm(self, result):
+            pcm, audio_format, started = result
+            if not started:
+                return
+            try:
                 if self._pcm_sink is None or self._pcm_sink.format() != audio_format:
                     self._stop_pcm_sink()
                     self._pcm_sink = QAudioSink(
@@ -520,7 +570,7 @@ class AudioController:
                     )
                     self._pcm_sink.setVolume(min(1.0, self._current_pcm_gain))
                     self._pcm_sink.setBufferSize(
-                        max(audio_format.bytesForDuration(60_000), audio_format.bytesPerFrame())
+                        max(audio_format.bytesForDuration(30_000), audio_format.bytesPerFrame())
                     )
                     self._pcm_sink_io = self._pcm_sink.start()
                     if self._pcm_sink_io is None:
@@ -531,7 +581,7 @@ class AudioController:
                 # without letting old audio accumulate seconds of delay. Keep
                 # at least one complete decoded block for large-buffer codecs.
                 frame_size = audio_format.bytesPerFrame()
-                pending_limit = max(audio_format.bytesForDuration(120_000), len(pcm))
+                pending_limit = max(audio_format.bytesForDuration(60_000), len(pcm))
                 pending_limit -= pending_limit % frame_size
                 excess = len(self._pcm_pending) - pending_limit
                 if excess > 0:
@@ -583,6 +633,9 @@ class AudioController:
             recover = getattr(self, "_recover_disconnected_output", None)
             if recover is not None and recover():
                 return
+            worker = getattr(self, "_pcm_worker", None)
+            if worker is not None:
+                worker.reset()
             self._stop_pcm_sink()
             self.media_player.setAudioBufferOutput(None)
             self._pcm_buffer_output = None
@@ -606,6 +659,9 @@ class AudioController:
             ):
                 self.media_player.setAudioBufferOutput(self._pcm_buffer_output)
 
+            worker = getattr(self, "_pcm_worker", None)
+            if getattr(worker, "owns_output", False):
+                worker.set_playing(state == QMediaPlayer.PlaybackState.PlayingState)
             sink = getattr(self, "_pcm_sink", None)
             if state == QMediaPlayer.PlaybackState.StoppedState:
                 self._flush_pcm_output()
@@ -697,6 +753,14 @@ class AudioController:
             )
 
 
+        def _schedule_playback_settings_save(self):
+            timer = getattr(self, "_playback_save_timer", None)
+            if timer is None:
+                save_playback_settings(self.playback_settings)
+            else:
+                timer.start()
+
+
         def handle_speed_change(self, value):
             previous_speed = self.playback_speed
             # Snap to 100% if close enough (within 5 units)
@@ -709,7 +773,7 @@ class AudioController:
             self.media_player.setPlaybackRate(self.playback_speed)
             self._set_native_pitch_compensation()
             self.playback_settings["speed_percent"] = value
-            save_playback_settings(self.playback_settings)
+            self._schedule_playback_settings_save()
             self.pitch_status_label.setText(
                 f"{self._displayed_pitch_semitones():+.1f} st"
             )
@@ -722,7 +786,7 @@ class AudioController:
             previous_shift = self._pcm_pitch_shift()
             self.pitch_linked_to_speed = bool(linked)
             self.playback_settings["pitch_linked_to_speed"] = self.pitch_linked_to_speed
-            save_playback_settings(self.playback_settings)
+            self._schedule_playback_settings_save()
             self._set_native_pitch_compensation()
             self.pitch_status_label.setText(
                 f"{self._displayed_pitch_semitones():+.1f} st"
@@ -757,18 +821,16 @@ class AudioController:
             self.pitch_settings = {"mode": mode, "value": value}
             self.playback_settings["pitch_mode"] = mode
             self.playback_settings["pitch_value"] = value
-            save_playback_settings(self.playback_settings)
+            self._schedule_playback_settings_save()
             self.pitch_status_label.setText(
                 f"{self._displayed_pitch_semitones():+.1f} st"
             )
-            # Clear old processed audio immediately when the shift changes.
-            # Native playback covers the new overlap buffer's short warmup.
-            if abs(previous_shift - self._pcm_pitch_shift()) >= 0.001:
+            # Preserve analysis for fine adjustments. Octave jumps need fresh
+            # context; native playback covers that single warmup.
+            shift = self._pcm_pitch_shift()
+            if ((abs(previous_shift) < 0.001) != (abs(shift) < 0.001)
+                    or abs(previous_shift - shift) >= 12.0):
                 self._flush_pcm_output()
-            # Keep the active Qt buffer output connected while the
-            # pitch processor warms its new setting. Recreating the output
-            # during playback can detach the decoded-buffer stream and leave
-            # native audio playing at the new displayed value but unchanged pitch.
             self._configure_pcm_volume(self.volume_slider.value())
 
 

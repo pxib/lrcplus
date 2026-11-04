@@ -53,41 +53,49 @@ def test_changing_karaoke_line_timestamp_moves_its_timing(editor):
 
 
 @pytest.mark.parametrize("karaoke", [True, False])
-def test_insert_newline_at_cursor_is_undoable_and_survives_save(make_lyrics_editor, karaoke):
+@pytest.mark.parametrize("marker,button", [(r"{\n}", "insert_newline_button"),
+                                         (r"{\nt}", "insert_translation_button")])
+def test_insert_newline_at_cursor_is_undoable_and_survives_save(make_lyrics_editor, karaoke, marker, button):
     from lyrics.lrcx_parser import load_lrcx
 
     editor = make_lyrics_editor(karaoke=karaoke)
     cursor = editor.line_text.textCursor()
     cursor.setPosition(2)
     editor.line_text.setTextCursor(cursor)
-    editor.insert_newline_button.click()
+    getattr(editor, button).click()
 
-    assert editor.line_text.toPlainText() == r"He{\n}llo"
-    assert editor.line_text.textCursor().position() == 6
+    assert editor.line_text.toPlainText() == "He" + marker + "llo"
+    assert editor.line_text.textCursor().position() == 2 + len(marker)
     assert editor.lines[0].text == "He\nllo"
     assert editor.lines[0].start == 2
     assert len(editor.lines) == 2
     assert editor.document_dirty
+    expected_translations = [1] if marker == r"{\nt}" else []
+    assert editor.lines[0].translation_lines == expected_translations
     editor.undo()
     assert editor.lines[0].text == "Hello"
     editor.redo()
-    assert editor.line_text.toPlainText() == r"He{\n}llo"
+    assert editor.line_text.toPlainText() == "He" + marker + "llo"
 
     assert editor.save_document()
-    assert r"He{\n}llo" in editor.lrc_path.read_text(encoding="utf-8")
-    assert load_lrcx(editor.lrc_path)[0].text == "He\nllo"
+    assert "He" + marker + "llo" in editor.lrc_path.read_text(encoding="utf-8")
+    reloaded = load_lrcx(editor.lrc_path)[0]
+    assert reloaded.text == "He\nllo"
+    assert reloaded.translation_lines == expected_translations
     editor._select_line_index(1)
     editor._select_line_index(0)
-    assert editor.line_text.toPlainText() == r"He{\n}llo"
+    assert editor.line_text.toPlainText() == "He" + marker + "llo"
 
 
-def test_insert_newline_replaces_lyric_selection(editor):
+@pytest.mark.parametrize("marker,button", [(r"{\n}", "insert_newline_button"),
+                                         (r"{\nt}", "insert_translation_button")])
+def test_insert_newline_replaces_lyric_selection(editor, marker, button):
     cursor = editor.line_text.textCursor()
     cursor.setPosition(1)
     cursor.setPosition(4, QTextCursor.MoveMode.KeepAnchor)
     editor.line_text.setTextCursor(cursor)
-    editor.insert_newline_button.click()
-    assert editor.line_text.toPlainText() == r"H{\n}o"
+    getattr(editor, button).click()
+    assert editor.line_text.toPlainText() == "H" + marker + "o"
     assert editor.lines[0].text == "H\no"
 
 
@@ -99,11 +107,34 @@ def test_typed_newline_markers_reach_preview_as_line_breaks(editor, monkeypatch)
     assert preview_texts[-1] == "First\n\nSecond\nThird"
 
 
+def test_translation_marker_survives_edit_save_and_undo(editor):
+    from lyrics.lrcx_parser import load_lrcx
+
+    editor.line_text.setPlainText(r"**Original**{\nt}Translation{\n}Other")
+    assert editor.lines[0].text == "Original\nTranslation\nOther"
+    assert editor.lines[0].translation_lines == [1]
+    editor._select_line_index(1)
+    editor._select_line_index(0)
+    assert editor.line_text.toPlainText() == r"**Original**{\nt}Translation{\n}Other"
+    editor.line_time.setValue(3)
+    assert editor.lines[0].translation_lines == [1]
+    editor.line_text.setPlainText(r"**Original**{\n}Translation{\n}Other")
+    assert editor.lines[0].translation_lines == []
+    editor.undo()
+    assert editor.lines[0].translation_lines == [1]
+    assert editor.save_document()
+    saved = load_lrcx(editor.lrc_path)[0]
+    assert saved.text == "Original\nTranslation\nOther"
+    assert saved.translation_lines == [1]
+
+
 def test_newline_button_is_disabled_without_a_selected_lyric(editor):
     editor.line_list.setCurrentRow(-1)
     before = deepcopy(editor.lines)
     assert not editor.insert_newline_button.isEnabled()
+    assert not editor.insert_translation_button.isEnabled()
     editor.insert_lyric_newline()
+    editor.insert_lyric_translation()
     assert editor.lines == before
     assert not editor.document_dirty
 
