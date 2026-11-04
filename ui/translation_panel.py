@@ -28,7 +28,11 @@ class TranslationUiMixin:
         self._translated_pair = None
         self._translation_pairs = {}
         self._saved_drafts = {}
-        self.setWindowTitle("Lyrics Translator" if cloud_provider is None else "Cloud Translation")
+        self.setWindowTitle(
+            "Lyrics Translator (poor quality)"
+            if cloud_provider is None
+            else "Cloud Translation"
+        )
         self.resize(900, 680)
         self.quota_dialog = QDialog(self)
         self.quota_dialog.setWindowTitle("Translation quota")

@@ -980,10 +980,10 @@ class FuriganaWidget(QWidget):
             # the cached whole-line result.
             if (
                 text
-                and self._karaoke_furigana_pending != reading_key
+                and self._karaoke_furigana_pending != text
             ):
                 self.loading_text = reading_key
-                self._karaoke_furigana_pending = reading_key
+                self._karaoke_furigana_pending = text
                 original_segments = list(source_segments)
 
                 def parse_karaoke():
