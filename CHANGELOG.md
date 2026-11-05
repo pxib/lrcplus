@@ -11,6 +11,7 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 #### Lyric image cards
 
+- Add image viewer. Click on the outputted image. click on it... click on it :)... click it. clcik. ckcc
 - Add an integrated **Share > Image card** page to the lyrics editor, alongside text sharing. Build an excerpt from explicitly checked lines in document order, including when the sidebar is sorted differently; use **Select All** to share the full song.
 - Preview the finished card while editing its style, copy the full-resolution image to the clipboard, or export it as PNG. Choose square (1080 x 1080), portrait (1080 x 1350), or landscape (1920 x 1080) output; the preview scales to the available space without changing export resolution.
 - Automatically fit long excerpts inside the available lyric area. Report excerpts or readings that cannot fit instead of clipping them or exporting an older preview.
