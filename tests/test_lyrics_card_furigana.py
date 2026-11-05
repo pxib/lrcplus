@@ -4,7 +4,7 @@ from dataclasses import replace
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage, QTextCursor, QFont
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy
 
 from lyrics.editor_source import parse_editor_source
 from lyrics.models import LyricLine, LyricSegment
@@ -169,7 +169,8 @@ def test_preview_png_and_presets_keep_furigana_and_toggling_off_keeps_base_text(
     assert card._render_key[-1].readings
     baseline = card._image.copy()
     card.furigana_scale.setValue(70)
-    QTest.qWait(180)
+    # Wait for the debounced render even when the runner delivers timers late.
+    assert QSignalSpy(card._refresh_timer.timeout).wait(3000)
     assert card._image != baseline
     output = tmp_path / "furigana.png"
     monkeypatch.setattr(card_module.QFileDialog, "getSaveFileName", lambda *_: (str(output), ""))

@@ -3,7 +3,7 @@ from dataclasses import replace
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage, QPainter
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication
 
 from lyrics.models import LyricLine
@@ -180,17 +180,17 @@ def test_preview_refreshes_for_selection_and_style_changes(editor):
     baseline = card._image.copy()
     editor.clear_share_line_selection()
     editor.line_list.item(0).setCheckState(Qt.CheckState.Checked)
-    QTest.qWait(180)
+    assert QSignalSpy(card._refresh_timer.timeout).wait(3000)
     assert card._render_key[0] == "Hello"
     assert card._image != baseline
     selected = card._image.copy()
     card.theme_combo.setCurrentText("Rose")
-    QTest.qWait(180)
+    assert QSignalSpy(card._refresh_timer.timeout).wait(3000)
     assert card._image != selected
     for template in CARD_TEMPLATES[1:]:
         previous = card._image.copy()
         card.template_combo.setCurrentText(template)
-        QTest.qWait(180)
+        assert QSignalSpy(card._refresh_timer.timeout).wait(3000)
         assert card._image != previous
         assert card._render_key[1].template == template
     editor.share_tabs.setCurrentIndex(0)
@@ -426,7 +426,7 @@ def test_each_text_style_changes_the_export_and_can_be_toggled_off(editor, flag,
     card = open_card(editor)
     baseline = card._image.copy()
     card.text_style_buttons[flag].setChecked(True)
-    QTest.qWait(180)
+    assert QSignalSpy(card._refresh_timer.timeout).wait(3000)
     assert card._image != baseline
     assert getattr(card.current_style(), flag)
     output = tmp_path / "styled.png"
@@ -530,7 +530,7 @@ def test_effect_controls_update_preview_export_and_toggle_off(editor, effect, tm
     assert card.effect_color_buttons[effect + "_color"].isEnabled()
     monkeypatch.setattr(card_module.QColorDialog, "getColor", lambda *_: QColor("#ff5577"))
     card.choose_effect_color(effect + "_color")
-    QTest.qWait(180)
+    assert QSignalSpy(card._refresh_timer.timeout).wait(3000)
     assert card._image != baseline
     assert getattr(card.current_style(), effect + "_color") == "#ff5577"
     output = tmp_path / (effect + ".png")
@@ -599,7 +599,7 @@ def test_watermark_controls_update_preview_and_png_and_can_be_disabled(editor, t
     card.watermark_width.setValue(240)
     card.watermark_opacity.setValue(70)
     card.watermark_position.setCurrentText("Top left")
-    QTest.qWait(180)
+    assert QSignalSpy(card._refresh_timer.timeout).wait(3000)
     assert card._image != baseline
     output = tmp_path / "watermarked.png"
     monkeypatch.setattr(card_module.QFileDialog, "getSaveFileName", lambda *_: (str(output), ""))
