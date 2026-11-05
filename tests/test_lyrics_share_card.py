@@ -3,7 +3,7 @@ from dataclasses import replace
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage, QPainter
-from PySide6.QtTest import QSignalSpy
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication
 
 from lyrics.models import LyricLine
@@ -53,6 +53,51 @@ def open_card(editor):
     editor.select_all_share_lines()
     editor.share_card.refresh()
     return editor.share_card
+
+
+def test_card_preview_opens_full_resolution_image_viewer(editor, monkeypatch):
+    from ui.player_dialogs import CoverPreviewDialog
+
+    card = open_card(editor)
+    opened = []
+
+    def inspect_viewer(viewer):
+        opened.append(viewer.windowTitle())
+        assert viewer.view.image_item.pixmap().toImage().convertToFormat(card._image.format()) == card._image
+        viewer.view.set_actual_size()
+        assert viewer.view.transform().m11() == 1
+        viewer.view.zoom(1.2)
+        assert viewer.view.transform().m11() == pytest.approx(1.2)
+        viewer.view.fit_to_view()
+        assert viewer.view.transform().m11() < 1
+
+    monkeypatch.setattr(CoverPreviewDialog, "exec", inspect_viewer)
+    QTest.mouseClick(card.preview, Qt.MouseButton.LeftButton)
+    QTest.keyClick(card.preview, Qt.Key.Key_Return)
+    assert opened == ["Lyrics Card", "Lyrics Card"]
+
+
+def test_empty_card_preview_does_not_open_viewer(editor):
+    card = editor.share_card
+    clicked = QSignalSpy(card.preview.clicked)
+    QTest.mouseClick(card.preview, Qt.MouseButton.LeftButton)
+    QTest.keyClick(card.preview, Qt.Key.Key_Space)
+    assert clicked.count() == 0
+
+
+def test_card_viewer_refreshes_pending_style_changes(editor, monkeypatch):
+    from ui.player_dialogs import CoverPreviewDialog
+
+    card = open_card(editor)
+    previous = card._image.copy()
+    card.theme_combo.setCurrentText("Paper")
+    opened = []
+    monkeypatch.setattr(CoverPreviewDialog, "exec", lambda viewer: opened.append(
+        viewer.view.image_item.pixmap().toImage()))
+    QTest.mouseClick(card.preview, Qt.MouseButton.LeftButton)
+    assert len(opened) == 1
+    assert opened[0].convertToFormat(card._image.format()) == card._image
+    assert card._image != previous
 
 
 def test_no_selection_keeps_card_empty_and_does_not_copy_or_export(editor, monkeypatch):

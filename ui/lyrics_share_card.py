@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QIODevice, QSaveFile, QSignalBlocker, Qt, QTimer
+from PySide6.QtCore import QBuffer, QIODevice, QSaveFile, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor, QFont, QImage, QImageReader, QPainter, QPixmap,
 )
@@ -52,11 +52,33 @@ def save_card_png(image, path):
 
 
 class _CardPreview(QWidget):
+    clicked = Signal()
+
     def __init__(self):
         super().__init__()
         self.image = QImage()
         self.setMinimumSize(180, 180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Click to open the image viewer")
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName("Card preview. Open image viewer")
+
+    def mouseReleaseEvent(self, event):
+        if (event.button() == Qt.MouseButton.LeftButton
+                and self.rect().contains(event.position().toPoint())
+                and not self.image.isNull()):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space) and not self.image.isNull():
+            self.clicked.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -106,6 +128,7 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         preview_header.addWidget(self.preview_details)
         preview_layout.addLayout(preview_header)
         self.preview = _CardPreview()
+        self.preview.clicked.connect(self.open_image_viewer)
         preview_layout.addWidget(self.preview, 1)
         self.status = QLabel()
         self.status.setMinimumWidth(0)
@@ -485,6 +508,15 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         if self._prepare_image():
             QApplication.clipboard().setImage(self._image)
             self.status.setText("Copied image to clipboard.")
+
+    def open_image_viewer(self):
+        if not self._prepare_image():
+            return
+        from ui.player_dialogs import CoverPreviewDialog
+
+        viewer = CoverPreviewDialog(QPixmap.fromImage(self._image), self)
+        viewer.setWindowTitle("Lyrics Card")
+        viewer.exec()
 
     def export_image(self):
         if not self._prepare_image():
