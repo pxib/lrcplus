@@ -70,6 +70,10 @@ def test_official_requests_authentication_codes_and_plain_text(provider):
         assert url == "https://api.deepl.com/v2/translate"
         assert headers["Authorization"] == "DeepL-Auth-Key secret"
         assert json.loads(body)["target_lang"] == "ZH-HANT"
+    elif provider == "datpmt":
+        assert method == "GET"
+        assert parse_qs(urlparse(url).query) == {
+            "string": ["Original <text>"], "from_lang": ["ja"], "to_lang": ["zh-TW"]}
     else:
         assert method == "GET"
         assert parse_qs(urlparse(url).query) == {"q": ["Original <text>"], "langpair": ["ja|zh-TW"]}
@@ -203,7 +207,7 @@ def test_provider_workspace_cloud_review_apply_and_switching(
     editor = make_lyrics_editor()
     editor.tabs.setCurrentWidget(editor.translation_page)
     workspace = editor.translation_panel
-    assert workspace.provider.count() == 5
+    assert workspace.provider.count() == 6
     workspace.provider.setCurrentIndex(workspace.provider.findData("azure"))
     panel = workspace.panels["azure"]
     wait_for(qapp, lambda: panel.source.count() > 0 and not panel._busy)

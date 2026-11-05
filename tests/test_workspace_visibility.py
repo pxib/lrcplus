@@ -16,7 +16,7 @@ def workspace(qapp, monkeypatch):
         pixmap.fill(Qt.GlobalColor.red)
         return pixmap
 
-    monkeypatch.setattr("ui.main_window.load_embedded_cover_thumbnail", thumbnail)
+    monkeypatch.setattr("ui.player_library.load_embedded_cover_thumbnail", thumbnail)
     window = Player()
     window.library_tracks = [LibraryTrack("C:/music/song.mp3", "Song", album="Album")]
     window._populate_library_view()

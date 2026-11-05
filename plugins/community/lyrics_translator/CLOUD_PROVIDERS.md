@@ -1,7 +1,7 @@
 # Cloud translation providers
 
 **Lyrics Translator** includes **Azure AI Translator**, **Google Cloud Translation**,
-**DeepL API** and **MyMemory** to the Lyrics Editor's **Translations** tab.
+**DeepL API**, **MyMemory**, and **Google Translate Free (Datpmt)** in the Lyrics Editor's **Translations** tab.
 Argos is an optional engine in the same plugin; no Argos installation is required
 for these cloud services. No additional Python dependencies are needed.
 
@@ -48,6 +48,7 @@ include whitespace and newlines; UTF-8 byte limits remain separate.
   ending in `:fx`, otherwise the main API endpoint. You can override the endpoint
   using the account selector to match your account's documentation.
 - **MyMemory:** no key required; uses the anonymous public translation endpoint.
+- **Google Translate Free (Datpmt):** no key required; uses Datpmt's public Google Translate wrapper. It sends each unique lyric row in a separate request, supports the API's 5,000-character per-request limit, and has no published quota or service guarantee. Lyrics are sent to Datpmt; availability and limits may change.
 
 Keys are masked in the interface. On Windows, entered keys are saved with
 current-user DPAPI encryption in plugin settings and restored on subsequent
@@ -92,6 +93,7 @@ These are provider-published allowances, not an app-enforced billing cap:
 | DeepL API Developer | 1 million characters total | [Billing](https://support.deepl.com/hc/en-us/articles/360020685720-Usage-count-and-billing-in-DeepL-API) |
 | DeepL API Free | 500,000 characters/month for that plan | [Billing](https://support.deepl.com/hc/en-us/articles/360020685720-Usage-count-and-billing-in-DeepL-API) |
 | MyMemory anonymous | 5,000 characters/day | [Usage limits](https://mymemory.translated.net/doc/usagelimits.php) |
+| Google Translate Free (Datpmt) | Not published | [API documentation](https://api.datpmt.com/documents) |
 
 REST references: [Azure](https://learn.microsoft.com/en-us/azure/ai-services/translator/text-translation/reference/v3/translate),
 [Google](https://cloud.google.com/translate/docs/reference/rest/v2/translate),

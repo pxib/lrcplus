@@ -3,12 +3,13 @@ import time
 import pytest
 from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QLineEdit, QMessageBox, QPushButton, QTableWidget, QWidget
 
-import ui.main_window as main_window
+import ui.lyrics_search_dialog as lyrics_search
+from ui.main_window import Player
 
 
 CASES = [
     (source, existing, ".lrc", accept, False)
-    for source in ("LRCLIB", *main_window.CHINESE_LYRICS_PROVIDERS, "Musixmatch")
+    for source in ("LRCLIB", *lyrics_search.CHINESE_LYRICS_PROVIDERS, "Musixmatch")
     for existing, accept in (("none", True), ("destination", False), ("destination", True))
 ] + [
     ("LRCLIB", existing, suffix, accept, True)
@@ -18,7 +19,7 @@ CASES = [
 ]
 CASES += [
     (source, "destination", suffix, action, False)
-    for source in ("LRCLIB", *main_window.CHINESE_LYRICS_PROVIDERS, "Musixmatch")
+    for source in ("LRCLIB", *lyrics_search.CHINESE_LYRICS_PROVIDERS, "Musixmatch")
     for suffix in (".lrc", ".lrcx", ".txt")
     for action in ("save_as", "cancel_save_as")
 ]
@@ -58,7 +59,7 @@ def test_provider_lyrics_require_confirmation_before_replacing_existing_lyrics(
     if suffix == ".lrcx":
         item["lyricsFormat"] = "lrcx"
     for name in ("search_lrclib", "search_chinese_lyrics", "search_musixmatch"):
-        monkeypatch.setattr(main_window, name, lambda *args, **kwargs: [dict(item)])
+        monkeypatch.setattr(lyrics_search, name, lambda *args, **kwargs: [dict(item)])
     monkeypatch.setenv("MUSIXMATCH_TOKEN", "test-token")
 
     def warn(box):
@@ -113,7 +114,7 @@ def test_provider_lyrics_require_confirmation_before_replacing_existing_lyrics(
     monkeypatch.setattr(QFileDialog, "getSaveFileName", choose_path)
     monkeypatch.setattr(QDialog, "exec", interact)
     try:
-        main_window.Player.search_lrclib_lyrics(parent)
+        Player.search_lrclib_lyrics(parent)
         assert len(warnings) == (existing != "none")
         saved_path = alternate if accept == "save_as" else destination
         if saves:

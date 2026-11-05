@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QLineEdit, QMessageBox
 from lyrics.models import LyricLine, LyricSegment
 from lyrics.editor_source import parse_editor_source
 import ui.lrc_editor as editor_module
+import ui.lyrics_editor_document as document_module
 
 
 def set_text_without_signals(widget, text):
@@ -188,7 +189,7 @@ def test_save_choice_during_close_keeps_window_open_if_writing_fails(editor, mon
     def fail(*args, **kwargs):
         raise PermissionError("locked")
 
-    monkeypatch.setattr(editor_module, "atomic_write_text", fail)
+    monkeypatch.setattr(document_module, "atomic_write_text", fail)
     editor.reject()
     assert editor.isVisible() and editor.document_dirty
 

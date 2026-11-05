@@ -40,7 +40,7 @@ class _DependencyJob(QThread):
 
 
 class DependencyManagerWidget(QWidget):
-    def __init__(self, plugin_manager, parent=None):
+    def __init__(self, plugin_manager, parent=None, *, defer_refresh=False):
         super().__init__(parent)
         self.plugin_manager = plugin_manager
         self.manager = plugin_manager.dependency_manager if plugin_manager else None
@@ -96,7 +96,8 @@ class DependencyManagerWidget(QWidget):
         self.details_button.setCheckable(True)
         self.details_button.toggled.connect(self.details.setVisible)
         layout.addWidget(self.details_button, alignment=Qt.AlignmentFlag.AlignLeft)
-        self.refresh()
+        if not defer_refresh:
+            self.refresh()
 
     @property
     def busy(self):

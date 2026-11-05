@@ -10,7 +10,8 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QComboBox, QDialog, QLabel, QLineEdit, QPushButton, QTableWidget, QTextEdit, QWidget
 
 from core import chinese_lyrics
-import ui.main_window as main_window
+import ui.lyrics_search_dialog as lyrics_search
+from ui.main_window import Player
 
 
 @pytest.mark.parametrize("source", ("NetEase Cloud Music", "QQ Music"))
@@ -125,7 +126,7 @@ def test_anonymous_provider_search_preview_and_save(qapp, monkeypatch, tmp_path,
     monkeypatch.setattr(chinese_lyrics.requests, "post", request)
     monkeypatch.setattr(QDialog, "exec", interact)
     try:
-        main_window.Player.search_lrclib_lyrics(parent)
+        Player.search_lrclib_lyrics(parent)
         if outcome in {"synced", "plain", "reselect"}:
             assert len(loaded) == 1
             destination = Path(loaded[0])

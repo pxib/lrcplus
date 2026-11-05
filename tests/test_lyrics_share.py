@@ -1,7 +1,9 @@
 from pathlib import Path
 
+import pytest
+
 from lyrics.models import LyricLine
-import ui.lrc_editor as lrc_editor
+import ui.lyrics_editor_document as document_module
 from ui.lrc_editor import LrcEditorDialog
 
 
@@ -26,6 +28,7 @@ class _ShareHarness:
     _share_text_for_lines = staticmethod(LrcEditorDialog._share_text_for_lines)
     _lines_for_share = staticmethod(LrcEditorDialog._lines_for_share)
     export_share_text = LrcEditorDialog.export_share_text
+    copy_share_text = LrcEditorDialog.copy_share_text
 
     def __init__(self, lines, mode, path):
         self.lines = lines
@@ -34,7 +37,7 @@ class _ShareHarness:
         self.lrc_path = Path(path)
         self._source_dirty = False
         self.source_lines = []
-        self.selected_indices = set()
+        self.selected_indices = set(range(len(lines)))
 
     def reload_model_from_source(self):
         self.lines = self.source_lines
@@ -73,6 +76,20 @@ def test_share_text_for_empty_document_is_empty():
     assert LrcEditorDialog._share_text_for_lines([]) == ""
 
 
+def test_unchecked_lyrics_do_not_replace_clipboard_or_open_export(qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    dialog = _ShareHarness([LyricLine(0, "Unselected lyric")], "text", tmp_path / "song.lrc")
+    dialog.selected_indices.clear()
+    QApplication.clipboard().setText("Keep this clipboard")
+    monkeypatch.setattr(document_module.QFileDialog, "getSaveFileName",
+                        lambda *_: pytest.fail("Opened export without a selection"))
+    assert dialog._share_text() is None
+    dialog.copy_share_text()
+    dialog.export_share_text()
+    assert QApplication.clipboard().text() == "Keep this clipboard"
+    assert "Select lyric lines" in dialog.share_status_label.text
+
+
 def test_lines_for_share_uses_selected_indices_in_document_order():
     lines = [
         LyricLine(start=1.0, text="First"),
@@ -81,13 +98,14 @@ def test_lines_for_share_uses_selected_indices_in_document_order():
     ]
 
     assert LrcEditorDialog._lines_for_share(lines, {2, 0}) == [lines[0], lines[2]]
-    assert LrcEditorDialog._lines_for_share(lines, set()) == lines
+    assert LrcEditorDialog._lines_for_share(lines, set()) == []
 
 
 def test_share_text_uses_pending_source_edits():
     dialog = _ShareHarness([], "text", "song.lrc")
     dialog._source_dirty = True
     dialog.source_lines = [LyricLine(start=2.0, text="Unsaved source lyric")]
+    dialog.selected_indices = {0}
 
     assert dialog._share_text() == "Unsaved source lyric\n"
     assert dialog._source_dirty is False
@@ -104,7 +122,7 @@ def test_export_share_text_writes_plain_text_and_cancel_does_nothing(
         tmp_path / "song.lrc",
     )
     monkeypatch.setattr(
-        lrc_editor.QFileDialog,
+        document_module.QFileDialog,
         "getSaveFileName",
         lambda *_args: (str(output_path), ""),
     )
@@ -116,7 +134,7 @@ def test_export_share_text_writes_plain_text_and_cancel_does_nothing(
 
     dialog.share_status_label.text = ""
     monkeypatch.setattr(
-        lrc_editor.QFileDialog,
+        document_module.QFileDialog,
         "getSaveFileName",
         lambda *_args: ("", ""),
     )
@@ -133,7 +151,7 @@ def test_export_timestamped_share_text_uses_lrc_extension(tmp_path, monkeypatch)
         tmp_path / "song.lrcx",
     )
     monkeypatch.setattr(
-        lrc_editor.QFileDialog,
+        document_module.QFileDialog,
         "getSaveFileName",
         lambda *_args: (str(output_path), ""),
     )

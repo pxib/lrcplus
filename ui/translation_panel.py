@@ -63,7 +63,7 @@ class TranslationUiMixin:
         if cloud_provider:
             self.folder.hide()
             form.labelForField(self.folder).hide()
-            fields = [] if cloud_provider == "mymemory" else [("api_key", "API key", True)]
+            fields = [] if cloud_provider in {"mymemory", "datpmt"} else [("api_key", "API key", True)]
             if cloud_provider == "azure":
                 fields.append(("region", "Azure region (if required)", False))
             import os
@@ -139,6 +139,10 @@ class TranslationUiMixin:
         quota_close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         quota_close.rejected.connect(self.quota_dialog.close)
         quota_layout.addWidget(quota_close)
+        # Keep the dialog at its intended width, but let the layout choose its
+        # height so an empty estimate does not leave a large blank band.
+        quota_layout.activate()
+        self.quota_dialog.resize(520, self.quota_dialog.sizeHint().height())
         buttons = QHBoxLayout()
         self.load_button = QPushButton("Load current lyrics")
         self.refresh_button = QPushButton("Refresh models")
@@ -350,7 +354,7 @@ class TranslationUiMixin:
         self.swap_button.setEnabled(not self._busy and source is not None and target is not None
                                     and self.source.findData(target) >= 0 and self.target.findData(source) >= 0)
         self.cancel_button.setEnabled(self._busy)
-        configured = not self.cloud_provider or self.cloud_provider == "mymemory" or bool(self.credentials["api_key"].text().strip())
+        configured = not self.cloud_provider or self.cloud_provider in {"mymemory", "datpmt"} or bool(self.credentials["api_key"].text().strip())
         ready = not self._busy and configured and self._route() is not None
         self.translate_button.setEnabled(ready and bool(self._rows_to_translate()))
         self.translate_selected_button.setEnabled(ready and bool(self._rows_to_translate(selected=True)))

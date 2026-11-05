@@ -34,6 +34,10 @@ The preview uses the current track when available and sample text otherwise.
 Lyric updates retain a five-second minimum cooldown. Playback progress appears
 only while playing. Artwork comes from MusicBrainz/Cover Art Archive or embedded
 audio artwork uploaded to Litterbox, according to your existing artwork settings.
+The lyrics editor's **Share > Image card > Artwork > Album cover** option can reuse
+an already-resolved cover through the `discord_rpc.album_artwork` service. The
+service only reads the cover cache and reports pending resolution; it starts no
+searches or uploads and never returns a Discord placeholder image.
 Embedded artwork uploads are limited to 512 pixels on the longest edge and 1 MB,
 preserving aspect ratio without enlarging smaller covers. Only the upload copy
 is resized; artwork in the audio file stays unchanged. JPEG and PNG covers are

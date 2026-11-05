@@ -23,12 +23,14 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QLineEdit,
     QGroupBox,
+    QGridLayout,
     QToolButton,
 )
 from core.settings import APPEARANCE_DEFAULTS, KARAOKE_SWEEP_STYLES, get_karaoke_settings
 from core.theme import build_theme_palette
 from ui.dependency_settings import DependencyManagerWidget
 from ui.about_tab import AboutTab
+from ui.settings_search import SettingsSearch
 from ui.settings_controls import (
     ThemedSpinBox,
     ThemedComboBox,
@@ -75,6 +77,30 @@ LYRIC_KEYS = (
     "scroll_animation_easing",
     "scroll_behavior",
 )
+
+# Shared by global controls and per-file overrides so both scopes stay organized.
+LYRIC_SECTIONS = {
+    "Display": (
+        "scrolling_lyrics", "lyrics_direction", "lyrics_alignment",
+        "lyrics_padding", "vertical_padding", "focus_transition",
+    ),
+    "Readings": (
+        "show_ruby", "show_romaji", "all_romaji", "ruby_position",
+        "furigana_parser", "mecab_parse_mode", "limited_reading_rendering",
+        "limited_reading_range", "fade_in_readings", "ruby_padding", "ruby_font_size",
+    ),
+    "Typography": ("font_family", "font_size", "lyrics_color"),
+    "Highlighting": (
+        "highlight_current", "highlight_color", "highlight_animation",
+        "highlight_animation_duration", "highlight_animation_out_duration",
+        "highlight_animation_easing",
+    ),
+    "Scrolling": (
+        "scrolling_mode", "continuous_scroll_duration_based", "continuous_scroll_speed",
+        "continuous_scroll_nudge_current", "scroll_animation_speed",
+        "scroll_animation_easing", "scroll_behavior",
+    ),
+}
 
 # Parser selection is an application-wide engine choice, not a per-file lyric override.
 LOCAL_LYRIC_KEYS = tuple(key for key in LYRIC_KEYS if key not in {"furigana_parser", "mecab_parse_mode"})
@@ -212,16 +238,17 @@ class SettingsDialog(QDialog):
             self, self.theme_mode, self.theme_color
         )
         self.setWindowTitle("Settings")
-        self.resize(700, 600)
+        self.resize(880, 640)
 
         tabs = QTabWidget()
+        self.category_pages = tabs
+        tabs.tabBar().hide()
 
         # ===== GENERAL =====
         general_tab = QWidget()
         general_layout = QVBoxLayout(general_tab)
 
-        startup_heading = QLabel("<b>Startup</b>")
-        general_layout.addWidget(startup_heading)
+        self._add_section_heading(general_layout, "Startup")
 
         self.remember_window_checkbox = QCheckBox(
             "Remember window size and position"
@@ -239,8 +266,7 @@ class SettingsDialog(QDialog):
         )
         general_layout.addWidget(self.restore_playlist_checkbox)
 
-        updates_heading = QLabel("<b>Updates</b>")
-        general_layout.addWidget(updates_heading)
+        self._add_section_heading(general_layout, "Updates")
         self.automatic_update_checkbox = QCheckBox(
             "Check for updates automatically"
         )
@@ -299,8 +325,7 @@ class SettingsDialog(QDialog):
         appearance_tab = QWidget()
         appearance_layout = QVBoxLayout(appearance_tab)
 
-        theme_heading = QLabel("<b>Theme</b>")
-        appearance_layout.addWidget(theme_heading)
+        self._add_section_heading(appearance_layout, "Theme")
         theme_mode_row = QHBoxLayout()
         theme_mode_row.addWidget(QLabel("Color mode"))
         self.light_theme_button = QPushButton("Light")
@@ -334,8 +359,11 @@ class SettingsDialog(QDialog):
         appearance_layout.addLayout(theme_color_row)
         self._update_theme_color_button()
 
-        background_heading = QLabel("<b>Background</b>")
-        appearance_layout.addWidget(background_heading)
+        appearance_layout.addStretch()
+
+        background_tab = QWidget()
+        background_layout = QVBoxLayout(background_tab)
+        self._add_section_heading(background_layout, "Artwork")
 
         self.background_enabled_checkbox = QCheckBox(
             "Show artwork behind lyrics"
@@ -343,7 +371,7 @@ class SettingsDialog(QDialog):
         self.background_enabled_checkbox.setChecked(
             bool(self.appearance_settings.get("background_enabled", True))
         )
-        appearance_layout.addWidget(self.background_enabled_checkbox)
+        background_layout.addWidget(self.background_enabled_checkbox)
 
         background_layout_row = QHBoxLayout()
         background_layout_row.addWidget(QLabel("Background layout"))
@@ -368,7 +396,7 @@ class SettingsDialog(QDialog):
             self.background_layout_combo.setEnabled
         )
         background_layout_row.addWidget(self.background_layout_combo, 1)
-        appearance_layout.addLayout(background_layout_row)
+        background_layout.addLayout(background_layout_row)
 
         artwork_source_row = QHBoxLayout()
         artwork_source_row.addWidget(QLabel("Artwork source"))
@@ -397,7 +425,7 @@ class SettingsDialog(QDialog):
         source_index = self.artwork_source_combo.findData(current_source)
         self.artwork_source_combo.setCurrentIndex(max(0, source_index))
         artwork_source_row.addWidget(self.artwork_source_combo, 1)
-        appearance_layout.addLayout(artwork_source_row)
+        background_layout.addLayout(artwork_source_row)
 
         self.custom_folders_row_widget = QWidget()
         custom_folders_row = QHBoxLayout(self.custom_folders_row_widget)
@@ -431,7 +459,7 @@ class SettingsDialog(QDialog):
         )
         custom_folder_buttons.addStretch(1)
         custom_folders_row.addLayout(custom_folder_buttons)
-        appearance_layout.addWidget(self.custom_folders_row_widget)
+        background_layout.addWidget(self.custom_folders_row_widget)
 
         self.booru_tags_row_widget = QWidget()
         booru_tags_row = QHBoxLayout(self.booru_tags_row_widget)
@@ -445,7 +473,7 @@ class SettingsDialog(QDialog):
             "Safebooru search tags. A random matching image is chosen."
         )
         booru_tags_row.addWidget(self.booru_tags_edit, 1)
-        appearance_layout.addWidget(self.booru_tags_row_widget)
+        background_layout.addWidget(self.booru_tags_row_widget)
         self.custom_background_folders_list.currentRowChanged.connect(
             self._update_custom_folder_controls
         )
@@ -471,7 +499,7 @@ class SettingsDialog(QDialog):
             max(0, index)
         )
         blur_mode_row.addWidget(self.background_blur_mode_combo, 1)
-        appearance_layout.addLayout(blur_mode_row)
+        background_layout.addLayout(blur_mode_row)
 
         self.background_blur_bleed_checkbox = QCheckBox(
             "Let blur bleed beyond artwork edges"
@@ -484,7 +512,7 @@ class SettingsDialog(QDialog):
                 )
             )
         )
-        appearance_layout.addWidget(self.background_blur_bleed_checkbox)
+        background_layout.addWidget(self.background_blur_bleed_checkbox)
 
         blur_row = QHBoxLayout()
         blur_row.addWidget(QLabel("Blur"))
@@ -497,7 +525,7 @@ class SettingsDialog(QDialog):
         self.background_blur_value.setFixedWidth(32)
         blur_row.addWidget(self.background_blur_slider, 1)
         blur_row.addWidget(self.background_blur_value)
-        appearance_layout.addLayout(blur_row)
+        background_layout.addLayout(blur_row)
 
         darkness_row = QHBoxLayout()
         darkness_row.addWidget(QLabel("Darkness"))
@@ -510,7 +538,7 @@ class SettingsDialog(QDialog):
         self.background_darkness_value.setFixedWidth(42)
         darkness_row.addWidget(self.background_darkness_slider, 1)
         darkness_row.addWidget(self.background_darkness_value)
-        appearance_layout.addLayout(darkness_row)
+        background_layout.addLayout(darkness_row)
 
         def update_background_labels(*_):
             self.background_blur_value.setText(
@@ -554,48 +582,7 @@ class SettingsDialog(QDialog):
             self.background_blur_bleed_checkbox.setEnabled
         )
 
-        self._add_section_heading(appearance_layout, "Empty timestamp placeholder")
-        self.empty_timestamp_placeholder_checkbox = QCheckBox(
-            "Show placeholder for empty timed lyric lines"
-        )
-        self.empty_timestamp_placeholder_checkbox.setChecked(
-            bool(self.appearance_settings.get(
-                "empty_timestamp_placeholder_enabled", True
-            ))
-        )
-        appearance_layout.addWidget(self.empty_timestamp_placeholder_checkbox)
-
-        placeholder_row = QHBoxLayout()
-        placeholder_row.addWidget(QLabel("Placeholder:"))
-        self.empty_timestamp_placeholder_edit = QLineEdit(
-            self.appearance_settings.get(
-                "empty_timestamp_placeholder", "♪ {countdown}"
-            )
-        )
-        self.empty_timestamp_placeholder_edit.setPlaceholderText("♪ {countdown}")
-        self.empty_timestamp_placeholder_edit.setToolTip(
-            "Use {countdown} where the remaining time until the next lyric should appear."
-        )
-        placeholder_row.addWidget(self.empty_timestamp_placeholder_edit, 1)
-        appearance_layout.addLayout(placeholder_row)
-        placeholder_hint = QLabel(
-            "Example: ♪ {countdown}  →  ♪ 12.5"
-        )
-        muted_color = build_theme_palette(
-            self.theme_mode, self.theme_color
-        )["muted"]
-        placeholder_hint.setStyleSheet(
-            f"color: {muted_color}; font-style: italic;"
-        )
-        appearance_layout.addWidget(placeholder_hint)
-        self.empty_timestamp_placeholder_edit.setEnabled(
-            self.empty_timestamp_placeholder_checkbox.isChecked()
-        )
-        self.empty_timestamp_placeholder_checkbox.toggled.connect(
-            self.empty_timestamp_placeholder_edit.setEnabled
-        )
-
-        appearance_layout.addStretch()
+        background_layout.addStretch()
 
         # ===== PLAYBACK =====
         playback_tab = self._make_scroll_tab(
@@ -608,19 +595,15 @@ class SettingsDialog(QDialog):
         lyrics_layout = QVBoxLayout(lyrics_tab)
         self.scope_tabs = QTabWidget()
 
-        global_tab = self._make_scroll_tab(
+        global_tab = self._make_lyrics_page(
             "Default lyric display settings for all files.",
-            lambda body_layout: self._create_lyrics_controls(
-                self.global_lyrics,
-                body_layout,
-                include_playback=False,
-            ),
+            self._create_global_lyrics_controls,
         )
         self.global_controls = self._last_scroll_controls
 
         if current_file:
-            local_tab = self._make_scroll_tab(
-                f"Overrides for:\n{current_file}",
+            local_tab = self._make_lyrics_page(
+                f"Overrides for: {current_file}\nEnable Override to replace a global setting for this file.",
                 lambda body_layout: self._create_local_controls(
                     self.global_lyrics,
                     self.local_overrides,
@@ -739,6 +722,8 @@ class SettingsDialog(QDialog):
                     row.addWidget(settings_button)
 
                 toggle = QCheckBox("Enabled")
+                toggle.setProperty("settingsLabel", f"Enable {plugin['name']}")
+                toggle.setProperty("settingsKeywords", plugin.get("description") or "")
                 is_core_plugin = plugin["category"] == "Core"
                 toggle.setChecked(is_core_plugin or plugin_id not in disabled)
                 toggle.setEnabled(not is_core_plugin)
@@ -757,8 +742,9 @@ class SettingsDialog(QDialog):
         plugin_scroll.setWidget(plugin_body)
         plugins_layout.addWidget(plugin_scroll, 1)
 
-        tabs.addTab(general_tab, "General")
-        tabs.addTab(appearance_tab, "Appearance")
+        tabs.addTab(self._scroll_page(general_tab), "General")
+        tabs.addTab(self._scroll_page(appearance_tab), "Appearance")
+        tabs.addTab(self._scroll_page(background_tab), "Background")
         tabs.addTab(playback_tab, "Playback")
         tabs.addTab(lyrics_tab, "Lyrics")
         tabs.addTab(self._make_scroll_tab(
@@ -766,8 +752,18 @@ class SettingsDialog(QDialog):
         ), "Karaoke")
         tabs.addTab(files_tab, "Files")
         tabs.addTab(plugins_tab, "Plugins")
-        self.dependencies_tab = DependencyManagerWidget(self.plugin_manager, self)
+        self.dependencies_tab = DependencyManagerWidget(
+            self.plugin_manager, self, defer_refresh=True
+        )
         tabs.addTab(self.dependencies_tab, "Dependencies")
+        self._dependencies_loaded = False
+
+        def load_dependencies(index):
+            if tabs.widget(index) is self.dependencies_tab and not self._dependencies_loaded:
+                self.dependencies_tab.refresh()
+                self._dependencies_loaded = True
+
+        tabs.currentChanged.connect(load_dependencies)
         self.about_tab = AboutTab(self.plugin_manager, self)
         tabs.addTab(self.about_tab, "About")
 
@@ -778,9 +774,91 @@ class SettingsDialog(QDialog):
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
 
+        self.category_list = QListWidget()
+        self.category_list.setObjectName("settingsCategories")
+        self.category_list.setAccessibleName("Settings categories")
+        self.category_list.setFixedWidth(190)
+        self.category_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        for index in range(tabs.count()):
+            self.category_list.addItem(tabs.tabText(index))
+        self.category_list.currentRowChanged.connect(tabs.setCurrentIndex)
+        tabs.currentChanged.connect(self.category_list.setCurrentRow)
+        self.category_list.setCurrentRow(0)
+
+        self.settings_search = SettingsSearch(tabs, self.category_list, self)
+        self._index_search_settings()
+        sidebar = QVBoxLayout()
+        sidebar.addWidget(self.settings_search.search_edit)
+        sidebar.addWidget(self.category_list, 1)
+        content = QHBoxLayout()
+        content.addLayout(sidebar)
+        content.addWidget(self.settings_search, 1)
         layout = QVBoxLayout(self)
-        layout.addWidget(tabs)
+        layout.addLayout(content, 1)
         layout.addWidget(button_box)
+
+    def _index_search_settings(self):
+        # Labels set by the shared row helpers stay in sync with the visible UI.
+        labels = {
+            "update_channel_combo": "Update channel",
+            "light_theme_button": "Light color mode",
+            "dark_theme_button": "Dark color mode",
+            "theme_color_button": "Accent color",
+            "background_layout_combo": "Background layout",
+            "artwork_source_combo": "Artwork source",
+            "custom_background_folders_list": "Custom background folders",
+            "booru_tags_edit": "Booru tags",
+            "background_blur_mode_combo": "Blur quality",
+            "background_blur_slider": "Background blur",
+            "background_darkness_slider": "Background darkness",
+            "empty_timestamp_placeholder_edit": "Empty timestamp placeholder",
+            "folder_list": "Lyrics search folders",
+            "check_updates_button": "Check for updates",
+        }
+        for name, label in labels.items():
+            getattr(self, name).setProperty("settingsLabel", label)
+        for key, widget in self.global_controls.items():
+            if key in LYRIC_KEYS:
+                widget.setProperty("settingsKeywords", key)
+        for key, (override, widget) in self.local_controls.items():
+            widget.setProperty("settingsLabel", self._local_setting_name(key))
+            widget.setProperty("settingsKeywords", key)
+            widget.setProperty("settingsFocusWidget", override)
+        for key, widget in self.karaoke_controls.items():
+            widget.setProperty("settingsKeywords", key)
+        conditional = {
+            self.custom_background_folders_list: (
+                self.artwork_source_combo, "Choose Custom as the artwork source to edit custom folders."
+            ),
+            self.booru_tags_edit: (
+                self.artwork_source_combo, "Choose an artwork source that uses Booru to edit Booru tags."
+            ),
+        }
+        for key, style in (("softness", "Soft"), ("glow_intensity", "Glow"),
+                           ("glow_radius", "Glow"), ("shimmer_width", "Shimmer")):
+            conditional[self.karaoke_controls[key]] = (
+                self.karaoke_controls["sweep_style"],
+                f"Choose the {style} sweep effect to edit this setting.",
+            )
+        for index in range(self.category_pages.count()):
+            page = self.category_pages.widget(index)
+            title = self.category_pages.tabText(index)
+            keywords = {"Dependencies": "install packages tools plugins", "About": "version updates application"}.get(title, "")
+            self.settings_search.add(page, title, keywords)
+            if title in {"Dependencies", "About"}:
+                continue
+            for widget in page.findChildren(QWidget):
+                label = widget.property("settingsLabel")
+                if not label and isinstance(widget, QCheckBox) and widget.text() != "Override":
+                    label = widget.text()
+                if not label:
+                    continue
+                fallback, availability = conditional.get(widget, (None, ""))
+                self.settings_search.add(
+                    widget, label, widget.property("settingsKeywords") or "",
+                    fallback=fallback, availability=availability,
+                    focus_widget=widget.property("settingsFocusWidget"),
+                )
 
     def done(self, result):
         if hasattr(self, "dependencies_tab") and self.dependencies_tab.busy:
@@ -789,6 +867,88 @@ class SettingsDialog(QDialog):
             )
             return
         super().done(result)
+
+    @staticmethod
+    def _scroll_page(body):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(body)
+        return scroll
+
+    def _make_lyrics_page(self, description, builder):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        hint = QLabel(description)
+        hint.setWordWrap(True)
+        hint.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(hint)
+        self._last_scroll_controls = builder(layout)
+        return page
+
+    def _create_lyric_sections(self, layout):
+        tabs = QTabWidget()
+        tabs.setObjectName("lyricsSections")
+        tabs.setAccessibleName("Lyric settings sections")
+        sections = {}
+        for title in LYRIC_SECTIONS:
+            body = QWidget()
+            body_layout = QVBoxLayout(body)
+            body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+            sections[title] = body_layout
+            tabs.addTab(self._scroll_page(body), title)
+        layout.addWidget(tabs, 1)
+        return sections
+
+    def _create_global_lyrics_controls(self, layout):
+        sections = self._create_lyric_sections(layout)
+        controls = self._create_lyrics_controls(
+            self.global_lyrics, layout, include_playback=False,
+            section_layouts=sections,
+        )
+        self._create_placeholder_controls(sections["Display"])
+        return controls
+
+    def _create_placeholder_controls(self, layout):
+        self._add_section_heading(layout, "Empty timestamp placeholder")
+        self.empty_timestamp_placeholder_checkbox = QCheckBox(
+            "Show placeholder for empty timed lyric lines"
+        )
+        self.empty_timestamp_placeholder_checkbox.setChecked(
+            bool(self.appearance_settings.get(
+                "empty_timestamp_placeholder_enabled", True
+            ))
+        )
+        layout.addWidget(self.empty_timestamp_placeholder_checkbox)
+
+        placeholder_row = QHBoxLayout()
+        placeholder_row.addWidget(QLabel("Placeholder:"))
+        self.empty_timestamp_placeholder_edit = QLineEdit(
+            self.appearance_settings.get(
+                "empty_timestamp_placeholder", "♪ {countdown}"
+            )
+        )
+        self.empty_timestamp_placeholder_edit.setPlaceholderText("♪ {countdown}")
+        self.empty_timestamp_placeholder_edit.setToolTip(
+            "Use {countdown} where the remaining time until the next lyric should appear."
+        )
+        placeholder_row.addWidget(self.empty_timestamp_placeholder_edit, 1)
+        layout.addLayout(placeholder_row)
+        placeholder_hint = QLabel(
+            "Example: ♪ {countdown}  →  ♪ 12.5"
+        )
+        muted_color = build_theme_palette(
+            self.theme_mode, self.theme_color
+        )["muted"]
+        placeholder_hint.setStyleSheet(
+            f"color: {muted_color}; font-style: italic;"
+        )
+        layout.addWidget(placeholder_hint)
+        self.empty_timestamp_placeholder_edit.setEnabled(
+            self.empty_timestamp_placeholder_checkbox.isChecked()
+        )
+        self.empty_timestamp_placeholder_checkbox.toggled.connect(
+            self.empty_timestamp_placeholder_edit.setEnabled
+        )
 
     def _make_scroll_tab(self, heading, builder):
         page = QWidget()
@@ -957,10 +1117,12 @@ class SettingsDialog(QDialog):
         )
 
     def _create_lyrics_controls(
-        self, values, layout, include_playback=False
+        self, values, layout, include_playback=False, section_layouts=None
     ):
         controls = {}
+        sections = section_layouts if section_layouts is not None else self._create_lyric_sections(layout)
 
+        layout = sections["Display"]
         self._add_section_heading(layout, "Display")
         display = QComboBox()
         display.addItem("Compact", False)
@@ -1021,6 +1183,7 @@ class SettingsDialog(QDialog):
         )
         controls["vertical_padding"] = vertical_padding
 
+        layout = sections["Readings"]
         self._add_section_heading(layout, "Furigana")
         show_ruby = QCheckBox("Show furigana")
         show_ruby.setChecked(bool(values.get("show_ruby", True)))
@@ -1156,6 +1319,7 @@ class SettingsDialog(QDialog):
         controls["ruby_font_size"] = ruby_font_size
         self._add_labeled(layout, "Ruby text font size:", ruby_font_size)
 
+        layout = sections["Typography"]
         self._add_section_heading(layout, "Typography")
         font_family = QComboBox()
         font_family.setEditable(False)
@@ -1181,8 +1345,9 @@ class SettingsDialog(QDialog):
         focus.setToolTip("Bring the current line into focus while gently blurring and dimming surrounding lyrics.")
         controls["focus_transition"] = focus
         rendering_layout.addWidget(focus)
-        layout.addWidget(rendering_group)
+        sections["Display"].addWidget(rendering_group)
 
+        layout = sections["Highlighting"]
         self._add_section_heading(layout, "Highlighting")
         highlight_current = QCheckBox("Highlight current lyric")
         highlight_current.setChecked(bool(values.get("highlight_current", True)))
@@ -1278,11 +1443,12 @@ class SettingsDialog(QDialog):
         controls["highlight_color"] = highlight_color
 
         lyrics_color = self._add_color_button(
-            layout, "Lyrics color:",
+            sections["Typography"], "Lyrics color:",
             values.get("lyrics_color", "#ffffff")
         )
         controls["lyrics_color"] = lyrics_color
 
+        layout = sections["Scrolling"]
         self._add_section_heading(layout, "Scrolling")
         scrolling_mode = QComboBox()
         scrolling_mode.addItem("Automatic (timestamp-driven)", "automatic")
@@ -1335,6 +1501,7 @@ class SettingsDialog(QDialog):
         speed_row.addWidget(continuous_speed, 1)
         speed_row.addWidget(speed_value)
         continuous_layout.addLayout(speed_row)
+        continuous_speed.setProperty("settingsLabel", "Continuous scroll speed")
         controls["continuous_scroll_speed"] = continuous_speed
         controls["continuous_scroll_speed_label"] = speed_label
         controls["continuous_scroll_speed_value"] = speed_value
@@ -1411,6 +1578,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(heading)
 
     def _add_labeled(self, layout, title, widget):
+        widget.setProperty("settingsLabel", title)
         row = QHBoxLayout()
         row.addWidget(QLabel(title))
         row.addWidget(widget, 1)
@@ -1420,6 +1588,7 @@ class SettingsDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(QLabel(title))
         slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setProperty("settingsLabel", title)
         slider.setRange(minimum, maximum)
         slider.setValue(
             max(minimum, min(maximum, int(value)))
@@ -1550,18 +1719,21 @@ class SettingsDialog(QDialog):
     def _create_local_controls(self, global_values, overrides, layout):
         controls = {}
 
-        # Same set as global, but every row can be inherited or overridden.
-        sections = {
-            "scrolling_lyrics": "Display",
-            "show_ruby": "Furigana", "show_romaji": "Romaji", "all_romaji": "All romaji",
-            "font_family": "Typography",
-            "focus_transition": "Rendering",
-            "highlight_current": "Highlighting",
-            "scroll_animation_speed": "Scrolling",
+        sections = self._create_lyric_sections(layout)
+        grids = {}
+        for title, section_layout in sections.items():
+            grid = QGridLayout()
+            grid.setColumnStretch(2, 1)
+            grid.setVerticalSpacing(10)
+            section_layout.addLayout(grid)
+            grids[title] = grid
+        section_for_key = {
+            key: title for title, keys in LYRIC_SECTIONS.items() for key in keys
         }
-        for key in LOCAL_LYRIC_KEYS:
-            if key in sections:
-                self._add_section_heading(layout, sections[key])
+        for key in (key for keys in LYRIC_SECTIONS.values() for key in keys
+                    if key in LOCAL_LYRIC_KEYS):
+            grid = grids[section_for_key[key]]
+            row_index = grid.rowCount()
             if key == "highlight_color" and self.plugin_manager is not None and "karaoke" in self.plugin_manager.plugins:
                 notice = QLabel(
                     "Karaoke timing uses its own progressive highlighting "
@@ -1569,13 +1741,11 @@ class SettingsDialog(QDialog):
                 )
                 notice.setWordWrap(True)
                 notice.setStyleSheet("color: palette(mid); font-style: italic;")
-                layout.addWidget(notice)
-            row_widget = QWidget()
-            row = QHBoxLayout(row_widget)
-            row.setContentsMargins(0, 0, 0, 0)
+                grid.addWidget(notice, row_index, 0, 1, 4)
+                row_index += 1
             setting_name = QLabel(self._local_setting_name(key))
             setting_name.setMinimumWidth(185)
-            row.addWidget(setting_name)
+            grid.addWidget(setting_name, row_index, 0)
 
             enabled = QCheckBox("Override")
             enabled.setChecked(key in overrides)
@@ -1585,22 +1755,16 @@ class SettingsDialog(QDialog):
             editor = self._editor_for_key(key, value)
             label = self._editor_label(key, editor)
 
-            if label is not None:
-                row.addWidget(label)
-
             def sync(state, widget=editor):
                 widget.setEnabled(bool(state))
 
             enabled.toggled.connect(sync)
             sync(enabled.isChecked())
 
-            row.addWidget(enabled)
-            if label is None:
-                row.addWidget(editor, 1)
-            else:
-                row.addWidget(editor, 1)
-
-            layout.addWidget(row_widget)
+            grid.addWidget(enabled, row_index, 1)
+            grid.addWidget(editor, row_index, 2)
+            if label is not None:
+                grid.addWidget(label, row_index, 3)
             controls[key] = (enabled, editor)
 
         return controls
@@ -1780,6 +1944,7 @@ class SettingsDialog(QDialog):
             "mecab_parse_mode",
             "lyrics_alignment",
             "ruby_position",
+            "scroll_animation_easing",
             "scroll_behavior",
             "font_family",
             "highlight_animation",

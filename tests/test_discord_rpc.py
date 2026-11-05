@@ -147,6 +147,7 @@ def load_settings(plugin, stored):
         get_setting=lambda key, default: stored.get(key, default),
         set_setting=lambda key, value: stored.__setitem__(key, value),
         register_settings_widget=lambda *args, **kwargs: None,
+        register_service=lambda *args: None,
     )
     plugin.on_load(SimpleNamespace(api=api, on=lambda *args: None))
 

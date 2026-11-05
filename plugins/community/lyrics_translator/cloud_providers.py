@@ -8,12 +8,13 @@ PROVIDERS = {
     "google": "Google Cloud Translation (untested, paid)",
     "deepl": "DeepL API (accurate, paid)",
     "mymemory": "MyMemory (free, limited, questionable quality)",
+    "datpmt": "Google Translate Free by Datpmt (free, good quality)",
 }
 # A deliberately small common language list; provider codes stay adapter-owned.
 LANGUAGES = {"ja": "Japanese", "en": "English", "zh": "Chinese (Simplified)",
              "zh-Hant": "Chinese (Traditional)", "ko": "Korean", "de": "German",
              "fr": "French", "es": "Spanish", "it": "Italian", "pt": "Portuguese",
-             "ru": "Russian", "nl": "Dutch", "pl": "Polish", "vi": "Vietnamese"}
+             "ru": "Russian", "nl": "Dutch", "pl": "Polish", "vi": "Vietnamese", "th": "Thai"}
 
 
 def catalog():
@@ -46,7 +47,7 @@ def batches(provider, rows):
         unique.setdefault(text, []).append(index)
     groups, group, size = [], [], 0
     for text, row_indices in unique.items():
-        if group and (provider == "mymemory" or len(group) >= 40 or size + len(text.encode("utf-8")) > 32000):
+        if group and (provider in {"mymemory", "datpmt"} or len(group) >= 40 or size + len(text.encode("utf-8")) > 32000):
             groups.append(group)
             group, size = [], 0
         group.append((text, row_indices))
@@ -60,7 +61,7 @@ def request(provider, source, target, texts, settings):
     source = language_code(provider, source)
     target = language_code(provider, target, target=True)
     key = settings.get("api_key", "")
-    if provider != "mymemory" and not key:
+    if provider not in {"mymemory", "datpmt"} and not key:
         raise ValueError("Enter an API key for the selected provider.")
     headers = {"Content-Type": "application/json; charset=utf-8"}
     if provider == "azure":
@@ -84,6 +85,13 @@ def request(provider, source, target, texts, settings):
     elif provider == "mymemory":
         url = "https://api.mymemory.translated.net/get?" + urlencode({"q": texts[0], "langpair": source + "|" + target})
         return "GET", url, {}, b""
+    elif provider == "datpmt":
+        if len(texts[0]) > 5000:
+            raise ValueError("This translation exceeds Datpmt's 5,000-character request limit.")
+        url = "https://api.datpmt.com/api/v2/dictionary/translate?" + urlencode({
+            "string": texts[0], "from_lang": source, "to_lang": target,
+        })
+        return "GET", url, {}, b""
     else:
         raise ValueError("Unknown translation provider.")
     return "POST", url, headers, json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -97,6 +105,8 @@ def response(provider, data, expected):
             values = [html.unescape(item["translatedText"]) for item in data["data"]["translations"]]
         elif provider == "deepl":
             values = [item["text"] for item in data["translations"]]
+        elif provider == "datpmt":
+            values = [data]
         else:
             if str(data["responseStatus"]) != "200" or data.get("quotaFinished"):
                 raise ValueError("MyMemory rejected the request or its daily quota is exhausted.")

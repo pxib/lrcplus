@@ -177,6 +177,7 @@ class DiscordRpcPlugin:
             if not isinstance(self.settings[key], str):
                 self.settings[key] = DEFAULT_SETTINGS[key]
         self.settings["placeholder_language"] = self._placeholder_language_setting()
+        context.api.register_service("discord_rpc.album_artwork", self.cached_album_artwork)
         context.on("app_ready", self.on_app_ready)
         context.api.register_settings_widget(
             "Discord Rich Presence",
@@ -975,6 +976,14 @@ class DiscordRpcPlugin:
         if self.settings.get("upload_embedded_artwork", True):
             return self._cover_cache.get(f"litterbox:{key}")
         return None
+
+    def cached_album_artwork(self, path):
+        """Share already-resolved album art without starting lookups or uploads."""
+        path = Path(path)
+        if not path.is_file():
+            return {"url": None, "pending": False}
+        return {"url": self._cached_cover(path),
+                "pending": self._cover_cache_key(path) in self._cover_jobs}
 
     # ------------------------------------------------------------------
     # Presence

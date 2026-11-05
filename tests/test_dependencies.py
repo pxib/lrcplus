@@ -288,6 +288,42 @@ def test_parallel_installation_is_rejected(tmp_path):
                 pytest.fail("Second installer acquired the same lock")
 
 
+def test_settings_only_refresh_dependencies_on_first_selection(qapp, monkeypatch):
+    from PySide6.QtWidgets import QTabWidget
+    from ui.dependency_settings import DependencyManagerWidget
+    from ui.settings_dialog import SettingsDialog
+
+    refreshes = []
+    original_refresh = DependencyManagerWidget.refresh
+
+    def refresh(widget):
+        refreshes.append(widget)
+        original_refresh(widget)
+
+    monkeypatch.setattr(DependencyManagerWidget, "refresh", refresh)
+    dialog = SettingsDialog([], {})
+    try:
+        widget = dialog.dependencies_tab
+        tabs = next(tab for tab in dialog.findChildren(QTabWidget)
+                    if tab.indexOf(widget) >= 0)
+        assert refreshes == []
+        assert widget.tree.topLevelItemCount() == 0
+        # Painting Settings must not start checks for the hidden tab either.
+        dialog.show()
+        qapp.processEvents()
+        assert refreshes == []
+        tabs.setCurrentWidget(widget)
+        assert refreshes == [widget]
+        assert widget.tree.topLevelItemCount() > 0
+        tabs.setCurrentIndex(0)
+        tabs.setCurrentWidget(widget)
+        assert refreshes == [widget]
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
 def test_settings_dependency_tab_and_busy_close_guard(qapp, tmp_path):
     from ui.settings_dialog import SettingsDialog
 
@@ -296,6 +332,10 @@ def test_settings_dependency_tab_and_busy_close_guard(qapp, tmp_path):
     dialog = SettingsDialog([], {}, plugin_manager=manager)
     try:
         widget = dialog.dependencies_tab
+        from PySide6.QtWidgets import QTabWidget
+        tabs = next(tab for tab in dialog.findChildren(QTabWidget)
+                    if tab.indexOf(widget) >= 0)
+        tabs.setCurrentWidget(widget)
         missing = next(widget.tree.topLevelItem(i) for i in range(widget.tree.topLevelItemCount())
                        if widget.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole) == "lp-test-missing")
         assert missing.text(2) == "Missing"

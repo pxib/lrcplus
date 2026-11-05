@@ -6,7 +6,8 @@ from PySide6.QtWidgets import QComboBox, QDialog, QLineEdit, QPushButton, QTable
 
 from core.chinese_lyrics import LyricsProviderError
 import core.lyrics_preview_queue as queue_module
-import ui.main_window as main_window
+import ui.lyrics_search_dialog as lyrics_search
+from ui.main_window import Player
 
 
 def wait_for(qapp, predicate):
@@ -18,7 +19,7 @@ def wait_for(qapp, predicate):
 
 
 def setup_search(monkeypatch):
-    monkeypatch.setattr(main_window, "search_chinese_lyrics", lambda source, *args: [
+    monkeypatch.setattr(lyrics_search, "search_chinese_lyrics", lambda source, *args: [
         {"id": number, "source": source, "trackName": f"Song {number}", "hasSyncedLyrics": None}
         for number in range(5)
     ])
@@ -45,7 +46,7 @@ def test_all_rows_are_checked_without_clicks_and_failures_do_not_replace_preview
         if item["id"] == 3:
             return {**item, "plainLyrics": "Plain lyrics"}
         return {**item, "syncedLyrics": f"[00:01.000]Song {item['id']}", "lyricsFormat": "lrcx" if item["id"] == 1 else "lrc"}
-    monkeypatch.setattr(main_window, "fetch_chinese_lyrics", fetch)
+    monkeypatch.setattr(lyrics_search, "fetch_chinese_lyrics", fetch)
 
     def interact(dialog):
         provider, table, preview = controls(dialog)
@@ -67,7 +68,7 @@ def test_all_rows_are_checked_without_clicks_and_failures_do_not_replace_preview
 
     monkeypatch.setattr(QDialog, "exec", interact)
     try:
-        main_window.Player.search_lrclib_lyrics(parent)
+        Player.search_lrclib_lyrics(parent)
     finally:
         parent.deleteLater()
         qapp.processEvents()
@@ -85,7 +86,7 @@ def test_selected_row_is_prioritized_and_dialog_closes_with_requests_in_flight(q
             entered.set()
             assert release.wait(5)
         return {**item, "syncedLyrics": f"[00:01]Song {item['id']}"}
-    monkeypatch.setattr(main_window, "fetch_chinese_lyrics", fetch)
+    monkeypatch.setattr(lyrics_search, "fetch_chinese_lyrics", fetch)
 
     def interact(dialog):
         _, table, preview = controls(dialog)
@@ -102,7 +103,7 @@ def test_selected_row_is_prioritized_and_dialog_closes_with_requests_in_flight(q
 
     monkeypatch.setattr(QDialog, "exec", interact)
     try:
-        main_window.Player.search_lrclib_lyrics(parent)
+        Player.search_lrclib_lyrics(parent)
         assert not release.is_set()
     finally:
         release.set()

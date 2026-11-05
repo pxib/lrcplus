@@ -9,7 +9,8 @@ from PySide6.QtWidgets import QComboBox, QDialog, QLabel, QLineEdit, QPushButton
 
 from core import chinese_lyrics
 from lyrics.loader import load_lyrics
-import ui.main_window as main_window
+import ui.lyrics_search_dialog as lyrics_search
+from ui.main_window import Player
 
 
 @pytest.mark.parametrize("source, word_timed, catalog_search", [
@@ -80,7 +81,7 @@ def test_native_provider_preview_cache_and_save(qapp, monkeypatch, tmp_path, sou
     monkeypatch.setattr(chinese_lyrics, "_request", request)
     monkeypatch.setattr(QDialog, "exec", interact)
     try:
-        main_window.Player.search_lrclib_lyrics(parent)
+        Player.search_lrclib_lyrics(parent)
         assert len(loaded) == 1
         path = Path(loaded[0])
         assert path.suffix == (".lrcx" if word_timed else ".lrc")

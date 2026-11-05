@@ -17,12 +17,34 @@ class BudgetBrandLabel(QLabel):
     budget_cut_requested = Signal()
 
     def __init__(self, parent=None):
-        super().__init__("LRCPlus", parent)
+        super().__init__(parent)
+        self._brand_pixmap = QPixmap(
+            str(Path(__file__).resolve().parents[1] / "assets" / "media" / "logocompact.png")
+        )
+        self._show_logo()
         self._clicks = 0
         self._reset = QTimer(self)
         self._reset.setSingleShot(True)
         self._reset.setInterval(2500)
         self._reset.timeout.connect(self._reset_clicks)
+
+    def _show_logo(self):
+        self._logo_mode = True
+        super().setText("")
+        self.setPixmap(self._brand_pixmap.scaledToHeight(32, Qt.TransformationMode.SmoothTransformation))
+        self.setFixedSize(self.pixmap().size())
+
+    def setText(self, text):
+        if text == "LRCPlus" and getattr(self, "_brand_pixmap", QPixmap()).isNull() is False:
+            self._show_logo()
+            return
+        self._logo_mode = False
+        super().setPixmap(QPixmap())
+        super().setText(text)
+        self.setFixedSize(self.sizeHint())
+
+    def text(self):
+        return "LRCPlus" if getattr(self, "_logo_mode", False) else super().text()
 
     def _reset_clicks(self):
         self._clicks = 0

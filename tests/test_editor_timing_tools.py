@@ -4,6 +4,7 @@ import pytest
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QListWidget, QSpinBox
 
 import ui.lrc_editor as editor_module
+import ui.lyrics_editor_document as document_module
 from lyrics.loader import load_lyrics
 
 def test_consecutive_shifts_undo_and_redo_one_operation_at_a_time(editor):
@@ -78,7 +79,7 @@ def test_failed_save_keeps_editor_open_dirty_and_recoverable(editor, monkeypatch
     def locked(*args, **kwargs):
         raise PermissionError("Locked destination")
 
-    monkeypatch.setattr(editor_module, "atomic_write_text", locked)
+    monkeypatch.setattr(document_module, "atomic_write_text", locked)
     monkeypatch.setattr(editor_module.QMessageBox, "warning", lambda *args: warnings.append(args[2]))
     editor.save_and_close()
     assert editor.document_dirty

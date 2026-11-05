@@ -6,7 +6,8 @@ from PySide6.QtWidgets import QCheckBox, QComboBox, QDialog, QLineEdit, QPushBut
 
 from core.lyrics_translations import with_translations
 from lyrics.lrcx_parser import load_lrcx
-import ui.main_window as main_window
+import ui.lyrics_search_dialog as lyrics_search
+from ui.main_window import Player
 
 
 @pytest.mark.parametrize("include", [False, True])
@@ -17,7 +18,7 @@ def test_translation_preview_toggle_cache_and_saved_format(qapp, monkeypatch, tm
     loaded, fetches = [], []
     parent.load_lrc_file = loaded.append
     parent.clear_lyrics_search_index = lambda: None
-    monkeypatch.setattr(main_window, "search_chinese_lyrics", lambda source, *args: [
+    monkeypatch.setattr(lyrics_search, "search_chinese_lyrics", lambda source, *args: [
         {"id": 42, "source": source, "trackName": "Original"},
     ])
 
@@ -27,7 +28,7 @@ def test_translation_preview_toggle_cache_and_saved_format(qapp, monkeypatch, tm
             "[00:01.000]<00:01.100>Hello<00:01.600><00:03.000>" if word_timed else "[00:01.000]Hello"
         ), "lyricsFormat": "lrcx" if word_timed else "lrc"}, {1000: "Translation"})
 
-    monkeypatch.setattr(main_window, "fetch_chinese_lyrics", fetch)
+    monkeypatch.setattr(lyrics_search, "fetch_chinese_lyrics", fetch)
 
     def interact(dialog):
         checkbox = dialog.findChild(QCheckBox)
@@ -81,7 +82,7 @@ def test_translation_preview_toggle_cache_and_saved_format(qapp, monkeypatch, tm
 
     monkeypatch.setattr(QDialog, "exec", interact)
     try:
-        main_window.Player.search_lrclib_lyrics(parent)
+        Player.search_lrclib_lyrics(parent)
         assert len(loaded) == 1
         saved = Path(loaded[0])
         assert saved.suffix == (".lrcx" if include or word_timed else ".lrc")
@@ -101,10 +102,10 @@ def test_translation_preview_toggle_cache_and_saved_format(qapp, monkeypatch, tm
 def test_translation_checkbox_stays_disabled_without_aligned_translation(qapp, monkeypatch):
     parent = QWidget()
     parent.current_audio_path = None
-    monkeypatch.setattr(main_window, "search_chinese_lyrics", lambda source, *args: [
+    monkeypatch.setattr(lyrics_search, "search_chinese_lyrics", lambda source, *args: [
         {"id": 42, "source": source, "trackName": "Original"},
     ])
-    monkeypatch.setattr(main_window, "fetch_chinese_lyrics", lambda item, cancel: {
+    monkeypatch.setattr(lyrics_search, "fetch_chinese_lyrics", lambda item, cancel: {
         **item, "syncedLyrics": "[00:01]Original", "lyricsFormat": "lrc",
     })
 
@@ -125,7 +126,7 @@ def test_translation_checkbox_stays_disabled_without_aligned_translation(qapp, m
 
     monkeypatch.setattr(QDialog, "exec", interact)
     try:
-        main_window.Player.search_lrclib_lyrics(parent)
+        Player.search_lrclib_lyrics(parent)
     finally:
         parent.deleteLater()
 
@@ -137,7 +138,7 @@ def test_translation_script_preview_matches_import_without_changing_original(qap
     loaded, fetches = [], []
     parent.load_lrc_file = loaded.append
     parent.clear_lyrics_search_index = lambda: None
-    monkeypatch.setattr(main_window, "search_chinese_lyrics", lambda source, *args: [
+    monkeypatch.setattr(lyrics_search, "search_chinese_lyrics", lambda source, *args: [
         {"id": 42, "source": source, "trackName": "Original"},
     ])
     provider_text = "音樂与梦想"
@@ -147,7 +148,7 @@ def test_translation_script_preview_matches_import_without_changing_original(qap
         return with_translations({**item, "syncedLyrics": "[00:01.000]僕の夢", "lyricsFormat": "lrc"},
                                  {1000: provider_text})
 
-    monkeypatch.setattr(main_window, "fetch_chinese_lyrics", fetch)
+    monkeypatch.setattr(lyrics_search, "fetch_chinese_lyrics", fetch)
 
     def interact(dialog):
         dialog.findChild(QComboBox).setCurrentText("NetEase Cloud Music")
@@ -185,7 +186,7 @@ def test_translation_script_preview_matches_import_without_changing_original(qap
 
     monkeypatch.setattr(QDialog, "exec", interact)
     try:
-        main_window.Player.search_lrclib_lyrics(parent)
+        Player.search_lrclib_lyrics(parent)
         line = load_lrcx(loaded[0])[0]
         assert line.text == "僕の夢\n" + expected
         assert line.translation_lines == [1]

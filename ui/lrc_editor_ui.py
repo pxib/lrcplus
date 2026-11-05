@@ -48,6 +48,7 @@ except Exception:
 
 
 from ui.lrc_editor_controls import ClickableSlider, KaraokeSeparationWidget
+from ui.lyrics_share_card import LyricsShareCardWidget
 
 
 class LrcEditorUiMixin:
@@ -579,7 +580,11 @@ class LrcEditorUiMixin:
         # ----------------------------- Share --------------------------
         self.share_page = QWidget()
         share_layout = QVBoxLayout(self.share_page)
-        share_layout.addWidget(QLabel("Copy or export the current lyrics as text."))
+        self.share_tabs = QTabWidget()
+        share_layout.addWidget(self.share_tabs, 1)
+        share_text_page = QWidget()
+        share_text_layout = QVBoxLayout(share_text_page)
+        share_text_layout.addWidget(QLabel("Copy or export the current lyrics as text."))
 
         share_format_row = QHBoxLayout()
         share_format_row.addWidget(QLabel("Format:"))
@@ -588,7 +593,7 @@ class LrcEditorUiMixin:
         self.share_format_combo.addItem("With line timestamps", "lrc")
         share_format_row.addWidget(self.share_format_combo)
         share_format_row.addStretch()
-        share_layout.addLayout(share_format_row)
+        share_text_layout.addLayout(share_format_row)
 
         share_actions = QHBoxLayout()
         copy_share_button = QPushButton("Copy")
@@ -598,13 +603,16 @@ class LrcEditorUiMixin:
         share_actions.addWidget(copy_share_button)
         share_actions.addWidget(export_share_button)
         share_actions.addStretch()
-        share_layout.addLayout(share_actions)
+        share_text_layout.addLayout(share_actions)
 
         self.share_status_label = QLabel("")
-        share_layout.addWidget(self.share_status_label)
+        share_text_layout.addWidget(self.share_status_label)
+        share_text_layout.addStretch()
+        self.share_tabs.addTab(share_text_page, "Text")
+        self.share_card = LyricsShareCardWidget(self)
+        self.share_tabs.addTab(self.share_card, "Image card")
         self.share_selection_label = QLabel("")
         share_layout.addWidget(self.share_selection_label)
-        share_layout.addStretch()
         self.tabs.addTab(self.share_page, "Share")
 
         # ---------------------------- Advanced --------------------------

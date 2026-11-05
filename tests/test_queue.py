@@ -619,7 +619,7 @@ def test_editor_association_refreshes_paused_renderer(
     if action == "remove":
         set_lyrics_attachment(tracks[0], external)
     if action == "choose":
-        monkeypatch.setattr("ui.lrc_editor.QFileDialog.getOpenFileName",
+        monkeypatch.setattr("ui.lyrics_editor_document.QFileDialog.getOpenFileName",
                             lambda *args: (str(external), ""))
         editor.choose_lyrics_file_for_current_song()
     else:
@@ -773,7 +773,7 @@ def test_saving_and_closing_editor_preserves_changed_association(
 
     def finish():
         if action == "choose":
-            monkeypatch.setattr("ui.lrc_editor.QFileDialog.getOpenFileName",
+            monkeypatch.setattr("ui.lyrics_editor_document.QFileDialog.getOpenFileName",
                                 lambda *args: (str(selected), ""))
             editor.choose_lyrics_file_for_current_song()
         else:

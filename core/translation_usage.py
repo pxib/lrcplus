@@ -62,5 +62,8 @@ def format_estimate(provider, texts, *, deepl_plan="developer", sent=0):
         if characters > reference.characters:
             text += " This run exceeds that full allowance."
     else:
-        text += "\nUsage-based plan: no included character allowance assumed."
+        if provider == "datpmt":
+            text += "\nDatpmt publishes no character allowance; service availability and limits may change."
+        else:
+            text += "\nUsage-based plan: no included character allowance assumed."
     return text + f"\nSent from this tab: ~{sent:,} characters. Actual remaining quota is unknown."

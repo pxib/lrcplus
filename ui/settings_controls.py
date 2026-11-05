@@ -172,6 +172,15 @@ SETTINGS_DIALOG_STYLE = """
         selection-background-color: @ACCENT_SOFT@;
         selection-color: @TEXT@;
     }
+    QDialog QListWidget#settingsCategories::item {
+        padding: 9px 10px;
+        margin: 2px 0;
+        border-radius: 4px;
+    }
+    QDialog QListWidget#settingsCategories::item:selected {
+        background: @ACCENT_SOFT@;
+        color: @TEXT@;
+    }
     QDialog QComboBox {
         color: @TEXT@;
         background: @SURFACE@;
@@ -279,6 +288,14 @@ SETTINGS_DIALOG_STYLE = """
         background: @SURFACE@;
         border: 2px solid @ACCENT@;
         border-radius: 7px;
+    }
+    QDialog QWidget[settingsSearchHighlight="true"] {
+        border: 2px solid @ACCENT@;
+        border-radius: 4px;
+    }
+    QDialog QListWidget#settingsSearchResults::item {
+        padding: 10px;
+        border-bottom: 1px solid @BORDER@;
     }
     QDialog QScrollBar:vertical {
         width: 10px;

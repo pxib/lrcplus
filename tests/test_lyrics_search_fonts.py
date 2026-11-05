@@ -7,7 +7,8 @@ from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtGui import QFont, QFontDatabase, QRawFont, QTextLayout
 from PySide6.QtWidgets import QComboBox, QDialog, QLineEdit, QPushButton, QTableWidget, QTextEdit, QWidget
 
-import ui.main_window as main_window
+import ui.lyrics_search_dialog as lyrics_search
+from ui.main_window import Player
 
 
 @pytest.mark.parametrize("source", ["KuGou", "Kuwo", "QQ Music"])
@@ -25,7 +26,7 @@ def test_search_fonts_follow_text_coverage_and_preserve_cached_lyrics(
     parent.load_lrc_file = loaded.append
     lyrics = f"[00:01.000]{text}\n[00:02.000]Second line"
     fetched = []
-    monkeypatch.setattr(main_window, "search_chinese_lyrics", lambda *args: [
+    monkeypatch.setattr(lyrics_search, "search_chinese_lyrics", lambda *args: [
         {"id": 42, "source": source, "trackName": text,
          "albumName": text, "artistName": text},
     ])
@@ -34,7 +35,7 @@ def test_search_fonts_follow_text_coverage_and_preserve_cached_lyrics(
         fetched.append(item["id"])
         return {**item, "syncedLyrics": lyrics, "lyricsFormat": "lrc"}
 
-    monkeypatch.setattr(main_window, "fetch_chinese_lyrics", fetch)
+    monkeypatch.setattr(lyrics_search, "fetch_chinese_lyrics", fetch)
 
     def check_font(font):
         assert font.family() == "Noto Sans JP"
@@ -87,7 +88,7 @@ def test_search_fonts_follow_text_coverage_and_preserve_cached_lyrics(
 
     monkeypatch.setattr(QDialog, "exec", interact)
     try:
-        main_window.Player.search_lrclib_lyrics(parent)
+        Player.search_lrclib_lyrics(parent)
         assert len(loaded) == 1
         assert (tmp_path / "song.lrc").read_text(encoding="utf-8") == lyrics + "\n"
     finally:

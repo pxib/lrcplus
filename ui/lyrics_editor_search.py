@@ -23,6 +23,9 @@ class LyricsEditorSearchMixin:
         layout.addLayout(row)
         self.lyric_search_status = QLabel()
         self.lyric_search_status.setWordWrap(True)
+        # An empty QLabel still reserves a line in the sidebar layout. Keep it
+        # hidden until a search has something useful to report.
+        self.lyric_search_status.hide()
         layout.addWidget(self.lyric_search_status)
         self.shortcut_find = QShortcut(QKeySequence.StandardKey.Find, self)
         self.shortcut_find.activated.connect(self.focus_lyric_search)
@@ -57,6 +60,7 @@ class LyricsEditorSearchMixin:
         else:
             message = f"{len(matches)} matching line(s)"
         self.lyric_search_status.setText(message)
+        self.lyric_search_status.setVisible(bool(message))
 
     def _find_lyric(self, direction):
         if not self._commit_pending_source():

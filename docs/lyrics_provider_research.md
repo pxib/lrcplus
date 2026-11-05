@@ -1,5 +1,25 @@
 # Lyrics provider investigation
 
+## SyncLRC integration (2026-11-05)
+
+Search Lyrics includes SyncLRC with no credentials required. The adapter uses
+`GET https://api.synclrc.dev/search?q=...&limit=10` and reuses the embedded
+`lyrics` object for preview and import. If a search result omits lyrics, it
+fetches `/lyrics/{id}` using that result's canonical ID. Switching providers
+retains the existing dialog cache. HTTP 429 pauses further requests using
+`Retry-After`, with a minimum 60-second cooldown.
+
+Karaoke angle-bracket timestamps are preserved as LRCX segment starts and
+explicit terminal boundaries. No word times are interpolated. Line-synced
+LRC and plain text are fallbacks. LRC offsets are applied before importing;
+instrumental and explicitly empty results are excluded. Provider attribution
+appears in the preview. Genie remains an independent probe, outside the app.
+
+The [official API documentation](https://synclrc.dev/) describes search results,
+canonical IDs, all three lyric formats, and the 30 requests/minute limits.
+Live probes returned all three formats for NewJeans - Ditto and aespa - Supernova.
+These samples establish availability, not timing accuracy against local audio.
+
 Checked on 2026-10-31. These are results from direct requests to the providers,
 without an account or developer API key. NetEase YRC with LRC fallback, KuGou KRC,
 and Kuwo LRC are now implemented, along with the dialog's per-provider cache.

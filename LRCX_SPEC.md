@@ -57,6 +57,27 @@ Underline and strikethrough remain continuous across spaces and furigana
 padding within a styled run, and restart on each visual row.
 Save as `.lrcx` to preserve formatting.
 
+In **Share > Image card > Text**, **Preserve LRCX formatting** keeps inline
+emphasis, blockquote indentation/bars, visual line breaks, and the smaller
+translation rows. Card-wide emphasis combines with source emphasis; card fonts,
+colors, stroke, and shadow remain available. Turn the option off for plain lyric
+text. Source formatting applies to the checked excerpt in document order.
+Line/segment timestamps and karaoke highlighting do not appear in image cards.
+**Include furigana** independently shows saved readings and already-generated
+editor readings above their base words. Authored ruby takes priority over
+automatic readings. Translation rows receive no automatic readings. Adjust the
+reading-size percentage beside the checkbox; annotated words wrap together.
+Image cards consume available readings without starting reading providers.
+
+Under **Text > Song details**, edit the title, artist/credit, and album (prefilled
+from `[ti:]`, `[ar:]`, and `[al:]` metadata). **Details placement** puts artist and
+album below the title or groups all details beside the enabled album cover.
+Unavailable artwork falls back to the below-title layout. Stroke and shadow
+also apply to song details, scaled to their smaller text size. Presets remember
+the placement and effects, while the title, artist, and album stay with the song.
+Changing stroke or shadow settings does not change automatic font sizing,
+line wrapping, or text placement. Effects paint within the text area's bounds.
+
 ## Blockquotes
 
 Start the lyric after its timestamp with `> ` to indent it and add a subtle

@@ -7,7 +7,8 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QComboBox, QDialog, QLabel, QLineEdit, QPushButton, QTableWidget, QTextEdit, QWidget
 
 from core import musixmatch
-import ui.main_window as main_window
+import ui.lyrics_search_dialog as lyrics_search
+from ui.main_window import Player
 
 
 @pytest.mark.parametrize("outcome", ["synced", "plain", "error", "cancel", "switch"])
@@ -89,7 +90,7 @@ def test_musixmatch_preview_stays_responsive_and_saves(qapp, monkeypatch, tmp_pa
             provider.setCurrentText("LRCLIB")
             release.set()
             wait_for(lambda: all(not job._future or job._future.done()
-                                 for job in dialog.findChildren(main_window.BackgroundJob)))
+                                 for job in dialog.findChildren(lyrics_search.BackgroundJob)))
             qapp.processEvents()
             assert not preview.toPlainText()
             assert dialog.findChild(QTableWidget).rowCount() == 0
@@ -108,7 +109,7 @@ def test_musixmatch_preview_stays_responsive_and_saves(qapp, monkeypatch, tmp_pa
     monkeypatch.setattr(musixmatch.requests, "get", get)
     monkeypatch.setattr(QDialog, "exec", interact)
     try:
-        main_window.Player.search_lrclib_lyrics(parent)
+        Player.search_lrclib_lyrics(parent)
         if outcome in {"synced", "plain"}:
             destination = parent.current_audio_path.with_suffix(".lrc" if outcome == "synced" else ".txt")
             assert loaded == [str(destination)]
@@ -165,7 +166,7 @@ def test_manual_token_entry_is_masked_and_retained_without_generation(qapp, monk
 
     monkeypatch.setattr(QDialog, "exec", interact)
     try:
-        main_window.Player.search_lrclib_lyrics(parent)
+        Player.search_lrclib_lyrics(parent)
     finally:
         parent.deleteLater()
         qapp.processEvents()

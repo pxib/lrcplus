@@ -120,7 +120,7 @@ def test_plugin_merge_preserves_settings_and_encrypted_records(monkeypatch):
             "encrypted_azure_api_key": ciphertext, "source": "ja", "models_folder": "local-models", "target": "zh"}
         assert settings["unrelated"] == {"keep": True}
         assert "cloud_translation" not in settings and "argos_translation" not in settings
-        assert set(manager.translation_providers) == {"argos", "azure", "google", "deepl", "mymemory"}
+        assert set(manager.translation_providers) == {"argos", "azure", "google", "deepl", "mymemory", "datpmt"}
         assert manager.translation_providers["argos"]["name"] == "Argos Translate (poor quality)"
     finally:
         plugin.on_unload(None)
@@ -135,6 +135,6 @@ def test_merged_plugin_remains_loadable_without_argos_dependencies(monkeypatch):
     monkeypatch.setattr(manager.dependency_manager, "status", lambda name: {"state": "missing", "text": "Missing"})
     assert manager.dependency_manager.plugin_problems(metadata) == []
     manager.load_from_file("lyrics_translator", root / "plugins/community/lyrics_translator/plugin.py", metadata)
-    assert len(manager.translation_providers) == 5
+    assert len(manager.translation_providers) == 6
     manager.unload("lyrics_translator")
     assert not manager.translation_providers

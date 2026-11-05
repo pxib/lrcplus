@@ -6,7 +6,8 @@ import pytest
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QDialog, QLabel, QLineEdit, QPushButton, QTableWidget, QWidget
 
-import ui.main_window as main_window
+import ui.lyrics_search_dialog as lyrics_search
+from ui.main_window import Player
 import core.lrclib as lrclib
 
 
@@ -16,7 +17,7 @@ def test_lyrics_search_query_prefers_artist_and_title_metadata(
 ):
     audio_path = tmp_path / "misleading-filename.mp3"
     monkeypatch.setattr(
-        main_window,
+        lyrics_search,
         "read_track",
         lambda _path: SimpleNamespace(
             artist="Tagged Artist",
@@ -24,7 +25,7 @@ def test_lyrics_search_query_prefers_artist_and_title_metadata(
         ),
     )
 
-    assert main_window._lyrics_search_query(audio_path) == (
+    assert lyrics_search._lyrics_search_query(audio_path) == (
         "Tagged Artist - Tagged Song"
     )
 
@@ -35,12 +36,12 @@ def test_lyrics_search_query_falls_back_to_filename_without_tags(
 ):
     audio_path = tmp_path / "filename-title.mp3"
     monkeypatch.setattr(
-        main_window,
+        lyrics_search,
         "read_track",
         lambda _path: SimpleNamespace(artist="", title=audio_path.stem),
     )
 
-    assert main_window._lyrics_search_query(audio_path) == "filename-title"
+    assert lyrics_search._lyrics_search_query(audio_path) == "filename-title"
 
 
 def test_lyrics_search_query_falls_back_when_metadata_cannot_be_read(
@@ -52,16 +53,16 @@ def test_lyrics_search_query_falls_back_when_metadata_cannot_be_read(
     def unreadable_track(_path):
         raise OSError("unreadable audio file")
 
-    monkeypatch.setattr(main_window, "read_track", unreadable_track)
+    monkeypatch.setattr(lyrics_search, "read_track", unreadable_track)
 
-    assert main_window._lyrics_search_query(audio_path) == "filename-title"
+    assert lyrics_search._lyrics_search_query(audio_path) == "filename-title"
 
 
 @pytest.mark.parametrize("outcome", ["results", "unknown", "empty", "error", "cancel"])
 def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
     entered, release = threading.Event(), threading.Event()
     now = [100.0]
-    monkeypatch.setattr(main_window, "monotonic", lambda: now[0])
+    monkeypatch.setattr(lyrics_search, "monotonic", lambda: now[0])
     worker_threads = []
     parent = QWidget()
     parent.current_audio_path = None
@@ -161,7 +162,7 @@ def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
     monkeypatch.setattr(lrclib.requests, "get", get)
     monkeypatch.setattr(QDialog, "exec", interact)
     try:
-        main_window.Player.search_lrclib_lyrics(parent)
+        Player.search_lrclib_lyrics(parent)
         assert len(worker_threads) == 1
     finally:
         release.set()

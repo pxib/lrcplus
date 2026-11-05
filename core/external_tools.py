@@ -141,7 +141,8 @@ class ExternalToolManager:
             # it with an unrelated ffprobe installation.
             return {exe: str(binary / f"{exe}.exe") if (binary / f"{exe}.exe").is_file() else None
                     for exe in TOOLS[name]["executables"]}
-        return {exe: shutil.which(exe, path=self._external_path()) for exe in TOOLS[name]["executables"]}
+        path = self._external_path()
+        return {exe: shutil.which(exe, path=path) for exe in TOOLS[name]["executables"]}
 
     def status(self, name):
         folder = self._folder(name)

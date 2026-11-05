@@ -317,7 +317,7 @@ def test_scrolling_covers_stays_bounded_without_row_references(library, qapp, mo
         pixmap.fill(Qt.GlobalColor.red)
         return pixmap
 
-    monkeypatch.setattr("ui.main_window.load_embedded_cover_thumbnail", thumbnail)
+    monkeypatch.setattr("ui.player_library.load_embedded_cover_thumbnail", thumbnail)
     library.resize(500, 400)
     library.show()
     qapp.processEvents()

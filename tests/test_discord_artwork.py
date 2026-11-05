@@ -17,6 +17,20 @@ def cover_bytes(size=(128, 64), *, mode="RGB", format="PNG", **kwargs):
     return output.getvalue()
 
 
+def test_shared_album_artwork_reads_only_resolved_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(DiscordRpcPlugin, "_load_persistent_cover_cache", lambda self: {})
+    plugin = DiscordRpcPlugin()
+    path = tmp_path / "song.mp3"
+    path.touch()
+    key = plugin._cover_cache_key(path)
+    monkeypatch.setattr(plugin, "_start_cover_resolution", lambda *_: pytest.fail("Started another lookup"))
+    assert plugin.cached_album_artwork(path) == {"url": None, "pending": False}
+    plugin._cover_jobs.add(key)
+    assert plugin.cached_album_artwork(path) == {"url": None, "pending": True}
+    plugin._cover_cache[f"mb:{key}"] = "https://coverartarchive.org/cover.png"
+    assert plugin.cached_album_artwork(path)["url"] == "https://coverartarchive.org/cover.png"
+
+
 def oversized_pixel_header():
     # A valid PNG header declares too many pixels without allocating them.
     data = cover_bytes((1, 1))

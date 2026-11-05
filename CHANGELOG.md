@@ -1,6 +1,45 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [2026-11-05]
+
+### Added
+
+- Add Datpmt's free Google Translate integration to Lyrics Translator, with per-line requests and no API key requirement.
+- Add SyncLRC to Search Lyrics with cached previews, karaoke timing imported as LRCX, and line-synced LRC or plain-text fallbacks. No API key is required.
+- Add settings search with label, description, and alias matching; Global/Local result paths; navigation to highlighted controls; Ctrl+F and Escape shortcuts; and guidance for settings hidden by another option.
+- Choose image-card song details below the title or grouped beside the album cover, with an editable album name and preset support. Apply proportionate stroke and shadow effects to titles, artists, and albums as well as lyrics.
+- Create lyric image cards in the editor's Share tab using checked lines, with a live preview, three themes, square/portrait/landscape sizes, font and alignment controls, optional title and credit, clipboard copy, and PNG export.
+- Add Spotlight and Record sleeve image-card templates alongside Classic, with the same themes, sizes, and text controls.
+- Customize card colors, solid/gradient/image backgrounds, gradient angle, image crop/zoom/blur/dimming, padding, line spacing, and lyric position. Save reusable style presets without replacing each song's title or credit.
+- Optionally include an album cover in lyric cards, reusing resolved Discord RPC artwork or embedded audio covers. Load covers in the background, adjust their size, and preserve the option in style presets.
+- Add right-aligned lyric cards and bold, italic, underline, and strikethrough text controls, saved with style presets.
+- Add configurable lyric-text stroke and shadow effects, including colors, outline width, shadow opacity/blur/offsets, and preset support. Keep effect edges within the card's text area.
+- Add an optional LRCPlus logo watermark to lyric cards, with width, opacity, corner placement, and preset support. Reserve space around the watermark to keep lyrics, credits, and album covers readable.
+- Preserve LRCX inline emphasis, blockquotes, visual breaks, and smaller translation rows in image cards by default, with a plain-text toggle saved in presets. Combine source and card styling without exporting karaoke timing or highlighting.
+- Include authored and available generated furigana in image cards, with an independent toggle and size control saved in presets. Keep readings above their base words through wrapping, alignment, text effects, and quote/translation layout, without karaoke highlighting.
+
+### Changed
+
+- Split the lyrics editor, main player window, and furigana renderer into eight focused modules for document handling, playback, karaoke editing, library management, updates, lyrics search, layout, and painting.
+- Use the LRCPlus logo in the main header and About tab, enlarging it in About and removing the duplicate title.
+- Show lyric translation preview controls only for providers that support provider translations.
+- Organize Settings with a category sidebar, a separate Background page, and scrollable pages. Split Global and Local lyric settings into Display, Readings, Typography, Highlighting, and Scrolling, with aligned file overrides and empty-line placeholders under Display.
+
+### Fixed
+
+- Restore the LRCPlus header logo after dismissing the budget-cuts dialog.
+- Keep image-card font sizes, line wrapping, and text placement unchanged when stroke or shadow settings change. Fit text using a fixed paint gutter and contain effects within their text areas.
+- Reduce the delay when opening Settings by checking dependencies only when their page is first selected and reusing PATH lookups when locating external tools.
+- Remove blank space left by the empty lyric-search status in the Lyrics Editor and tighten the translation quota dialog's height to its content.
+- Save scroll animation easing using its internal value instead of its display label.
+- Prevent collapsed image-card option checkboxes from clipping with themed indicators. Require an explicit lyric selection for image and text sharing; keep previews empty and copy/export inactive until lines are checked.
+- Reorganize image-card settings into Layout, Text, Artwork, and Effects, with collapsible optional controls, wider text fields, a resizable preview, and always-visible copy/export actions.
+- Keep image-card underlines and strikethrough continuous across styled text, spaces, and furigana padding, restarting at wrapped rows.
+- Bring image-card furigana closer to the base lyrics while preserving alignment and wrapping.
+- Prevent processed-audio underruns when opening the lyrics editor, Recent Songs, and other dialogs. Prime a short output reserve and preserve the active sink and pitch history when decoded audio arrives in bursts.
+- Avoid decoder-callback lockups during media stop and reconfiguration by receiving audio without emitting Qt wakeup signals from the renderer thread.
+
 ## [2026-11-04]
 
 ### Added

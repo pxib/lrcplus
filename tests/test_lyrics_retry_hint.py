@@ -3,17 +3,18 @@ import time
 import pytest
 from PySide6.QtWidgets import QComboBox, QDialog, QLabel, QLineEdit, QPushButton, QTextEdit, QWidget
 
-import ui.main_window as main_window
+import ui.lyrics_search_dialog as lyrics_search
+from ui.main_window import Player
 
 
-@pytest.mark.parametrize("source", ["LRCLIB", *main_window.CHINESE_LYRICS_PROVIDERS, "Musixmatch"])
+@pytest.mark.parametrize("source", ["LRCLIB", *lyrics_search.CHINESE_LYRICS_PROVIDERS, "Musixmatch"])
 @pytest.mark.parametrize("failure", ["service", "network", "empty", "lyrics"])
 def test_every_provider_failure_suggests_searching_with_title_only(qapp, monkeypatch, source, failure):
     parent = QWidget()
     parent.current_audio_path = None
     monkeypatch.setenv("MUSIXMATCH_TOKEN", "manual-token")
-    error_class = (main_window.LRCLibError if source == "LRCLIB" else
-                   main_window.MusixmatchError if source == "Musixmatch" else main_window.LyricsProviderError)
+    error_class = (lyrics_search.LRCLibError if source == "LRCLIB" else
+                   lyrics_search.MusixmatchError if source == "Musixmatch" else lyrics_search.LyricsProviderError)
 
     def search(*args, **kwargs):
         if failure == "service":
@@ -28,9 +29,9 @@ def test_every_provider_failure_suggests_searching_with_title_only(qapp, monkeyp
         raise error_class("No lyrics available")
 
     for name in ["search_lrclib", "search_chinese_lyrics", "search_musixmatch"]:
-        monkeypatch.setattr(main_window, name, search)
+        monkeypatch.setattr(lyrics_search, name, search)
     for name in ["fetch_chinese_lyrics", "fetch_musixmatch_lyrics"]:
-        monkeypatch.setattr(main_window, name, fetch)
+        monkeypatch.setattr(lyrics_search, name, fetch)
 
     def interact(dialog):
         dialog.findChild(QComboBox).setCurrentText(source)
@@ -51,7 +52,7 @@ def test_every_provider_failure_suggests_searching_with_title_only(qapp, monkeyp
 
     monkeypatch.setattr(QDialog, "exec", interact)
     try:
-        main_window.Player.search_lrclib_lyrics(parent)
+        Player.search_lrclib_lyrics(parent)
     finally:
         parent.deleteLater()
         qapp.processEvents()
