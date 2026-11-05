@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QFont, QFontMetricsF, QPen, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPen, QTextCharFormat, QTextCursor
 
 from ui.lyrics_card_text import utf16_offsets
 
@@ -90,8 +90,9 @@ def _rows(document):
             base_x = left + (right - left - base.size().width()) / 2
             base_row.extend(_piece(value, stroke) for value in _glyphs(base, base_x, baseline - ascent))
             reading_x = left + (right - left - reading.size().width()) / 2
-            reading_y = baseline - size.height() + handler.ruby_drop(ascent)
-            reading_row.extend(_piece(value, stroke) for value in _glyphs(reading, reading_x, reading_y))
+            _, reading_y = handler.child_positions(index, baseline)
+            reading_stroke = stroke if handler.inherit_stroke else QPen(Qt.PenStyle.NoPen)
+            reading_row.extend(_piece(value, reading_stroke) for value in _glyphs(reading, reading_x, reading_y))
         else:
             base_row.append(_piece(glyph))
             if reading_row is not None:
@@ -177,13 +178,17 @@ def undecorated_document(document):
     return clone
 
 
-def paint_decorations(painter, document, color):
+def paint_decorations(painter, document, color, band=None):
     painter.save()
     for span in decoration_spans(document):
+        if band is not None and span.band != band:
+            continue
         if span.stroke.style() != Qt.PenStyle.NoPen:
             painter.setPen(QPen(span.stroke.color(), span.thickness + span.stroke.widthF(),
                                 Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
             painter.drawLine(QPointF(span.left, span.y), QPointF(span.right, span.y))
-        painter.setPen(QPen(color, span.thickness, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
+        handler = getattr(document, "_card_ruby_handler", None)
+        fill = QColor(handler.ruby_color) if span.band == "reading" and handler is not None and handler.ruby_color else color
+        painter.setPen(QPen(fill, span.thickness, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
         painter.drawLine(QPointF(span.left, span.y), QPointF(span.right, span.y))
     painter.restore()

@@ -11,7 +11,6 @@ from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -68,6 +67,7 @@ from ui.library_lyrics_search import LibraryLyricsSearchMixin
 from ui.audio_devices import AudioDeviceControllerMixin
 from ui.artwork_background import ArtworkBackgroundWidget, extract_embedded_cover
 from ui.player_dialogs import ClickableSlider, ClickableTimeLabel, PitchChangerDialog
+from ui.settings_controls import ThemedComboBox
 from core.booru_artwork import fetch_booru_artwork
 from core.theme import build_theme_palette
 from ui.easter_eggs import BudgetBrandLabel, CatSeekTrack, EasterEggs
@@ -560,7 +560,7 @@ class Player(
                 self.toggle_mute
             )
 
-            self.pitch_options_button = QToolButton()
+            self.pitch_options_button = QPushButton()
             self.pitch_options_button.setText("Pitch")
             self.pitch_options_button.setObjectName("dockAction")
             self.pitch_options_button.setToolTip("Adjust playback speed and pitch")
@@ -589,7 +589,8 @@ class Player(
             volume_layout = QHBoxLayout()
             volume_layout.setContentsMargins(0, 0, 0, 0)
             volume_layout.setSpacing(8)
-            self.playback_source_combo = QComboBox()
+            self.playback_source_combo = ThemedComboBox()
+            self.playback_source_combo.setObjectName("playbackSourceCombo")
             self.playback_source_combo.setAccessibleName("Playback source")
             self.playback_source_combo.addItem("Library", "library")
             self.playback_source_combo.addItem("Queue / Playlist", "playlist")
@@ -917,6 +918,34 @@ class Player(
                     padding: 8px 10px;
                     selection-background-color: @ACCENT@;
                 }
+                QComboBox#librarySearchFilter {
+                    color: @TEXT@;
+                    background: @SURFACE@;
+                    border: 1px solid @FIELD_BORDER@;
+                    border-radius: 6px;
+                    padding: 7px 10px;
+                    min-height: 18px;
+                }
+                QComboBox#librarySearchFilter:hover {
+                    border-color: @ACCENT_BORDER@;
+                }
+                QComboBox#librarySearchFilter::drop-down {
+                    border: none;
+                    width: 22px;
+                }
+                QComboBox#librarySearchFilter::down-arrow {
+                    image: none;
+                    width: 0;
+                    height: 0;
+                }
+                QComboBox#librarySearchFilter QAbstractItemView {
+                    color: @TEXT@;
+                    background: @SURFACE@;
+                    border: 1px solid @FIELD_BORDER@;
+                    selection-color: @TEXT@;
+                    selection-background-color: @ACCENT_SOFT@;
+                    outline: none;
+                }
                 QLabel#libraryFolderLabel {
                     color: @TEXT@;
                 }
@@ -960,6 +989,47 @@ class Player(
                     border-radius: 6px;
                     padding: 5px 9px;
                     min-height: 28px;
+                }
+                QComboBox#playbackSourceCombo {
+                    color: @DOCK_TEXT@;
+                    background: @DOCK_CONTROL@;
+                    border: 1px solid @DOCK_CONTROL_BORDER@;
+                    border-radius: 6px;
+                    padding: 4px 30px 4px 8px;
+                    min-height: 28px;
+                }
+                QComboBox#playbackSourceCombo:hover {
+                    background: @DOCK_CONTROL_HOVER@;
+                }
+                QComboBox#playbackSourceCombo::drop-down {
+                    border: none;
+                    width: 24px;
+                }
+                QComboBox#playbackSourceCombo::down-arrow {
+                    image: none;
+                    width: 0;
+                    height: 0;
+                }
+                QComboBox#playbackSourceCombo QToolButton#comboDropIndicator {
+                    color: @DOCK_TEXT@;
+                    background: @DOCK_CONTROL@;
+                    border: none;
+                    border-left: 1px solid @DOCK_CONTROL_BORDER@;
+                    border-top-right-radius: 5px;
+                    border-bottom-right-radius: 5px;
+                    padding: 0;
+                }
+                QComboBox#playbackSourceCombo QToolButton#comboDropIndicator:hover {
+                    background: @DOCK_CONTROL_HOVER@;
+                }
+                QComboBox#librarySearchFilter QToolButton#comboDropIndicator {
+                    color: @TEXT@;
+                    background: @SURFACE@;
+                    border: none;
+                    padding: 0;
+                }
+                QComboBox#librarySearchFilter QToolButton#comboDropIndicator:hover {
+                    background: @RAISED_HOVER@;
                 }
                 QPushButton#dockAction:hover {
                     background: @DOCK_CONTROL_HOVER@;

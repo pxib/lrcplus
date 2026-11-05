@@ -10,6 +10,7 @@ from PySide6.QtMultimedia import QAudioSink
 from core.audio_dsp import (
     PcmPitchProcessor, apply_pcm_gain_to_bytes, apply_pcm_rate_to_bytes,
 )
+from core.audio_sink import dispose_audio_sink
 
 
 # Keep threads alive if their window is deleted during a native DSP call.
@@ -186,9 +187,7 @@ class _PlaybackEngine(QObject):
         sink, self._sink = self._sink, None
         self._io = None
         if sink is not None:
-            sink.reset()
-            sink.stop()
-            sink.deleteLater()
+            dispose_audio_sink(sink)
 
     def _reset(self):
         self._stop_sink()

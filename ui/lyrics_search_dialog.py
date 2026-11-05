@@ -1,6 +1,7 @@
 """Provider lyrics search dialog and metadata-based search queries."""
 
 from pathlib import Path
+from copy import deepcopy
 import math
 import os
 from time import monotonic
@@ -45,6 +46,7 @@ from core.music_library import read_track
 from ui.lyrics_preview import LyricsPreview
 from core.file_io import atomic_write_text
 from core.fonts import content_font, library_font
+from lyrics.writer import serialize_lrcx
 
 
 def _lyrics_search_query(audio_path):
@@ -236,8 +238,12 @@ class LyricsSearchDialogMixin:
         buttons = QHBoxLayout()
         use_button = QPushButton("Use Selected Lyrics", dialog)
         use_button.setEnabled(False)
+        use_translation_button = QPushButton("Apply Only Translation", dialog)
+        use_translation_button.setEnabled(False)
+        use_translation_button.setVisible(False)
         cancel_button = QPushButton("Cancel", dialog)
         buttons.addStretch(1)
+        buttons.addWidget(use_translation_button)
         buttons.addWidget(use_button)
         buttons.addWidget(cancel_button)
         layout.addLayout(buttons)
@@ -327,6 +333,11 @@ class LyricsSearchDialogMixin:
 
         def update_preview():
             use_button.setEnabled(False)
+            use_translation_button.setEnabled(False)
+            use_translation_button.setVisible(
+                provider.currentText() in CHINESE_LYRICS_PROVIDERS
+                and preview_tabs.currentIndex() == 1
+            )
             attribution.clear()
             item = selected_record()
             has_translation = bool(item and item.get("translatedLyrics"))
@@ -364,6 +375,9 @@ class LyricsSearchDialogMixin:
                     lookup_failure("This result does not contain lyrics.")
                 )
             use_button.setEnabled(bool(synced or plain))
+            use_translation_button.setEnabled(
+                has_translation and bool(item.get("translatedLyrics"))
+            )
             if item.get("source"):
                 notes = [f"Lyrics provided by {item['source']}", item.get("copyright"), item.get("sourceUrl")]
                 if item["source"] == "Kuwo":
@@ -619,13 +633,49 @@ class LyricsSearchDialogMixin:
             update_search_button()
             status.setText(lookup_failure(f"Search failed: {error}"))
 
-        def use_selected():
+        def use_selected(only_translation=False):
             item = selected_record()
             if item is None:
                 status.setText("Select a result first.")
                 return
 
-            if include_translations.isChecked() and item.get("translatedLyrics"):
+            if only_translation:
+                if (provider.currentText() not in CHINESE_LYRICS_PROVIDERS
+                        or not item.get("translatedLyrics")):
+                    status.setText("No provider translation is available for this result.")
+                    return
+                item = converted_translations(item, translation_script.currentData())
+                translation_rows = item.get("translationRows") or {}
+                source_path = getattr(self, "current_lyrics_path", None)
+                current_lines = getattr(self, "lyric_lines", None) or []
+                if not source_path or not current_lines:
+                    status.setText("Open a timed lyrics file before applying translations.")
+                    return
+                merged_lines = deepcopy(current_lines)
+                by_timestamp = {round(float(line.start) * 1000): line for line in merged_lines}
+                matched = 0
+                for timestamp, translated in translation_rows.items():
+                    line = by_timestamp.get(int(timestamp))
+                    if line is None or not str(translated).strip():
+                        continue
+                    rows = line.text.split("\n")
+                    if translated in rows:
+                        continue
+                    line.translation_lines = list(line.translation_lines or [])
+                    line.translation_lines.append(len(rows))
+                    line.text = line.text + "\n" + translated
+                    matched += 1
+                if not matched:
+                    status.setText("No translation timestamps matched the current lyrics.")
+                    return
+                item = {
+                    **item,
+                    "syncedLyrics": serialize_lrcx(merged_lines),
+                    "plainLyrics": "",
+                    "lyricsFormat": "lrcx",
+                }
+
+            if not only_translation and include_translations.isChecked() and item.get("translatedLyrics"):
                 item = converted_translations(item, translation_script.currentData())
                 item = {**item, "syncedLyrics": item["translatedLyrics"], "lyricsFormat": "lrcx"}
 
@@ -648,6 +698,8 @@ class LyricsSearchDialogMixin:
                 destination = (
                     self.current_audio_path.with_suffix(".lrcx" if item.get("lyricsFormat") == "lrcx" else ".lrc")
                 )
+                if only_translation:
+                    destination = Path(self.current_lyrics_path).with_suffix(".lrcx")
                 content = synced
             else:
                 destination = (
@@ -668,9 +720,13 @@ class LyricsSearchDialogMixin:
                     warning = QMessageBox(
                         QMessageBox.Icon.Warning,
                         "Overwrite Lyrics",
-                        f'"{self.current_audio_path.name}" already has lyrics.\n\n'
-                        f"Replace them with the selected lyrics from {provider.currentText()}?\n"
-                        f"An existing file at {destination} will be overwritten.",
+                        (
+                            f'"{self.current_audio_path.name}" already has lyrics.\n\n'
+                            + ("Append the selected provider translations to the current lyrics and save as LRCX?\n"
+                               if only_translation else
+                               f"Replace them with the selected lyrics from {provider.currentText()}?\n")
+                            + f"An existing file at {destination} will be overwritten."
+                        ),
                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                         dialog,
                     )
@@ -723,6 +779,7 @@ class LyricsSearchDialogMixin:
             lambda _: use_selected()
         )
         use_button.clicked.connect(use_selected)
+        use_translation_button.clicked.connect(lambda: use_selected(only_translation=True))
         cancel_button.clicked.connect(dialog.reject)
         change_auth_method()
 

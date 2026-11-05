@@ -87,6 +87,8 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         layout.addWidget(hint)
 
         controls = self._build_card_controls()
+        self._sync_ruby_positions()
+        self._sync_ruby_color()
         preview_panel = QFrame()
         preview_panel.setFrameShape(QFrame.Shape.StyledPanel)
         preview_panel.setMinimumWidth(240)
@@ -138,7 +140,7 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         self.credit_edit.textChanged.connect(self.schedule_refresh)
         self.album_edit.textChanged.connect(self.schedule_refresh)
         self.theme_combo.currentIndexChanged.connect(self._sync_color_controls)
-        self.template_combo.currentIndexChanged.connect(self._sync_color_controls)
+        self.template_combo.currentIndexChanged.connect(self._template_changed)
         self.preset_combo.currentIndexChanged.connect(self.apply_preset)
         self.save_preset_button.clicked.connect(self.save_preset)
         self.delete_preset_button.clicked.connect(self.delete_preset)
@@ -156,6 +158,11 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
     def _sync_details_placement(self):
         item = self.details_placement.model().item(self.details_placement.findData("beside_cover"))
         item.setEnabled(self.show_album_cover.isChecked())
+
+    def _template_changed(self, *_args):
+        if not self._updating_style and self.template_combo.currentText() in ("Polaroid", "Editorial"):
+            self.theme_combo.setCurrentText("Paper")
+        self._sync_color_controls()
 
     def _album_song_path(self):
         path = self.editor.attached_song_path or self.editor._editing_song_path
@@ -207,7 +214,36 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         for button, value in zip(self.color_buttons, self._colors):
             _color_swatch(button, value)
             button.setEnabled(self.custom_colors.isChecked())
+        if hasattr(self, "ruby_color_button"):
+            self._sync_ruby_color()
         self.schedule_refresh()
+
+    def _sync_ruby_positions(self, *_args):
+        previous = self.ruby_position.currentData()
+        vertical = self.writing_mode.currentData() in ("vertical_rl", "vertical_lr")
+        options = (("Right", "right"), ("Left", "left")) if vertical else (("Above", "above"), ("Below", "below"))
+        blocker = QSignalBlocker(self.ruby_position)
+        self.ruby_position.clear()
+        self.ruby_position.addItem("Auto", "auto")
+        for label, value in options:
+            self.ruby_position.addItem(label, value)
+        self.ruby_position.setCurrentIndex(max(0, self.ruby_position.findData(previous)))
+        del blocker
+        self.schedule_refresh()
+
+    def _sync_ruby_color(self, *_args):
+        custom = self.ruby_custom_color.isChecked()
+        if not custom:
+            self._ruby_color = self._colors[2]
+        _color_swatch(self.ruby_color_button, self._ruby_color)
+        self.ruby_color_button.setEnabled(custom)
+        self.schedule_refresh()
+
+    def choose_ruby_color(self):
+        color = QColorDialog.getColor(QColor(self._ruby_color), self, "Choose Furigana Color")
+        if color.isValid():
+            self._ruby_color = color.name()
+            self._sync_ruby_color()
 
     def choose_color(self, index):
         color = QColorDialog.getColor(QColor(self._colors[index]), self, "Choose card color")
@@ -299,6 +335,7 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
             self.font_size.setValue(style.font_size)
             alignment = style.alignment or ("center" if style.centered else "left")
             self.alignment_combo.setCurrentIndex(self.alignment_combo.findData(alignment))
+            self.writing_mode.setCurrentIndex(self.writing_mode.findData(style.writing_mode))
             for key, button in self.text_style_buttons.items():
                 button.setChecked(getattr(style, key))
             self.stroke_enabled.setChecked(style.stroke_enabled)
@@ -312,6 +349,12 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
             self.details_placement.setCurrentIndex(self.details_placement.findData(style.details_placement))
             self.preserve_lrcx_formatting.setChecked(style.preserve_lrcx_formatting)
             self.include_furigana.setChecked(style.include_furigana)
+            self.ruby_position.setCurrentIndex(self.ruby_position.findData(style.ruby_position))
+            self._ruby_color = style.ruby_color or self._colors[2]
+            self.ruby_custom_color.setChecked(bool(style.ruby_color))
+            self.ruby_inherit_stroke.setChecked(style.ruby_inherit_stroke)
+            self.ruby_inherit_shadow.setChecked(style.ruby_inherit_shadow)
+            self._sync_ruby_color()
             for key in STYLE_RANGES:
                 getattr(self, key).setValue(getattr(style, key))
             self.custom_colors.setChecked(bool(style.colors))
@@ -346,6 +389,7 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
             font_family=self.font_combo.currentFont().family(), font_size=self.font_size.value(),
             centered=self.alignment_combo.currentIndex() == 1,
             alignment=self.alignment_combo.currentData(),
+            writing_mode=self.writing_mode.currentData(),
             **{key: button.isChecked() for key, button in self.text_style_buttons.items()},
             stroke_enabled=self.stroke_enabled.isChecked(), shadow_enabled=self.shadow_enabled.isChecked(),
             watermark_enabled=self.watermark_enabled.isChecked(), watermark_position=self.watermark_position.currentData(),
@@ -355,6 +399,10 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
             show_album_cover=self.show_album_cover.isChecked(),
             preserve_lrcx_formatting=self.preserve_lrcx_formatting.isChecked(),
             include_furigana=self.include_furigana.isChecked(),
+            ruby_position=self.ruby_position.currentData(),
+            ruby_color=self._ruby_color if self.ruby_custom_color.isChecked() else "",
+            ruby_inherit_stroke=self.ruby_inherit_stroke.isChecked(),
+            ruby_inherit_shadow=self.ruby_inherit_shadow.isChecked(),
             colors=tuple(self._colors) if self.custom_colors.isChecked() else (),
             background_mode=self.background_mode.currentText(), image_path=self.image_path_edit.text(),
             **{key: getattr(self, key).value() for key in STYLE_RANGES if key != "font_size"},

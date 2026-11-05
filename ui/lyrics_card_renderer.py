@@ -16,6 +16,8 @@ from core.fonts import library_font
 from ui.lyrics_card_text import CardLyrics, apply_character_styles, apply_block_quotes, quote_bar_rects
 from ui.lyrics_card_ruby import ruby_layout_source, install_ruby_objects, clone_ruby_handler
 from ui.lyrics_card_decorations import undecorated_document, paint_decorations
+from ui.lyrics_card_templates import cinema_bar_height, paint_cover, paint_new_template
+from ui.lyrics_card_vertical import VerticalLyrics, fit_vertical_lyrics
 
 
 CARD_SIZES = {
@@ -28,9 +30,12 @@ CARD_THEMES = {
     "Paper": ("#faf5eb", "#eae1d0", "#292722", "#665d50", "#986b35"),
     "Rose": ("#331f35", "#69455c", "#fff1f5", "#e6bdce", "#fda4af"),
 }
-CARD_TEMPLATES = ("Classic", "Spotlight", "Record sleeve")
+CARD_TEMPLATES = ("Classic", "Spotlight", "Record sleeve", "Polaroid", "Editorial", "Cinema")
 WATERMARK_POSITIONS = ("bottom_right", "bottom_left", "top_right", "top_left")
 DETAILS_PLACEMENTS = {"Below title": "below_title", "Beside cover": "beside_cover"}
+WRITING_MODES = {"Horizontal": "horizontal", "Vertical · right to left": "vertical_rl",
+                 "Vertical · left to right": "vertical_lr"}
+RUBY_POSITIONS = ("auto", "above", "below", "right", "left")
 LOGO_PATH = Path(__file__).resolve().parents[1] / "assets" / "media" / "logo.png"
 # Always leave room for the widest outline, including when effects are off.
 # Painting settings must not change line wrapping, fitting, or block placement.
@@ -66,6 +71,7 @@ class CardStyle:
     cover_size: int = 160
     # An empty alignment keeps older centered-only styles compatible.
     alignment: str = ""
+    writing_mode: str = "horizontal"
     bold: bool = False
     italic: bool = False
     underline: bool = False
@@ -86,6 +92,11 @@ class CardStyle:
     preserve_lrcx_formatting: bool = True
     include_furigana: bool = True
     furigana_scale: int = 50
+    ruby_position: str = "auto"
+    ruby_gap: int = 0
+    ruby_color: str = ""
+    ruby_inherit_stroke: bool = True
+    ruby_inherit_shadow: bool = True
 
 
 def _document(text, family, pixels, width, centered=False, line_spacing=100, lyric_style=None, source=None):
@@ -154,7 +165,7 @@ def _document(text, family, pixels, width, centered=False, line_spacing=100, lyr
             child = _document(contents.text, family, size, 1_000_000, lyric_style=inline_style, source=contents)
             child.setTextWidth(math.ceil(child.idealWidth()))
             return child
-        install_ruby_objects(document, words, font, lyric_style.furigana_scale, make_inline)
+        install_ruby_objects(document, words, font, lyric_style.furigana_scale, make_inline, lyric_style)
     document.setTextWidth(width)
     return document
 
@@ -171,9 +182,16 @@ def _effect_insets(style):
     return left, top, right, bottom
 
 
-def _paint_document(painter, document, x, y, color, quote_bars=True):
+def _paint_document(painter, document, x, y, color, quote_bars=True, part="all"):
     painter.save()
     painter.translate(x, y)
+    handler = getattr(document, "_card_ruby_handler", None)
+    if part == "ruby":
+        if handler is not None:
+            handler.paint_readings(painter, document, color)
+            paint_decorations(painter, document, QColor(color), band="reading")
+        painter.restore()
+        return
     if quote_bars:
         bar_color = QColor(color)
         bar_color.setAlpha(round(bar_color.alpha() * .5))
@@ -181,17 +199,19 @@ def _paint_document(painter, document, x, y, color, quote_bars=True):
             painter.fillRect(rect, bar_color)
     context = QAbstractTextDocumentLayout.PaintContext()
     context.palette.setColor(context.palette.ColorRole.Text, QColor(color))
-    handler = getattr(document, "_card_ruby_handler", None)
     if handler is not None:
         handler.color = QColor(color)
+        handler.paint_part = part
     undecorated_document(document).documentLayout().draw(painter, context)
-    paint_decorations(painter, document, QColor(color))
+    paint_decorations(painter, document, QColor(color), band="base" if part == "base" else None)
+    if handler is not None:
+        handler.paint_part = "all"
     painter.restore()
 
 
 def _paint_lyrics(painter, document, x, y, color, style):
     fill_document = None
-    if style.stroke_enabled:
+    if style.stroke_enabled and not isinstance(document, VerticalLyrics):
         # Qt centers the outline on the glyph edge. Repaint the fill above
         # it so a thick stroke cannot cover narrow letter stems.
         fill_document = document.clone()
@@ -202,10 +222,16 @@ def _paint_lyrics(painter, document, x, y, color, style):
         character_format.setTextOutline(QPen(Qt.PenStyle.NoPen))
         cursor.mergeCharFormat(character_format)
 
-    def paint_glyphs(target):
-        _paint_document(target, document, x, y, color)
+    def paint_glyphs(target, part="all"):
+        if isinstance(document, VerticalLyrics):
+            document.paint(target, x, y, color, style, part)
+            return
+        _paint_document(target, document, x, y, color, part=part)
         if fill_document is not None:
-            _paint_document(target, fill_document, x, y, color, quote_bars=False)
+            if part == "ruby" and not style.ruby_inherit_stroke:
+                return
+            fill_part = "base" if part == "all" and not style.ruby_inherit_stroke else part
+            _paint_document(target, fill_document, x, y, color, quote_bars=False, part=fill_part)
 
     if not style.shadow_enabled or not style.shadow_opacity:
         paint_glyphs(painter)
@@ -216,7 +242,7 @@ def _paint_lyrics(painter, document, x, y, color, style):
     layer_painter = QPainter(layer)
     layer_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     layer_painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-    paint_glyphs(layer_painter)
+    paint_glyphs(layer_painter, "all" if style.ruby_inherit_shadow else "base")
     layer_painter.end()
     # Blur the alpha mask so all scripts, decorations and the stroke cast
     # the same shadow. Its color stays independent of the lyric fill.
@@ -231,6 +257,8 @@ def _paint_lyrics(painter, document, x, y, color, style):
     shadow_image = QImage(shadow.tobytes(), style.width, style.height, QImage.Format.Format_RGBA8888).copy()
     painter.drawImage(style.shadow_offset_x, style.shadow_offset_y, shadow_image)
     painter.drawImage(0, 0, layer)
+    if not style.ruby_inherit_shadow:
+        paint_glyphs(painter, "ruby")
 
 
 def _fitted_document(text, style, size, width, height, centered=False, line_spacing=100, styled=False, source=None):
@@ -340,11 +368,13 @@ def _song_details(style, width):
     entries = []
     height = 0
     credit = " · ".join(value.strip() for value in (style.credit, style.album) if value.strip())
-    for text, pixels, color_index in ((style.title.strip(), 30, 3), (credit, 26, 4)):
+    title_size = 64 if style.template == "Editorial" else 30
+    for text, pixels, color_index in ((style.title.strip(), title_size, 3), (credit, 26, 4)):
         if not text:
             continue
         scale = min(1, pixels / style.font_size)
-        effects = replace(style, bold=False, italic=False, underline=False, strikeout=False,
+        effects = replace(style, bold=style.template == "Editorial" and color_index == 3,
+                          italic=False, underline=False, strikeout=False,
                           alignment="left", centered=False, include_furigana=False,
                           stroke_width=max(1, round(style.stroke_width * scale)),
                           shadow_blur=round(style.shadow_blur * scale),
@@ -382,12 +412,14 @@ def render_lyric_card(text, style, cover_image=None):
     margin = style.padding
     watermark = _watermark(style)
     top_margin = bottom_margin = margin
+    if style.template == "Cinema":
+        top_margin = bottom_margin = max(margin, cinema_bar_height(style) + 24)
     if watermark is not None:
         reserved = watermark[1].height() + 48 + 24
         if style.watermark_position.startswith("top"):
-            top_margin = max(margin, reserved)
+            top_margin = max(top_margin, reserved)
         else:
-            bottom_margin = max(margin, reserved)
+            bottom_margin = max(bottom_margin, reserved)
     content_x = margin
     content_width = style.width - 2 * margin
     sidebar_width = min(420, round(style.width * .30))
@@ -401,11 +433,27 @@ def render_lyric_card(text, style, cover_image=None):
     cover_size = min(style.cover_size, sidebar_width - 2 * sidebar_padding) if sidebar_details else style.cover_size
     metadata_x = sidebar_padding if sidebar_details else content_x
     metadata_width = sidebar_width - 2 * sidebar_padding if sidebar_details else content_width
-    if has_cover and not sidebar_details:
+    if has_cover and not sidebar_details and (style.template != "Polaroid" or beside_cover):
         metadata_width -= cover_size + 32
     details, details_height = _song_details(style, metadata_width)
     cover_rect = None
-    if sidebar_details:
+    photo_rect = None
+    if style.template == "Polaroid":
+        photo_height = min(cover_size, (style.height - top_margin - bottom_margin) * .32)
+        photo_rect = QRectF(content_x, top_margin, cover_size if beside_cover else content_width, photo_height)
+        if beside_cover:
+            block_height = max(photo_height, details_height)
+            photo_rect.moveTop(top_margin + (block_height - photo_height) / 2)
+            metadata_x += cover_size + 32
+            details_y = top_margin + (block_height - details_height) / 2
+            body_top = top_margin + block_height + 44
+        else:
+            details_y = photo_rect.bottom() + 20
+            body_top = details_y + details_height + 32
+        if has_cover:
+            cover_rect = photo_rect
+        body_bottom = style.height - bottom_margin
+    elif sidebar_details:
         details_y = style.height - bottom_margin - details_height
         if has_cover:
             cover_rect = QRectF((sidebar_width - cover_size) / 2, top_margin, cover_size, cover_size)
@@ -424,12 +472,24 @@ def render_lyric_card(text, style, cover_image=None):
                 metadata_x += cover_size + 32
         body_top = top_margin + 120 if style.template == "Spotlight" else block_y + block_height + (54 if block_height else 34)
         body_bottom = block_y - 48 if style.template == "Spotlight" else style.height - bottom_margin
+    if style.template == "Editorial":
+        content_x += 48
+        content_width -= 48
+        body_top += 32
+    elif style.template == "Cinema":
+        body_top += 96
     body_height = body_bottom - body_top
     effect_left = effect_top = effect_right = effect_bottom = TEXT_PAINT_PADDING
     lyric_width = content_width - effect_left - effect_right
     lyric_height = body_height - effect_top - effect_bottom
-    lyrics = _fitted_document(text.strip(), style, style.font_size, lyric_width,
-                              lyric_height, style.centered, style.line_spacing, styled=True, source=source)
+    lyric_offset_x = 0
+    if style.writing_mode in ("vertical_rl", "vertical_lr"):
+        lyrics = fit_vertical_lyrics(text.strip(), style, lyric_width, lyric_height, source)
+        alignment = style.alignment or ("center" if style.centered else "left")
+        lyric_offset_x = (lyric_width - lyrics.size().width()) * {"left": 0, "center": .5, "right": 1}.get(alignment, 0)
+    else:
+        lyrics = _fitted_document(text.strip(), style, style.font_size, lyric_width,
+                                  lyric_height, style.centered, style.line_spacing, styled=True, source=source)
 
     result = card_background(style, colors)
     painter = QPainter(result)
@@ -466,10 +526,13 @@ def render_lyric_card(text, style, cover_image=None):
                 painter.drawEllipse(QRectF(center_x - 26, center_y - 26, 52, 52))
                 painter.setBrush(QColor(background))
                 painter.drawEllipse(QRectF(center_x - 5, center_y - 5, 10, 10))
-        else:
+        elif style.template == "Classic":
             painter.setPen(QPen(border, 2))
             painter.drawRoundedRect(QRectF(32, 32, style.width - 64, style.height - 64), 24, 24)
             painter.fillRect(QRectF(margin, body_top - 34, 54, 4), QColor(accent))
+        else:
+            paint_new_template(painter, style, colors, QRectF(content_x, body_top, content_width, body_height),
+                               photo_rect, cover_image if has_cover else None)
 
         for document, dx, dy, color_index, effects in details:
             painter.save()
@@ -480,13 +543,10 @@ def render_lyric_card(text, style, cover_image=None):
         lyrics_y = body_top + effect_top + (lyric_height - lyrics.size().height()) * style.vertical_position / 100
         painter.save()
         painter.setClipRect(QRectF(content_x, body_top, content_width, body_height))
-        _paint_lyrics(painter, lyrics, content_x + effect_left, lyrics_y, foreground, style)
+        _paint_lyrics(painter, lyrics, content_x + effect_left + lyric_offset_x, lyrics_y, foreground, style)
         painter.restore()
         if has_cover:
-            fitted = cover_image.size().scaled(QSize(cover_size, cover_size), Qt.AspectRatioMode.KeepAspectRatio)
-            target = QRectF(cover_rect.x() + (cover_size - fitted.width()) / 2,
-                            cover_rect.y() + (cover_size - fitted.height()) / 2, fitted.width(), fitted.height())
-            painter.drawImage(target, cover_image)
+            paint_cover(painter, cover_rect, cover_image)
         if watermark is not None:
             painter.save()
             painter.setOpacity(style.watermark_opacity / 100)

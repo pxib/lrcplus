@@ -9,12 +9,13 @@ from PySide6.QtGui import (
     QTextCharFormat, QTextCursor, QTextDocument, QTextOption,
 )
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QHBoxLayout, QLabel, QStyle, QStyledItemDelegate,
+    QApplication, QHBoxLayout, QLabel, QStyle, QStyledItemDelegate,
     QStyleOptionViewItem, QWidget,
 )
 
 from core.background_job import BackgroundJob
 from core.library_lyrics import LibraryLyricsIndex, normalize_lyric_query
+from ui.settings_controls import ThemedComboBox
 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -64,7 +65,8 @@ class LyricMatchDelegate(QStyledItemDelegate):
 
 class LibraryLyricsSearchMixin:
     def _build_library_search_filter(self, toolbar):
-        self.library_search_filter = QComboBox()
+        self.library_search_filter = ThemedComboBox()
+        self.library_search_filter.setObjectName("librarySearchFilter")
         self.library_search_filter.setAccessibleName("Library search filter")
         self.library_search_filter.addItem("Track details", "metadata")
         self.library_search_filter.addItem("Lyrics", "lyrics")

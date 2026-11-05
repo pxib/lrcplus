@@ -23,15 +23,16 @@ def buffer(value=0.25, frames=4096):
 
 
 class Sink:
-    """Simulated device that accepts a half-block every five milliseconds."""
+    """Simulated device with a configurable delay between partial writes."""
 
-    def __init__(self, device, fmt, parent):
+    def __init__(self, device, fmt, parent, *, write_interval=0.005):
         self.owner = threading.get_ident()
         self.device = device
         self.fmt = fmt
         self.written = bytearray()
         self.total_written = 0
         self.last_write = 0
+        self.write_interval = write_interval
         self.suspended = threading.Event()
         self.was_reset = threading.Event()
         self.progress = threading.Event()
@@ -57,7 +58,7 @@ class Sink:
 
     def bytesFree(self):
         self.check_thread()
-        return 4096 if time.monotonic() - self.last_write >= 0.005 else 0
+        return 4096 if time.monotonic() - self.last_write >= self.write_interval else 0
 
     def write(self, data):
         self.check_thread()
@@ -193,11 +194,12 @@ def test_decoder_burst_keeps_pitch_history_and_active_sink(qapp, monkeypatch):
         close(worker)
 
 
-def test_decoder_processing_and_device_writes_continue_while_gui_is_stalled(qapp):
+@pytest.mark.parametrize("write_interval", [0.005, 0.02])
+def test_decoder_processing_and_device_writes_continue_while_gui_is_stalled(qapp, write_interval):
     sinks = []
 
     def factory(*args):
-        sink = Sink(*args)
+        sink = Sink(*args, write_interval=write_interval)
         sinks.append(sink)
         return sink
 
@@ -210,19 +212,29 @@ def test_decoder_processing_and_device_writes_continue_while_gui_is_stalled(qapp
     worker.route_started.connect(lambda: routes.append(True))
     worker.failed.connect(errors.append)
 
+    next_buffer = threading.Semaphore(0)
+    stopping = threading.Event()
+
     def decoder():
         for _ in range(6):
+            next_buffer.acquire()
+            if stopping.is_set():
+                return
             source.audioBufferReceived.emit(buffer())
-            time.sleep(0.1)
 
     producer = threading.Thread(target=decoder)
     try:
         producer.start()
         # Intentionally do not process a single GUI event. The old output
         # path stopped here waiting for its GUI completion and drain timer.
+        # Pace the decoder by completed writes. Fixed sleeps can overrun the
+        # bounded audio queue when the runner schedules device writes slowly.
+        for index in range(6):
+            next_buffer.release()
+            expected = (index + 1) * 32768
+            wait_without_gui(lambda: bool(sinks) and sinks[0].total_written == expected)
         producer.join(3)
         assert not producer.is_alive()
-        wait_without_gui(lambda: bool(sinks) and sinks[0].total_written == 6 * 32768)
         assert sinks[0].owner != threading.get_ident()
         assert sinks[0].buffer_size == audio_format().bytesForDuration(120000)
         assert not routes  # The UI notification is still queued.
@@ -231,6 +243,8 @@ def test_decoder_processing_and_device_writes_continue_while_gui_is_stalled(qapp
         assert routes == [True]
         assert not errors
     finally:
+        stopping.set()
+        next_buffer.release()
         producer.join(3)
         close(worker)
 

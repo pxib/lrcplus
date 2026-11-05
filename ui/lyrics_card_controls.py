@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.fonts import library_font
-from ui.lyrics_card_renderer import CARD_SIZES, CARD_THEMES, CARD_TEMPLATES, WATERMARK_POSITIONS, DETAILS_PLACEMENTS, theme_colors
+from ui.lyrics_card_renderer import CARD_SIZES, CARD_THEMES, CARD_TEMPLATES, WATERMARK_POSITIONS, DETAILS_PLACEMENTS, WRITING_MODES, theme_colors
 
 
 def _field(label, control):
@@ -176,6 +176,12 @@ class LyricsCardControlsMixin:
         self.font_combo = QFontComboBox()
         self.font_combo.setCurrentFont(library_font(QApplication.font()))
         typography.addWidget(_field("Font", self.font_combo))
+        self.writing_mode = QComboBox()
+        for label, value in WRITING_MODES.items():
+            self.writing_mode.addItem(label, value)
+        self.writing_mode.setToolTip("Vertical lyrics read top to bottom, with upright CJK characters and furigana beside them. Alignment places the column block; line spacing separates columns. Song details stay horizontal.")
+        self.writing_mode.currentIndexChanged.connect(self.schedule_refresh)
+        typography.addWidget(_field("Writing direction", self.writing_mode))
         self.font_size = self._spin("font_size", 56, " px")
         self.font_size.setToolTip("Maximum lyric font size; long excerpts shrink to fit.")
         self.alignment_combo = QComboBox()
@@ -240,21 +246,37 @@ class LyricsCardControlsMixin:
         self.preserve_lrcx_formatting.setToolTip("Keep inline emphasis, blockquotes, and smaller translation rows. Karaoke timing and highlighting are excluded.")
         self.preserve_lrcx_formatting.toggled.connect(self.schedule_refresh)
         lyrics.addWidget(self.preserve_lrcx_formatting)
-        self.include_furigana = QCheckBox("Include furigana")
-        self.include_furigana.setChecked(True)
+        self.include_furigana, ruby, self.ruby_controls = _section(layout, "Furigana", optional=True, checked=True)
+        self.include_furigana.checkbox.setAccessibleName("Include furigana")
         self.include_furigana.setToolTip("Use saved readings and readings already available in the editor.")
         self.furigana_scale = self._spin("furigana_scale", 50, "%")
         self.furigana_scale.setMaximumWidth(90)
         self.furigana_scale.setAccessibleName("Furigana size")
         self.furigana_scale.setToolTip("Reading font size relative to the lyric font.")
-        furigana = QHBoxLayout()
-        furigana.addWidget(self.include_furigana)
-        furigana.addStretch()
-        furigana.addWidget(self.furigana_scale)
-        lyrics.addLayout(furigana)
-        self.include_furigana.toggled.connect(self.furigana_scale.setVisible)
-        self.include_furigana.toggled.connect(self.furigana_scale.setEnabled)
+        self.ruby_gap = self._spin("ruby_gap", 0, " px")
+        self.ruby_gap.setToolTip("Additional space between the reading and its base text. Zero keeps the default tight spacing.")
+        ruby.addWidget(_row(_field("Size", self.furigana_scale), _field("Extra gap", self.ruby_gap)))
+        self.ruby_position = QComboBox()
+        self.ruby_position.setToolTip("Auto places readings above horizontal lyrics and to the right of vertical lyrics.")
+        self.ruby_position.currentIndexChanged.connect(self.schedule_refresh)
+        ruby.addWidget(_field("Position", self.ruby_position))
+        self.ruby_custom_color = QCheckBox("Custom color")
+        self.ruby_color_button = QPushButton()
+        self.ruby_color_button.setAccessibleName("Furigana color")
+        self._ruby_color = self._colors[2]
+        self.ruby_color_button.clicked.connect(self.choose_ruby_color)
+        self.ruby_custom_color.toggled.connect(self._sync_ruby_color)
+        ruby.addWidget(_row(self.ruby_custom_color, self.ruby_color_button))
+        self.ruby_inherit_stroke = QCheckBox("Inherit stroke")
+        self.ruby_inherit_shadow = QCheckBox("Inherit shadow")
+        self.ruby_inherit_stroke.setToolTip("Apply the lyric stroke to readings when Stroke is enabled.")
+        self.ruby_inherit_shadow.setToolTip("Let readings cast the lyric shadow when Shadow is enabled.")
+        for control in (self.ruby_inherit_stroke, self.ruby_inherit_shadow):
+            control.setChecked(True)
+            control.toggled.connect(self.schedule_refresh)
+        ruby.addWidget(_row(self.ruby_inherit_stroke, self.ruby_inherit_shadow))
         self.include_furigana.toggled.connect(self.schedule_refresh)
+        self.writing_mode.currentIndexChanged.connect(self._sync_ruby_positions)
 
     def _build_artwork_controls(self):
         layout = self._control_page("Artwork")

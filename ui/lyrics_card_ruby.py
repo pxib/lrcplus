@@ -5,12 +5,12 @@ import math
 
 from PySide6.QtCore import QSizeF, Qt
 from PySide6.QtGui import (
-    QAbstractTextDocumentLayout, QColor, QPen, QPyTextObject, QTextCharFormat,
+    QAbstractTextDocumentLayout, QColor, QFontMetricsF, QPen, QPyTextObject, QTextCharFormat,
     QTextCursor, QTextFormat,
 )
 
 from ui.lyrics_card_text import CardLyrics, utf16_offsets
-from ui.lyrics_card_decorations import undecorated_document
+from ui.lyrics_card_decorations import undecorated_document, _glyphs
 
 
 RUBY_OBJECT = int(QTextFormat.ObjectTypes.UserObject) + 1
@@ -73,11 +73,17 @@ class RubyTextObject(QPyTextObject):
         document._card_ruby_handler = self
         document.markContentsDirty(0, document.characterCount())
 
-    def __init__(self, document, words, font, scale, make_document):
+    def __init__(self, document, words, font, scale, make_document, style=None):
         super().__init__(document)
         self.color = QColor("#ffffff")
         self.pieces = []
         self._outlined = {}
+        self.below = style is not None and style.ruby_position == "below"
+        self.extra_gap = style.ruby_gap if style is not None else 0
+        self.ruby_color = style.ruby_color if style is not None else ""
+        self.inherit_stroke = style.ruby_inherit_stroke if style is not None else True
+        self.paint_part = "all"
+        self.gaps = []
         for _, word in words:
             pixels = max(1, round(font.pixelSize() * (.75 if word.translated else 1)))
             base = make_document(CardLyrics(word.text, styles=word.styles), pixels)
@@ -88,8 +94,13 @@ class RubyTextObject(QPyTextObject):
             width = math.ceil(max(base.idealWidth(), reading.idealWidth()))
             base.size()
             ascent = base.begin().layout().lineAt(0).ascent()
-            gap = max(1, round(pixels * .03))
-            self.pieces.append((base, reading, QSizeF(width, reading.size().height() + gap + ascent), ascent))
+            gap = max(1, round(pixels * .03)) + self.extra_gap
+            self.gaps.append(gap)
+            height = reading.size().height() + gap + ascent
+            if self.below:
+                height = (math.ceil(QFontMetricsF(font).ascent()) + base.size().height() - ascent
+                          + gap - self.ruby_drop(ascent) + reading.size().height())
+            self.pieces.append((base, reading, QSizeF(width, height), ascent))
 
     def intrinsicSize(self, document, position, char_format):
         return self.pieces[int(char_format.property(RUBY_INDEX))][2]
@@ -108,23 +119,55 @@ class RubyTextObject(QPyTextObject):
             self._outlined[key] = clone
         return self._outlined[key]
 
+    def child_positions(self, index, baseline):
+        base, reading, size, ascent = self.pieces[index]
+        if self.below:
+            reading_y = baseline + base.size().height() - ascent + self.gaps[index] - self.ruby_drop(ascent)
+        else:
+            reading_y = baseline - size.height() + self.ruby_drop(ascent)
+        return baseline - ascent, reading_y
+
+    def _paint_child(self, painter, child, x, y, color, pen):
+        painted = undecorated_document(self._document_for_pen(child, pen))
+        painter.save()
+        painter.translate(x, y)
+        context = QAbstractTextDocumentLayout.PaintContext()
+        context.palette.setColor(context.palette.ColorRole.Text, QColor(color))
+        painted.documentLayout().draw(painter, context)
+        painter.restore()
+
+    def paint_readings(self, painter, document, color):
+        for _, _, char_format, _, left, right, baseline in _glyphs(document):
+            if char_format.objectType() != RUBY_OBJECT:
+                continue
+            index = int(char_format.property(RUBY_INDEX))
+            reading = self.pieces[index][1]
+            _, y = self.child_positions(index, baseline)
+            pen = char_format.textOutline() if self.inherit_stroke else QPen(Qt.PenStyle.NoPen)
+            self._paint_child(painter, reading, left + (right - left - reading.size().width()) / 2,
+                              y, self.ruby_color or color, pen)
+
     def drawObject(self, painter, rect, document, position, char_format):
-        base, reading, _, ascent = self.pieces[int(char_format.property(RUBY_INDEX))]
+        index = int(char_format.property(RUBY_INDEX))
+        base, reading, _, ascent = self.pieces[index]
+        block = document.findBlock(position)
+        layout = block.layout()
+        line = layout.lineForTextPosition(position - block.position())
+        baseline = layout.position().y() + line.y() + line.ascent()
+        base_y, reading_y = self.child_positions(index, baseline)
         pen = char_format.toCharFormat().textOutline()
-        # Use the font's spare vertical space to bring ruby closer to its base.
-        ruby_y = rect.top() + self.ruby_drop(ascent)
-        for child, y in ((reading, ruby_y), (base, rect.bottom() - ascent)):
-            painted = undecorated_document(self._document_for_pen(child, pen))
-            painter.save()
-            painter.translate(rect.left() + (rect.width() - child.size().width()) / 2, y)
-            context = QAbstractTextDocumentLayout.PaintContext()
-            context.palette.setColor(context.palette.ColorRole.Text, self.color)
-            painted.documentLayout().draw(painter, context)
-            painter.restore()
+        children = []
+        if self.paint_part != "base":
+            children.append((reading, reading_y, self.ruby_color or self.color,
+                             pen if self.inherit_stroke else QPen(Qt.PenStyle.NoPen)))
+        children.append((base, base_y, self.color, pen))
+        for child, y, color, child_pen in children:
+            self._paint_child(painter, child, rect.left() + (rect.width() - child.size().width()) / 2,
+                              y, color, child_pen)
 
 
-def install_ruby_objects(document, words, font, scale, make_document):
-    handler = RubyTextObject(document, words, font, scale, make_document)
+def install_ruby_objects(document, words, font, scale, make_document, style=None):
+    handler = RubyTextObject(document, words, font, scale, make_document, style)
     handler.attach(document)
     offsets = utf16_offsets(document.toPlainText())
     for index, (position, _) in enumerate(words):
@@ -134,6 +177,8 @@ def install_ruby_objects(document, words, font, scale, make_document):
         char_format = QTextCharFormat()
         char_format.setObjectType(RUBY_OBJECT)
         char_format.setProperty(RUBY_INDEX, index)
+        if handler.below:
+            char_format.setVerticalAlignment(QTextCharFormat.VerticalAlignment.AlignTop)
         cursor.mergeCharFormat(char_format)
         cursor.setPosition(offsets[position + 1])
         cursor.setPosition(offsets[position + 2], QTextCursor.MoveMode.KeepAnchor)

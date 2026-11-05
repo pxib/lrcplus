@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from core.recent import add_to_recent_songs
 from core.background_job import BackgroundJob
+from core.audio_sink import dispose_audio_sink
 from core.settings import save_playback_settings
 from core.playlists import path_key
 from core.audio_dsp import (
@@ -408,9 +409,7 @@ class AudioController:
             self._pcm_route_active = False
             sink = getattr(self, "_pcm_sink", None)
             if sink is not None:
-                sink.reset()
-                sink.stop()
-                sink.deleteLater()
+                dispose_audio_sink(sink)
             self._pcm_sink = None
             self._pcm_sink_io = None
 

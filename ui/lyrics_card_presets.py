@@ -5,7 +5,7 @@ from dataclasses import asdict
 from PySide6.QtGui import QColor
 
 from core.settings import load_all_settings, save_all_settings
-from ui.lyrics_card_renderer import CardStyle, CARD_SIZES, CARD_THEMES, CARD_TEMPLATES, WATERMARK_POSITIONS, DETAILS_PLACEMENTS
+from ui.lyrics_card_renderer import CardStyle, CARD_SIZES, CARD_THEMES, CARD_TEMPLATES, WATERMARK_POSITIONS, DETAILS_PLACEMENTS, WRITING_MODES, RUBY_POSITIONS
 
 
 PRESETS_KEY = "lyrics_card_presets"
@@ -19,6 +19,7 @@ STYLE_RANGES = {
     "shadow_offset_x": (-40, 40), "shadow_offset_y": (-40, 40),
     "watermark_width": (80, 320), "watermark_opacity": (0, 100),
     "furigana_scale": (25, 80),
+    "ruby_gap": (0, 40),
 }
 
 
@@ -31,6 +32,8 @@ def style_from_preset(values):
     for key, choices in (("theme", CARD_THEMES), ("template", CARD_TEMPLATES),
                          ("background_mode", ("Gradient", "Solid", "Image")),
                          ("alignment", ("left", "center", "right")),
+                         ("writing_mode", WRITING_MODES.values()),
+                         ("ruby_position", RUBY_POSITIONS),
                          ("details_placement", DETAILS_PLACEMENTS.values()),
                          ("watermark_position", WATERMARK_POSITIONS)):
         value = values.get(key)
@@ -48,10 +51,11 @@ def style_from_preset(values):
         if isinstance(value, str):
             result[key] = value[:maximum]
     for key in ("centered", "show_album_cover", "bold", "italic", "underline", "strikeout",
-                "stroke_enabled", "shadow_enabled", "watermark_enabled", "preserve_lrcx_formatting", "include_furigana"):
+                "stroke_enabled", "shadow_enabled", "watermark_enabled", "preserve_lrcx_formatting", "include_furigana",
+                "ruby_inherit_stroke", "ruby_inherit_shadow"):
         if isinstance(values.get(key), bool):
             result[key] = values[key]
-    for key in ("stroke_color", "shadow_color"):
+    for key in ("stroke_color", "shadow_color", "ruby_color"):
         value = values.get(key)
         if isinstance(value, str) and QColor(value).isValid():
             result[key] = QColor(value).name()
@@ -59,6 +63,9 @@ def style_from_preset(values):
     if (isinstance(colors, (list, tuple)) and len(colors) == 6
             and all(isinstance(color, str) and QColor(color).isValid() for color in colors)):
         result["colors"] = tuple(QColor(color).name() for color in colors)
+    positions = ("auto", "right", "left") if result.get("writing_mode", "horizontal").startswith("vertical_") else ("auto", "above", "below")
+    if result.get("ruby_position", "auto") not in positions:
+        result["ruby_position"] = "auto"
     # Titles, credits, albums and lyric selections belong to the current song.
     return CardStyle(**result)
 

@@ -63,11 +63,38 @@ translation rows. Card-wide emphasis combines with source emphasis; card fonts,
 colors, stroke, and shadow remain available. Turn the option off for plain lyric
 text. Source formatting applies to the checked excerpt in document order.
 Line/segment timestamps and karaoke highlighting do not appear in image cards.
-**Include furigana** independently shows saved readings and already-generated
-editor readings above their base words. Authored ruby takes priority over
+**Furigana** independently shows saved readings and already-generated
+editor readings beside their base words. Authored ruby takes priority over
 automatic readings. Translation rows receive no automatic readings. Adjust the
-reading-size percentage beside the checkbox; annotated words wrap together.
+reading-size percentage in the Furigana section; annotated words wrap together.
 Image cards consume available readings without starting reading providers.
+
+Under **Text > Furigana**, choose **Auto**, **Above**, or **Below** for horizontal
+lyrics, or **Auto**, **Right**, or **Left** for vertical lyrics. Auto uses above
+or right respectively. **Extra gap** adds space to the default tight placement.
+Readings inherit lyric color by default; enable **Custom color** to choose their
+own. **Inherit stroke** and **Inherit shadow** independently apply the lyric
+effects to readings. These appearance settings preserve fitting and placement;
+reading size, position, and spacing participate in layout. The settings are
+stored with style presets.
+
+**Layout > Template** includes Classic, Spotlight, Record sleeve, Polaroid,
+Editorial, and Cinema. Polaroid frames artwork above a lyric caption; Editorial
+uses a larger title and offset lyrics; Cinema places lyrics lower on a shaded
+artwork backdrop. Polaroid and Editorial initially select the Paper theme,
+which can be changed. Saved presets retain their chosen theme. Cinema uses
+available album artwork as a blurred backdrop with Gradient fill; Solid and
+Image fill keep the selected background. Artwork is optional in every template.
+
+**Text > Typography > Writing direction** switches lyrics between horizontal
+text and top-to-bottom columns flowing right to left or left to right. CJK
+characters stay upright, supported fonts supply vertical punctuation forms,
+and Latin words run sideways. Newlines start new columns. Furigana follows its
+base text on the selected side (right by default); source emphasis, translation sizing, and quote markers
+are preserved. Alignment positions the column block, line spacing controls the
+space between columns, and vertical position moves the block up or down.
+The selected font must contain the desired characters. Song details remain
+horizontal, and the writing direction is saved with style presets.
 
 Under **Text > Song details**, edit the title, artist/credit, and album (prefilled
 from `[ti:]`, `[ar:]`, and `[al:]` metadata). **Details placement** puts artist and

@@ -187,7 +187,7 @@ def test_preview_refreshes_for_selection_and_style_changes(editor):
     card.theme_combo.setCurrentText("Rose")
     QTest.qWait(180)
     assert card._image != selected
-    for template in ("Spotlight", "Record sleeve"):
+    for template in CARD_TEMPLATES[1:]:
         previous = card._image.copy()
         card.template_combo.setCurrentText(template)
         QTest.qWait(180)

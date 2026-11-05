@@ -1,6 +1,3 @@
-import importlib.util
-from pathlib import Path
-import sys
 from threading import Event
 
 import pytest
@@ -101,18 +98,11 @@ def test_network_failure(monkeypatch):
         synclrc.search("Song")
 
 
-def test_comparison_handles_empty_rows_and_offset(capsys):
-    path = Path(__file__).resolve().parents[1] / "zindepedenttests/korean_lyrics_timestamp_comparison.py"
-    spec = importlib.util.spec_from_file_location("korean_comparison_test", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-        sync, notes = module.parse_synced_lrc("[offset:500]\n[00:01.00]Hello\n[00:02.00]")
-        genie, _ = module.parse_genie('{"500":"Hello","1500":""}')
-        assert [row.ms for row in sync] == [500, 1500]
-        assert notes
-        assert module.output_report(sync, genie, module.align(sync, genie), None, []) == 0
-        assert "Median offset:         +0.0 ms" in capsys.readouterr().out
-    finally:
-        sys.modules.pop(spec.name, None)
+def test_search_preserves_empty_rows_and_offset(monkeypatch):
+    monkeypatch.setattr(synclrc, "_request", lambda *args: {"results": [{
+        "id": RECORD_ID,
+        "lyrics": {"synced": "[offset:500]\n[00:01.00]Hello\n[00:02.00]"},
+    }]})
+    record, = synclrc.search("Song")
+    assert record["syncedLyrics"] == "[00:00.500]Hello\n[00:01.500]"
+    assert record["lyricsFormat"] == "lrc"

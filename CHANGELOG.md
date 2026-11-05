@@ -8,37 +8,65 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 - Add Datpmt's free Google Translate integration to Lyrics Translator, with per-line requests and no API key requirement.
 - Add SyncLRC to Search Lyrics with cached previews, karaoke timing imported as LRCX, and line-synced LRC or plain-text fallbacks. No API key is required.
 - Add settings search with label, description, and alias matching; Global/Local result paths; navigation to highlighted controls; Ctrl+F and Escape shortcuts; and guidance for settings hidden by another option.
-- Choose image-card song details below the title or grouped beside the album cover, with an editable album name and preset support. Apply proportionate stroke and shadow effects to titles, artists, and albums as well as lyrics.
-- Create lyric image cards in the editor's Share tab using checked lines, with a live preview, three themes, square/portrait/landscape sizes, font and alignment controls, optional title and credit, clipboard copy, and PNG export.
-- Add Spotlight and Record sleeve image-card templates alongside Classic, with the same themes, sizes, and text controls.
-- Customize card colors, solid/gradient/image backgrounds, gradient angle, image crop/zoom/blur/dimming, padding, line spacing, and lyric position. Save reusable style presets without replacing each song's title or credit.
-- Optionally include an album cover in lyric cards, reusing resolved Discord RPC artwork or embedded audio covers. Load covers in the background, adjust their size, and preserve the option in style presets.
-- Add right-aligned lyric cards and bold, italic, underline, and strikethrough text controls, saved with style presets.
-- Add configurable lyric-text stroke and shadow effects, including colors, outline width, shadow opacity/blur/offsets, and preset support. Keep effect edges within the card's text area.
-- Add an optional LRCPlus logo watermark to lyric cards, with width, opacity, corner placement, and preset support. Reserve space around the watermark to keep lyrics, credits, and album covers readable.
-- Preserve LRCX inline emphasis, blockquotes, visual breaks, and smaller translation rows in image cards by default, with a plain-text toggle saved in presets. Combine source and card styling without exporting karaoke timing or highlighting.
-- Include authored and available generated furigana in image cards, with an independent toggle and size control saved in presets. Keep readings above their base words through wrapping, alignment, text effects, and quote/translation layout, without karaoke highlighting.
+
+#### Lyric image cards
+
+- Add an integrated **Share > Image card** page to the lyrics editor, alongside text sharing. Build an excerpt from explicitly checked lines in document order, including when the sidebar is sorted differently; use **Select All** to share the full song.
+- Preview the finished card while editing its style, copy the full-resolution image to the clipboard, or export it as PNG. Choose square (1080 x 1080), portrait (1080 x 1350), or landscape (1920 x 1080) output; the preview scales to the available space without changing export resolution.
+- Automatically fit long excerpts inside the available lyric area. Report excerpts or readings that cannot fit instead of clipping them or exporting an older preview.
+- Choose **Classic** for a rounded frame and restrained accent, **Spotlight** for a large quotation mark and footer details, or **Record sleeve** for a record-inspired sidebar and separate lyric panel.
+- Add **Polaroid**, with a paper frame, photo area, and lyrics below the artwork. Place song details below the photo or beside the cover; use a themed photo treatment when artwork is unavailable.
+- Add **Editorial**, with an oversized song heading, divider rules, and offset lyric text. Keep the composition usable with or without an album cover.
+- Add **Cinema**, with letterbox bars, lower-positioned lyrics, and a shaded, blurred artwork backdrop. With Gradient fill, reuse available album artwork for the backdrop; Solid and Image fill retain the chosen background.
+- Start Polaroid and Editorial in the **Paper** theme when selected manually. Allow theme changes afterward and restore the exact saved theme when loading a preset.
+- Offer **Midnight**, **Paper**, and **Rose** themes across all six templates. Override background, gradient end, lyrics, title, artist/album, and accent colors individually, or return to the theme colors.
+- Customize Solid, Gradient, and Image backgrounds. Adjust gradient angle and background-image crop position, zoom, blur, and dimming; preserve image proportions while filling the canvas.
+- Set the lyric font, maximum font size, and left, center, or right alignment. Add card-wide bold, italic, underline, or strikethrough, and adjust padding, line spacing, and the lyric block's vertical position.
+- Edit the song title, artist/credit, and album independently, initially populated from `[ti:]`, `[ar:]`, and `[al:]` metadata. Put artist and album on a second row below the title, or group all details beside the album cover. Fall back to the below-title layout when artwork is unavailable.
+- Include an optional, adjustable album cover from artwork already resolved by Discord RPC or embedded in the audio file. Load artwork in the background for the attached/editing song, expose refresh/status controls, and avoid starting a new artwork search or upload just to create a card.
+- Configure stroke color and width, plus shadow color, opacity, blur, and horizontal/vertical offsets. Apply these effects to lyrics and song details, scaling them for the metadata font sizes.
+- Add an optional **LRCPlus watermark** with width, opacity, and any-corner placement controls. Reserve room for the logo so it stays separate from lyrics, song details, and artwork.
+- Preserve LRCX inline emphasis, blockquote indentation and bars, visual line breaks, and smaller translation rows by default. Combine source formatting with card-wide styling, or disable **Preserve LRCX formatting** for plain lyric styling. Omit karaoke timing and highlighting from the image.
+- Include authored readings, saved generated readings, and readings already cached by the editor. Give authored readings priority, keep annotated words together when wrapping, and avoid starting a reading provider during preview or export. Translation rows receive no automatic readings.
+- Add a dedicated **Text > Furigana** section with an independent enable toggle and reading-size percentage. Choose **Auto**, **Above**, or **Below** for horizontal lyrics, and **Auto**, **Right**, or **Left** for vertical lyrics; Auto uses above/right respectively.
+- Adjust **Extra gap** between ruby and its base text while retaining the existing tight placement at zero. Inherit the lyric color by default or choose a custom reading color. Independently enable or disable **Inherit stroke** and **Inherit shadow** for the readings.
+- Add **Text > Typography > Writing direction** choices for horizontal text and top-to-bottom vertical columns flowing either right to left or left to right. Keep CJK characters upright, use available font-provided vertical punctuation/kana forms, and shape Latin words as sideways runs.
+- Preserve grapheme clusters and combining marks in vertical lyrics. Start a new column at each explicit newline, wrap long columns, and keep common closing punctuation with the preceding text. Render furigana on its selected side and preserve source emphasis, smaller translations, quote markers, and continuous vertical decoration rules. Song details remain horizontal.
+- Use alignment to position the vertical column block, line spacing to separate columns, and vertical position to move the block up or down. Automatically reduce text size when necessary; changing ruby size, side, or spacing participates in fitting.
+- Save reusable style presets, including template, theme, background settings, typography, writing direction, details placement, artwork preference, watermark, effects, and furigana customization. Keep the current song's title, artist, album, lyric selection, and actual cover image separate from presets. Background-image presets remember the local file path.
+- Validate saved style values and retain compatible defaults for older presets, including centered-only alignment, horizontal writing, automatic ruby placement, inherited reading color, and inherited reading effects.
 
 ### Changed
 
+- Match the library search and playback-source dropdown arrows to the themed chevron style, and style Pitch like the Shuffle button.
 - Split the lyrics editor, main player window, and furigana renderer into eight focused modules for document handling, playback, karaoke editing, library management, updates, lyrics search, layout, and painting.
 - Use the LRCPlus logo in the main header and About tab, enlarging it in About and removing the duplicate title.
 - Show lyric translation preview controls only for providers that support provider translations.
 - Organize Settings with a category sidebar, a separate Background page, and scrollable pages. Split Global and Local lyric settings into Display, Readings, Typography, Highlighting, and Scrolling, with aligned file overrides and empty-line placeholders under Display.
+- Reorganize image-card controls into **Layout**, **Text**, **Artwork**, and **Effects** tabs, each with its own scrolling settings page. Group related controls and expand optional sections only when enabled.
+- Give font, title, artist, and album fields full-width rows. Add tooltips for long metadata and keep the start of prefilled text visible rather than scrolling immediately to the end.
+- Put saved-style selection, saving, and deletion in a compact toolbar. Add a resizable settings/preview split, show output dimensions and selected-line count above the preview, and keep preview feedback plus **Copy Image** and **Save PNG** visible while settings scroll.
 
 ### Fixed
 
 - Restore the LRCPlus header logo after dismissing the budget-cuts dialog.
-- Keep image-card font sizes, line wrapping, and text placement unchanged when stroke or shadow settings change. Fit text using a fixed paint gutter and contain effects within their text areas.
 - Reduce the delay when opening Settings by checking dependencies only when their page is first selected and reusing PATH lookups when locating external tools.
 - Remove blank space left by the empty lyric-search status in the Lyrics Editor and tighten the translation quota dialog's height to its content.
 - Save scroll animation easing using its internal value instead of its display label.
-- Prevent collapsed image-card option checkboxes from clipping with themed indicators. Require an explicit lyric selection for image and text sharing; keep previews empty and copy/export inactive until lines are checked.
-- Reorganize image-card settings into Layout, Text, Artwork, and Effects, with collapsible optional controls, wider text fields, a resizable preview, and always-visible copy/export actions.
-- Keep image-card underlines and strikethrough continuous across styled text, spaces, and furigana padding, restarting at wrapped rows.
-- Bring image-card furigana closer to the base lyrics while preserving alignment and wrapping.
 - Prevent processed-audio underruns when opening the lyrics editor, Recent Songs, and other dialogs. Prime a short output reserve and preserve the active sink and pitch history when decoded audio arrives in bursts.
 - Avoid decoder-callback lockups during media stop and reconfiguration by receiving audio without emitting Qt wakeup signals from the renderer thread.
+
+#### Lyric image cards and sharing
+
+- Remove the implicit "nothing checked means all lyrics" fallback. With no selection, leave the image-card preview empty, explain how to select lines, and disable image copy/save. Text sharing also requires checked lines and leaves the clipboard and export dialog untouched when none are selected.
+- Replace height-constrained optional-section headings with native checkbox rows, preventing themed or enlarged checkbox indicators from being cropped. Collapse their controls without discarding the configured values.
+- Keep fitted font sizes, wrapping, and text positions stable when stroke, shadow, reading color, or reading-effect inheritance changes. Use a fixed paint gutter and contain effects within their assigned text areas instead of subtracting changing effect bounds from the fitting space.
+- Continue underlines and strikethrough across styled text, spaces, and ruby expansion, restarting at wrapped rows and stopping at unstyled runs. Keep vertical decoration rules continuous through padding introduced by long readings.
+- Bring above-line ruby closer to its base text. Preserve the surrounding text baseline when readings are above or below the line, including mixed annotated/unannotated text and wrapped rows; keep custom reading colors and decoration rules on the selected side.
+- Keep ruby that opts out of stroke or shadow visually unchanged when the corresponding lyric effect is enabled, including avoiding an extra fill pass that could thicken unstroked reading edges.
+- Update available ruby-position choices when the writing direction changes, and fall back to Auto if the previous side does not apply. Normalize incompatible or malformed position values when loading presets.
+- Clear stale previews and prevent exporting them after invalid source edits, missing background images, or text/reading overflow. Write PNG output atomically so an unsuccessful encode or write does not replace an existing destination file.
+- Keep artwork, song details, lyrics, and watermark areas separate while fitting the excerpt, and preserve cover aspect ratio. Keep appearance-only effect changes independent of these layout reservations.
 
 ## [2026-11-04]
 

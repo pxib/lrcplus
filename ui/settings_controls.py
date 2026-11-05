@@ -1,5 +1,5 @@
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QColor, QPainter, QPolygon
+from PySide6.QtGui import QColor, QPainter, QPalette, QPolygon
 from PySide6.QtWidgets import QAbstractSpinBox, QComboBox, QSpinBox, QToolButton
 from core.theme import build_theme_palette
 
@@ -70,12 +70,14 @@ _NativeComboBox = QComboBox
 
 
 class _ComboDropButton(QToolButton):
-    def __init__(self, parent):
+    def __init__(self, parent, on_click=None):
         super().__init__(parent)
         self.setObjectName("comboDropIndicator")
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.clicked.connect(lambda _checked=False: parent.showPopup())
+        if on_click is None:
+            on_click = parent.showPopup
+        self.clicked.connect(lambda _checked=False: on_click())
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -83,7 +85,7 @@ class _ComboDropButton(QToolButton):
         center_y = self.height() // 2
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QColor("#53665e"))
+        painter.setPen(self.palette().color(QPalette.ColorRole.ButtonText))
         painter.drawLine(
             QPoint(center_x - 3, center_y - 1),
             QPoint(center_x, center_y + 2),
