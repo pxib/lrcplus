@@ -12,6 +12,9 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 ### Fixed
 - Placeholder for the time being.
 
+### Known Issues
+- Translations and newlines add about 40-60 MB. I advise against adding those until I got it narrowed and hunted down.
+
 ## [2026-11-05]
 
 ### Added
