@@ -1,0 +1,113 @@
+
+{
+  "themes": [
+    {
+      "name": "Midnight",
+      "description": "Minimal, cool, and understated",
+      "background": "#101318",
+      "surface": "#202630",
+      "accent": "#619BFF",
+      "text": "#F5F7FA",
+      "secondaryText": "#9BA7B7"
+    },
+    {
+      "name": "OLED Black",
+      "description": "True black, ideal for OLED screens",
+      "background": "#000000",
+      "surface": "#161616",
+      "accent": "#A78BFA",
+      "text": "#FFFFFF",
+      "secondaryText": "#AAAAAA"
+    },
+    {
+      "name": "Sakura",
+      "description": "Soft pink and warm pastels",
+      "background": "#FFF0F4",
+      "surface": "#FFFFFF",
+      "accent": "#E879A4",
+      "text": "#49313E",
+      "secondaryText": "#967A87"
+    },
+    {
+      "name": "Matcha",
+      "description": "Calm, natural green tones",
+      "background": "#EFF4E8",
+      "surface": "#FFFFFF",
+      "accent": "#72945C",
+      "text": "#29382C",
+      "secondaryText": "#738273"
+    },
+    {
+      "name": "Nordic Frost",
+      "description": "Cool blue-gray with icy highlights",
+      "background": "#242C3A",
+      "surface": "#333E50",
+      "accent": "#88C0D0",
+      "text": "#ECEFF4",
+      "secondaryText": "#A7B5C8"
+    },
+    {
+      "name": "Lavender",
+      "description": "Gentle purple with a dreamy feel",
+      "background": "#F5F0FF",
+      "surface": "#FFFFFF",
+      "accent": "#9B78D3",
+      "text": "#3C3155",
+      "secondaryText": "#9287A7"
+    },
+    {
+      "name": "Rose Noir",
+      "description": "A refined, romantic dark palette",
+      "background": "#1B131B",
+      "surface": "#2D202D",
+      "accent": "#EF87B6",
+      "text": "#FAEBF3",
+      "secondaryText": "#B9A1B0"
+    },
+    {
+      "name": "Cyberpunk",
+      "description": "Neon energy against deep navy",
+      "background": "#0B1020",
+      "surface": "#171E34",
+      "accent": "#00E5C3",
+      "text": "#E7F8FF",
+      "secondaryText": "#92AABD"
+    },
+    {
+      "name": "Solar Amber",
+      "description": "Warm, cozy, vintage-inspired",
+      "background": "#241C17",
+      "surface": "#372A21",
+      "accent": "#F5B65B",
+      "text": "#FFF1DF",
+      "secondaryText": "#C9AF92"
+    },
+    {
+      "name": "Paper",
+      "description": "Clean, understated productivity look",
+      "background": "#F6F5F2",
+      "surface": "#FFFFFF",
+      "accent": "#5277B5",
+      "text": "#25292F",
+      "secondaryText": "#858991"
+    },
+    {
+      "name": "Reimu",
+      "description": "A shrine maiden-inspired red and white theme",
+      "background": "#FFF8F3",
+      "surface": "#FFFFFF",
+      "accent": "#D93642",
+      "text": "#372629",
+      "secondaryText": "#9B7777"
+    },
+    {
+      "name": "Alice Margatroid",
+      "description": "An elegant porcelain and blue theme inspired by the dollmaker of the Forest of Magic",
+      "background": "#F8F4E9",
+      "surface": "#FFFFFF",
+      "accent": "#456AA0",
+      "text": "#292E42",
+      "secondaryText": "#85869A"
+    }
+  ]
+}

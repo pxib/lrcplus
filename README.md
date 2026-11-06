@@ -4,6 +4,27 @@ media player
 
 idk
 
+## Gapless playback and ReplayGain
+
+Enable these under **Settings > Playback**. Both default to off.
+
+- **Gapless playback** prebuffers one successor and keeps the audio output open
+  across tracks. It requires FFmpeg and works at normal speed and pitch; changing
+  either uses the existing Qt playback path. Enabling it takes effect on the next
+  track load. Files are decoded at the output device's sample rate, rather than
+  using a bit-perfect output mode. Encoded silence in a file is preserved.
+- **ReplayGain** reads existing track or album gain/peak tags from the files.
+  Album mode falls back to track tags. Files without gain tags play unchanged.
+  A preamp and peak-based clipping prevention are available. This does not scan
+  loudness or write tags. Manual volume boosts can still cause clipping.
+
+The gapless path keeps at most two FFmpeg decoder processes, each with 256 KiB
+of queued PCM, plus a 250 ms output buffer and a small pending write. Decoder
+processes have their own additional memory costs. No full-track PCM cache or
+new Python dependency is added. With gapless playback off, no FFmpeg playback
+decoder runs. ReplayGain attenuation uses native output volume on the Qt path;
+amplification uses the existing PCM processing path.
+
 ## LRCLIB
 
 LRCPlus integrates with LRCLIB for searching and retrieving synchronized and plain-text lyrics. API integration is authorized by LRCLIB under its API Terms of Use.

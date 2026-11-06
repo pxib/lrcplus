@@ -3,6 +3,7 @@ import html
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -17,6 +18,10 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
 )
+
+from core.fonts import library_font
+from ui.content_fonts import FontRunResolver
+from ui.content_list import ContentListDelegate, configure_content_list
 
 
 class WordAnalysisWorker(QThread):
@@ -35,7 +40,7 @@ class WordAnalysisWorker(QThread):
             self.failed.emit(str(error))
 
 
-def format_lyric_with_readings(text, words):
+def format_lyric_with_readings(text, words, escape_text=html.escape):
     parts = []
     source_position = 0
     for word in words:
@@ -46,15 +51,15 @@ def format_lyric_with_readings(text, words):
         found_at = text.find(surface, source_position)
         if found_at < 0:
             continue
-        parts.append(html.escape(text[source_position:found_at]))
-        parts.append(html.escape(surface))
+        parts.append(escape_text(text[source_position:found_at]))
+        parts.append(escape_text(surface))
         if reading:
             parts.append(
                 '<span style="font-size: 15px; color: #68716e;">'
-                f"（{html.escape(reading)}）</span>"
+                f"（{escape_text(reading)}）</span>"
             )
         source_position = found_at + len(surface)
-    parts.append(html.escape(text[source_position:]))
+    parts.append(escape_text(text[source_position:]))
     return "".join(parts)
 
 
@@ -67,6 +72,12 @@ class FlashcardDialog(QDialog):
         self.words_by_line = [[] for _line in self.lyrics]
         self.selected_cards = {}
         self._updating_words = False
+        self._all_lyrics_populated = False
+        self._content_font = library_font(self.font())
+        self._content_font.setStyleStrategy(
+            self._content_font.styleStrategy() | QFont.StyleStrategy.NoFontMerging
+        )
+        self._font_resolver = FontRunResolver(self._content_font)
 
         layout = QVBoxLayout(self)
         self.status_label = QLabel("Analyzing lyric words...")
@@ -76,10 +87,24 @@ class FlashcardDialog(QDialog):
         self.previous_button.setEnabled(False)
         self.previous_button.clicked.connect(self.previous_line)
         self.line_selector = QComboBox()
+        self.line_selector.setFont(self._content_font)
+        self.line_selector.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.line_selector.setMinimumContentsLength(16)
+        configure_content_list(self.line_selector.view())
+        if hasattr(QComboBox, "LabelDrawingMode"):
+            self.line_selector.setLabelDrawingMode(QComboBox.LabelDrawingMode.UseDelegate)
+        else:
+            # Older Qt versions draw the closed label themselves.
+            font = QFont(self._content_font)
+            font.setStyleStrategy(font.styleStrategy() & ~QFont.StyleStrategy.NoFontMerging)
+            self.line_selector.setFont(font)
         self.line_selector.setMinimumWidth(280)
         for index, line in enumerate(self.lyrics):
             text = str(line.get("text", "") or "")
-            self.line_selector.addItem(f"{index + 1:03d}  {text}")
+            display_text = text.replace("\n", " ")
+            self.line_selector.addItem(f"{index + 1:03d}  {display_text}")
             self.line_selector.setItemData(
                 index,
                 text,
@@ -97,17 +122,21 @@ class FlashcardDialog(QDialog):
         layout.addLayout(navigation)
 
         self.lyric_label = QLabel("<i>Waiting for word analysis...</i>")
+        self.lyric_label.setFont(self._content_font)
         self.lyric_label.setWordWrap(True)
         self.lyric_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lyric_label.setMinimumHeight(100)
         layout.addWidget(self.lyric_label)
 
         self.line_reading_label = QLabel("")
+        self.line_reading_label.setFont(self._content_font)
         self.line_reading_label.setWordWrap(True)
         self.line_reading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.line_reading_label)
 
         self.table = QTableWidget(0, 3, self)
+        self.table.setFont(self._content_font)
+        self.table.setItemDelegate(ContentListDelegate(self.table))
         self.table.setHorizontalHeaderLabels(["", "Word", "Reading"])
         self.table.setEditTriggers(
             QAbstractItemView.EditTrigger.NoEditTriggers
@@ -120,6 +149,7 @@ class FlashcardDialog(QDialog):
         layout.addWidget(self.table, 1)
 
         self.all_lyrics_list = QListWidget(self)
+        configure_content_list(self.all_lyrics_list)
         self.all_lyrics_list.setMaximumHeight(180)
         self.all_lyrics_list.setVisible(False)
         self.all_lyrics_list.itemClicked.connect(self.select_listed_line)
@@ -176,13 +206,9 @@ class FlashcardDialog(QDialog):
             })
 
         self.all_lyrics_list.clear()
-        for index, line in enumerate(self.lyrics):
-            text = str(line.get("text", "") or "")
-            reading = self.line_reading(index)
-            label = f"{index + 1:03d}  {text}"
-            if reading:
-                label += f"    {reading}"
-            self.all_lyrics_list.addItem(label)
+        self._all_lyrics_populated = False
+        if self.all_lyrics_list.isVisible():
+            self._populate_all_lyrics()
 
         if self.lyrics:
             self.line_selector.setEnabled(True)
@@ -191,6 +217,19 @@ class FlashcardDialog(QDialog):
         self.table.setEnabled(True)
         self.status_label.setText("Select lyric words to add them to the export.")
         self.export_button.setEnabled(bool(self.selected_cards))
+
+    def _populate_all_lyrics(self):
+        if self._all_lyrics_populated:
+            return
+        for index, line in enumerate(self.lyrics):
+            text = str(line.get("text", "") or "")
+            reading = self.line_reading(index)
+            display_text = text.replace("\n", " ")
+            label = f"{index + 1:03d}  {display_text}"
+            if reading:
+                label += f"    {reading}"
+            self.all_lyrics_list.addItem(label)
+        self._all_lyrics_populated = True
 
     def show_analysis_error(self, message):
         self.status_label.setText(f"Word analysis failed: {message}")
@@ -210,14 +249,26 @@ class FlashcardDialog(QDialog):
 
         text = str(self.lyrics[line_index].get("text", "") or "")
         words = self.words_by_line[line_index]
+        automatic = False
+
+        def escape_text(value):
+            nonlocal automatic
+            markup, fallback = self._font_resolver.html(value)
+            automatic |= fallback
+            return markup
+
+        formatted = format_lyric_with_readings(text, words, escape_text)
+        self._set_label_fallback(self.lyric_label, automatic)
         self.lyric_label.setText(
             '<div style="font-size: 30px;">'
-            + format_lyric_with_readings(text, words)
+            + formatted
             + "</div>"
         )
         reading = self.line_reading(line_index)
+        markup, fallback = self._font_resolver.html(reading)
+        self._set_label_fallback(self.line_reading_label, fallback)
         self.line_reading_label.setText(
-            f'<div style="font-size: 20px;">{html.escape(reading)}</div>'
+            f'<div style="font-size: 20px;">{markup}</div>'
         )
         self.previous_button.setEnabled(line_index > 0)
         self.next_button.setEnabled(line_index < len(self.lyrics) - 1)
@@ -245,6 +296,12 @@ class FlashcardDialog(QDialog):
         self.table.blockSignals(False)
         self._updating_words = False
 
+    def _set_label_fallback(self, label, automatic):
+        font = QFont(self._content_font)
+        if automatic:
+            font.setStyleStrategy(font.styleStrategy() & ~QFont.StyleStrategy.NoFontMerging)
+        label.setFont(font)
+
     def previous_line(self):
         self.show_line(self.line_selector.currentIndex() - 1)
 
@@ -256,6 +313,8 @@ class FlashcardDialog(QDialog):
 
     def toggle_all_lyrics(self):
         visible = not self.all_lyrics_list.isVisible()
+        if visible:
+            self._populate_all_lyrics()
         self.all_lyrics_list.setVisible(visible)
         self.show_all_button.setText(
             "Hide All Lyrics" if visible else "Show All Lyrics"
@@ -355,7 +414,15 @@ class AnkiFlashcardsPlugin:
             api.get_current_track(),
             lyrics,
         )
-        dialog.exec()
+        try:
+            dialog.exec()
+        finally:
+            # Esc can dismiss the dialog before analysis finishes. Keep its
+            # QThread alive until it exits, then release the whole widget tree.
+            dialog.worker.finished.connect(dialog.deleteLater)
+            dialog.hide()
+            if not dialog.worker.isRunning():
+                dialog.deleteLater()
 
 
 PLUGIN_CLASS = AnkiFlashcardsPlugin

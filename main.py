@@ -14,6 +14,10 @@ if __name__ == "__main__" and "--lrcplus-dependency-probe" in sys.argv:
     from core.dependency_probe import main as probe_main
     raise SystemExit(probe_main())
 
+if __name__ == "__main__":
+    from core.crash_logging import install_crash_logging
+    install_crash_logging()
+
 activate_dependencies()
 
 from core.external_tools import activate_tools

@@ -1,19 +1,41 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
-## [2026-11-06] - dev
+## [2026-11-06]
 
 ### Added
-- Placeholder for the time being.
+
+- Add Core and User theme presets, including automatic mode and palette changes. Save, import, export, and delete user themes; remember the selected theme across restarts; and customize surface, background, cell selection, hover, and other colors per mode.
+- Add optional gapless playback with bounded two-track FFmpeg prebuffering and a continuous output sink at normal speed and pitch.
+- Add ReplayGain track/album tag playback, album-to-track fallback, preamp, and peak-based clipping prevention in Settings > Playback.
+- Add persistent crash traces in `%LOCALAPPDATA%\LRCPlus\logs\crash.log` to help diagnose rare crashes.
+- Add a Windows memory profiler with runtime feature logging, optional Python allocation tracing, and a temporary switch for comparing the same song with word highlighting disabled.
 
 ### Changed
-- Placeholder for the time being.
+
+- Improve audio fidelity at nonstandard playback speeds with band-limited resampling that preserves phase and sample history across decoded buffers.
+- Reduce startup allocations by deferring networking and DSP imports, creating lyric renderers on demand, and generating Mandarin readings in a disposable worker instead of keeping pronunciation dictionaries in the player.
+- Derive library cells from shared track metadata instead of retaining duplicate formatted values.
+- Defer hidden waveform decoding and background blur processing. Create image-card controls only when their editor page is opened, and reduce redundant preview and image-buffer copies.
+- Use glyph-checked font runs in Recents, Queue, Settings folder lists, and Flashcards to avoid loading large legacy fallback fonts while preserving mixed scripts and emoji.
+- Populate Flashcards' All Lyrics list on demand. In controlled Windows checks, Recents' first-open working-set growth fell from about 70 to 10 MiB, and Flashcards' UI growth after word analysis fell from about 74 to 6 MiB.
 
 ### Fixed
-- Placeholder for the time being.
+
+- Discard stale audio and route-start notifications during rapid speed, pitch-mode, and track changes, preventing an obsolete playback route from muting native audio.
+- Flush remaining resampled audio once at the end of a stream, preserving short clips and track endings without duplicating samples.
+- Address a potential cause of rare playback crashes by delivering background lyric readings on the UI thread and safely discarding pending results when lyric rows are removed. The reported crashes, observed twice with Korean lyrics, have not been reproduced; this change is not yet confirmed to resolve them.
+- Stop hidden Floating Lyrics from processing multiline and translated text and loading additional font/layout resources. Refresh the current lyric when the window is shown, including while paused. Both `{\n}` and `{\nt}` remain supported.
+- Cache karaoke settings and refresh them when changed instead of parsing the entire settings file on every highlighting frame. Disconnect media callbacks when the plugin unloads.
+- Release closed Pitch, Timing, Dependency, Update, Flashcard, and Karaoke Screen dialogs and their owned resources. Preserve active worker lifetimes until completion and flush pending pitch changes before disposal.
+- Release explicit confirmation dialogs after use; retain the existing cleanup for Recents, Settings, the lyrics editor, lyric search, and image viewers.
 
 ### Known Issues
-- Translations and newlines add about 40-60 MB. I advise against adding those until I got it narrowed and hunted down.
+
+- Previously reported gradual memory growth in the Lyrics Editor and Translation workspace has not been reliably reproduced or confirmed resolved. Remaining idle-to-playback increases and large image-card generation peaks are not fully attributed across real workloads.
+- Font, decoder, artwork, reading-engine, and DSP caches can remain allocated after first use. Standalone Translation and URL Import intentionally retain one window's UI state until plugin shutdown. Closing a dialog does not guarantee a return to startup memory usage.
+- Quoted savings are controlled Windows development-process measurements, not guaranteed packaged-app or Task Manager totals. Flashcards measurements separate UI allocations from word-analysis memory. Earlier offscreen probes lacked the installed Windows font database and do not establish native text-rendering costs.
+- See the [memory investigation](docs/memory-usage.md) and [dialog audit](docs/dialog-memory-audit.md) for reproduction details, measured scope, and areas that still need profiling. Further optimization should follow reproducible growth or unusually large allocations.
 
 ## [2026-11-05]
 

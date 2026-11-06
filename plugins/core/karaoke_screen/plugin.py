@@ -507,6 +507,7 @@ class KaraokeScreenPlugin(QObject):
             self._synth_status_last_update = now
 
     def _screen_closed(self, *_args):
+        screen = self.screen
         self._stop_microphone()
         self._stop_square_wave_stream()
         if self.screen_timer is not None:
@@ -516,6 +517,8 @@ class KaraokeScreenPlugin(QObject):
         self.screen = None
         self.screen_timer = None
         self.pitch_timer = None
+        if screen is not None:
+            screen.deleteLater()
 
     def _toggle_microphone(self, checked=False):
         if self._pitch_detector is not None:
@@ -816,8 +819,10 @@ class KaraokeScreenPlugin(QObject):
         self._stop_microphone()
         self._stop_square_wave_stream()
         if self.screen is not None:
-            self.screen.close()
-            self.screen = None
+            screen = self.screen
+            screen.close()
+            if self.screen is screen:
+                self._screen_closed()
         self.screen_timer = None
         if self.pitch_timer is not None:
             self.pitch_timer.stop()

@@ -261,6 +261,8 @@ class DependencyManagerDialog(QDialog):
         _apply_settings_dialog_style(
             self, getattr(parent, "theme_mode", "light"),
             getattr(parent, "theme_color", "#3a9879"),
+            getattr(parent, "theme_surface", "classic"),
+            getattr(parent, "theme_overrides", {}),
         )
         layout = QVBoxLayout(self)
         self.dependencies = DependencyManagerWidget(plugin_manager, self)
@@ -295,9 +297,17 @@ def show_dependency_notice(plugin_manager, parent):
     notice.setDetailedText(details)
     open_button = notice.addButton("Open Dependency Manager", QMessageBox.ButtonRole.AcceptRole)
     notice.addButton("Later", QMessageBox.ButtonRole.RejectRole)
-    notice.exec()
+    try:
+        notice.exec()
+        open_manager = notice.clickedButton() is open_button
+    finally:
+        notice.deleteLater()
     settings = load_all_settings()
     settings["dependency_notice_dismissed"] = signature
     save_all_settings(settings)
-    if notice.clickedButton() is open_button:
-        DependencyManagerDialog(plugin_manager, parent).exec()
+    if open_manager:
+        dialog = DependencyManagerDialog(plugin_manager, parent)
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()

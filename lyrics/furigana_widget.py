@@ -3,7 +3,7 @@
 import math
 from concurrent.futures import ThreadPoolExecutor
 
-from PySide6.QtCore import QRectF, QEasingCurve, QVariantAnimation, QObject, Signal
+from PySide6.QtCore import QRectF, QEasingCurve, QVariantAnimation, QTimer, QObject, Signal
 from PySide6.QtGui import QFont, QFontMetrics, QColor
 from PySide6.QtWidgets import QWidget, QGraphicsBlurEffect
 from lyrics.furigana import (
@@ -33,6 +33,7 @@ class _LineFocusBlurEffect(QGraphicsBlurEffect):
 
 
 class _FuriganaBridge(QObject):
+    """Compatibility export for plugins; the player polls reading futures."""
     ready = Signal(str, object)
 
 
@@ -144,9 +145,11 @@ class FuriganaWidget(FuriganaLayoutMixin, FuriganaPaintingMixin, QWidget):
         self.reading_font = QFont()
         self.reading_font.setPointSize(self.READING_FONT_SIZE)
 
-        self._furigana_bridge = _FuriganaBridge(self)
-        self._furigana_bridge.ready.connect(self.furigana_ready)
         self._furigana_future = None
+        self._reading_request = None
+        self._reading_timer = QTimer(self)
+        self._reading_timer.setInterval(25)
+        self._reading_timer.timeout.connect(self._poll_readings)
         self._karaoke_furigana_pending = None
         self._prepared_layout_key = None
         self._prepared_layout = []
@@ -924,24 +927,10 @@ class FuriganaWidget(FuriganaLayoutMixin, FuriganaPaintingMixin, QWidget):
                         return [{"text": text, "reading": None}]
 
                 future = _FURIGANA_EXECUTOR.submit(parse_karaoke)
-                self._furigana_future = future
-
-                def finished_karaoke(done):
-                    if done.cancelled() or getattr(self, "_reading_disposed", False):
-                        return
-                    try:
-                        result = done.result()
-                    except Exception as error:
-                        print(
-                            f"[Yomi] Lyric reading worker failed for {text!r}: {error!r}"
-                        )
-                        result = [{"text": text, "reading": None}]
-                    self._emit_readings_ready(
-                        reading_key,
-                        {"karaoke": original_segments, "segments": result, "line_end": line_end},
-                    )
-
-                future.add_done_callback(finished_karaoke)
+                self._watch_readings(
+                    future, reading_key,
+                    {"karaoke": original_segments, "line_end": line_end},
+                )
                 # Render authored LRCX ruby immediately while the automatic
                 # reading worker runs.  Returning here used to leave the
                 # previous/generated view on screen until the cache was ready,
@@ -1181,27 +1170,35 @@ class FuriganaWidget(FuriganaLayoutMixin, FuriganaPaintingMixin, QWidget):
                 return [{"text": text, "reading": None}]
 
         future = _FURIGANA_EXECUTOR.submit(parse)
+        self._watch_readings(future, reading_key)
+
+    def _watch_readings(self, future, text, envelope=None):
+        # Poll on the owning UI thread. A completion callback must not touch
+        # a QObject (or retain the row) while viewport eviction deletes it.
+        if self._furigana_future is not None:
+            self._furigana_future.cancel()
         self._furigana_future = future
+        self._reading_request = (text, envelope)
+        self._reading_timer.start()
 
-        def finished(done):
-            if done.cancelled() or getattr(self, "_reading_disposed", False):
-                return
-            try:
-                result = done.result()
-            except Exception as error:
-                print(f"[Yomi] Worker failed for {text!r}: {error!r}")
-                result = [{"text": text, "reading": None}]
-            self._emit_readings_ready(reading_key, result)
-
-        future.add_done_callback(finished)
-
-    def _emit_readings_ready(self, text, result):
+    def _poll_readings(self):
+        future = self._furigana_future
+        if future is None or not future.done():
+            return
+        text, envelope = self._reading_request
+        self._furigana_future = None
+        self._reading_request = None
+        self._reading_timer.stop()
+        if future.cancelled() or getattr(self, "_reading_disposed", False):
+            return
         try:
-            self._furigana_bridge.ready.emit(text, result)
-        except RuntimeError:
-            # The Qt row may be destroyed between the worker finishing and
-            # emitting its queued result (viewport eviction or window close).
-            pass
+            result = future.result()
+        except Exception as error:
+            print(f"[Readings] Worker failed for {text!r}: {error!r}")
+            result = [{"text": text, "reading": None}]
+        if envelope is not None:
+            result = dict(envelope, segments=result)
+        self.furigana_ready(text, result)
 
     def furigana_ready(self, text, segments):
         # Karaoke requests return a small envelope so the cached full-line
@@ -1264,9 +1261,13 @@ class FuriganaWidget(FuriganaLayoutMixin, FuriganaPaintingMixin, QWidget):
                 return
 
     def stop_workers(self):
-        # Kept as a no-op for the main-window shutdown hook. Furigana is now
-        # generated synchronously and no worker threads are created.
-        return
+        self._reading_timer.stop()
+        if self._furigana_future is not None:
+            self._furigana_future.cancel()
+        self._furigana_future = None
+        self._reading_request = None
+        self.loading_text = None
+        self._karaoke_furigana_pending = None
 
     def closeEvent(self, event):
         self.stop_workers()

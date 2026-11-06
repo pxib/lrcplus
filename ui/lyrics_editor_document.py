@@ -709,7 +709,10 @@ class LyricsEditorDocumentMixin:
         )
         cancel = box.addButton(QMessageBox.StandardButton.Cancel)
 
-        box.exec()
+        try:
+            box.exec()
+        finally:
+            box.deleteLater()
         clicked = box.clickedButton()
 
         if clicked is lrcx_button:
@@ -738,7 +741,10 @@ class LyricsEditorDocumentMixin:
         lrc_button = box.addButton("Save as LRC", QMessageBox.ButtonRole.AcceptRole)
         lrcx_button = box.addButton("Save as LRCX", QMessageBox.ButtonRole.ActionRole)
         box.addButton(QMessageBox.StandardButton.Cancel)
-        box.exec()
+        try:
+            box.exec()
+        finally:
+            box.deleteLater()
         clicked = box.clickedButton()
         if clicked is lrc_button:
             default = str(self.lrc_path.with_suffix(".lrc"))

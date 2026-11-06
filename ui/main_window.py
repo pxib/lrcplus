@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.pcm_playback import PcmPlayback
+from core.gapless import GaplessMediaPlayer
 from core.audio_controller import AudioController, snap_volume_percentage
 from core.queue_controller import QueueControllerMixin
 from core.lyrics_controller import LyricsController, _FuriganaProgressBridge
@@ -120,7 +121,11 @@ class Player(
             # AUDIO
             # --------------------------------------------------
 
-            self.media_player = QMediaPlayer(self)
+            self.media_player = GaplessMediaPlayer(self)
+            self.media_player.next_path = self._gapless_next_path
+            self.media_player.gaplessFallback.connect(
+                self._handle_gapless_fallback
+            )
 
             self.audio_output = QAudioOutput(self)
             self._pcm_buffer_output = None
@@ -860,6 +865,8 @@ class Player(
             palette = build_theme_palette(
                 self.appearance_settings.get("theme_mode", "light"),
                 self.appearance_settings.get("theme_color", "#3a9879"),
+                self.appearance_settings.get("theme_surface", "classic"),
+                self.appearance_settings.get("theme_overrides", {}),
             )
             style = """
                 QMainWindow#lrcPlusWindow,
@@ -952,6 +959,8 @@ class Player(
                     color: @TEXT@;
                     background: @SURFACE@;
                     alternate-background-color: @SURFACE_ALT@;
+                    selection-color: @SELECTION_TEXT@;
+                    selection-background-color: @SELECTION@;
                     border: 1px solid @BORDER@;
                     border-radius: 6px;
                     outline: none;
@@ -959,9 +968,12 @@ class Player(
                 QTreeWidget#libraryTable::item {
                     padding: 4px 3px;
                 }
+                QTreeWidget#libraryTable::item:hover {
+                    background-color: @ITEM_HOVER@;
+                }
                 QTreeWidget#libraryTable::item:selected {
-                    color: @TEXT@;
-                    background: @ACCENT_SOFT@;
+                    color: @SELECTION_TEXT@;
+                    background-color: @SELECTION@;
                 }
                 QTreeWidget#libraryTable QHeaderView::section {
                     color: @MUTED@;
@@ -1086,6 +1098,9 @@ class Player(
                 "@ACCENT_HOVER@": "accent_hover",
                 "@ACCENT_BORDER@": "accent_border",
                 "@ACCENT_SOFT@": "accent_soft",
+                "@SELECTION@": "selection",
+                "@SELECTION_TEXT@": "selection_text",
+                "@ITEM_HOVER@": "item_hover",
                 "@ACCENT_TEXT@": "accent_text",
                 "@WINDOW@": "window",
                 "@HEADER@": "header",
@@ -1562,6 +1577,8 @@ class Player(
                         and find_ffmpeg() is not None
                     )
                     self._apply_output_device(self.playback_settings)
+                    self._load_replaygain()
+                    self._invalidate_gapless_preload()
                     self._update_shuffle_button_text()
                     self._update_playback_source_control()
                     self.update_transport_buttons()
@@ -1718,6 +1735,8 @@ class Player(
             dialog.resize(500, 300)
 
             list_widget = QListWidget()
+            from ui.content_list import configure_content_list
+            configure_content_list(list_widget)
             # Filenames share a row height. Avoid measuring hidden titles,
             # which can eagerly load large fallback fonts on Windows.
             list_widget.setUniformItemSizes(True)
@@ -1809,6 +1828,8 @@ class Player(
             self.media_player.setAudioBufferOutput(None)
             self._stop_pcm_sink()
             self._pcm_worker.close()
+            if getattr(self, "_replaygain_job", None) is not None:
+                self._replaygain_job.close()
             self._playback_save_timer.stop()
 
             event.accept()
@@ -1824,4 +1845,7 @@ class Player(
                 on_link_change=self.handle_pitch_link_change,
                 parent=self,
             )
-            dialog.exec()
+            try:
+                dialog.exec()
+            finally:
+                dialog.deleteLater()

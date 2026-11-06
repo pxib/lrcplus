@@ -91,7 +91,10 @@ class LyricsTimingToolsMixin:
         layout.addWidget(buttons)
         update_preview()
         dialog.resize(460, 250)
-        dialog.exec()
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
 
     def show_timing_validation(self):
         if not self._prepare_timing_tools():
@@ -131,4 +134,7 @@ class LyricsTimingToolsMixin:
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         dialog.resize(680, 400)
-        dialog.exec()
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()

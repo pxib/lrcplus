@@ -5,6 +5,8 @@ from lyrics.lrcx_parser import get_lrcx_offset
 from bisect import bisect_right
 
 from concurrent.futures import ThreadPoolExecutor
+from queue import SimpleQueue, Empty
+from threading import Event
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer
 from PySide6.QtWidgets import QListWidget, QListWidgetItem, QMessageBox, QCheckBox
@@ -41,6 +43,33 @@ from core.lyrics_search import LyricsSearchMixin
 class _FuriganaProgressBridge(QObject):
     progress = Signal(int, int, int)
     finished = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._messages = SimpleQueue()
+        self._timer = QTimer(self)
+        self._timer.setInterval(25)
+        self._timer.timeout.connect(self._poll)
+        self._request_id = None
+
+    def start(self, request_id):
+        self._request_id = request_id
+        self._timer.start()
+        return self._messages
+
+    def _poll(self):
+        while True:
+            try:
+                kind, values = self._messages.get_nowait()
+            except Empty:
+                return
+            if values[-1] != self._request_id:
+                continue
+            if kind == "progress":
+                self.progress.emit(*values)
+            else:
+                self._timer.stop()
+                self.finished.emit(*values)
 
 
 _FURIGANA_PREFETCH_EXECUTOR = ThreadPoolExecutor(
@@ -132,7 +161,10 @@ class LyricsController(LyricsSearchMixin):
             )
             install = box.addButton("Install MeCab", QMessageBox.ButtonRole.AcceptRole)
             use_yomi = box.addButton("Use Yomi", QMessageBox.ButtonRole.RejectRole)
-            box.exec()
+            try:
+                box.exec()
+            finally:
+                box.deleteLater()
             if box.clickedButton() is install:
                 QMessageBox.information(
                     self,
@@ -378,6 +410,11 @@ class LyricsController(LyricsSearchMixin):
         self._last_scrolling_lyrics_enabled = self.scrolling_lyrics_enabled
 
     def _start_furigana_prefetch(self):
+        previous_cancel = getattr(self, "_furigana_prefetch_cancel", None)
+        if previous_cancel is not None:
+            previous_cancel.set()
+        cancelled = Event()
+        self._furigana_prefetch_cancel = cancelled
         self._furigana_prefetch_id = getattr(self, "_furigana_prefetch_id", 0) + 1
         request_id = self._furigana_prefetch_id
 
@@ -398,20 +435,19 @@ class LyricsController(LyricsSearchMixin):
             return
 
         progress_interval = max(1, (len(lines) + 99) // 100)
+        messages = self._furigana_progress_bridge.start(request_id)
 
         def progress(done, total):
             if done < total and done % progress_interval:
                 return
-            self._furigana_progress_bridge.progress.emit(
-                done, total, request_id
-            )
+            messages.put(("progress", (done, total, request_id)))
 
         def worker():
             return prefetch_furigana_batches(
                 lines,
                 batch_size=10,
                 progress_callback=progress,
-                should_continue=lambda: request_id == self._furigana_prefetch_id,
+                should_continue=lambda: not cancelled.is_set(),
             )
 
         future = _FURIGANA_PREFETCH_EXECUTOR.submit(worker)
@@ -421,7 +457,7 @@ class LyricsController(LyricsSearchMixin):
                 done.result()
             except Exception as error:
                 print(f"[Furigana] Batch prefetch failed: {error!r}")
-            self._furigana_progress_bridge.finished.emit(request_id)
+            messages.put(("finished", (request_id,)))
 
         future.add_done_callback(finished)
 
@@ -459,6 +495,9 @@ class LyricsController(LyricsSearchMixin):
         print("[Furigana] Batch prefetch complete")
 
     def _clear_loaded_lyrics(self):
+        cancelled = getattr(self, "_furigana_prefetch_cancel", None)
+        if cancelled is not None:
+            cancelled.set()
         self.lyric_lines = []
         self.lyrics = []
         self.lyric_times = []
@@ -563,7 +602,10 @@ class LyricsController(LyricsSearchMixin):
                         QMessageBox.ButtonRole.RejectRole,
                     )
                     box.setDefaultButton(generate)
-                    box.exec()
+                    try:
+                        box.exec()
+                    finally:
+                        box.deleteLater()
 
                     decision = box.clickedButton() is generate
                     set_automatic_readings_enabled(decision)

@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from PySide6.QtCore import QDateTime, QLocale, QPoint, Qt, Signal
 from PySide6.QtMultimedia import QMediaDevices
 from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPolygon
@@ -25,9 +28,11 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QGridLayout,
     QToolButton,
+    QInputDialog,
+    QMessageBox,
 )
 from core.settings import APPEARANCE_DEFAULTS, KARAOKE_SWEEP_STYLES, get_karaoke_settings
-from core.theme import build_theme_palette
+from core.theme import build_theme_palette, normalize_theme_overrides, THEME_COLOR_FIELDS
 from ui.dependency_settings import DependencyManagerWidget
 from ui.about_tab import AboutTab
 from ui.settings_search import SettingsSearch
@@ -78,6 +83,53 @@ LYRIC_KEYS = (
     "scroll_behavior",
 )
 
+
+def _load_theme_color_presets():
+    """Read named accent colors from the repository's shared theme reference."""
+    path = Path(__file__).resolve().parents[1] / "themedata" / "optionalthemes.json"
+    try:
+        with path.open(encoding="utf-8") as theme_file:
+            themes = json.load(theme_file).get("themes", [])
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [
+        (theme["name"], theme)
+        for theme in themes
+        if isinstance(theme, dict)
+        and isinstance(theme.get("name"), str)
+        and all(isinstance(theme.get(key), str) for key in (
+            "background", "surface", "accent", "text", "secondaryText"
+        ))
+    ]
+
+
+def _blend_theme_colors(first, second, amount):
+    first, second = QColor(first), QColor(second)
+    return QColor(
+        round(first.red() * (1 - amount) + second.red() * amount),
+        round(first.green() * (1 - amount) + second.green() * amount),
+        round(first.blue() * (1 - amount) + second.blue() * amount),
+    ).name()
+
+
+def _valid_theme_definition(theme):
+    if not isinstance(theme, dict):
+        return None
+    name = str(theme.get("name", "")).strip()
+    fields = ("background", "surface", "accent", "text", "secondaryText")
+    colors = {key: theme.get(key) for key in fields}
+    if not name or any(
+        not isinstance(value, str) or not QColor(value).isValid()
+        or not value.startswith("#") or len(value) != 7
+        for value in colors.values()
+    ):
+        return None
+    return {
+        "name": name,
+        "description": str(theme.get("description", "Custom theme")),
+        **{key: QColor(value).name() for key, value in colors.items()},
+    }
+
 # Shared by global controls and per-file overrides so both scopes stay organized.
 LYRIC_SECTIONS = {
     "Display": (
@@ -119,7 +171,7 @@ class PluginSettingsDialog(QDialog):
             APPEARANCE_DEFAULTS["theme_color"],
         )
         theme_mode = getattr(parent, "theme_mode", "light")
-        _apply_settings_dialog_style(self, theme_mode, theme_color)
+        _apply_settings_dialog_style(self, theme_mode, theme_color, getattr(parent, "theme_surface", "classic"), getattr(parent, "theme_overrides", {}))
         self.setWindowTitle(f"{plugin_name} Settings")
         self.resize(520, 460)
 
@@ -214,6 +266,15 @@ class SettingsDialog(QDialog):
         self.global_lyrics = dict(global_lyrics or {})
         self.startup_settings = dict(startup_settings or {})
         self.appearance_settings = dict(appearance_settings or {})
+        self.custom_themes = [
+            valid for theme in self.appearance_settings.get("custom_themes", [])
+            if (valid := _valid_theme_definition(theme)) is not None
+        ]
+        self.theme_preset_name = self.appearance_settings.get("theme_preset_name")
+        self.theme_overrides = normalize_theme_overrides(self.appearance_settings.get("theme_overrides"))
+        self.theme_surface = self.appearance_settings.get("theme_surface", "classic")
+        if self.theme_surface not in {"classic", "neutral"}:
+            self.theme_surface = "classic"
         self.theme_mode = self.appearance_settings.get("theme_mode", "light")
         if self.theme_mode not in {"light", "dark"}:
             self.theme_mode = "light"
@@ -235,7 +296,7 @@ class SettingsDialog(QDialog):
         self.plugin_toggles = {}
 
         _apply_settings_dialog_style(
-            self, self.theme_mode, self.theme_color
+            self, self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides
         )
         self.setWindowTitle("Settings")
         self.resize(880, 640)
@@ -350,6 +411,44 @@ class SettingsDialog(QDialog):
         theme_mode_row.addStretch(1)
         appearance_layout.addLayout(theme_mode_row)
 
+        surface_row = QHBoxLayout()
+        surface_row.addWidget(QLabel("Surface palette"))
+        self.theme_surface_combo = QComboBox()
+        self.theme_surface_combo.addItem("Classic", "classic")
+        self.theme_surface_combo.addItem("Neutral", "neutral")
+        self.theme_surface_combo.setCurrentIndex(self.theme_surface_combo.findData(self.theme_surface))
+        self.theme_surface_combo.currentIndexChanged.connect(self._change_theme_surface)
+        surface_row.addWidget(self.theme_surface_combo, 1)
+        appearance_layout.addLayout(surface_row)
+
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel("Theme presets"))
+        self.theme_preset_combo = QComboBox()
+        self._populate_theme_preset_combo()
+        self.theme_preset_combo.activated.connect(self._choose_theme_preset)
+        preset_row.addWidget(self.theme_preset_combo, 1)
+        self.save_theme_button = QPushButton("Save current")
+        self.save_theme_button.clicked.connect(self._save_current_theme)
+        preset_row.addWidget(self.save_theme_button)
+        appearance_layout.addLayout(preset_row)
+
+        theme_actions_row = QHBoxLayout()
+        self.import_theme_button = QPushButton("Import…")
+        self.import_theme_button.clicked.connect(self._import_theme)
+        self.export_theme_button = QPushButton("Export…")
+        self.export_theme_button.clicked.connect(self._export_theme)
+        self.delete_theme_button = QPushButton("Delete saved theme")
+        self.delete_theme_button.clicked.connect(self._delete_saved_theme)
+        theme_actions_row.addWidget(self.import_theme_button)
+        theme_actions_row.addWidget(self.export_theme_button)
+        theme_actions_row.addWidget(self.delete_theme_button)
+        appearance_layout.addLayout(theme_actions_row)
+        if self.theme_preset_name:
+            saved_index = self.theme_preset_combo.findText(self.theme_preset_name)
+            if saved_index >= 0:
+                self.theme_preset_combo.setCurrentIndex(saved_index)
+        self._update_theme_management_controls()
+
         theme_color_row = QHBoxLayout()
         theme_color_row.addWidget(QLabel("Accent color"))
         self.theme_color_button = QPushButton()
@@ -358,6 +457,54 @@ class SettingsDialog(QDialog):
         theme_color_row.addWidget(self.theme_color_button, 1)
         appearance_layout.addLayout(theme_color_row)
         self._update_theme_color_button()
+
+        self.theme_simple_color_buttons = {}
+        self.theme_simple_reset_buttons = {}
+        for key, label in (("surface", "Surface color"), ("window", "Background color")):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label))
+            color_button = QPushButton()
+            color_button.clicked.connect(lambda _checked=False, role=key: self._choose_theme_color_for_role(role))
+            row.addWidget(color_button, 1)
+            reset_button = QPushButton("Reset")
+            reset_button.clicked.connect(lambda _checked=False, role=key: self._reset_theme_color_for_role(role))
+            row.addWidget(reset_button)
+            self.theme_simple_color_buttons[key] = color_button
+            self.theme_simple_reset_buttons[key] = reset_button
+            appearance_layout.addLayout(row)
+
+        self.advanced_theme_toggle = QPushButton("Show advanced colors")
+        self.advanced_theme_toggle.setCheckable(True)
+        appearance_layout.addWidget(self.advanced_theme_toggle)
+        self.advanced_theme_panel = QWidget()
+        advanced_layout = QVBoxLayout(self.advanced_theme_panel)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_layout.addWidget(QLabel("Customize individual colors for the selected light or dark mode."))
+        advanced_row = QHBoxLayout()
+        self.theme_role_combo = QComboBox()
+        for key, label in THEME_COLOR_FIELDS.items():
+            self.theme_role_combo.addItem(label, key)
+        self.theme_role_combo.currentIndexChanged.connect(self._update_advanced_theme_controls)
+        advanced_row.addWidget(self.theme_role_combo, 1)
+        self.theme_role_color_button = QPushButton()
+        self.theme_role_color_button.clicked.connect(self._choose_theme_role_color)
+        advanced_row.addWidget(self.theme_role_color_button)
+        self.theme_role_reset_button = QPushButton("Reset color")
+        self.theme_role_reset_button.clicked.connect(self._reset_theme_role_color)
+        advanced_row.addWidget(self.theme_role_reset_button)
+        advanced_layout.addLayout(advanced_row)
+        self.theme_reset_mode_button = QPushButton("Reset all custom colors for this mode")
+        self.theme_reset_mode_button.clicked.connect(self._reset_theme_mode_colors)
+        advanced_layout.addWidget(self.theme_reset_mode_button)
+        appearance_layout.addWidget(self.advanced_theme_panel)
+        self.advanced_theme_panel.hide()
+        self.advanced_theme_toggle.toggled.connect(self.advanced_theme_panel.setVisible)
+        self.advanced_theme_toggle.toggled.connect(
+            lambda expanded: self.advanced_theme_toggle.setText(
+                "Hide advanced colors" if expanded else "Show advanced colors"
+            )
+        )
+        self._update_advanced_theme_controls()
 
         appearance_layout.addStretch()
 
@@ -432,6 +579,8 @@ class SettingsDialog(QDialog):
         custom_folders_row.setContentsMargins(0, 0, 0, 0)
         custom_folders_row.addWidget(QLabel("Custom folders"))
         self.custom_background_folders_list = QListWidget()
+        from ui.content_list import configure_content_list
+        configure_content_list(self.custom_background_folders_list)
         self.custom_background_folders_list.setMaximumHeight(76)
         self.custom_background_folders_list.setToolTip(
             "A random image from these folders, including subfolders, is "
@@ -635,6 +784,8 @@ class SettingsDialog(QDialog):
             QLabel("These folders are searched for matching .lrc/.lrcx files.")
         )
         self.folder_list = QListWidget()
+        from ui.content_list import configure_content_list
+        configure_content_list(self.folder_list)
         for folder in folders:
             self.folder_list.addItem(QListWidgetItem(folder))
         files_layout.addWidget(self.folder_list, 1)
@@ -804,6 +955,13 @@ class SettingsDialog(QDialog):
             "light_theme_button": "Light color mode",
             "dark_theme_button": "Dark color mode",
             "theme_color_button": "Accent color",
+            "theme_surface_combo": "Surface palette",
+            "advanced_theme_toggle": "Advanced theme colors",
+            "theme_role_combo": "Advanced theme colors",
+            "theme_role_color_button": "Advanced color",
+            "theme_role_reset_button": "Reset advanced color",
+            "theme_reset_mode_button": "Reset advanced colors",
+            "theme_preset_combo": "Theme presets",
             "background_layout_combo": "Background layout",
             "artwork_source_combo": "Artwork source",
             "custom_background_folders_list": "Custom background folders",
@@ -937,7 +1095,7 @@ class SettingsDialog(QDialog):
             "Example: ♪ {countdown}  →  ♪ 12.5"
         )
         muted_color = build_theme_palette(
-            self.theme_mode, self.theme_color
+            self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides
         )["muted"]
         placeholder_hint.setStyleSheet(
             f"color: {muted_color}; font-style: italic;"
@@ -1038,7 +1196,31 @@ class SettingsDialog(QDialog):
 
     def _create_playback_controls(self, layout):
         self._add_section_heading(layout, "Playback")
-
+        self.gapless_checkbox = QCheckBox("Gapless playback")
+        self.gapless_checkbox.setChecked(bool(self.playback_settings.get("gapless_playback", False)))
+        self.gapless_checkbox.setToolTip(
+            "Prebuffer the next track for uninterrupted playback. Requires FFmpeg; "
+            "available at normal speed and pitch. Takes effect on the next track."
+        )
+        layout.addWidget(self.gapless_checkbox)
+        self.replaygain_combo = QComboBox()
+        for label, value in (("Off", "off"), ("Track", "track"), ("Album", "album")):
+            self.replaygain_combo.addItem(label, value)
+        self.replaygain_combo.setCurrentIndex(max(0, self.replaygain_combo.findData(
+            self.playback_settings.get("replaygain_mode", "off"))))
+        self.replaygain_combo.setToolTip(
+            "Use existing ReplayGain tags to balance loudness. Album mode preserves "
+            "relative track levels and falls back to track tags. Untagged files are unchanged."
+        )
+        self._add_labeled(layout, "ReplayGain:", self.replaygain_combo)
+        self.replaygain_preamp = QSpinBox()
+        self.replaygain_preamp.setRange(-24, 24)
+        self.replaygain_preamp.setSuffix(" dB")
+        self.replaygain_preamp.setValue(int(self.playback_settings.get("replaygain_preamp", 0)))
+        self._add_labeled(layout, "ReplayGain preamp:", self.replaygain_preamp)
+        self.replaygain_clipping = QCheckBox("Prevent clipping using ReplayGain peak tags")
+        self.replaygain_clipping.setChecked(bool(self.playback_settings.get("replaygain_prevent_clipping", True)))
+        layout.addWidget(self.replaygain_clipping)
         self.show_waveform_checkbox = QCheckBox(
             "Show playback waveform"
         )
@@ -1360,7 +1542,7 @@ class SettingsDialog(QDialog):
             )
             karaoke_notice.setWordWrap(True)
             muted_color = build_theme_palette(
-                self.theme_mode, self.theme_color
+                self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides
             )["muted"]
             karaoke_notice.setStyleSheet(
                 f"color: {muted_color}; font-style: italic;"
@@ -1627,7 +1809,7 @@ class SettingsDialog(QDialog):
 
     def _update_theme_color_button(self):
         color = QColor(self.theme_color)
-        palette = build_theme_palette(self.theme_mode, self.theme_color)
+        palette = build_theme_palette(self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides)
         self.theme_color_button.setText(color.name().upper())
         self.theme_color_button.setToolTip("Choose the app accent color")
         self.theme_color_button.setStyleSheet(
@@ -1638,11 +1820,255 @@ class SettingsDialog(QDialog):
             f"QPushButton:hover {{ border-color: {palette['accent_border']}; }}"
         )
 
+    def _update_advanced_theme_controls(self, *_args):
+        if not hasattr(self, "theme_role_color_button"):
+            return
+        key = self.theme_role_combo.currentData()
+        palette = build_theme_palette(self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides)
+        def update_color_button(button, value):
+            color = QColor(value)
+            text = "#000000" if color.lightness() > 140 else "#ffffff"
+            button.setText(color.name().upper())
+            button.setStyleSheet(
+                f"QPushButton {{ background: {color.name()}; color: {text}; padding: 6px 12px; }}"
+            )
+
+        update_color_button(self.theme_role_color_button, palette[key])
+        for role, button in self.theme_simple_color_buttons.items():
+            update_color_button(button, palette[role])
+            self.theme_simple_reset_buttons[role].setEnabled(
+                role in self.theme_overrides.get(self.theme_mode, {})
+            )
+        self.theme_role_reset_button.setEnabled(key in self.theme_overrides.get(self.theme_mode, {}))
+        self.theme_reset_mode_button.setEnabled(bool(self.theme_overrides.get(self.theme_mode)))
+
+    def _refresh_advanced_theme(self):
+        self._update_theme_color_button()
+        self._update_advanced_theme_controls()
+        _apply_settings_dialog_style(self, self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides)
+
+    def _choose_theme_role_color(self):
+        self._choose_theme_color_for_role(self.theme_role_combo.currentData())
+
+    def _choose_theme_color_for_role(self, key):
+        palette = build_theme_palette(self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides)
+        color = QColorDialog.getColor(QColor(palette[key]), self, "Choose " + THEME_COLOR_FIELDS[key].lower())
+        if color.isValid():
+            self.theme_overrides.setdefault(self.theme_mode, {})[key] = color.name()
+            self._refresh_advanced_theme()
+
+    def _reset_theme_role_color(self):
+        self._reset_theme_color_for_role(self.theme_role_combo.currentData())
+
+    def _reset_theme_color_for_role(self, key):
+        colors = self.theme_overrides.get(self.theme_mode, {})
+        colors.pop(key, None)
+        if not colors:
+            self.theme_overrides.pop(self.theme_mode, None)
+        self._refresh_advanced_theme()
+
+    def _reset_theme_mode_colors(self):
+        self.theme_overrides.pop(self.theme_mode, None)
+        self._refresh_advanced_theme()
+
+    def _change_theme_surface(self, _index):
+        self.theme_surface = self.theme_surface_combo.currentData()
+        self._update_advanced_theme_controls()
+        self._update_theme_color_button()
+        _apply_settings_dialog_style(self, self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides)
+
+    def _choose_theme_preset(self, index):
+        preset = self.theme_preset_combo.itemData(index)
+        if not preset:
+            return
+        if isinstance(preset, str):
+            # Keep the original standalone accent presets available.
+            self.theme_color = preset
+            self.theme_preset_name = None
+        else:
+            self.theme_preset_name = preset["name"]
+            self.theme_mode = "dark" if QColor(preset["background"]).lightness() < 128 else "light"
+            self.theme_color = QColor(preset["accent"]).name()
+            background = QColor(preset["background"])
+            surface = QColor(preset["surface"])
+            accent = QColor(preset["accent"])
+            text = QColor(preset["text"])
+            secondary_text = QColor(preset["secondaryText"])
+            dock = background if self.theme_mode == "dark" else text
+            dock_control = surface if self.theme_mode == "dark" else dock.lighter(135)
+            dock_text = text if self.theme_mode == "dark" else surface
+            raised_base = surface if self.theme_mode == "dark" else background
+            colors = self.theme_overrides.setdefault(self.theme_mode, {})
+            colors.update({
+                "window": background.name(),
+                "header": background.name(),
+                "surface": surface.name(),
+                "surface_alt": _blend_theme_colors(background, surface, 0.55),
+                "raised": _blend_theme_colors(raised_base.name(), text.name(), 0.10),
+                "raised_hover": _blend_theme_colors(raised_base.name(), accent.name(), 0.10),
+                "pressed": _blend_theme_colors(raised_base.name(), accent.name(), 0.20),
+                "text": text.name(),
+                "brand": text.name(),
+                "muted": secondary_text.name(),
+                "border": _blend_theme_colors(background.name(), text.name(), 0.16),
+                "field_border": _blend_theme_colors(background.name(), text.name(), 0.22),
+                "header_button_text": text.name(),
+                "dock": dock.name(),
+                "dock_border": dock.lighter(150).name(),
+                "dock_control": dock_control.name(),
+                "dock_control_hover": dock_control.lighter(115).name(),
+                "dock_control_border": dock_control.lighter(130).name(),
+                "dock_disabled": dock.darker(110).name(),
+                "dock_text": dock_text.name(),
+                "dock_muted": secondary_text.name(),
+                "seek_track": accent.name(),
+                "slider_handle": dock_text.name(),
+                "scroll_handle": accent.name(),
+            })
+            self.light_theme_button.setChecked(self.theme_mode == "light")
+            self.dark_theme_button.setChecked(self.theme_mode == "dark")
+        self._update_advanced_theme_controls()
+        self._update_theme_color_button()
+        _apply_settings_dialog_style(self, self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides)
+        self._update_theme_management_controls()
+
+    def _update_theme_management_controls(self):
+        if not hasattr(self, "delete_theme_button"):
+            return
+        self.delete_theme_button.setEnabled(
+            self.theme_preset_combo.currentText() in {theme["name"] for theme in self.custom_themes}
+        )
+
+    def _add_theme_combo_section(self, label):
+        self.theme_preset_combo.addItem(label)
+        item = self.theme_preset_combo.model().item(self.theme_preset_combo.count() - 1)
+        if item is not None:
+            item.setEnabled(False)
+            item.setSelectable(False)
+            font = item.font()
+            font.setBold(True)
+            font.setPointSize(font.pointSize() + 1)
+            item.setFont(font)
+            palette = build_theme_palette(
+                self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides
+            )
+            item.setForeground(QColor(palette["accent"]))
+            item.setBackground(QColor(palette["raised"]))
+
+    def _populate_theme_preset_combo(self):
+        self.theme_preset_combo.clear()
+        self.theme_preset_combo.addItem("Choose a preset", None)
+        self._add_theme_combo_section("Core")
+        for name, color in (("Green", "#3a9879"), ("Blue", "#4477cc"), ("Purple", "#895cc4"), ("Rose", "#c45278"), ("Orange", "#bd691f")):
+            self.theme_preset_combo.addItem(name, color)
+        for name, theme in _load_theme_color_presets():
+            self.theme_preset_combo.addItem(name, theme)
+        self._add_theme_combo_section("User")
+        for theme in self.custom_themes:
+            self.theme_preset_combo.addItem(theme["name"], theme)
+
+    def _current_theme_definition(self, name):
+        palette = build_theme_palette(
+            self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides
+        )
+        return {
+            "name": name,
+            "description": "Saved from the current appearance",
+            "background": palette["window"],
+            "surface": palette["surface"],
+            "accent": palette["accent"],
+            "text": palette["text"],
+            "secondaryText": palette["muted"],
+        }
+
+    def _reload_theme_presets(self, selected_name=None):
+        self.theme_preset_combo.blockSignals(True)
+        self._populate_theme_preset_combo()
+        if selected_name:
+            self.theme_preset_combo.setCurrentIndex(self.theme_preset_combo.findText(selected_name))
+        else:
+            self.theme_preset_combo.setCurrentIndex(0)
+        self.theme_preset_combo.blockSignals(False)
+        self._update_theme_management_controls()
+
+    def _save_current_theme(self):
+        name, accepted = QInputDialog.getText(self, "Save theme", "Theme name:")
+        name = name.strip()
+        if not accepted or not name:
+            return
+        builtin_names = {theme_name.casefold() for theme_name, _ in _load_theme_color_presets()}
+        existing = next((theme for theme in self.custom_themes if theme["name"].casefold() == name.casefold()), None)
+        if name.casefold() in builtin_names and existing is None:
+            QMessageBox.warning(self, "Theme already exists", "Choose a name that is not used by a built-in theme.")
+            return
+        theme = self._current_theme_definition(name)
+        if existing:
+            self.custom_themes[self.custom_themes.index(existing)] = theme
+        else:
+            self.custom_themes.append(theme)
+        self.theme_preset_name = name
+        self._reload_theme_presets(name)
+
+    def _import_theme(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import theme", "", "Theme JSON (*.json)")
+        if not path:
+            return
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as error:
+            QMessageBox.warning(self, "Could not import theme", str(error))
+            return
+        candidates = payload.get("themes", []) if isinstance(payload, dict) and "themes" in payload else [payload]
+        if not isinstance(candidates, list):
+            QMessageBox.warning(self, "Could not import theme", "The themes field must be a list.")
+            return
+        imported = [_valid_theme_definition(theme) for theme in candidates]
+        if not imported or any(theme is None for theme in imported):
+            QMessageBox.warning(self, "Could not import theme", "Each theme needs a name and five valid hex colors.")
+            return
+        builtin_names = {name.casefold() for name, _ in _load_theme_color_presets()}
+        if any(theme["name"].casefold() in builtin_names for theme in imported):
+            QMessageBox.warning(self, "Could not import theme", "An imported theme uses a built-in theme name.")
+            return
+        for theme in imported:
+            existing = next((item for item in self.custom_themes if item["name"].casefold() == theme["name"].casefold()), None)
+            if existing:
+                self.custom_themes[self.custom_themes.index(existing)] = theme
+            else:
+                self.custom_themes.append(theme)
+        self.theme_preset_name = imported[0]["name"]
+        self._reload_theme_presets(self.theme_preset_name)
+        self._choose_theme_preset(self.theme_preset_combo.currentIndex())
+
+    def _export_theme(self):
+        name = self.theme_preset_combo.currentText()
+        name, accepted = QInputDialog.getText(self, "Export theme", "Theme name:", text=name if name != "Choose a preset" else "Custom")
+        if not accepted:
+            return
+        theme = self._current_theme_definition(name.strip() or "Custom")
+        path, _ = QFileDialog.getSaveFileName(self, "Export theme", f"{theme['name']}.json", "Theme JSON (*.json)")
+        if not path:
+            return
+        try:
+            Path(path).write_text(json.dumps({"themes": [theme]}, indent=2, ensure_ascii=False), encoding="utf-8")
+        except OSError as error:
+            QMessageBox.warning(self, "Could not export theme", str(error))
+
+    def _delete_saved_theme(self):
+        name = self.theme_preset_combo.currentText()
+        index = next((i for i, theme in enumerate(self.custom_themes) if theme["name"] == name), None)
+        if index is None:
+            return
+        self.custom_themes.pop(index)
+        self.theme_preset_name = None
+        self._reload_theme_presets()
+
     def _set_theme_mode(self, theme_mode):
         self.theme_mode = theme_mode
+        self._update_advanced_theme_controls()
         self._update_theme_color_button()
         _apply_settings_dialog_style(
-            self, self.theme_mode, self.theme_color
+            self, self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides
         )
 
     def _update_custom_folder_controls(self, *_args):
@@ -1691,9 +2117,11 @@ class SettingsDialog(QDialog):
         if not color.isValid():
             return
         self.theme_color = color.name()
+        self.theme_preset_name = None
+        self.theme_preset_combo.setCurrentIndex(0)
         self._update_theme_color_button()
         _apply_settings_dialog_style(
-            self, self.theme_mode, self.theme_color
+            self, self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides
         )
 
     def _local_setting_name(self, key):
@@ -1973,6 +2401,10 @@ class SettingsDialog(QDialog):
         return {
             "theme_mode": self.theme_mode,
             "theme_color": self.theme_color,
+            "theme_preset_name": self.theme_preset_name or "",
+            "custom_themes": list(self.custom_themes),
+            "theme_surface": self.theme_surface,
+            "theme_overrides": normalize_theme_overrides(self.theme_overrides),
             "background_enabled": self.background_enabled_checkbox.isChecked(),
             "background_layout": self.background_layout_combo.currentData(),
             "custom_background_folders": [
@@ -2042,11 +2474,17 @@ class SettingsDialog(QDialog):
             "shuffle_enabled": self.playback_settings.get("shuffle_enabled", False),
             "shuffle_mode": self.shuffle_mode_combo.currentData(),
             "after_playback": self.after_playback_combo.currentData(),
+            "gapless_playback": self.gapless_checkbox.isChecked(),
+            "replaygain_mode": self.replaygain_combo.currentData(),
+            "replaygain_preamp": self.replaygain_preamp.value(),
+            "replaygain_prevent_clipping": self.replaygain_clipping.isChecked(),
             "output_device": self.output_device_combo.currentData(),
             "show_waveform": self.show_waveform_checkbox.isChecked(),
             "volume": self.playback_settings.get("volume", 80),
             "pitch_mode": self.playback_settings.get("pitch_mode", "Semitones"),
             "pitch_value": self.playback_settings.get("pitch_value", 0),
+            "speed_percent": self.playback_settings.get("speed_percent", 100),
+            "pitch_linked_to_speed": self.playback_settings.get("pitch_linked_to_speed", False),
         }
 
     def _create_karaoke_controls(self, layout):

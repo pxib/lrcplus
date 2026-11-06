@@ -2,9 +2,10 @@
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent
-from PySide6.QtWidgets import QDialog, QListWidget, QPushButton, QStyledItemDelegate, QWidget
+from PySide6.QtWidgets import QDialog, QListWidget, QPushButton, QWidget
 
 from ui.main_window import Player
+from ui.content_list import ContentListDelegate
 
 
 @pytest.mark.parametrize("outcome", ["load", "cancel", "close", "error"])
@@ -67,17 +68,12 @@ def test_opening_recents_does_not_measure_every_hidden_title(tmp_path, qapp, mon
     parent.load_audio = loaded.append
     parent._clear_shuffle_history = lambda: None
 
-    class TrackingDelegate(QStyledItemDelegate):
+    class TrackingDelegate(ContentListDelegate):
         def sizeHint(self, option, index):
             measured.append(index.row())
             return super().sizeHint(option, index)
 
-    class TrackingList(QListWidget):
-        def __init__(self):
-            super().__init__()
-            self.setItemDelegate(TrackingDelegate(self))
-
-    monkeypatch.setattr("ui.main_window.QListWidget", TrackingList)
+    monkeypatch.setattr("ui.content_list.ContentListDelegate", TrackingDelegate)
 
     def inspect(dialog):
         view = dialog.findChild(QListWidget)

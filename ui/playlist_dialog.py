@@ -59,6 +59,8 @@ class PlaylistDialog(QDialog):
         hint = QLabel("Drag tracks to reorder. Right-click a track for Play next. Repeated tracks are kept.")
         hint.setWordWrap(True)
         self.list_widget = QListWidget()
+        from ui.content_list import configure_content_list
+        configure_content_list(self.list_widget)
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.list_widget.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.list_widget.setDefaultDropAction(Qt.DropAction.MoveAction)

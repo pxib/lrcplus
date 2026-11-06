@@ -618,6 +618,8 @@ class FloatingLyricsPlugin:
 
     def _set_menu_checked(self, checked):
         self.context.api.set_menu_action_checked("Floating Lyrics", checked)
+        if checked:
+            self.refresh()
 
     def toggle_window(self, checked=False):
         self.settings["enabled"] = bool(checked)
@@ -679,7 +681,9 @@ class FloatingLyricsPlugin:
             self.refresh()
 
     def refresh(self):
-        if self.window is None:
+        # Hidden multiline rows still perform layout and load native fallback
+        # fonts. Read the current lyric when shown instead of warming that cache.
+        if self.window is None or not self.floating.isVisible():
             return
 
         self.floating.set_furigana_enabled(getattr(self.window, "show_ruby", True))

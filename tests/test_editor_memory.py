@@ -51,3 +51,24 @@ def test_card_shutdown_releases_render_and_preview(editor):
     assert card._image.isNull()
     assert card.preview.image.isNull()
     assert not card._refresh_timer.isActive()
+
+
+def test_editor_starts_only_the_waveform_decoder_being_shown(editor, qapp, monkeypatch):
+    from lyrics.waveform import WaveformWidget
+
+    started = []
+    monkeypatch.setattr("lyrics.waveform.find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(WaveformWidget, "_start_audio_worker", lambda self: started.append(self))
+    editor.lyrics_waveform.load_audio("song.mp3")
+    editor.karaoke_waveform.load_audio("song.mp3")
+    assert started == []
+    editor.show()
+    editor.lyrics_transport_stack.setCurrentWidget(editor.lyrics_waveform)
+    qapp.processEvents()
+    assert started == [editor.lyrics_waveform]
+    karaoke_index = next(index for index in range(editor.tabs.count())
+                         if editor.tabs.tabText(index) == "Karaoke")
+    editor.tabs.setCurrentIndex(karaoke_index)
+    editor.karaoke_transport_stack.setCurrentWidget(editor.karaoke_waveform)
+    qapp.processEvents()
+    assert started == [editor.lyrics_waveform, editor.karaoke_waveform]

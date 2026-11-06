@@ -340,8 +340,8 @@ SETTINGS_DIALOG_STYLE = """
 """
 
 
-def _apply_settings_dialog_style(dialog, theme_mode, theme_color):
-    palette = build_theme_palette(theme_mode, theme_color)
+def _apply_settings_dialog_style(dialog, theme_mode, theme_color, theme_surface="classic", theme_overrides=None):
+    palette = build_theme_palette(theme_mode, theme_color, theme_surface, theme_overrides)
     style = SETTINGS_DIALOG_STYLE
     for token, key in (
         ("@WINDOW@", "window"),

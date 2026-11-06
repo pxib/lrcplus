@@ -785,10 +785,8 @@ class ScrollingLyricsWidget(QWidget):
     def _discard_row(row):
         # Pending providers may finish after their viewport row has gone away.
         # Cancel queued work; running work can still populate the shared cache.
-        future = getattr(row, "_furigana_future", None)
         row._reading_disposed = True
-        if future is not None:
-            future.cancel()
+        row.stop_workers()
         row.hide()
         row.setParent(None)
         row.deleteLater()

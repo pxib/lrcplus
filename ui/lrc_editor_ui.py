@@ -160,7 +160,7 @@ class LrcEditorUiMixin:
         self.lyrics_seek.sliderMoved.connect(self.seek_preview)
         self.lyrics_transport_stack.addWidget(self.lyrics_seek)
 
-        self.lyrics_waveform = WaveformWidget()
+        self.lyrics_waveform = WaveformWidget(defer_hidden_load=True)
         self.lyrics_waveform.seekRequested.connect(self.seek_preview)
         self.lyrics_waveform.segmentPlayRequested.connect(self.play_waveform_segment)
         self.lyrics_waveform.karaokeTimingRequested.connect(self._waveform_karaoke_timing_changed)
@@ -442,7 +442,7 @@ class LrcEditorUiMixin:
             self.karaoke_seek.sliderMoved.connect(self.seek_preview)
             self.karaoke_transport_stack.addWidget(self.karaoke_seek)
 
-            self.karaoke_waveform = WaveformWidget()
+            self.karaoke_waveform = WaveformWidget(defer_hidden_load=True)
             self.karaoke_waveform.seekRequested.connect(self.seek_preview)
             self.karaoke_waveform.segmentPlayRequested.connect(self.play_waveform_segment)
             self.karaoke_waveform.karaokeTimingRequested.connect(self._waveform_karaoke_timing_changed)

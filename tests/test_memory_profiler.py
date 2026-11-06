@@ -47,7 +47,7 @@ def test_profiler_comparison_only_changes_the_current_run(
     monkeypatch.setattr(application, "main", run_application)
     try:
         assert profile_memory.main() == 0
-        records = [json.loads(line) for line in output.read_text().splitlines()]
+        records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
         assert ("karaoke" in records[0]["runtime"]["loaded_plugins"]) is not disable_karaoke
         assert get_disabled_plugins() == saved_disabled
     finally:

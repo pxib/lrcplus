@@ -1,5 +1,12 @@
 # Memory investigation
 
+The subsequent [dialog memory audit](dialog-memory-audit.md) covers the Recents
+font allocation, repeated dialog disposal, worker lifetime, and hidden editor
+waveform decoding. Its native Recents probe reduced first-open working-set
+growth from about 70 MiB to 10 MiB while preserving mixed-script filenames.
+The Flashcards follow-up reduced its measured UI growth after word analysis
+from approximately 74 MiB to 6 MiB, with analysis memory measured separately.
+
 The reported measurements were approximately 150 MB at startup, 165 MB playing
 audio, 173 MB in Lyrics, 192 MB in the editor, 198 MB in Translation, and 250 MB
 after generating a share card. The editor and Translation also appeared to grow
@@ -297,6 +304,56 @@ interval, timed/translated line counts, reading mode/parser, local tagger state,
 and reading-cache entry count. Its comparison flag disables word highlighting
 for that run without changing saved plugin preferences. All 37 focused profiler,
 playback-memory, karaoke-visibility, and deferred-renderer checks passed.
+
+## Multiline lyrics and hidden Floating Lyrics
+
+The user measured the same Japanese song at approximately 157 MB with word
+highlighting and 150 MB without it. The actual profiler captures show the major
+early allocation jump in both runs, followed by a plateau. In the karaoke-on
+capture, working set rose from 176.69 to 283.32 MiB at roughly 3–6 seconds of
+playback; with karaoke off, it rose from 175.80 to 280.24 MiB at roughly 2–5
+seconds. These counters differ from Task Manager's resident-memory reading.
+
+The user then isolated visual breaks (`{\n}` and `{\nt}`). The recent-song entry
+identified the actual file as the translated **Best Friend Remix** LRCX: 90
+timed lines, 85 with translations. Earlier local checks used the original LRCX,
+which contains no translations.
+
+The Floating Lyrics plugin was receiving position updates and setting its text
+even when its window was hidden and its saved `enabled` setting was false.
+Multiline/translation layout in that secondary renderer loaded native fallback
+font/layout resources despite the feature not being visible. An isolated
+Windows check with the main GenSen font already loaded measured about 68.2 MiB
+of additional working set and 34.8 MiB of private commitment when the hidden
+window received the first translated line. Subsequent lines reused those
+resources. Skipping the hidden updates removed that allocation in the probe.
+
+The plugin now skips lyric processing while hidden. Its visibility callback
+refreshes the current lyric and ruby settings immediately when shown, including
+when playback is paused. Both visual-break types remain supported.
+
+A full-player native Windows reproduction used the same Japanese MP3, translated
+remix LRCX, explicitly registered GenSen font, collapsed lyrics list, embedded
+artwork, muted neutral pitch/rate, and both Karaoke and Floating Lyrics plugins.
+All settings were isolated from the user's preferences:
+
+| Working set | Before | After |
+| --- | ---: | ---: |
+| Startup | 146.78 MiB | 146.66 MiB |
+| Playback at 3 seconds | 175.66 MiB | 175.51 MiB |
+| Playback at 5 seconds | 243.59 MiB | 175.52 MiB |
+| Playback at 8 seconds | 245.91 MiB | 177.95 MiB |
+
+Private committed bytes at 8 seconds fell from 182.74 to 147.94 MiB in that
+controlled run. Savings depend on whether other visible components have already
+loaded the same fallback fonts; an expanded lyrics list can load them earlier.
+These are development-process measurements, not a promised Task Manager total.
+Restart the app when retesting so fonts loaded by the old hidden path are not
+already cached in the process.
+
+All 48 focused floating-window, profiler, playback-memory, karaoke-visibility,
+deferred-renderer, and newline-layout checks passed. The two new hidden-window
+cases also passed separately with the native Windows Qt backend.
 
 ## Capture the actual workload
 

@@ -4,6 +4,7 @@ from collections import OrderedDict
 from concurrent.futures import Future
 from copy import deepcopy
 from types import SimpleNamespace
+from queue import SimpleQueue
 
 import pytest
 
@@ -63,6 +64,7 @@ def test_lrcx_prefetch_caches_readings_before_playback_visits_every_line(qapp, t
     monkeypatch.setattr(controller_module, "_FURIGANA_PREFETCH_EXECUTOR", ImmediateExecutor())
     monkeypatch.setattr(renderer_module, "_FURIGANA_EXECUTOR", NoPlaybackParsing())
     controller._furigana_progress_bridge = SimpleNamespace(
+        start=lambda request_id: SimpleQueue(),
         progress=SimpleNamespace(emit=lambda *args: None),
         finished=SimpleNamespace(emit=lambda *args: None),
     )

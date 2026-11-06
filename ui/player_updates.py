@@ -90,7 +90,13 @@ class PlayerUpdatesMixin:
             lambda tag=release.tag: self._skip_update_version(tag)
         )
         dialog.update_requested.connect(lambda item=release: self._begin_update(item))
-        dialog.finished.connect(lambda: setattr(self, "_update_available_dialog", None))
+
+        def release_dialog():
+            if self._update_available_dialog is dialog:
+                self._update_available_dialog = None
+            dialog.deleteLater()
+
+        dialog.finished.connect(release_dialog)
         dialog.show()
 
     def _update_check_failed(self, _worker, message, manual):
@@ -148,6 +154,14 @@ class PlayerUpdatesMixin:
         )
         worker.finished.connect(lambda job=worker: self._update_download_finished(job))
         worker.finished.connect(worker.deleteLater)
+        # Keep a hidden progress window usable while its worker is active,
+        # then release it even if the user dismissed it during the download.
+        def release_progress():
+            if self._update_progress_dialog is progress:
+                self._update_progress_dialog = None
+            progress.deleteLater()
+
+        worker.finished.connect(release_progress)
         progress.show()
         worker.start()
 

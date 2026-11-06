@@ -7,6 +7,9 @@ from core.playlists import path_key
 
 class QueueControllerMixin:
     def _notify_queue_changed(self):
+        invalidate = getattr(self, "_invalidate_gapless_preload", None)
+        if invalidate is not None:
+            invalidate()
         self.update_transport_buttons()
         self.queue_changed.emit()
 

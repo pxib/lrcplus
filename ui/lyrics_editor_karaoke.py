@@ -225,7 +225,10 @@ class LyricsEditorKaraokeMixin:
         clear_button = box.addButton("Clear Karaoke", QMessageBox.ButtonRole.DestructiveRole)
         cancel_button = box.addButton(QMessageBox.StandardButton.Cancel)
         box.setDefaultButton(cancel_button)
-        box.exec()
+        try:
+            box.exec()
+        finally:
+            box.deleteLater()
         if box.clickedButton() is not clear_button:
             return
         self._push_undo_state()

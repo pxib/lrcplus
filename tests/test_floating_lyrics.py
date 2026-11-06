@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
@@ -146,3 +148,61 @@ def test_saved_disabled_state_prevents_startup_and_resume_showing():
     assert api.menu_checked is False
     assert plugin.floating.hide_calls == 1
     assert plugin.floating.show_calls == 0
+
+
+@pytest.mark.parametrize("translation_lines", [[], [1]])
+def test_hidden_multiline_lyrics_defer_reading_and_layout_until_shown(
+    qapp, monkeypatch, translation_lines
+):
+    from lyrics.line_breaks import decode_line_breaks
+
+    reads = []
+
+    def cached_readings(text):
+        reads.append(text)
+        return [{"text": decode_line_breaks(text)[0], "reading": None}]
+
+    monkeypatch.setattr("lyrics.furigana_widget.get_cached_furigana_segments", cached_readings)
+    api = SimpleNamespace(
+        set_setting=lambda *args: None,
+        set_menu_action_checked=lambda *args: None,
+    )
+    plugin = FloatingLyricsPlugin()
+    plugin.context = SimpleNamespace(api=api)
+    plugin.settings = dict(FloatingLyricsPlugin.DEFAULTS, remember_position=False)
+    plugin.floating = FloatingLyricsWindow(plugin.settings)
+    plugin.floating.visibility_changed = plugin._set_menu_checked
+    first = SimpleNamespace(text="First\nFirst translation", translation_lines=translation_lines)
+    latest = SimpleNamespace(text="Latest\nLatest translation", translation_lines=translation_lines)
+    plugin.window = SimpleNamespace(lyric_lines=[first, latest], current_line=0, show_ruby=True)
+    try:
+        for position in range(100):
+            plugin.on_position_changed(position)
+        plugin.on_track_changed("song.mp3")
+        assert reads == []
+        assert plugin.floating.lyric_widget.lyric == ""
+        assert plugin.floating.lyric_widget._prepared_layout == []
+
+        # Opening while paused must display the current lyric and settings
+        # without waiting for another positionChanged signal.
+        plugin.window.current_line = 1
+        plugin.window.show_ruby = False
+        plugin.toggle_window(True)
+        qapp.processEvents()
+        assert plugin.floating.lyric_widget.lyric == latest.text
+        assert plugin.floating.lyric_widget.translation_lines == translation_lines
+        assert not plugin.floating.lyric_widget.show_ruby
+        assert reads
+
+        plugin.floating.hide()
+        count = len(reads)
+        plugin.window.current_line = 0
+        plugin.on_position_changed(200)
+        assert len(reads) == count
+        plugin.floating.show()
+        qapp.processEvents()
+        assert plugin.floating.lyric_widget.lyric == first.text
+    finally:
+        plugin.on_unload(None)
+        plugin.floating.deleteLater()
+        qapp.processEvents()

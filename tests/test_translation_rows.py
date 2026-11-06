@@ -85,6 +85,7 @@ def test_floating_lyrics_skips_translation_and_retains_role_on_same_text(
     plugin.floating = floating
     try:
         floating._current_text = text  # Same visible text, newly supplied row metadata.
+        floating.show()
         plugin.refresh()
         qapp.processEvents()
         assert translation_provider == ["Original"]

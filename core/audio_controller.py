@@ -15,6 +15,7 @@ from core.background_job import BackgroundJob
 from core.audio_sink import dispose_audio_sink
 from core.settings import save_playback_settings
 from core.playlists import path_key
+from core.replaygain import ReplayGain, read_replaygain
 from core.audio_dsp import (
     volume_to_gain,
     snap_volume_percentage,
@@ -28,10 +29,76 @@ from core.audio_dsp import (
 
 
 class AudioController:
+        def _replaygain_options(self):
+            settings = getattr(self, "playback_settings", {})
+            return (settings.get("replaygain_mode", "off"),
+                    settings.get("replaygain_preamp", 0),
+                    settings.get("replaygain_prevent_clipping", True))
+
+        def _handle_gapless_fallback(self, error):
+            self._load_replaygain()
+            self.statusBar().showMessage(f"Gapless playback unavailable: {error}", 7000)
+
+        def _replaygain_multiplier(self):
+            return getattr(self, "_replaygain_tags", ReplayGain()).multiplier(*self._replaygain_options())
+
+        def _load_replaygain(self):
+            job = getattr(self, "_replaygain_job", None)
+            if job is not None:
+                job.cancel()
+            self._replaygain_tags = ReplayGain()
+            self._configure_pcm_volume(self.volume_slider.value())
+            path = getattr(self, "current_audio_path", None)
+            if (path is None or self._replaygain_options()[0] == "off"
+                    or getattr(self.media_player, "_gapless_active", False)):
+                return
+            if job is None:
+                job = self._replaygain_job = BackgroundJob(self, "replaygain-tags")
+                job.finished.connect(self._apply_replaygain)
+            job.start(lambda: (path, read_replaygain(path)))
+
+        def _apply_replaygain(self, result):
+            path, tags = result
+            if path == self.current_audio_path:
+                self._replaygain_tags = tags
+                self._configure_pcm_volume(self.volume_slider.value())
+
+        def _invalidate_gapless_preload(self):
+            self._gapless_shuffle_choice = None
+            invalidate = getattr(self.media_player, "invalidate_preload", None)
+            if invalidate is not None:
+                invalidate()
+
+        def _gapless_next_path(self):
+            paths = self._playback_paths()
+            if not paths:
+                return None
+            current = self._active_index(paths)
+            after = self.playback_settings.get("after_playback", "next_track")
+            if after == "repeat_track":
+                return str(self.current_audio_path) if self.current_audio_path else None
+            priority = getattr(self, "_priority_queue_indices", [])
+            if self.playback_settings.get("play_mode", "library") == "playlist" and priority:
+                return str(paths[priority[0]])
+            if getattr(self, "shuffle_enabled", False) and len(paths) > 1:
+                forward = getattr(self, "_shuffle_forward_history", [])
+                for entry in reversed(forward):
+                    target = self._resolve_history_index(entry, paths)
+                    if target is not None:
+                        return str(paths[target])
+                target = self._choose_shuffle_index(paths, current)
+                self._gapless_shuffle_choice = (tuple(map(str, paths)), current, target)
+                return str(paths[target])
+            if current + 1 < len(paths):
+                return str(paths[current + 1])
+            return str(paths[0]) if after == "repeat_all" else None
+
         def load_audio(self, path):
             audio_path = Path(path).expanduser().resolve()
 
-            self.media_player.stop()
+            handoff = getattr(self.media_player, "_gapless_handoff", False)
+            if not handoff:
+                self.media_player.stop()
 
             self.current_audio_path = audio_path
 
@@ -94,7 +161,9 @@ class AudioController:
                 self.waveform_widget.set_lyric_times([])
                 self.waveform_widget.load_audio(audio_path)
 
-            self._flush_pcm_output()
+            if not handoff:
+                self._flush_pcm_output()
+            self._replaygain_tags = ReplayGain()
             self._configure_pcm_volume(self.volume_slider.value())
 
             # Load audio.
@@ -104,6 +173,7 @@ class AudioController:
                 )
             )
             self._set_native_pitch_compensation()
+            self._load_replaygain()
 
             # Folder walks and lyric-file reads must not delay playback or PCM
             # callbacks on the GUI thread. Only apply the current search result.
@@ -193,6 +263,7 @@ class AudioController:
             if self.playback_settings.get("play_mode", "library") != source:
                 self._clear_shuffle_history()
             self.playback_settings["play_mode"] = source
+            self._invalidate_gapless_preload()
             save_playback_settings(self.playback_settings)
             self._update_playback_source_control()
             self.update_transport_buttons()
@@ -234,6 +305,11 @@ class AudioController:
 
 
         def _choose_shuffle_index(self, paths, current, direction=1):
+            reserved = getattr(self, "_gapless_shuffle_choice", None)
+            if direction == 1 and reserved is not None:
+                self._gapless_shuffle_choice = None
+                if reserved[0] == tuple(map(str, paths)) and reserved[1] == current:
+                    return reserved[2]
             if len(paths) <= 1:
                 return current if current >= 0 else 0
             mode = getattr(self, "playback_settings", {}).get("shuffle_mode", "tracks")
@@ -364,6 +440,7 @@ class AudioController:
         def cycle_shuffle_mode(self):
             self.shuffle_enabled = not self.shuffle_enabled
             self._clear_shuffle_history()
+            self._invalidate_gapless_preload()
             self.playback_settings["shuffle_enabled"] = self.shuffle_enabled
             save_playback_settings(self.playback_settings)
             self._update_shuffle_button_text()
@@ -426,7 +503,8 @@ class AudioController:
             elif not getattr(worker, "owns_output", False):
                 worker.reset()
             if hasattr(self, "volume_slider"):
-                self.audio_output.setVolume(self.volume_slider.value() / 100.0)
+                self.audio_output.setVolume(min(1.0, getattr(
+                    self, "_current_pcm_gain", self.volume_slider.value() / 100.0)))
 
 
         def _pcm_pitch_shift(self):
@@ -456,21 +534,38 @@ class AudioController:
 
         def _configure_pcm_volume(self, value, refresh_format=False):
             value = int(value)
-            self._current_pcm_gain = volume_to_gain(value)
+            decoder = getattr(self.media_player, "_decoder", None)
+            if getattr(self.media_player, "_gapless_active", False) and decoder is not None:
+                self._replaygain_tags = decoder.tags
+            self._current_pcm_gain = volume_to_gain(value) * self._replaygain_multiplier()
             pitch_active = abs(self._pcm_pitch_shift()) >= 0.001
             rate_active = self._pcm_rate_active()
+            configure_gapless = getattr(self.media_player, "configure_gapless", None)
+            if configure_gapless is not None and configure_gapless(
+                self.playback_settings.get("gapless_playback", False),
+                volume_to_gain(value), self._replaygain_options(),
+                compatible=not pitch_active and not rate_active,
+            ):
+                self._stop_pcm_sink()
+                worker = getattr(self, "_pcm_worker", None)
+                if getattr(worker, "owns_output", False):
+                    worker.configure(self.audio_output.device(), 1, 0, 1,
+                                     enabled=False, playing=False)
+                self.media_player.setAudioBufferOutput(None)
+                return
+            gain_active = self._current_pcm_gain > 1.0
             worker = getattr(self, "_pcm_worker", None)
             owns_output = getattr(worker, "owns_output", False)
             if owns_output:
                 worker.configure(
                     self.audio_output.device(), self.playback_speed,
                     self._pcm_pitch_shift(), self._current_pcm_gain,
-                    enabled=(value > 100 or pitch_active or rate_active)
+                    enabled=(gain_active or pitch_active or rate_active)
                             and not getattr(self, "_audio_output_unavailable", False)
                             and getattr(self, "_audio_device_dialog", None) is None,
                     playing=self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState,
                 )
-            if value <= 100 and not pitch_active and not rate_active:
+            if not gain_active and not pitch_active and not rate_active:
                 output = self._pcm_buffer_output
                 self.media_player.setAudioBufferOutput(None)
                 self._pcm_buffer_output = None
@@ -482,7 +577,7 @@ class AudioController:
                     reset_pcm_pitch_state()
                 if output is not None:
                     output.deleteLater()
-                self.audio_output.setVolume(value / 100.0)
+                self.audio_output.setVolume(self._current_pcm_gain)
                 return
 
             output = getattr(self, "_pcm_buffer_output", None)
@@ -525,7 +620,7 @@ class AudioController:
             if (getattr(self, "_audio_output_unavailable", False)
                     or getattr(self, "_audio_device_dialog", None) is not None):
                 return
-            if (self.volume_slider.value() <= 100
+            if (getattr(self, "_current_pcm_gain", 1.0) <= 1.0
                     and abs(self._pcm_pitch_shift()) < 0.001
                     and not self._pcm_rate_active()):
                 return
@@ -559,7 +654,7 @@ class AudioController:
                     audio_format.sampleRate(),
                     self._pcm_pitch_shift(),
                 )
-                if self.volume_slider.value() > 100:
+                if self._current_pcm_gain > 1.0:
                     pcm = apply_pcm_gain_to_bytes(
                         pcm, audio_format.sampleFormat(), self._current_pcm_gain,
                     )
@@ -662,7 +757,7 @@ class AudioController:
         def _sync_pcm_sink_state(self, state):
             if (
                 state == QMediaPlayer.PlaybackState.PlayingState
-                and (self.volume_slider.value() > 100
+                and (getattr(self, "_current_pcm_gain", 1.0) > 1.0
                      or abs(self._pcm_pitch_shift()) >= 0.001
                      or self._pcm_rate_active())
                 and self._pcm_buffer_output is not None
@@ -887,6 +982,10 @@ class AudioController:
 
             # Repeat Track takes priority over normal progression.
             if after == "repeat_track":
+                if getattr(self.media_player, "_gapless_handoff", False):
+                    self.load_audio(str(self.current_audio_path))
+                    self.media_player.play()
+                    return
                 self._flush_pcm_output()
                 self.media_player.setPosition(0)
                 self.media_player.play()

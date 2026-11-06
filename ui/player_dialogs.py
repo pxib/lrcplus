@@ -379,6 +379,11 @@ class PitchChangerDialog(QDialog):
         self._on_change(self.unit_combo.currentText(),
                         self._value_in_units(self.slider.value() / 100.0))
 
+    def done(self, result):
+        if self._pitch_update_timer.isActive():
+            self._notify_pitch_change()
+        super().done(result)
+
     def _from_slider(self, value):
         if self.slider.isSliderDown():
             self.set_value(value / 100.0, notify=False)

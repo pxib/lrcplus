@@ -59,6 +59,10 @@ PLAYBACK_DEFAULTS = {
     "shuffle_enabled": False,
     "shuffle_mode": "tracks",
     "after_playback": "next_track",
+    "gapless_playback": False,
+    "replaygain_mode": "off",
+    "replaygain_preamp": 0,
+    "replaygain_prevent_clipping": True,
     "output_device": "",
     "volume": 80,
     "high_volume_warning_shown": False,
@@ -141,6 +145,13 @@ def get_playback_settings(payload=None):
     after_playback = str(values.get("after_playback", PLAYBACK_DEFAULTS["after_playback"])).lower()
     if after_playback not in {"next_track", "stop", "repeat_all", "repeat_track"}:
         after_playback = PLAYBACK_DEFAULTS["after_playback"]
+    replaygain_mode = str(values.get("replaygain_mode", "off")).lower()
+    if replaygain_mode not in {"off", "track", "album"}:
+        replaygain_mode = "off"
+    try:
+        replaygain_preamp = max(-24, min(24, int(values.get("replaygain_preamp", 0))))
+    except (TypeError, ValueError, OverflowError):
+        replaygain_preamp = 0
     pitch_mode = str(values.get("pitch_mode", PLAYBACK_DEFAULTS["pitch_mode"]))
     if pitch_mode not in {"Octaves", "Percent", "Semitones"}:
         pitch_mode = PLAYBACK_DEFAULTS["pitch_mode"]
@@ -168,6 +179,10 @@ def get_playback_settings(payload=None):
         "shuffle_enabled": bool(values.get("shuffle_enabled", PLAYBACK_DEFAULTS["shuffle_enabled"])),
         "shuffle_mode": shuffle_mode,
         "after_playback": after_playback,
+        "gapless_playback": bool(values.get("gapless_playback", False)),
+        "replaygain_mode": replaygain_mode,
+        "replaygain_preamp": replaygain_preamp,
+        "replaygain_prevent_clipping": bool(values.get("replaygain_prevent_clipping", True)),
         "output_device": str(values.get("output_device", PLAYBACK_DEFAULTS["output_device"]) or ""),
         "volume": max(0, min(300, volume)),
         "high_volume_warning_shown": bool(
@@ -369,6 +384,10 @@ def save_update_settings(values):
 APPEARANCE_DEFAULTS = {
     "theme_mode": "light",
     "theme_color": "#3a9879",
+    "theme_preset_name": "",
+    "custom_themes": [],
+    "theme_surface": "classic",
+    "theme_overrides": {},
     "background_enabled": True,
     "background_layout": "fit",
     "background_blur_mode": "quality",
@@ -413,9 +432,37 @@ def get_appearance_settings(payload=None):
         if isinstance(folder, str) and folder.strip()
     ))
 
+    from core.theme import normalize_theme_overrides
+
+    custom_themes = []
+    raw_custom_themes = values.get("custom_themes", [])
+    if isinstance(raw_custom_themes, list):
+        theme_fields = ("background", "surface", "accent", "text", "secondaryText")
+        for theme in raw_custom_themes:
+            if not isinstance(theme, dict):
+                continue
+            name = theme.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            colors = {key: theme.get(key) for key in theme_fields}
+            if any(not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color) for color in colors.values()):
+                continue
+            custom_themes.append({
+                "name": name.strip(),
+                "description": str(theme.get("description", "Custom theme")),
+                **{key: color.lower() for key, color in colors.items()},
+            })
+    theme_preset_name = values.get("theme_preset_name", "")
+    if not isinstance(theme_preset_name, str):
+        theme_preset_name = ""
+
     return {
         "theme_mode": theme_mode,
         "theme_color": theme_color.lower(),
+        "theme_preset_name": theme_preset_name,
+        "custom_themes": custom_themes,
+        "theme_overrides": normalize_theme_overrides(values.get("theme_overrides")),
+        "theme_surface": values.get("theme_surface") if values.get("theme_surface") in ("classic", "neutral") else "classic",
         "background_enabled": bool(
             values.get(
                 "background_enabled",

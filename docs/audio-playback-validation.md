@@ -1,5 +1,43 @@
 # Audio playback validation
 
+## Gapless playback and ReplayGain
+
+The optional gapless transport decodes the active track and one successor with
+FFmpeg, using pipe backpressure and a 256 KiB PCM queue per decoder. A single
+floating-point output sink stays open across automatic track changes. Successor
+samples enter the device buffer before the boundary; track/lyric state advances
+when the sink's processed-sample clock reaches that boundary. The device buffer
+is requested at 250 ms. Track positions are broadcast at most every 40 ms.
+Queue edits discard the successor; an edit after successor samples were submitted
+restarts at the current audible position to avoid playing removed audio.
+
+Gapless playback defaults off, requires FFmpeg, and applies on the next track
+load. Speed or pitch processing and unsupported output formats retain Qt native
+playback. Device replacement also returns to Qt for the current track. The fixed
+device format can resample input; this feature does not provide bit-perfect
+output or remove silence encoded into a track. FFmpeg decoder processes have
+additional working memory beyond the bounded PCM queues.
+
+ReplayGain reads Vorbis/APE-style tags, ID3 TXXX frames, and MP4 iTunes freeform
+tags using the existing Mutagen dependency. Album gain uses album peak, falling
+back to the track gain/peak pair if album gain is absent. Missing or invalid gain
+tags mean unity gain, including when a preamp is set. Optional peak limiting
+caps the ReplayGain multiplier before manual volume. It is not a true-peak
+limiter, and manual volume boosts can still clip. On native Qt playback tag
+reads run asynchronously, so gain can take effect shortly after playback starts.
+
+Automated checks verify byte-for-byte concatenation without sink replacement,
+audible-boundary UI timing, partial writes, per-track gains, pause/resume/seek,
+queue edits, shuffle, priority entries, duplicate occurrences, repeat modes,
+tag format parsing, bounded real FFmpeg decoding, and process cancellation.
+
+Real hardware listening remains necessary. Play two halves of a continuous
+lossless recording and a gapless-tagged MP3/AAC album. Check the boundary for
+silence, repeated or missing samples, and lyric timing. Repeat with ReplayGain,
+mixed sample rates, a paused/seeked track, output-device replacement, and queue
+edits near the boundary. Verify final-track tails finish before playback stops.
+Compare track/album modes using tagged and untagged files at a comfortable level.
+
 Rate conversion uses a per-stream windowed-sinc filter, with a fractional
 phase shared across decoder callbacks. The cutoff is 94% of the lower Nyquist
 frequency. A Blackman window spans 32 sinc zero crossings on each side; the

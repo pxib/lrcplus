@@ -733,7 +733,10 @@ class LyricsSearchDialogMixin:
                     save_as = warning.addButton("Save as...", QMessageBox.ButtonRole.ActionRole)
                     warning.setDefaultButton(QMessageBox.StandardButton.Cancel)
                     warning.setEscapeButton(QMessageBox.StandardButton.Cancel)
-                    warning.exec()
+                    try:
+                        warning.exec()
+                    finally:
+                        warning.deleteLater()
                     if warning.clickedButton() is save_as:
                         suffix = destination.suffix
                         filename, _ = QFileDialog.getSaveFileName(

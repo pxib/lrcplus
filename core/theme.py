@@ -1,4 +1,41 @@
+import re
+
 from PySide6.QtGui import QColor
+
+
+THEME_COLOR_FIELDS = {
+    "window": "Window", "header": "Header", "surface": "Surface",
+    "surface_alt": "Alternate surface", "raised": "Raised controls",
+    "raised_hover": "Hovered controls", "pressed": "Pressed controls",
+    "text": "Text", "muted": "Muted text", "brand": "Brand text",
+    "border": "Borders", "field_border": "Field borders",
+    "header_button_text": "Header text", "dock": "Player background",
+    "dock_border": "Player border", "dock_control": "Player controls",
+    "dock_control_hover": "Player controls on hover",
+    "dock_control_border": "Player control border", "dock_disabled": "Disabled player controls",
+    "dock_text": "Player text", "dock_muted": "Muted player text",
+    "seek_track": "Seek track", "slider_handle": "Slider handle",
+    "scroll_handle": "Scroll handle",
+    "selection": "Cell selection color",
+    "item_hover": "Cell hover color",
+}
+
+
+def normalize_theme_overrides(value):
+    """Keep only supported per-mode, opaque RGB color overrides."""
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for mode in ("light", "dark"):
+        colors = value.get(mode)
+        if not isinstance(colors, dict):
+            continue
+        valid = {key: color.lower() for key, color in colors.items()
+                 if key in THEME_COLOR_FIELDS and isinstance(color, str)
+                 and re.fullmatch(r"#[0-9a-fA-F]{6}", color)}
+        if valid:
+            result[mode] = valid
+    return result
 
 
 def _relative_luminance(color):
@@ -13,7 +50,7 @@ def _relative_luminance(color):
     return sum(value * weight for value, weight in zip(channels, (0.2126, 0.7152, 0.0722)))
 
 
-def build_theme_palette(mode, accent_color):
+def build_theme_palette(mode, accent_color, surface_style="classic", overrides=None):
     dark = str(mode).casefold() == "dark"
     accent = QColor(str(accent_color))
     if not accent.isValid():
@@ -82,6 +119,17 @@ def build_theme_palette(mode, accent_color):
             "scroll_handle": "#bdcec5",
         }
 
+    if surface_style == "neutral":
+        for key, value in values.items():
+            color = QColor(value)
+            gray = round(0.2126 * color.red() + 0.7152 * color.green() + 0.0722 * color.blue())
+            values[key] = QColor(gray, gray, gray).name()
+        accent_soft_base = QColor(values["surface"])
+
+    mode_name = "dark" if dark else "light"
+    values.update(normalize_theme_overrides(overrides).get(mode_name, {}))
+    accent_soft_base = QColor(values["surface"])
+
     values["accent"] = accent.name()
     values["accent_hover"] = accent_hover
     values["accent_border"] = accent.lighter(135).name()
@@ -99,5 +147,16 @@ def build_theme_palette(mode, accent_color):
         round(accent_soft_base.green() * (1 - accent_ratio) + accent.green() * accent_ratio),
         round(accent_soft_base.blue() * (1 - accent_ratio) + accent.blue() * accent_ratio),
     ).name()
+    values.setdefault("selection", values["accent_soft"])
+    values.setdefault("item_hover", values["raised_hover"])
+    selection_color = QColor(values["selection"])
+    selection_luminance = _relative_luminance(selection_color)
+    white_selection_contrast = 1.05 / (selection_luminance + 0.05)
+    dark_selection_contrast = (selection_luminance + 0.05) / (
+        _relative_luminance(dark_text) + 0.05
+    )
+    values["selection_text"] = (
+        "#ffffff" if white_selection_contrast >= dark_selection_contrast else dark_text.name()
+    )
     values["mode"] = "dark" if dark else "light"
     return values

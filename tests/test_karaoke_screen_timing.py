@@ -37,6 +37,11 @@ def screen(qapp):
         get_current_track=lambda: "song.mp3",
     ))
     yield plugin
+    # Child widgets do not receive closeEvent when their parent closes.
+    # Stop their polling before another test replaces the reading cache.
+    plugin.screen.current_lyric.stop_workers()
+    plugin.screen.next_lyric.stop_workers()
+    plugin.screen.close()
     window.close()
     window.deleteLater()
     qapp.processEvents()
