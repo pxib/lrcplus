@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from PySide6.QtCore import QObject, Qt, Signal
 
 from core.audio_dsp import (
-    PcmPitchProcessor, apply_pcm_rate_to_bytes, apply_pcm_gain_to_bytes,
+    PcmPitchProcessor, PcmRateProcessor, apply_pcm_gain_to_bytes,
 )
 
 
@@ -19,6 +19,7 @@ class PcmWorker(QObject):
         super().__init__(parent)
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pcm")
         self._processor = PcmPitchProcessor()
+        self._rate_processor = PcmRateProcessor()
         self._pending = deque()
         self._future = None
         self._generation = 0
@@ -65,14 +66,19 @@ class PcmWorker(QObject):
     def _process(self, job, reset):
         if reset:
             self._processor.reset()
+            self._rate_processor.reset()
         data, fmt, speed, shift, gain = job
-        pcm = apply_pcm_rate_to_bytes(data, fmt.sampleFormat(), fmt.channelCount(), speed)
+        # An empty job marks decoder end-of-stream, after all queued blocks.
+        pcm = (self._rate_processor.process(
+            data, fmt.sampleFormat(), fmt.channelCount(), speed,
+            sample_rate=fmt.sampleRate(),
+        ) if data else self._rate_processor.flush())
         pcm = self._processor.process(
             pcm, fmt.sampleFormat(), fmt.channelCount(), fmt.sampleRate(), shift,
         )
         if gain > 1:
             pcm = apply_pcm_gain_to_bytes(pcm, fmt.sampleFormat(), gain)
-        started = abs(shift) < 0.001 or self._processor._started
+        started = abs(shift) < 0.001 or getattr(self._processor, "_started", False)
         return pcm, fmt, started
 
     def _complete(self, completion):
@@ -98,4 +104,5 @@ class PcmWorker(QObject):
         self.reset()
         # Cleanup follows any running native call on the same worker.
         self._executor.submit(self._processor.reset)
+        self._executor.submit(self._rate_processor.reset)
         self._executor.shutdown(wait=False)

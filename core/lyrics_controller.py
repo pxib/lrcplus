@@ -191,6 +191,8 @@ class LyricsController(LyricsSearchMixin):
             self._start_furigana_prefetch()
 
     def apply_lyric_display_mode(self):
+        if getattr(self, "_lyrics_renderers_ready", True) is False:
+            return
         # Remember the previously visible mode. Re-entering scrolling must
         # rebuild its rows: switching the stacked widget can otherwise leave
         # existing rows attached but visually empty.

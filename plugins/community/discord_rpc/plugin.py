@@ -11,7 +11,7 @@ import random
 import re
 import unicodedata
 
-import requests
+from core.http_client import requests
 from PIL import Image, ImageOps
 
 from lyrics.furigana import detect_lyrics_collection_language, get_reading_mode

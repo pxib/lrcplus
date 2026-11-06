@@ -471,7 +471,7 @@ class LrcEditorDialog(
             )
         else:
             label.setText("No lyrics selected. Check lines to share, or use Select All.")
-        card = getattr(self, "share_card", None)
+        card = self._share_card
         if card is not None and self._share_selection_active:
             card.schedule_refresh()
 
@@ -1005,6 +1005,12 @@ class LrcEditorDialog(
                 if getattr(segment, "ruby_source", None) == "generated":
                     segment.ruby = None
                     segment.ruby_source = None
+
+        texts = [reading_source(line.text, line.translation_lines) for line in self.lines if line.text]
+        if mode == "pinyin" or (mode == "auto" and detect_lyrics_collection_language(texts) == "chinese"):
+            # Warm Mandarin readings together so Generate All starts a single
+            # disposable dictionary worker instead of one process per line.
+            prefetch_furigana_batches(texts, force=True)
 
         generated_lines = 0
         errors = 0
@@ -1856,7 +1862,8 @@ class LrcEditorDialog(
         if self.translation_panel is not None and not self.translation_panel.confirm_close():
             return False
         self._closed = True
-        self.share_card.shutdown()
+        if self._share_card is not None:
+            self._share_card.shutdown()
         if self.translation_panel is not None:
             self.translation_panel.shutdown()
         if self._segment_preview_range is not None:

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from core.settings import save_music_library
 from ui.library_lyrics_search import LyricMatchDelegate
 from ui.library_sorting import LIBRARY_SORT_ROLE, LibraryTreeItem
+from ui.library_rows import LibraryGroupRows, LibraryRowData, LibraryTrackItem
 from ui.artwork_background import extract_embedded_cover, load_embedded_cover_thumbnail
 from ui.player_dialogs import AlbumCoverDelegate, CoverPreviewDialog, LibraryScanWorker
 from core.fonts import library_font
@@ -275,6 +276,10 @@ class PlayerLibraryMixin:
         sorting_enabled = self.library_table.isSortingEnabled()
         self.library_table.setSortingEnabled(False)
         self.library_table.clear()
+        self._library_row_data = LibraryRowData(
+            self._format_library_duration, self._format_library_size,
+            self._library_track_number, getattr(self, "library_lyrics_column", 12),
+        )
         grouped = {}
         for track in self.library_tracks:
             group = (track.album_artist or track.artist or "Unknown artist", track.album or "Unknown album", track.date or "")
@@ -301,32 +306,10 @@ class PlayerLibraryMixin:
             parent.setData(0, Qt.ItemDataRole.UserRole + 1, (artist, album, date))
             self.library_table.addTopLevelItem(parent)
             tracks.sort(key=lambda t: (self._library_track_number(t.track_number), t.display_title.casefold()))
-            filter_rows = []
+            filter_rows = LibraryGroupRows(parent)
             self._library_filter_groups.append((parent, filter_rows))
             for track in tracks:
-                item = LibraryTreeItem([
-                    "",
-                    track.track_number or "",
-                    track.display_title,
-                    track.artist or artist,
-                    track.date,
-                    self._format_library_duration(track.duration),
-                    track.codec,
-                    f"{track.bitrate} kbps" if track.bitrate else "",
-                    self._format_library_size(track.file_size),
-                    Path(track.path).name,
-                    track.path,
-                    __import__("datetime").datetime.fromtimestamp(track.modified).strftime("%Y-%m-%d %H:%M:%S") if track.modified else "",
-                ])
-                item.setData(0, Qt.ItemDataRole.UserRole, track.path)
-                for column, value in ((1, self._library_track_number(track.track_number)),
-                                      (5, track.duration), (7, track.bitrate),
-                                      (8, track.file_size), (11, track.modified)):
-                    item.setData(column, LIBRARY_SORT_ROLE, value)
-                haystack = " ".join([track.display_title, track.artist, track.album, track.album_artist, track.date, track.path]).casefold()
-                filter_rows.append((item, haystack))
-                # Artwork is intentionally deferred until the row is visible.
-                item.setSizeHint(0, QSize(0, 58))
+                item = LibraryTrackItem(track, artist, self._library_row_data)
                 parent.addChild(item)
 
         folder_text = "; ".join(self.library_folders) if self.library_folders else "No music folders yet. Add a folder to build your library."
@@ -354,20 +337,16 @@ class PlayerLibraryMixin:
             self._library_expansion_before_search = expansion
         self.library_table.setUpdatesEnabled(False)
         try:
+            matches_changed = self._library_row_data.matches is not lyrics_matches
+            self._library_row_data.matches = lyrics_matches
             for parent, rows in self._library_filter_groups:
                 group = tuple(parent.data(0, Qt.ItemDataRole.UserRole + 1))
                 if query:
                     expansion.setdefault(group, parent.isExpanded())
                 any_visible = False
                 for item, haystack in rows:
-                    if lyric_column is not None:
-                        path = item.data(0, Qt.ItemDataRole.UserRole)
-                        match = lyrics_matches.get(path) if lyrics_matches is not None else None
-                        text = match.text if match else ""
-                        item.setText(lyric_column, text)
-                        item.setToolTip(lyric_column, text)
-                        item.setData(lyric_column, Qt.ItemDataRole.UserRole,
-                                     (match.start, match.end) if match else None)
+                    if query and lyrics_matches is None:
+                        haystack = item.search_text()
                     visible = (item.data(0, Qt.ItemDataRole.UserRole) in lyrics_matches
                                if lyrics_matches is not None else not query or query in haystack)
                     if item.isHidden() == visible:
@@ -379,6 +358,17 @@ class PlayerLibraryMixin:
                     parent.setExpanded(True)
                 elif not query and expansion is not None:
                     parent.setExpanded(expansion.get(group, parent.isExpanded()))
+                if matches_changed and lyric_column is not None and parent.childCount():
+                    model = self.library_table.model()
+                    group_index = self.library_table.indexFromItem(parent)
+                    model.dataChanged.emit(
+                        model.index(0, lyric_column, group_index),
+                        model.index(parent.childCount() - 1, lyric_column, group_index),
+                        [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole, Qt.ItemDataRole.UserRole],
+                    )
+            if matches_changed and self.library_table.sortColumn() == lyric_column:
+                header = self.library_table.header()
+                self.library_table.sortItems(lyric_column, header.sortIndicatorOrder())
             if not query:
                 self._library_expansion_before_search = None
         finally:
@@ -458,7 +448,11 @@ class PlayerLibraryMixin:
         pixmap = QPixmap()
         if not pixmap.loadFromData(cover_data):
             return
-        CoverPreviewDialog(pixmap, self).exec()
+        viewer = CoverPreviewDialog(pixmap, self)
+        try:
+            viewer.exec()
+        finally:
+            viewer.deleteLater()
 
     def add_music_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Add Music Folder")

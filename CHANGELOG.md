@@ -1,6 +1,17 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [2026-11-06] - dev
+
+### Added
+- Placeholder for the time being.
+
+### Changed
+- Placeholder for the time being.
+
+### Fixed
+- Placeholder for the time being.
+
 ## [2026-11-05]
 
 ### Added
@@ -67,7 +78,7 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 - Keep ruby that opts out of stroke or shadow visually unchanged when the corresponding lyric effect is enabled, including avoiding an extra fill pass that could thicken unstroked reading edges.
 - Update available ruby-position choices when the writing direction changes, and fall back to Auto if the previous side does not apply. Normalize incompatible or malformed position values when loading presets.
 - Clear stale previews and prevent exporting them after invalid source edits, missing background images, or text/reading overflow. Write PNG output atomically so an unsuccessful encode or write does not replace an existing destination file.
-- Keep artwork, song details, lyrics, and watermark areas separate while fitting the excerpt, and preserve cover aspect ratio. Keep appearance-only effect changes independent of these layout reservations.
+- Keep artwork, song details, lyrics, and watermark areas separate while fitting the excaerpt, and preserve cover aspect ratio. Keep appearance-only effect changes independent of these layout reservations.
 
 ## [2026-11-04]
 

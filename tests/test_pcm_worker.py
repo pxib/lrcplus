@@ -5,6 +5,7 @@ import numpy as np
 from PySide6.QtMultimedia import QAudioFormat
 
 from core.pcm_worker import PcmWorker
+from core.audio_dsp import apply_pcm_rate_to_bytes
 
 
 def wait_until(qapp, predicate):
@@ -82,6 +83,30 @@ def test_workers_own_independent_pitch_histories(qapp):
     finally:
         for worker in workers:
             worker.close()
+
+
+def test_worker_preserves_resampling_phase_and_flushes_tail(qapp):
+    worker = PcmWorker()
+    received = []
+    fmt = audio_format()
+    source = np.random.default_rng(23).normal(0, 0.1, (6007, 2)).astype(np.float32)
+    worker.ready.connect(received.append)
+    try:
+        blocks = [source[start:start + 127].tobytes() for start in range(0, len(source), 127)]
+        # Pace submission so the backlog limiter doesn't intentionally drop input.
+        for index, block in enumerate(blocks):
+            worker.submit(block, fmt, 0.73, 0, 1)
+            wait_until(qapp, lambda: len(received) == index + 1)
+        worker.submit(b"", fmt, 0.73, 0, 1)
+        wait_until(qapp, lambda: len(received) == len(blocks) + 1)
+        expected = apply_pcm_rate_to_bytes(source.tobytes(), fmt.sampleFormat(), 2, 0.73)
+        assert b"".join(result[0] for result in received) == expected
+        worker.reset()
+        worker.submit(bytes(4096 * 8), fmt, 0.73, 0, 1)
+        wait_until(qapp, lambda: len(received) == len(blocks) + 2)
+        assert not np.any(np.frombuffer(received[-1][0], np.float32))
+    finally:
+        worker.close()
 
 
 def test_worker_reports_processing_failure_on_gui_thread(qapp, monkeypatch):

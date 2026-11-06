@@ -246,7 +246,7 @@ def _paint_lyrics(painter, document, x, y, color, style):
     layer_painter.end()
     # Blur the alpha mask so all scripts, decorations and the stroke cast
     # the same shadow. Its color stays independent of the lyric fill.
-    pixels = Image.frombytes("RGBA", (style.width, style.height), bytes(layer.constBits()))
+    pixels = Image.frombuffer("RGBA", (style.width, style.height), layer.constBits(), "raw", "RGBA", 0, 1)
     alpha = pixels.getchannel("A")
     if style.shadow_blur:
         alpha = alpha.filter(ImageFilter.GaussianBlur(style.shadow_blur))
@@ -254,7 +254,7 @@ def _paint_lyrics(painter, document, x, y, color, style):
     shadow_color = QColor(style.shadow_color)
     shadow = Image.new("RGBA", pixels.size, (shadow_color.red(), shadow_color.green(), shadow_color.blue(), 0))
     shadow.putalpha(alpha)
-    shadow_image = QImage(shadow.tobytes(), style.width, style.height, QImage.Format.Format_RGBA8888).copy()
+    shadow_image = QImage(shadow.tobytes(), style.width, style.height, QImage.Format.Format_RGBA8888)
     painter.drawImage(style.shadow_offset_x, style.shadow_offset_y, shadow_image)
     painter.drawImage(0, 0, layer)
     if not style.ruby_inherit_shadow:

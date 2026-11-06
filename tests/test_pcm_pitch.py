@@ -215,6 +215,25 @@ def test_native_audio_stays_audible_until_processed_audio_is_written(playback):
     assert playback.native_volume == 0.0
 
 
+def test_synchronous_rate_route_flushes_filter_tail_at_decoder_end(playback):
+    from core.audio_dsp import apply_pcm_rate_to_bytes
+
+    playback.pitch_linked_to_speed = True
+    playback.playback_speed = 1.25
+    playback.write(frames=1031)
+    playback._write_pcm_buffer(SimpleNamespace(isValid=lambda: False))
+    expected = apply_pcm_rate_to_bytes(
+        np.full((1031, 2), 0.25, np.float32).tobytes(),
+        playback.audio_format.sampleFormat(), 2, 1.25,
+    )
+    assert bytes(playback._pcm_pending) == expected
+    playback._write_pcm_buffer(SimpleNamespace(isValid=lambda: False))
+    assert bytes(playback._pcm_pending) == expected
+    playback._flush_pcm_output()
+    playback.write(value=0, frames=1031)
+    assert not np.any(np.frombuffer(playback._pcm_pending, np.float32))
+
+
 def test_stalled_sink_keeps_recent_audio_with_bounded_delay(playback):
     playback.pitch_semitones = 0
     playback.volume = 150

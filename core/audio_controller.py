@@ -1,7 +1,7 @@
 import random
+import math
 from pathlib import Path
 
-import numpy as np
 from PySide6.QtCore import QSignalBlocker, Qt, QUrl
 from PySide6.QtMultimedia import (
     QAudioBufferOutput,
@@ -20,7 +20,7 @@ from core.audio_dsp import (
     snap_volume_percentage,
     apply_pcm_gain,
     apply_pcm_gain_to_bytes,
-    apply_pcm_rate_to_bytes,
+    PcmRateProcessor,
     apply_pcm_pitch_to_bytes,
     reset_pcm_pitch_state,
 )
@@ -416,6 +416,10 @@ class AudioController:
 
         def _flush_pcm_output(self):
             self._stop_pcm_sink()
+            rate_processor = getattr(self, "_pcm_rate_processor", None)
+            if rate_processor is not None:
+                rate_processor.reset()
+            self._pcm_rate_format = None
             worker = getattr(self, "_pcm_worker", None)
             if worker is None:
                 reset_pcm_pitch_state()
@@ -432,7 +436,7 @@ class AudioController:
                 return 0.0
             pitch = float(getattr(self, "pitch_semitones", 0.0))
             speed = max(0.01, float(getattr(self, "playback_speed", 1.0)))
-            speed_pitch = 12.0 * np.log2(speed)
+            speed_pitch = 12.0 * math.log2(speed)
             # Cancel the resampling pitch change, then apply the chosen pitch.
             return pitch - speed_pitch
 
@@ -443,7 +447,7 @@ class AudioController:
             if not getattr(self, "pitch_linked_to_speed", False):
                 return pitch
             speed = max(0.01, float(getattr(self, "playback_speed", 1.0)))
-            return 12.0 * np.log2(speed)
+            return 12.0 * math.log2(speed)
 
 
         def _pcm_rate_active(self):
@@ -523,24 +527,33 @@ class AudioController:
                 return
             if (self.volume_slider.value() <= 100
                     and abs(self._pcm_pitch_shift()) < 0.001
-                    and not self._pcm_rate_active()) or not buffer.isValid():
+                    and not self._pcm_rate_active()):
                 return
 
-            data = bytes(buffer.data())
-            if not data:
-                return
-
-            audio_format = buffer.format()
+            if buffer.isValid():
+                data = bytes(buffer.data())
+                if not data:
+                    return
+                audio_format = self._pcm_rate_format = buffer.format()
+            else:
+                audio_format = getattr(self, "_pcm_rate_format", None)
+                if audio_format is None:
+                    return
+                data = b""
             worker = getattr(self, "_pcm_worker", None)
             if worker is not None:
                 worker.submit(data, audio_format, self.playback_speed,
                               self._pcm_pitch_shift(), self._current_pcm_gain)
                 return
             try:
-                pcm = apply_pcm_rate_to_bytes(
+                rate_processor = getattr(self, "_pcm_rate_processor", None)
+                if rate_processor is None:
+                    rate_processor = self._pcm_rate_processor = PcmRateProcessor()
+                pcm = (rate_processor.process(
                     data, audio_format.sampleFormat(), audio_format.channelCount(),
                     self.playback_speed,
-                )
+                    sample_rate=audio_format.sampleRate(),
+                ) if data else rate_processor.flush())
                 pcm = apply_pcm_pitch_to_bytes(
                     pcm, audio_format.sampleFormat(), audio_format.channelCount(),
                     audio_format.sampleRate(),
@@ -553,13 +566,13 @@ class AudioController:
                 self._accept_processed_pcm((pcm, audio_format,
                     abs(self._pcm_pitch_shift()) < 0.001
                     or getattr(apply_pcm_pitch_to_bytes, "_started", False)))
-            except (ValueError, RuntimeError, OSError) as error:
+            except (ImportError, ValueError, RuntimeError, OSError) as error:
                 self._pcm_output_failed(error)
 
 
         def _accept_processed_pcm(self, result):
             pcm, audio_format, started = result
-            if not started:
+            if not pcm or not started:
                 return
             try:
                 if self._pcm_sink is None or self._pcm_sink.format() != audio_format:
@@ -813,7 +826,7 @@ class AudioController:
             if mode == "Octaves":
                 semitones = value * 12.0
             elif mode == "Percent":
-                semitones = 12.0 * np.log2(max(0.01, value) / 100.0)
+                semitones = 12.0 * math.log2(max(0.01, value) / 100.0)
             else:
                 semitones = value
             self.pitch_semitones = max(-24.0, min(24.0, float(semitones)))

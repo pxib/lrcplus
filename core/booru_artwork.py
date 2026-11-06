@@ -1,5 +1,5 @@
 import random
-import requests
+from core.http_client import requests
 
 SAFEBOORU_API = "https://safebooru.org/index.php"
 

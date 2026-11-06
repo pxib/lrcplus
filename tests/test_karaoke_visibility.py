@@ -44,7 +44,7 @@ class Display(QWidget):
         self.positions.append(position)
 
     def set_karaoke_sweep_style(self, style):
-        pass
+        self.sweep_style = style
 
 
 @pytest.fixture
@@ -138,6 +138,92 @@ def test_only_visible_lyric_display_receives_updates(karaoke, qapp):
     assert plugin.timer.isActive()
     assert len(window.lyric_widget.positions) == count
     assert window.scrolling_lyrics_widget.positions
+
+
+def test_animation_frames_do_not_reload_or_reapply_settings(karaoke, qapp, monkeypatch):
+    window, plugin = karaoke
+
+    def unexpected(*args):
+        pytest.fail("Animation must not read or reapply settings")
+
+    monkeypatch.setattr("plugins.core.karaoke.plugin.get_karaoke_settings", unexpected)
+    window.workspace_stack.setCurrentWidget(window.lyrics_page)
+    window.show()
+    qapp.processEvents()
+    window.media_player.play()
+    monkeypatch.setattr("plugins.core.karaoke.plugin.apply_karaoke_settings", unexpected)
+    count = len(window.lyric_widget.positions)
+    for _ in range(1000):
+        plugin.update_karaoke_position()
+    assert len(window.lyric_widget.positions) == count + 1000
+
+
+def test_changed_settings_refresh_once_and_reach_newly_visible_displays(
+    karaoke, qapp, monkeypatch
+):
+    window, plugin = karaoke
+    from core.settings import save_karaoke_settings
+    import plugins.core.karaoke.plugin as module
+
+    window.workspace_stack.setCurrentWidget(window.lyrics_page)
+    window.show()
+    window.media_player.play()
+    qapp.processEvents()
+    save_karaoke_settings({"sweep_fps": 120, "sweep_style": "glow"})
+    original = module.get_karaoke_settings
+    reads = []
+
+    def read_settings():
+        reads.append(True)
+        return original()
+
+    monkeypatch.setattr(module, "get_karaoke_settings", read_settings)
+    plugin.on_karaoke_settings_changed()
+    assert plugin.timer.interval() == 8
+    assert window.lyric_widget.sweep_style == "glow"
+    for _ in range(1000):
+        plugin.update_karaoke_position()
+    window.media_player.pause()
+    window.display_stack.setCurrentWidget(window.scrolling_lyrics_widget)
+    qapp.processEvents()
+    assert window.scrolling_lyrics_widget.sweep_style == "glow"
+    assert not plugin.timer.isActive()
+    assert len(reads) == 1
+
+
+def test_unloaded_plugin_stops_receiving_media_signals(karaoke):
+    window, plugin = karaoke
+    plugin.on_unload(None)
+    position = plugin._position_anchor_ms
+    rate = plugin._playback_rate
+    window.media_player.positionChanged.emit(4321)
+    window.media_player.playbackRateChanged.emit(2.0)
+    window.media_player.play()
+    assert plugin._position_anchor_ms == position
+    assert plugin._playback_rate == rate
+    assert plugin.window is None
+
+
+def test_runtime_snapshot_reports_word_highlighting_and_translation_workload(karaoke, qapp):
+    from tools.profile_memory import runtime_state
+
+    window, plugin = karaoke
+    window.plugin_manager = SimpleNamespace(plugins={
+        "karaoke": SimpleNamespace(instance=plugin),
+    })
+    window.lyric_lines[0].translation_lines = [1]
+    window.workspace_stack.setCurrentWidget(window.lyrics_page)
+    window.show()
+    window.media_player.play()
+    qapp.processEvents()
+    state = runtime_state(window)
+    assert state["loaded_plugins"] == ["karaoke"]
+    assert state["karaoke_timer_active"]
+    assert state["karaoke_interval_ms"] > 0
+    assert state["timed_lyric_lines"] == 1
+    assert state["translated_lyric_lines"] == 1
+    window.media_player.pause()
+    assert not runtime_state(window)["karaoke_timer_active"]
 
 
 @pytest.mark.parametrize("display", ["lyric_widget", "scrolling_lyrics_widget"])

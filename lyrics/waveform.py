@@ -154,8 +154,11 @@ class WaveformWidget(QWidget):
     karaokeTimingFinished = Signal()
     lyricTimingRequested = Signal(str, int)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, defer_hidden_load=False):
         super().__init__(parent)
+        self._defer_hidden_load = defer_hidden_load
+        self._audio_path = None
+        self._audio_load_pending = False
         self.setMinimumHeight(74)
         self.setMaximumHeight(110)
         self.setMouseTracking(True)
@@ -216,19 +219,39 @@ class WaveformWidget(QWidget):
         self._error = None
         self._loading = False
         self._stop_worker(wait=False)
+        self._audio_path = path
+        self._audio_load_pending = self._defer_hidden_load and not self.isVisible()
+        if self._audio_load_pending:
+            self.update()
+            return
+        self._start_audio_worker()
 
+    def _start_audio_worker(self):
         if find_ffmpeg() is None:
             self._error = "ffmpeg was not found."
             self.update()
             return
 
-        self._worker = _WaveformWorker(path, parent=self)
+        self._worker = _WaveformWorker(self._audio_path, parent=self)
         self._loading = True
         self._worker.loaded.connect(self._on_loaded)
         self._worker.failed.connect(self._on_failed)
         self._worker.finished.connect(self._worker_finished)
         self._worker.start()
         self.update()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._audio_load_pending:
+            self._audio_load_pending = False
+            self._start_audio_worker()
+
+    def hideEvent(self, event):
+        if self._defer_hidden_load and self._worker is not None:
+            self._audio_load_pending = True
+            self._stop_worker(wait=False)
+            self._loading = False
+        super().hideEvent(event)
 
     def set_duration(self, duration_ms):
         self._duration_ms = max(0, int(duration_ms))

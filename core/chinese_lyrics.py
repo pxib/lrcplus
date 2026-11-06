@@ -10,7 +10,7 @@ from threading import Event
 import unicodedata
 from urllib.parse import quote
 
-import requests
+from core.http_client import requests
 
 from core.app_info import APP_NAME, APP_VERSION, PROJECT_URL
 from core.lrclib import _retry_after

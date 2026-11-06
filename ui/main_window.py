@@ -89,6 +89,7 @@ class Player(
     QMainWindow,
 ):
         queue_changed = Signal()
+        lyrics_renderers_created = Signal()
 
         def __init__(self, plugin_manager=None):
             super().__init__()
@@ -154,10 +155,10 @@ class Player(
             self.lrc_search_paths = load_lrc_search_folders()
             # Persistent music library. Playback controls remain separate from
             # the library; the library is the primary workspace.
-            self.music_library = load_music_library()
-            self.library_folders = self.music_library["folders"]
+            music_library = load_music_library()
+            self.library_folders = music_library["folders"]
             self.library_tracks = []
-            self.library_column_state = self.music_library.get("columns", {}) or {}
+            self.library_column_state = music_library.get("columns", {}) or {}
             # Older library builds stored column positions without the new
             # embedded Album cover column. Shift that saved layout once so a
             # user's existing visibility/order/width preferences stay intact.
@@ -171,7 +172,7 @@ class Player(
                     self.library_column_state = migrated
                 except (TypeError, ValueError, AttributeError):
                     pass
-            for raw in self.music_library["tracks"]:
+            for raw in music_library["tracks"]:
                 if not isinstance(raw, dict):
                     continue
                 try:
@@ -251,21 +252,9 @@ class Player(
             # LYRIC DISPLAY
             # --------------------------------------------------
 
-            self.lyric_widget = FuriganaWidget()
-            self.lyric_widget.setMinimumHeight(250)
-            self.lyric_widget.set_direction(self.lyrics_direction)
-            self.lyric_widget.set_ruby_visible(self.show_ruby)
-            self.lyric_widget.set_romaji_visible(self.show_romaji)
-            self.lyric_widget.set_all_romaji_visible(self.all_romaji)
-            self.lyric_widget.set_ruby_position(self.ruby_position)
-            self.lyric_widget.set_ruby_padding(self.ruby_padding)
-
-            self.scrolling_lyrics_widget = ScrollingLyricsWidget(
-                self.lyric_widget.manual_overrides,
-                self.lyrics_direction,
-                self.lyrics_padding,
-                self,
-            )
+            self._lyric_widget = None
+            self._scrolling_lyrics_widget = None
+            self._lyrics_renderers_ready = False
 
             # --------------------------------------------------
             # LYRICS LIST
@@ -348,7 +337,7 @@ class Player(
             
             # Interactive waveform overview. It mirrors the seek bar but also
             # shows lyric boundaries and supports direct seeking.
-            self.waveform_widget = WaveformWidget()
+            self.waveform_widget = WaveformWidget(defer_hidden_load=True)
             self.waveform_widget.setVisible(
                 self.playback_settings.get("show_waveform", True)
                 and find_ffmpeg() is not None
@@ -688,40 +677,13 @@ class Player(
             self.lyric_display_stack.setStyleSheet(
                 "QStackedWidget { background: transparent; }"
             )
-            self.lyric_display_stack.addWidget(self.lyric_widget)
-            self.lyric_display_stack.addWidget(self.scrolling_lyrics_widget)
-            self.lyric_display_stack.setCurrentIndex(
-                1 if self.scrolling_lyrics_enabled else 0
-            )
 
             # The lyrics now sit over a dedicated artwork background instead
             # of the old empty grey area.
-            self.lyrics_background = ArtworkBackgroundWidget()
+            self.lyrics_background = ArtworkBackgroundWidget(defer_hidden_rendering=True)
             self.lyrics_background.setMinimumHeight(250)
             self.lyrics_background.set_content(self.lyric_display_stack)
             self._apply_appearance_settings()
-
-            # Keep the display pages transparent so the artwork can show
-            # through the lyric area.
-            for display_widget in (
-                self.lyric_widget,
-                self.scrolling_lyrics_widget,
-            ):
-                display_widget.setAttribute(
-                    Qt.WidgetAttribute.WA_TranslucentBackground,
-                    True,
-                )
-                display_widget.setAutoFillBackground(False)
-
-            self.lyric_widget.setStyleSheet(
-                "background: transparent; border: none;"
-            )
-            self.scrolling_lyrics_widget.setStyleSheet(
-                "background: transparent; border: none;"
-                "QScrollArea { background: transparent; border: none; }"
-                "QScrollArea::viewport { background: transparent; }"
-                "QScrollArea > QWidget > QWidget { background: transparent; }"
-            )
 
             # Apply all configured lyric defaults now that the display stack exists.
             self.refresh_lyrics_settings_for_current_file()
@@ -844,6 +806,43 @@ class Player(
             self.easter_eggs = EasterEggs(self)
             self._restore_startup_state()
             self.update_transport_buttons()
+
+
+        @property
+        def lyric_widget(self):
+            self._ensure_lyrics_renderers()
+            return self._lyric_widget
+
+        @property
+        def scrolling_lyrics_widget(self):
+            self._ensure_lyrics_renderers()
+            return self._scrolling_lyrics_widget
+
+        def _ensure_lyrics_renderers(self):
+            """Create renderers when lyrics, a plugin, or the workspace needs them."""
+            if self._lyrics_renderers_ready:
+                return
+            self._lyric_widget = FuriganaWidget()
+            self._lyric_widget.setMinimumHeight(250)
+            self._scrolling_lyrics_widget = ScrollingLyricsWidget(
+                self._lyric_widget.manual_overrides,
+                self.lyrics_direction, self.lyrics_padding, self,
+            )
+            for widget in (self._lyric_widget, self._scrolling_lyrics_widget):
+                widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+                widget.setAutoFillBackground(False)
+                self.lyric_display_stack.addWidget(widget)
+                apply_karaoke_settings(widget, self.karaoke_settings)
+            self._lyric_widget.setStyleSheet("background: transparent; border: none;")
+            self._scrolling_lyrics_widget.setStyleSheet(
+                "background: transparent; border: none;"
+                "QScrollArea { background: transparent; border: none; }"
+                "QScrollArea::viewport { background: transparent; }"
+                "QScrollArea > QWidget > QWidget { background: transparent; }"
+            )
+            self._lyrics_renderers_ready = True
+            self.apply_lyric_display_mode()
+            self.lyrics_renderers_created.emit()
 
 
         def _seek_from_waveform(self, position_ms):
@@ -1218,6 +1217,7 @@ class Player(
             if current_page is not self.lyrics_page:
                 return
 
+            self._ensure_lyrics_renderers()
             QTimer.singleShot(0, self._refresh_lyrics_after_page_show)
             QTimer.singleShot(1, self._refresh_lyrics_after_page_show)
 
@@ -1568,8 +1568,9 @@ class Player(
 
                     self.karaoke_settings = dialog.get_karaoke_settings()
                     save_karaoke_settings(self.karaoke_settings)
-                    for widget in (self.lyric_widget, self.scrolling_lyrics_widget):
-                        apply_karaoke_settings(widget, self.karaoke_settings)
+                    if self._lyrics_renderers_ready:
+                        for widget in (self.lyric_widget, self.scrolling_lyrics_widget):
+                            apply_karaoke_settings(widget, self.karaoke_settings)
                     if self.plugin_manager is not None:
                         self.plugin_manager.emit("karaoke_settings_changed")
 
@@ -1797,7 +1798,8 @@ class Player(
                 self._booru_executor.shutdown(wait=False, cancel_futures=True)
             self._save_startup_state()
 
-            self.lyric_widget.stop_workers()
+            if self._lyrics_renderers_ready:
+                self._lyric_widget.stop_workers()
             self.waveform_widget._stop_worker()
 
             self._close_audio_device_dialog()

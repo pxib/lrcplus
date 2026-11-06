@@ -358,6 +358,78 @@ def test_device_failure_is_delivered_on_gui_thread_and_stops_input(qapp):
         close(worker)
 
 
+@pytest.mark.parametrize("speed", [0.25, 0.73, 1.25, 2.0])
+def test_resampler_tail_reaches_device_once_at_end_of_stream(qapp, speed):
+    from core.audio_dsp import apply_pcm_rate_to_bytes
+
+    sinks = []
+    worker = PcmPlayback(sink_factory=lambda *args: sinks.append(Sink(*args)) or sinks[-1])
+    tone = (0.25 * np.sin(2 * np.pi * 440 * np.arange(1031) / 48000)).astype(np.float32)
+    source = np.column_stack((tone, -tone))
+    expected = apply_pcm_rate_to_bytes(source.tobytes(), audio_format().sampleFormat(), 2, speed)
+    try:
+        worker.configure(None, speed, 0, 1, enabled=True, playing=True)
+        for start in range(0, len(source), 127):
+            worker.receive_buffer(QAudioBuffer(source[start:start + 127].tobytes(), audio_format()))
+        worker.receive_buffer(QAudioBuffer())
+        wait_without_gui(lambda: bool(sinks) and sinks[0].total_written == len(expected))
+        assert bytes(sinks[0].written) == expected
+        time.sleep(0.03)  # Further end-of-stream polls cannot duplicate the tail.
+        assert sinks[0].total_written == len(expected)
+    finally:
+        close(worker)
+
+
+@pytest.mark.parametrize("change", ["speed", "pitch_bypass", "octave", "disabled", "track"])
+def test_control_restart_discards_inflight_audio_and_queued_route_notification(qapp, monkeypatch, change):
+    sinks = []
+    entered, release = threading.Event(), threading.Event()
+    worker = PcmPlayback(sink_factory=lambda *args: sinks.append(Sink(*args)) or sinks[-1])
+    process = worker._engine._processor.process
+    routes = []
+    worker.route_started.connect(lambda: routes.append(True))
+
+    def blocked(*args):
+        entered.set()
+        assert release.wait(3)
+        return process(*args)
+
+    try:
+        worker.configure(None, 1, 0, 1.5, enabled=True, playing=True)
+        worker.receive_buffer(buffer())
+        wait_without_gui(lambda: bool(sinks) and sinks[0].total_written == 32768)
+        assert not routes  # The first route notification is queued on the GUI.
+        monkeypatch.setattr(worker._engine._processor, "process", blocked)
+        worker.receive_buffer(buffer(0.5))
+        assert entered.wait(2)
+        generation = worker._generation
+        if change == "track":
+            worker.reset()
+        else:
+            worker.configure(None, 1.25 if change == "speed" else 1,
+                             5 if change == "pitch_bypass" else 12 if change == "octave" else 0,
+                             1.5, enabled=change != "disabled", playing=True)
+        assert worker._generation != generation
+        qapp.processEvents()
+        assert not routes  # A stale start must never mute native output.
+        release.set()
+        wait_without_gui(lambda: sinks[0].was_reset.is_set())
+        assert sinks[0].total_written == 32768
+        # Rapid switches while DSP was running must leave the final route usable.
+        worker.configure(None, 0.73, -5, 1.5, enabled=True, playing=True)
+        worker.configure(None, 2, 12, 1.5, enabled=True, playing=True)
+        worker.configure(None, 1.25, 0, 1.5, enabled=True, playing=True)
+        worker.receive_buffer(buffer(0, frames=4096))
+        worker.receive_buffer(QAudioBuffer())
+        wait_without_gui(lambda: len(sinks) == 2 and sinks[1].total_written == 3277 * 8)
+        assert not np.any(np.frombuffer(sinks[1].written, np.float32))
+        qapp.processEvents()
+        assert routes == [True]
+    finally:
+        release.set()
+        close(worker)
+
+
 @pytest.mark.parametrize("operation", ["gui_stall", "recents", "editor"])
 def test_player_decoder_keeps_feeding_audio_during_gui_stall(qapp, tmp_path, monkeypatch, operation):
     from PySide6.QtMultimedia import QAudioSink, QMediaDevices

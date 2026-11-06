@@ -189,7 +189,10 @@ class CoverPreviewDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(controls)
         layout.addWidget(self.view, 1)
-        QTimer.singleShot(0, self.view.fit_to_view)
+        fit_timer = QTimer(self)
+        fit_timer.setSingleShot(True)
+        fit_timer.timeout.connect(self.view.fit_to_view)
+        fit_timer.start(0)
 
 
 class PitchChangerDialog(QDialog):

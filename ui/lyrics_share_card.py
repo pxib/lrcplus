@@ -83,11 +83,12 @@ class _CardPreview(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         if not self.image.isNull():
-            pixmap = QPixmap.fromImage(self.image).scaled(
-                self.size(), Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            painter.drawPixmap((self.width() - pixmap.width()) // 2, (self.height() - pixmap.height()) // 2, pixmap)
+            size = self.image.size().scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio)
+            target = self.rect()
+            target.setSize(size)
+            target.moveCenter(self.rect().center())
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            painter.drawImage(target, self.image)
         painter.end()
 
 
@@ -210,7 +211,11 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         self.schedule_refresh()
 
     def shutdown(self):
+        self._refresh_timer.stop()
         self.album_art.shutdown()
+        self._image = QImage()
+        self.preview.image = self._image
+        self._render_key = None
 
     def _spin(self, name, value, suffix=""):
         widget = QSpinBox()
@@ -516,7 +521,10 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
 
         viewer = CoverPreviewDialog(QPixmap.fromImage(self._image), self)
         viewer.setWindowTitle("Lyrics Card")
-        viewer.exec()
+        try:
+            viewer.exec()
+        finally:
+            viewer.deleteLater()
 
     def export_image(self):
         if not self._prepare_image():

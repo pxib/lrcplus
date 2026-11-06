@@ -3,8 +3,8 @@
 from pathlib import Path
 from time import monotonic
 
-from PySide6.QtCore import QEvent, QObject, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QPainter, QPixmap, QShortcut, QAction
+from PySide6.QtCore import QEvent, QObject, QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QImageReader, QPainter, QPixmap, QShortcut, QAction
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QLabel, QLineEdit, QMenuBar,
@@ -18,9 +18,11 @@ class BudgetBrandLabel(QLabel):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._brand_pixmap = QPixmap(
-            str(Path(__file__).resolve().parents[1] / "assets" / "media" / "logocompact.png")
-        )
+        reader = QImageReader(str(Path(__file__).resolve().parents[1] / "assets" / "media" / "logocompact.png"))
+        size = reader.size()
+        if size.isValid():
+            reader.setScaledSize(size.scaled(QSize(4096, 32), Qt.AspectRatioMode.KeepAspectRatio))
+        self._brand_pixmap = QPixmap.fromImage(reader.read())
         self._show_logo()
         self._clicks = 0
         self._reset = QTimer(self)

@@ -1,7 +1,12 @@
-import numpy as np
 from PySide6.QtMultimedia import QAudioFormat
 
-from core.pitch_stream import BLOCK_FRAMES, create_pitch_stream
+from core.pcm_resampler import PcmRateProcessor
+
+
+def create_pitch_stream(channels, sample_rate, semitones):
+    from core.pitch_stream import create_pitch_stream as create
+    return create(channels, sample_rate, semitones)
+
 
 def volume_to_gain(volume_percent):
     """Convert a UI percentage to the PCM gain multiplier used above 100%."""
@@ -19,6 +24,8 @@ def snap_volume_percentage(value, threshold=5):
 
 def apply_pcm_gain(samples, gain):
     """Apply the gain and clamp the resulting floating-point PCM to [-1.0, 1.0]."""
+    import numpy as np
+
     array = np.asarray(samples, dtype=np.float32)
     gain = float(gain)
     if not np.isfinite(gain):
@@ -29,6 +36,8 @@ def apply_pcm_gain(samples, gain):
 
 def apply_pcm_gain_to_bytes(data, sample_format, gain):
     """Apply gain to interleaved Qt PCM bytes while preserving their sample format."""
+    import numpy as np
+
     if sample_format == QAudioFormat.SampleFormat.Float:
         samples = np.frombuffer(data, dtype=np.float32)
         return apply_pcm_gain(samples, gain).tobytes()
@@ -54,46 +63,10 @@ def apply_pcm_gain_to_bytes(data, sample_format, gain):
 
 
 def apply_pcm_rate_to_bytes(data, sample_format, channels, rate):
-    """Resample a decoded PCM block to match the media player's playback rate."""
-    rate = float(rate)
-    if not np.isfinite(rate) or rate <= 0 or abs(rate - 1.0) < 0.001:
-        return data
-    if sample_format == QAudioFormat.SampleFormat.Float:
-        dtype = np.float32
-        floating = True
-    elif sample_format == QAudioFormat.SampleFormat.Int16:
-        dtype = np.int16
-        floating = False
-    elif sample_format == QAudioFormat.SampleFormat.Int32:
-        dtype = np.int32
-        floating = False
-    else:
-        raise ValueError("Playback-rate processing requires float, 16-bit, or 32-bit PCM.")
-
-    channels = max(1, int(channels))
-    samples = np.frombuffer(data, dtype=dtype)
-    frame_count = len(samples) // channels
-    if frame_count < 2:
-        return data
-    frames = samples[:frame_count * channels].reshape(frame_count, channels)
-    output_count = max(1, int(round(frame_count / rate)))
-    source_positions = np.minimum(
-        np.arange(output_count, dtype=np.float64) * rate,
-        frame_count - 1,
-    )
-    left_indices = np.floor(source_positions).astype(np.intp)
-    right_indices = np.minimum(left_indices + 1, frame_count - 1)
-    fraction = (source_positions - left_indices)[:, None]
-    processed = (
-        frames[left_indices].astype(np.float32) * (1.0 - fraction)
-        + frames[right_indices].astype(np.float32) * fraction
-    )
-    if floating:
-        processed = np.clip(processed, -1.0, 1.0).astype(dtype)
-    else:
-        limits = np.iinfo(dtype)
-        processed = np.clip(np.rint(processed), limits.min, limits.max).astype(dtype)
-    return processed.tobytes()
+    """Resample a complete PCM clip; playback must retain a PcmRateProcessor."""
+    processor = PcmRateProcessor()
+    return (processor.process(data, sample_format, channels, rate)
+            + processor.flush())
 
 
 class PcmPitchProcessor:
@@ -105,6 +78,9 @@ class PcmPitchProcessor:
         if abs(shift) < 0.001:
             self.reset()
             return data
+        import numpy as np
+        from core.pitch_stream import BLOCK_FRAMES
+
         if sample_format == QAudioFormat.SampleFormat.Float:
             dtype, floating = np.float32, True
         elif sample_format == QAudioFormat.SampleFormat.Int16:
@@ -177,8 +153,10 @@ class PcmPitchProcessor:
         if effect is not None:
             effect.close()
         self._state = None
-        self._input = np.empty((0, 0), dtype=np.float32)
-        self._pending = np.empty((0, 0), dtype=np.float32)
+        # Idle/reset processors do not need NumPy. Real pitch processing
+        # allocates typed arrays when it creates a stream above.
+        self._input = ()
+        self._pending = ()
         self._started = False
         self._effect = None
         self._startup_remaining = 0

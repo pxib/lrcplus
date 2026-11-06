@@ -10,6 +10,19 @@ from ui.easter_eggs import EasterEggs
 from ui.main_window import Player
 
 
+def test_brand_keeps_only_the_display_sized_logo(qapp):
+    from ui.easter_eggs import BudgetBrandLabel
+
+    label = BudgetBrandLabel()
+    assert not label._brand_pixmap.isNull()
+    assert label._brand_pixmap.height() == 32
+    assert label.pixmap().size() == label._brand_pixmap.size()
+    label.setText("LRC")
+    label.setText("LRCPlus")
+    assert label.pixmap().size() == label._brand_pixmap.size()
+    label.deleteLater()
+
+
 @pytest.fixture
 def player(qapp):
     window = Player()

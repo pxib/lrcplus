@@ -24,3 +24,5 @@ pyvenv.cfg
 *.lrc
 *.lrcx
 *.mp3
+.pytest*
+*.jsonl

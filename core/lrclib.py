@@ -4,7 +4,7 @@ from email.utils import parsedate_to_datetime
 import math
 from threading import Event
 
-import requests
+from core.http_client import requests
 
 from core.app_info import APP_NAME, APP_VERSION, PROJECT_URL
 

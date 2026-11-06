@@ -8,7 +8,7 @@ from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtMultimedia import QAudioSink
 
 from core.audio_dsp import (
-    PcmPitchProcessor, apply_pcm_gain_to_bytes, apply_pcm_rate_to_bytes,
+    PcmPitchProcessor, PcmRateProcessor, apply_pcm_gain_to_bytes,
 )
 from core.audio_sink import dispose_audio_sink
 
@@ -86,7 +86,10 @@ class PcmPlayback(QObject):
                 return
             previous = self._controls
             self._controls = _Controls(device, speed, shift, gain, enabled, playing)
-            if previous.device != device or previous.enabled != enabled:
+            pitch_restart = ((abs(previous.shift) < 0.001) != (abs(shift) < 0.001)
+                             or abs(previous.shift - shift) >= 12.0)
+            if (previous.device != device or previous.enabled != enabled
+                    or abs(previous.speed - speed) >= 0.001 or pitch_restart):
                 self._reset_locked()
         self._notify()
 
@@ -162,6 +165,8 @@ class _PlaybackEngine(QObject):
         self._mailbox = mailbox
         self._sink_factory = sink_factory
         self._processor = PcmPitchProcessor()
+        self._rate_processor = PcmRateProcessor()
+        self._last_input = None
         self._generation = -1
         self._sink = None
         self._io = None
@@ -192,6 +197,8 @@ class _PlaybackEngine(QObject):
     def _reset(self):
         self._stop_sink()
         self._processor.reset()
+        self._rate_processor.reset()
+        self._last_input = None
 
     def _current(self):
         with self._mailbox._lock:
@@ -237,24 +244,20 @@ class _PlaybackEngine(QObject):
                         break
                     data, fmt, settings = mailbox._pending.popleft()
                     mailbox._queued_bytes -= len(data)
-                pcm = apply_pcm_rate_to_bytes(
+                self._last_input = (fmt, settings)
+                pcm = self._rate_processor.process(
                     data, fmt.sampleFormat(), fmt.channelCount(), settings.speed,
+                    sample_rate=fmt.sampleRate(),
                 )
-                pcm = self._processor.process(
-                    pcm, fmt.sampleFormat(), fmt.channelCount(), fmt.sampleRate(), settings.shift,
-                )
-                if settings.gain > 1:
-                    pcm = apply_pcm_gain_to_bytes(pcm, fmt.sampleFormat(), settings.gain)
-                if not self._current():
-                    break
-                if abs(settings.shift) >= 0.001 and not self._processor._started:
-                    continue
-                self._accept(pcm, fmt)
+                self._process_resampled(pcm, fmt, settings)
                 self._drain()
             with mailbox._lock:
                 end_of_stream = mailbox._end_of_stream and not mailbox._pending
+            if end_of_stream and self._last_input is not None and self._current():
+                fmt, settings = self._last_input
+                self._process_resampled(self._rate_processor.flush(), fmt, settings)
             self._drain(force=end_of_stream)
-        except (ValueError, RuntimeError, OSError) as error:
+        except (ImportError, ValueError, RuntimeError, OSError) as error:
             self._reset()
             with mailbox._lock:
                 report = not mailbox._closed and generation == mailbox._generation
@@ -272,6 +275,20 @@ class _PlaybackEngine(QObject):
             more = bool(mailbox._pending) or generation != mailbox._generation or mailbox._closed
         if more:
             mailbox._notify()
+
+    def _process_resampled(self, pcm, fmt, settings):
+        if not pcm:
+            return
+        pcm = self._processor.process(
+            pcm, fmt.sampleFormat(), fmt.channelCount(), fmt.sampleRate(), settings.shift,
+        )
+        if settings.gain > 1:
+            pcm = apply_pcm_gain_to_bytes(pcm, fmt.sampleFormat(), settings.gain)
+        if not self._current():
+            return
+        if abs(settings.shift) >= 0.001 and not self._processor._started:
+            return
+        self._accept(pcm, fmt)
 
     def _accept(self, pcm, fmt):
         if self._sink is None or self._sink.format() != fmt:

@@ -10,8 +10,9 @@ import unicodedata
 from collections import OrderedDict
 import json
 import math
-import requests
+from core.http_client import requests
 
+from lyrics.pinyin_client import read_pinyin_runs
 from lyrics.japanese_numbers import number_spans
 from lyrics.line_breaks import decode_line_breaks, original_reading_text
 from lyrics.reading_providers import (
@@ -20,12 +21,6 @@ from lyrics.reading_providers import (
     generate_reading_segments_batch,
     find_reading_provider,
 )
-
-try:
-    from pypinyin import Style, pinyin as _pypinyin
-except Exception:
-    Style = None
-    _pypinyin = None
 
 _ACTIVE_PARSER = "yomi"
 _MECAB_PARSE_MODE = "batch"
@@ -569,31 +564,36 @@ def token_to_furigana_segments(surface, reading):
 
 def build_pinyin_segments(text):
     """Build ruby-compatible pinyin segments, one reading per Han character."""
-    text = str(text or "")
-    if not text:
-        return []
-    if _pypinyin is None or Style is None:
-        return _fallback(text)
+    return build_pinyin_segments_batch([text])[0]
 
-    segments = []
-    index = 0
-    while index < len(text):
-        if not _is_hanzi(text[index]):
-            start = index
-            while index < len(text) and not _is_hanzi(text[index]):
-                index += 1
-            segments.append({"text": text[start:index], "reading": None})
-            continue
 
-        start = index
-        while index < len(text) and _is_hanzi(text[index]):
-            index += 1
-        run = text[start:index]
-        readings = _pypinyin(run, style=Style.TONE, heteronym=False, strict=False)
-        for char, values in zip(run, readings):
-            reading = str(values[0]) if values else None
-            segments.append({"text": char, "reading": reading or None})
-    return segments
+_HANZI_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+
+
+def build_pinyin_segments_batch(texts):
+    """Read a song's Han runs together, keeping only its small results here."""
+    values = [str(text or "") for text in texts]
+    matches = [list(_HANZI_RUN.finditer(text)) for text in values]
+    runs = list(dict.fromkeys(match.group() for row in matches for match in row))
+    if not runs:
+        return [_fallback(text) for text in values]
+    try:
+        converted = dict(zip(runs, read_pinyin_runs(runs)))
+    except Exception:
+        return [_fallback(text) for text in values]
+    result = []
+    for text, row in zip(values, matches):
+        segments, position = [], 0
+        for match in row:
+            if match.start() > position:
+                segments.append({"text": text[position:match.start()], "reading": None})
+            segments.extend({"text": char, "reading": reading or None}
+                            for char, reading in zip(match.group(), converted[match.group()]))
+            position = match.end()
+        if position < len(text):
+            segments.append({"text": text[position:], "reading": None})
+        result.append(segments)
+    return result
 
 
 _SEGMENT_CACHE = OrderedDict()
@@ -1070,6 +1070,7 @@ def prefetch_furigana_batches(lines, batch_size=10, progress_callback=None, shou
             if progress_callback: progress_callback(completed, total)
         return completed, total
     japanese = []
+    chinese = []
     mode = get_reading_mode()
 
     # Explicit providers may offer a real batch implementation. This matters
@@ -1097,7 +1098,7 @@ def prefetch_furigana_batches(lines, batch_size=10, progress_callback=None, shou
             if provider_id:
                 segments = generate_reading_segments(provider_id, text)
             elif mode == "pinyin" or (mode == "auto" and language == "chinese"):
-                segments = build_pinyin_segments(text)
+                chinese.append(text); continue
             elif mode == "furigana" or (mode == "auto" and language == "japanese"):
                 japanese.append(text); continue
             else:
@@ -1107,6 +1108,16 @@ def prefetch_furigana_batches(lines, batch_size=10, progress_callback=None, shou
         _cache_furigana_segments(text, segments or _fallback(text))
         completed += 1
         if progress_callback: progress_callback(completed, total)
+    if chinese and (not should_continue or should_continue()):
+        # One worker imports the dictionaries once for the entire collection.
+        batches = build_pinyin_segments_batch(chinese)
+        for text, segments in zip(chinese, batches):
+            if should_continue and not should_continue():
+                break
+            _cache_furigana_segments(text, segments or _fallback(text))
+            completed += 1
+            if progress_callback:
+                progress_callback(completed, total)
     # MeCab can tokenize the same lyric differently when surrounding lines are
     # included in the input. Let the user choose between the faster batch mode
     # and parsing each lyric line independently.

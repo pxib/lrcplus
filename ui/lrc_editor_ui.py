@@ -48,10 +48,31 @@ except Exception:
 
 
 from ui.lrc_editor_controls import ClickableSlider, KaraokeSeparationWidget
-from ui.lyrics_share_card import LyricsShareCardWidget
 
 
 class LrcEditorUiMixin:
+    @property
+    def share_card(self):
+        """Allocate the card controls and fonts only when they are needed."""
+        if self._share_card is None:
+            from ui.lyrics_share_card import LyricsShareCardWidget
+
+            card = LyricsShareCardWidget(self)
+            self._share_card = card
+            index = self.share_tabs.indexOf(self._share_card_page)
+            current = self.share_tabs.currentIndex()
+            blocker = QSignalBlocker(self.share_tabs)
+            self.share_tabs.removeTab(index)
+            self.share_tabs.insertTab(index, card, "Image card")
+            self.share_tabs.setCurrentIndex(current)
+            del blocker
+            self._share_card_page.deleteLater()
+        return self._share_card
+
+    def _share_tab_changed(self, index):
+        if self.share_tabs.widget(index) is self._share_card_page:
+            self.share_tabs.setCurrentWidget(self.share_card)
+
     def _build_ui(self):
         # The line list is intentionally outside the tabs. Selecting a lyric
         # must work the same way in Lyrics, Karaoke and Source modes.
@@ -609,8 +630,10 @@ class LrcEditorUiMixin:
         share_text_layout.addWidget(self.share_status_label)
         share_text_layout.addStretch()
         self.share_tabs.addTab(share_text_page, "Text")
-        self.share_card = LyricsShareCardWidget(self)
-        self.share_tabs.addTab(self.share_card, "Image card")
+        self._share_card = None
+        self._share_card_page = QWidget()
+        self.share_tabs.addTab(self._share_card_page, "Image card")
+        self.share_tabs.currentChanged.connect(self._share_tab_changed)
         self.share_selection_label = QLabel("")
         share_layout.addWidget(self.share_selection_label)
         self.tabs.addTab(self.share_page, "Share")

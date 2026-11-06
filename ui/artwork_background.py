@@ -92,8 +92,10 @@ class ArtworkBackgroundWidget(QWidget):
     and dark overlay so foreground lyrics remain readable.
     """
 
-    def __init__(self, content=None, parent=None):
+    def __init__(self, content=None, parent=None, *, defer_hidden_rendering=False):
         super().__init__(parent)
+        self._defer_hidden_rendering = defer_hidden_rendering
+        self._background_cache_key = None
         self._source_pixmap = QPixmap()
         self._artwork_bytes = None
         self._cached_background = QPixmap()
@@ -183,6 +185,7 @@ class ArtworkBackgroundWidget(QWidget):
         self._artwork_bytes = None
         self._source_pixmap = QPixmap()
         self._cached_background = QPixmap()
+        self._background_cache_key = None
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.update()
 
@@ -251,8 +254,18 @@ class ArtworkBackgroundWidget(QWidget):
         removed here because its alpha compositing could produce a nearly
         black result on some Qt paint backends.
         """
+        if self._defer_hidden_rendering and (not self.isVisible() or not self._background_enabled):
+            self._cached_background = QPixmap()
+            self._background_cache_key = None
+            return
         if self.size().isEmpty() or self._source_pixmap.isNull():
             self._cached_background = QPixmap()
+            self._background_cache_key = None
+            return
+        key = (self._source_pixmap.cacheKey(), self.width(), self.height(),
+               self._background_layout, self._blur_mode, self._blur_bleed,
+               self._blur_radius, self._darkness)
+        if key == self._background_cache_key and not self._cached_background.isNull():
             return
 
         if self._background_layout == "center":
@@ -304,11 +317,8 @@ class ArtworkBackgroundWidget(QWidget):
                 width = image.width()
                 height = image.height()
 
-                raw = image.bits().tobytes()
-                pil_image = Image.frombytes(
-                    "RGBA",
-                    (width, height),
-                    raw,
+                pil_image = Image.frombuffer(
+                    "RGBA", (width, height), image.constBits(), "raw", "RGBA", 0, 1,
                 )
 
                 blur_radius = max(
@@ -349,7 +359,7 @@ class ArtworkBackgroundWidget(QWidget):
                         blurred_image.width,
                         blurred_image.height,
                         QImage.Format.Format_RGBA8888,
-                    ).copy()
+                    )
 
                     scaled = QPixmap.fromImage(qimage)
                     print(
@@ -370,7 +380,7 @@ class ArtworkBackgroundWidget(QWidget):
                         width,
                         height,
                         QImage.Format.Format_RGBA8888,
-                    ).copy()
+                    )
 
                     scaled = QPixmap.fromImage(qimage)
                     print(
@@ -413,6 +423,18 @@ class ArtworkBackgroundWidget(QWidget):
         painter.end()
 
         self._cached_background = background
+        self._background_cache_key = key
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._defer_hidden_rendering:
+            self._rebuild_background()
+
+    def hideEvent(self, event):
+        if self._defer_hidden_rendering:
+            self._cached_background = QPixmap()
+            self._background_cache_key = None
+        super().hideEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)

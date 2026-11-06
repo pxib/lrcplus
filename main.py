@@ -4,6 +4,11 @@ from pathlib import Path
 # Worker dispatch must precede GUI and third-party imports in frozen releases.
 from core.dependencies import activate_dependencies
 
+if __name__ == "__main__" and "--lrcplus-pinyin-worker" in sys.argv:
+    sys.argv.remove("--lrcplus-pinyin-worker")
+    from core.pinyin_worker import main as pinyin_worker_main
+    raise SystemExit(pinyin_worker_main())
+
 if __name__ == "__main__" and "--lrcplus-dependency-probe" in sys.argv:
     sys.argv.remove("--lrcplus-dependency-probe")
     from core.dependency_probe import main as probe_main

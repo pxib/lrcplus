@@ -629,8 +629,11 @@ class EmbeddedPlayer(QWidget):
 
     def _segments(self, text):
         # Reuse the app's readings without starting a second audio engine.
-        source = self.host.lyric_widget
-        if source.lyric == text:
+        source = (
+            self.host.lyric_widget
+            if getattr(self.host, "_lyrics_renderers_ready", True) else None
+        )
+        if source is not None and source.lyric == text:
             return [dict(segment) for segment in source.segments]
         index = self.host.current_line
         lines = self.host.lyric_lines
@@ -658,7 +661,7 @@ class EmbeddedPlayer(QWidget):
         else:
             cached = get_cached_furigana_segments(text)
         prepared = cached if cached is not None else [{"text": text, "reading": None}]
-        overrides = source.manual_overrides.get(text, {})
+        overrides = source.manual_overrides.get(text, {}) if source is not None else {}
         for index, segment in enumerate(prepared):
             if index in overrides:
                 segment["reading"] = overrides[index] or None

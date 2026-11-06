@@ -6,7 +6,7 @@ import threading
 from urllib.parse import urlparse
 import weakref
 
-import requests
+from core.http_client import requests
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QImage, QImageReader
 
