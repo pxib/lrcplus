@@ -450,6 +450,7 @@ def get_appearance_settings(payload=None):
             custom_themes.append({
                 "name": name.strip(),
                 "description": str(theme.get("description", "Custom theme")),
+                "advancedColors": normalize_theme_overrides(theme.get("advancedColors", {})),
                 **{key: color.lower() for key, color in colors.items()},
             })
     theme_preset_name = values.get("theme_preset_name", "")

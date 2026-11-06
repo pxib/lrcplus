@@ -127,6 +127,7 @@ def _valid_theme_definition(theme):
     return {
         "name": name,
         "description": str(theme.get("description", "Custom theme")),
+        "advancedColors": normalize_theme_overrides(theme.get("advancedColors", {})),
         **{key: QColor(value).name() for key, value in colors.items()},
     }
 
@@ -1925,6 +1926,10 @@ class SettingsDialog(QDialog):
                 "slider_handle": dock_text.name(),
                 "scroll_handle": accent.name(),
             })
+            advanced = normalize_theme_overrides(preset.get("advancedColors", {}))
+            for mode, advanced_colors in advanced.items():
+                self.theme_overrides.setdefault(mode, {}).update(advanced_colors)
+            colors.update(advanced.get(self.theme_mode, {}))
             self.light_theme_button.setChecked(self.theme_mode == "light")
             self.dark_theme_button.setChecked(self.theme_mode == "dark")
         self._update_advanced_theme_controls()
@@ -1979,6 +1984,7 @@ class SettingsDialog(QDialog):
             "accent": palette["accent"],
             "text": palette["text"],
             "secondaryText": palette["muted"],
+            "advancedColors": normalize_theme_overrides(self.theme_overrides),
         }
 
     def _reload_theme_presets(self, selected_name=None):
