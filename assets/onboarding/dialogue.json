@@ -1,0 +1,42 @@
+{
+  "firststeplanguage": [
+    {
+      "speaker": "Setup Wizard",
+      "lines": [
+        "Youkoso to LRCPlus!\\nw3",
+        "To COMMENCE forth, please choose a language.\\nw3",
+        "Oh, right. I forgot I didn't even localize this software. Mb, skip this step.\\e"
+      ]
+    }
+    ],
+    "secondstepmusiclibraryfolders": [
+        {
+        "speaker": "Setup Wizard",
+        "lines": [
+          "LRCPlus can scan your music library for lyrics.\\nw2",
+          "If you have a... lot of music, it may take a little while to scan.\\nw3",
+          "You can always add more folders later. I think.\\e"
+        ]
+        }
+    ],
+    "thirdstepappearance": [
+        {
+        "speaker": "Setup Wizard",
+        "lines": [
+          "Alrighhht, this is the spicy part. You can adjust the appearance of LRCPlus to your liking. I prefer Sakura ngl.\\nw6",
+          "Pick whichever feels more like you.\\nw3",
+          "You can always change your theme later in Settings~\\e"
+        ]
+        }
+    ],
+    "fourthsteplyrics": [
+        {
+        "speaker": "Setup Wizard",
+        "lines": [
+          "LRCPlus can display lyrics from your own files, or help you search for them online.\\nw3",
+          "Okay, so... you wanna search for lyrics online?\\button(Yes,lyrics_online)\\button(No,ok)",
+          "\\c6You can explore furigana, romanization, and other display options in Settings.\\e"
+        ]
+        }
+    ]
+}

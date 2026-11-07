@@ -131,6 +131,46 @@ def _valid_theme_definition(theme):
         **{key: QColor(value).name() for key, value in colors.items()},
     }
 
+
+def apply_theme_preset(appearance, preset):
+    """Apply a preset using the same color mapping as the Settings UI."""
+    from copy import deepcopy
+    result = deepcopy(appearance)
+    if isinstance(preset, str):
+        result.update(theme_color=preset, theme_preset_name=None)
+        return result
+    mode = "dark" if QColor(preset["background"]).lightness() < 128 else "light"
+    background, surface, accent, text, secondary = (QColor(preset[key]) for key in
+        ("background", "surface", "accent", "text", "secondaryText"))
+    dock = background if mode == "dark" else text
+    dock_control = surface if mode == "dark" else dock.lighter(135)
+    dock_text = text if mode == "dark" else surface
+    raised_base = surface if mode == "dark" else background
+    overrides = normalize_theme_overrides(result.get("theme_overrides"))
+    colors = overrides.setdefault(mode, {})
+    colors.update({
+        "window": background.name(), "header": background.name(), "surface": surface.name(),
+        "surface_alt": _blend_theme_colors(background, surface, 0.55),
+        "raised": _blend_theme_colors(raised_base, text, 0.10),
+        "raised_hover": _blend_theme_colors(raised_base, accent, 0.10),
+        "pressed": _blend_theme_colors(raised_base, accent, 0.20),
+        "text": text.name(), "brand": text.name(), "muted": secondary.name(),
+        "border": _blend_theme_colors(background, text, 0.16),
+        "field_border": _blend_theme_colors(background, text, 0.22),
+        "header_button_text": text.name(), "dock": dock.name(),
+        "dock_border": dock.lighter(150).name(), "dock_control": dock_control.name(),
+        "dock_control_hover": dock_control.lighter(115).name(),
+        "dock_control_border": dock_control.lighter(130).name(),
+        "dock_disabled": dock.darker(110).name(), "dock_text": dock_text.name(),
+        "dock_muted": secondary.name(), "seek_track": accent.name(),
+        "slider_handle": dock_text.name(), "scroll_handle": accent.name(),
+    })
+    for key, values in normalize_theme_overrides(preset.get("advancedColors", {})).items():
+        overrides.setdefault(key, {}).update(values)
+    result.update(theme_preset_name=preset["name"], theme_mode=mode,
+                  theme_color=accent.name(), theme_overrides=overrides)
+    return result
+
 # Shared by global controls and per-file overrides so both scopes stay organized.
 LYRIC_SECTIONS = {
     "Display": (
@@ -247,6 +287,7 @@ class PluginSettingsDialog(QDialog):
 
 class SettingsDialog(QDialog):
     check_updates_requested = Signal()
+    relaunch_wizard_requested = Signal()
 
     def __init__(
         self,
@@ -327,6 +368,10 @@ class SettingsDialog(QDialog):
             bool(self.startup_settings.get("restore_playlist", False))
         )
         general_layout.addWidget(self.restore_playlist_checkbox)
+
+        self.relaunch_wizard_button = QPushButton("Relaunch Wizard")
+        self.relaunch_wizard_button.clicked.connect(self.relaunch_wizard_requested.emit)
+        general_layout.addWidget(self.relaunch_wizard_button, alignment=Qt.AlignmentFlag.AlignLeft)
 
         self._add_section_heading(general_layout, "Updates")
         self.automatic_update_checkbox = QCheckBox(
@@ -1882,56 +1927,16 @@ class SettingsDialog(QDialog):
         preset = self.theme_preset_combo.itemData(index)
         if not preset:
             return
-        if isinstance(preset, str):
-            # Keep the original standalone accent presets available.
-            self.theme_color = preset
-            self.theme_preset_name = None
-        else:
-            self.theme_preset_name = preset["name"]
-            self.theme_mode = "dark" if QColor(preset["background"]).lightness() < 128 else "light"
-            self.theme_color = QColor(preset["accent"]).name()
-            background = QColor(preset["background"])
-            surface = QColor(preset["surface"])
-            accent = QColor(preset["accent"])
-            text = QColor(preset["text"])
-            secondary_text = QColor(preset["secondaryText"])
-            dock = background if self.theme_mode == "dark" else text
-            dock_control = surface if self.theme_mode == "dark" else dock.lighter(135)
-            dock_text = text if self.theme_mode == "dark" else surface
-            raised_base = surface if self.theme_mode == "dark" else background
-            colors = self.theme_overrides.setdefault(self.theme_mode, {})
-            colors.update({
-                "window": background.name(),
-                "header": background.name(),
-                "surface": surface.name(),
-                "surface_alt": _blend_theme_colors(background, surface, 0.55),
-                "raised": _blend_theme_colors(raised_base.name(), text.name(), 0.10),
-                "raised_hover": _blend_theme_colors(raised_base.name(), accent.name(), 0.10),
-                "pressed": _blend_theme_colors(raised_base.name(), accent.name(), 0.20),
-                "text": text.name(),
-                "brand": text.name(),
-                "muted": secondary_text.name(),
-                "border": _blend_theme_colors(background.name(), text.name(), 0.16),
-                "field_border": _blend_theme_colors(background.name(), text.name(), 0.22),
-                "header_button_text": text.name(),
-                "dock": dock.name(),
-                "dock_border": dock.lighter(150).name(),
-                "dock_control": dock_control.name(),
-                "dock_control_hover": dock_control.lighter(115).name(),
-                "dock_control_border": dock_control.lighter(130).name(),
-                "dock_disabled": dock.darker(110).name(),
-                "dock_text": dock_text.name(),
-                "dock_muted": secondary_text.name(),
-                "seek_track": accent.name(),
-                "slider_handle": dock_text.name(),
-                "scroll_handle": accent.name(),
-            })
-            advanced = normalize_theme_overrides(preset.get("advancedColors", {}))
-            for mode, advanced_colors in advanced.items():
-                self.theme_overrides.setdefault(mode, {}).update(advanced_colors)
-            colors.update(advanced.get(self.theme_mode, {}))
-            self.light_theme_button.setChecked(self.theme_mode == "light")
-            self.dark_theme_button.setChecked(self.theme_mode == "dark")
+        values = apply_theme_preset({
+            "theme_mode": self.theme_mode, "theme_color": self.theme_color,
+            "theme_preset_name": self.theme_preset_name, "theme_overrides": self.theme_overrides,
+        }, preset)
+        self.theme_mode = values["theme_mode"]
+        self.theme_color = values["theme_color"]
+        self.theme_preset_name = values["theme_preset_name"]
+        self.theme_overrides = values["theme_overrides"]
+        self.light_theme_button.setChecked(self.theme_mode == "light")
+        self.dark_theme_button.setChecked(self.theme_mode == "dark")
         self._update_advanced_theme_controls()
         self._update_theme_color_button()
         _apply_settings_dialog_style(self, self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides)

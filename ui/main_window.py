@@ -475,6 +475,7 @@ class Player(
             self.lyrics_menu.addAction(reload_renderer_action)
             self.lyrics_menu.addSeparator()
             search_lyrics_action = QAction("Search Lyrics", self)
+            search_lyrics_action.setObjectName("search_lyrics")
             search_lyrics_action.triggered.connect(self.search_lrclib_lyrics)
             self.lyrics_menu.addAction(search_lyrics_action)
             self.lyrics_button.setMenu(self.lyrics_menu)
@@ -1535,6 +1536,15 @@ class Player(
                 QTimer.singleShot(0, lambda: self.check_for_updates(manual=True))
 
             dialog.check_updates_requested.connect(check_updates_after_settings_close)
+
+            def relaunch_wizard():
+                dialog.accept()
+                def open_wizard():
+                    from ui.onboarding import OnboardingDialog
+                    OnboardingDialog(self).run()
+                QTimer.singleShot(0, open_wizard)
+
+            dialog.relaunch_wizard_requested.connect(relaunch_wizard)
 
             try:
                 if dialog.exec() == QDialog.DialogCode.Accepted:

@@ -1,6 +1,10 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [2026-11-07] - exp
+
+### Added
+
 ## [2026-11-06]
 
 ### Added

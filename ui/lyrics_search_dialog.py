@@ -6,7 +6,7 @@ import math
 import os
 from time import monotonic
 from threading import Event
-from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtCore import QEventLoop, Qt, QTimer, QSize
 from PySide6.QtGui import QIcon, QMovie, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -71,6 +71,8 @@ class LyricsSearchDialogMixin:
         dialog = QDialog(self)
         dialog.setWindowTitle("Search Lyrics")
         dialog.resize(900, 650)
+        from core.onboarding_events import onboarding_events
+        dialog.finished.connect(lambda _result: onboarding_events(self).occurred.emit("lyrics_search_closed"))
 
         layout = QVBoxLayout(dialog)
         provider_row = QHBoxLayout()
@@ -537,6 +539,8 @@ class LyricsSearchDialogMixin:
             search_in_progress = True
             setattr(self, cooldown_attribute(), monotonic() + 5)
             update_search_button()
+            from core.onboarding_events import onboarding_events
+            onboarding_events(self).occurred.emit("lyrics_search_started")
             search_job.start(fetch_results, query, source, key, search_cancel, auth_method.currentData())
 
         def fetch_results(query, source, key, cancel, mode):
@@ -555,6 +559,8 @@ class LyricsSearchDialogMixin:
             nonlocal search_in_progress
             search_in_progress = False
             if isinstance(payload, provider_errors):
+                from core.onboarding_events import onboarding_events
+                onboarding_events(self).occurred.emit("lyrics_search_failed")
                 set_search_indicator("error")
                 setattr(self, cooldown_attribute(), max(
                     getattr(self, cooldown_attribute(), 0), monotonic() + payload.retry_after,
@@ -567,6 +573,8 @@ class LyricsSearchDialogMixin:
                 payload = []
 
             records.extend(payload)
+            from core.onboarding_events import onboarding_events
+            onboarding_events(self).occurred.emit("lyrics_search_results" if records else "lyrics_search_empty")
 
             check_result_timing()
             populate_results()
@@ -628,6 +636,8 @@ class LyricsSearchDialogMixin:
 
         def search_failed(error):
             nonlocal search_in_progress
+            from core.onboarding_events import onboarding_events
+            onboarding_events(self).occurred.emit("lyrics_search_failed")
             search_in_progress = False
             set_search_indicator("error")
             update_search_button()
@@ -787,7 +797,14 @@ class LyricsSearchDialogMixin:
         change_auth_method()
 
         try:
-            dialog.exec()
+            if getattr(self, "_active_onboarding", None) is not None:
+                loop = QEventLoop(dialog)
+                dialog.finished.connect(loop.quit)
+                dialog.setWindowModality(Qt.WindowModality.NonModal)
+                dialog.show()
+                loop.exec()
+            else:
+                dialog.exec()
         finally:
             cooldown_timer.stop()
             search_cancel.set()

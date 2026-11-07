@@ -1,0 +1,54 @@
+{
+  "lyrics_online": [
+    {
+      "speaker": "Setup Wizard",
+      "lines": [
+        "You can search for lyrics online from LRCPlus.\\n",
+        "Let's see...\\wait(1)\\pos(1490,55,in_out_cubic) ^ right here.\\nw2",
+        "I'll click it for you.\\wait(1)\\click(81.1%,3.3%)\\pos(1490,205,out_cubic) Hmm...\\nw2",
+        "Ah, there it is.\\wait(1)\\click(81.3%,13.5%)\\nw2",
+        "\\curhide\\toggleoutsideclickOkay, try searching for lyrics now.\\pos(1200,205,out_cubic)\\waitevent(lyrics_search_started)",
+        "Ooh, searching...\\waitevent(lyrics_search_results,lyrics_search_failed,lyrics_search_empty)\\if(lyrics_search_failed,search_failed)\\if(lyrics_search_empty,no_results)\\if(lyrics_search_results,results_found)"
+    ]
+    }
+  ],
+  "search_failed": [
+    {
+      "speaker": "Setup Wizard",
+      "lines": ["Yikes... something went wrong with the search. \\toggleoutsideclickWant to try again?\\button(Try again,lyrics_retry)\\button(Continue,lyrics_continue)"]
+    }
+  ],
+  "no_results": [
+    {
+      "speaker": "Setup Wizard",
+      "lines": ["No lyrics this time... \\toggleoutsideclickMaybe try a different search?\\button(Try again,lyrics_retry)\\button(Continue,lyrics_continue)"]
+    }
+  ],
+  "results_found": [
+    {
+      "speaker": "Setup Wizard",
+      "lines": ["There we go! You can pick a result to take a closer look.\\wait(3)\\res\\cr6"]
+    }
+  ],
+  "lyrics_retry": [
+    {
+      "speaker": "Setup Wizard",
+      "lines": [
+        "Go ahead, give it another try.\\waitevent(lyrics_search_started)",
+        "Let's see...\\waitevent(lyrics_search_results,lyrics_search_failed,lyrics_search_empty)\\if(lyrics_search_failed,search_failed)\\if(lyrics_search_empty,no_results)\\if(lyrics_search_results,results_found)"
+      ]
+    }
+  ],
+  "lyrics_continue": [
+    {
+      "speaker": "Setup Wizard",
+      "lines": ["No worries, you can always search again later.\\wait(2)\\res\\cr6"]
+    }
+  ],
+  "ok": [
+    {
+      "speaker": "Setup Wizard",
+      "lines": ["Fair enough.\\wait(2)\\cr6"]
+    }
+  ]
+}

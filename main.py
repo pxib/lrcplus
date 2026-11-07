@@ -43,6 +43,8 @@ __all__ = [
 
 
 def main() -> int:
+    from ui.onboarding import needs_onboarding
+    show_onboarding = needs_onboarding()
     update_health_token = None
     for argument in sys.argv[1:]:
         if argument.startswith("--lrcplus-update-health="):
@@ -77,7 +79,13 @@ def main() -> int:
             lambda token=update_health_token: acknowledge_update_health(token),
         )
     from ui.dependency_settings import show_dependency_notice
-    QTimer.singleShot(0, lambda: show_dependency_notice(plugin_manager, window))
+    def show_startup_dialogs():
+        if show_onboarding:
+            from ui.onboarding import OnboardingDialog
+            OnboardingDialog(window).run()
+        show_dependency_notice(plugin_manager, window)
+
+    QTimer.singleShot(0, show_startup_dialogs)
 
     exit_code = app.exec()
     plugin_manager.unload_all()
