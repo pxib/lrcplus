@@ -62,6 +62,21 @@ def test_http_proxy_shares_transport_patches_with_requests(monkeypatch):
     assert actual._lrcplus_test_marker is marker
 
 
+def test_http_proxy_restores_transport_after_patch(monkeypatch):
+    import requests as actual
+    from core.http_client import requests
+
+    assert vars(requests) is vars(actual)
+    for name in ("get", "post"):
+        original = getattr(actual, name)
+        with monkeypatch.context() as patch:
+            replacement = lambda *args, **kwargs: None
+            patch.setattr(requests, name, replacement)
+            assert getattr(actual, name) is replacement
+        assert getattr(requests, name) is original
+        assert getattr(actual, name) is original
+
+
 def test_first_lyrics_workspace_uses_latest_settings_and_reuses_widgets(qapp):
     window = Player()
     try:

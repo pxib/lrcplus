@@ -9,6 +9,10 @@ def _module():
 
 
 class _DeferredRequests:
+    # Introspection must see the same namespace that writes and deletes use.
+    # In particular, patch tools must restore attributes on the real module.
+    __slots__ = ()
+
     def __getattr__(self, name):
         return getattr(_module(), name)
 

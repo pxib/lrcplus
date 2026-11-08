@@ -231,6 +231,8 @@ def test_player_handoff_preserves_queue_rules_and_sink(qapp, monkeypatch, tmp_pa
     from types import SimpleNamespace
 
     monkeypatch.setattr("core.gapless.shutil.which", lambda name: "ffmpeg")
+    # Exercise the same device-free environment as the hosted CI runner.
+    monkeypatch.setattr("ui.audio_devices.QMediaDevices.audioOutputs", lambda: [])
     save_playback_settings({"play_mode": "playlist", "gapless_playback": True})
     window = Player()
     player = window.media_player
@@ -238,6 +240,8 @@ def test_player_handoff_preserves_queue_rules_and_sink(qapp, monkeypatch, tmp_pa
     player._sink_factory = Sink
     device = SimpleNamespace(preferredFormat=audio_format, isFormatSupported=lambda fmt: True)
     monkeypatch.setattr(window.audio_output, "device", lambda: device)
+    # The fake sink supplies output even though the host has no audio device.
+    monkeypatch.setattr(window, "_audio_output_unavailable", False)
     monkeypatch.setattr(window.waveform_widget, "load_audio", lambda *args: None)
     monkeypatch.setattr(window, "update_background_for_audio", lambda *args: None)
     paths = [tmp_path / name for name in ("first.wav", "second.wav", "third.wav")]
