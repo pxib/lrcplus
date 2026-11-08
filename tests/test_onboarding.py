@@ -5,7 +5,7 @@ import pytest
 
 from core import settings
 from core.onboarding_script import compile_script, load_script
-from ui.onboarding import OnboardingDialog, load_dialogue, load_route, needs_onboarding, parse_dialogue_line
+from ui.onboarding import FINISH_PAGE, LYRICS_PAGE, OnboardingDialog, load_dialogue, load_route, needs_onboarding, parse_dialogue_line
 
 
 def test_renpy_style_script_compiles_menu_conditions_and_inline_actions():
@@ -696,7 +696,7 @@ label fourthsteplyrics:
     dialog.show()
     dialog.typing_timer.stop()
     monkeypatch.setattr("ui.onboarding.load_script", lambda: labels)
-    dialog.set_page(3)
+    dialog.set_page(LYRICS_PAGE)
     dialog.step_dialogue_lines = labels["fourthsteplyrics"]
     dialog.dialogue_lines = labels["fourthsteplyrics"]
     dialog.dialogue_index = -1
@@ -724,13 +724,13 @@ def test_debug_skips_event_wait_and_jumps_to_step(monkeypatch):
     dialog.debug_skip_line()
     assert not dialog.waiting_events
     assert dialog.full_text == "Next line."
-    dialog.debug_step.setCurrentIndex(3)
+    dialog.debug_step.setCurrentIndex(LYRICS_PAGE)
     dialog.debug_jump_step()
-    assert dialog.page == 3
+    assert dialog.page == LYRICS_PAGE
     assert dialog.dialogue_index == 0
-    dialog.debug_step.setCurrentIndex(4)
+    dialog.debug_step.setCurrentIndex(FINISH_PAGE)
     dialog.debug_jump_step()
-    assert dialog.page == 4 and dialog.next.isEnabled()
+    assert dialog.page == FINISH_PAGE and dialog.next.isEnabled()
     dialog.close()
 
 
@@ -778,3 +778,142 @@ def test_closing_search_window_exits_wait(monkeypatch, start_first):
         dialog.finish_typing()
     assert dialog.full_text == parse_dialogue_line(load_route("search_closed")[0][1])[0]
     dialog.close()
+
+
+@pytest.mark.parametrize("cue", ["", r"\wait(20)", r"\idle(20)",
+                                     r"\waitevent(lyrics_search_started,idle(20))", r"\pos(20,20)"])
+def test_route_switch_cancels_previous_scene(monkeypatch, qapp, cue):
+    monkeypatch.setattr(settings, "save_all_settings", lambda payload: None)
+    monkeypatch.setattr("ui.onboarding.load_route", lambda key: [("Guide", r"New scene.\n")])
+    player = QWidget()
+    player.library_folders = []
+    dialog = OnboardingDialog(player)
+    try:
+        dialog.show()
+        dialog.typing_timer.stop()
+        dialog.dialogue_lines = [("Guide", "Old scene." + cue)]
+        dialog.dialogue_index = -1
+        dialog.advance_dialogue()
+        if cue:
+            dialog.finish_typing()
+        dialog.timer.start(20_000)
+        dialog.event_auto_advance = True
+
+        dialog.select_route("replacement")
+
+        assert dialog.full_text == "New scene."
+        assert dialog.typing_timer.isActive()
+        assert not dialog.next.isEnabled()
+        assert dialog.space.isEnabled()
+        assert not dialog.timer.isActive()
+        assert not dialog.script_timer.isActive()
+        assert not dialog.idle_timer.isActive()
+        assert not dialog.idle_cursor_timer.isActive()
+        assert not dialog.waiting_events
+        assert not dialog.event_auto_advance
+        assert dialog.move_animation.state() == dialog.move_animation.State.Stopped
+        dialog.events.occurred.emit("lyrics_search_started")
+        dialog.finish_typing()
+        assert dialog.description.text() == "New scene."
+        assert dialog.dialogue_index == 0
+    finally:
+        dialog.close()
+
+
+def test_new_route_invalidates_queued_menu_recovery(monkeypatch, qapp):
+    monkeypatch.setattr(settings, "save_all_settings", lambda payload: None)
+    monkeypatch.setattr("ui.onboarding.load_route", lambda key: [("Guide", key + r"\n")])
+    player = QWidget()
+    player.library_folders = []
+    dialog = OnboardingDialog(player)
+    try:
+        dialog.show()
+        dialog.menu_recovery_route = "old_recovery"
+        dialog.recover_from_disruption()
+        assert dialog.disruption_pending
+        dialog.select_route("replacement")
+        qapp.processEvents()
+        assert dialog.full_text == "replacement"
+        assert not dialog.disruption_pending
+    finally:
+        dialog.close()
+
+
+@pytest.mark.parametrize("transition", ["route", "page", "close"])
+def test_scene_transition_invalidates_queued_menu_action(monkeypatch, qapp, transition):
+    monkeypatch.setattr(settings, "save_all_settings", lambda payload: None)
+    monkeypatch.setattr("ui.onboarding.load_route", lambda key: [("Guide", r"Replacement.\n")])
+    player = QWidget()
+    player.library_folders = []
+    dialog = OnboardingDialog(player)
+    menu = QMenu(player)
+    action = menu.addAction("Search Lyrics")
+    triggered = []
+    action.triggered.connect(lambda: triggered.append(True))
+    try:
+        dialog.show()
+        menu.popup(player.mapToGlobal(QPoint(30, 30)))
+        qapp.processEvents()
+        dialog.pending_menu_action = action
+        dialog.watched_menu = menu
+        dialog.perform_script_click()
+        if transition == "route":
+            dialog.select_route("replacement")
+        elif transition == "page":
+            dialog.set_page(2)
+        else:
+            dialog.close()
+        qapp.processEvents()
+        assert triggered == []
+        assert not dialog.cursor_hide_timer.isActive()
+    finally:
+        dialog.close()
+
+
+def test_long_command_sequence_yields_and_completes_without_recursion(monkeypatch, qapp):
+    monkeypatch.setattr(settings, "save_all_settings", lambda payload: None)
+    player = QWidget()
+    player.library_folders = []
+    dialog = OnboardingDialog(player)
+    try:
+        dialog.typing_timer.stop()
+        dialog.dialogue_lines = [("Guide", "Hello" + r"\toggleoutsideclick" * 2001 + r"\e")]
+        dialog.dialogue_index = -1
+        dialog.advance_dialogue()
+        dialog.finish_typing()
+        assert dialog.script_timer.isActive()
+        assert dialog.script_busy
+        for _ in range(20):
+            qapp.processEvents()
+            if not dialog.script_timer.isActive():
+                break
+        assert not dialog.script_timer.isActive()
+        assert not dialog.script_busy
+        assert dialog.next.isEnabled()
+        assert dialog.outside_click_enabled
+    finally:
+        dialog.close()
+
+
+def test_immediate_jump_loop_yields_and_can_be_cancelled(monkeypatch, qapp):
+    monkeypatch.setattr(settings, "save_all_settings", lambda payload: None)
+    monkeypatch.setattr("ui.onboarding.load_route", lambda key: [
+        ("Guide", r"\jump(loop)" if key == "loop" else r"Recovered.\n")
+    ])
+    player = QWidget()
+    player.library_folders = []
+    dialog = OnboardingDialog(player)
+    try:
+        dialog.select_route("loop")
+        assert dialog.script_timer.isActive()
+        QTimer.singleShot(0, lambda: dialog.select_route("replacement"))
+        for _ in range(5):
+            qapp.processEvents()
+            if dialog.full_text == "Recovered.":
+                break
+        assert dialog.full_text == "Recovered."
+        assert not dialog.script_timer.isActive()
+        dialog.finish_typing()
+        assert dialog.description.text() == "Recovered."
+    finally:
+        dialog.close()

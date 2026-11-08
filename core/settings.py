@@ -45,6 +45,25 @@ STARTUP_DEFAULTS = {
     "restore_playlist": False,
 }
 
+ONBOARDING_TEXT_INTERVALS = {"slow": 50, "normal": 25, "fast": 10, "instant": 0}
+
+
+def get_onboarding_pacing(payload=None):
+    """Read validated wizard preferences without creating first-run settings."""
+    payload = load_all_settings() if payload is None else payload
+    values = payload.get("onboarding_pacing", {})
+    if not isinstance(values, dict):
+        values = {}
+    speed = values.get("text_speed", "normal")
+    if not isinstance(speed, str) or speed not in ONBOARDING_TEXT_INTERVALS:
+        speed = "normal"
+    auto_read = values.get("auto_read", True)
+    if not isinstance(auto_read, bool):
+        auto_read = True
+    return {"text_speed": speed, "reduced_motion": values.get("reduced_motion") is True,
+            "auto_read": auto_read}
+
+
 UPDATE_DEFAULTS = {
     "automatic_check": True,
     "channel": "stable",

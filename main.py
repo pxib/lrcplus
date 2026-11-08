@@ -53,6 +53,8 @@ def main() -> int:
             break
 
     app = QApplication(sys.argv)
+    from core.gui_garbage_collector import install_gui_garbage_collector
+    install_gui_garbage_collector(app)
     control_wheel_filter = ControlWheelFilter(app)
     app.installEventFilter(control_wheel_filter)
     app.setApplicationName(APP_NAME)

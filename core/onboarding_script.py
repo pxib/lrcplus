@@ -8,6 +8,8 @@ import base64
 import re
 from pathlib import Path
 
+from core.onboarding_state import encode_payload, parse_condition, state_command
+
 
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "assets" / "onboarding" / "onboarding.rpy"
 
@@ -23,13 +25,19 @@ def _quoted(value, location):
 
 
 def _cue(statement, location):
+    state = state_command(statement, location)
+    if state is not None:
+        return r"\state(" + encode_payload(state) + ")"
     fixed = {
         "next": r"\n", "end": r"\e", "continue_setup": r"\c",
         "hide_cursor": r"\curhide", "toggle_outside_click": r"\toggleoutsideclick",
-        "reset": r"\res",
+        "reset": r"\res", "return": r"\return",
     }
     if statement in fixed:
         return fixed[statement]
+    call = re.fullmatch(r"call\s+([A-Za-z_][A-Za-z_0-9]*)", statement)
+    if call:
+        return rf"\call({call.group(1)})"
     return_marker = re.fullmatch(r"return\s+checkpoint\((\d+)\)", statement)
     if return_marker:
         return r"\cr" + return_marker.group(1)
@@ -72,103 +80,207 @@ def _cue(statement, location):
     return "\\" + names[name] + "(" + args + ")"
 
 
-def compile_script(source):
-    """Return label -> list of (speaker, encoded dialogue) without evaluating code."""
-    labels = {}
-    current = None
-    pending = ""
-    lines = source.splitlines()
-    i = 0
-    while i < len(lines):
-        raw = lines[i]
-        i += 1
-        stripped = raw.strip()
-        location = f"line {i}"
-        if not stripped or stripped.startswith("#"):
+class _ScriptParser:
+    """Parse indentation explicitly so an unselected block never leaks statements."""
+
+    def __init__(self, source):
+        self.rows = []
+        self.index = 0
+        for number, raw in enumerate(source.splitlines(), 1):
+            text = raw.strip()
+            if not text or text.startswith("#"):
+                continue
+            prefix = raw[:len(raw) - len(raw.lstrip())]
+            if any(char != " " for char in prefix) or len(prefix) % 4:
+                raise ValueError(f"line {number}: indentation must use groups of four spaces")
+            self.rows.append((number, len(prefix), text))
+
+    def block(self, indent):
+        nodes = []
+        while self.index < len(self.rows):
+            number, depth, text = self.rows[self.index]
+            if depth < indent:
+                break
+            if depth != indent:
+                raise ValueError(f"line {number}: unexpected indentation")
+            self.index += 1
+            condition = re.fullmatch(r"if\s+(.+):", text)
+            if condition:
+                arms = []
+                expression = parse_condition(condition.group(1), f"line {number}")
+                body = self.block(indent + 4)
+                if not body:
+                    raise ValueError(f"line {number}: if block is empty")
+                arms.append((expression, body))
+                has_else = False
+                while self.index < len(self.rows):
+                    arm_line, arm_depth, arm_text = self.rows[self.index]
+                    if arm_depth != indent:
+                        break
+                    elif_match = re.fullmatch(r"elif\s+(.+):", arm_text)
+                    if not elif_match and arm_text != "else:":
+                        break
+                    if has_else:
+                        raise ValueError(f"line {arm_line}: branch cannot follow else")
+                    self.index += 1
+                    expression = (parse_condition(elif_match.group(1), f"line {arm_line}")
+                                  if elif_match else None)
+                    has_else = expression is None
+                    body = self.block(indent + 4)
+                    if not body:
+                        raise ValueError(f"line {arm_line}: conditional block is empty")
+                    arms.append((expression, body))
+                nodes.append(("if", number, arms))
+            elif text == "menu:":
+                options = []
+                while self.index < len(self.rows):
+                    option_line, option_depth, option_text = self.rows[self.index]
+                    if option_depth < indent + 4:
+                        break
+                    option = re.fullmatch(r'("(?:[^"\\]|\\.)*"):', option_text)
+                    if option_depth != indent + 4 or not option:
+                        raise ValueError(f"line {option_line}: expected a menu option")
+                    self.index += 1
+                    body = self.block(indent + 8)
+                    if not body:
+                        raise ValueError(f"line {option_line}: menu option is empty")
+                    options.append((_quoted(option.group(1), f"line {option_line}"), body))
+                if not options:
+                    raise ValueError(f"line {number}: menu has no options")
+                nodes.append(("menu", number, options))
+            else:
+                nodes.append(("statement", number, text))
+        return nodes
+
+
+def _single_branch(expression, body):
+    """Keep existing encodings for the original one-statement condition syntax."""
+    if len(body) != 1 or body[0][0] != "statement":
+        return None
+    _, number, statement = body[0]
+    location = f"line {number}"
+    jump = re.fullmatch(r"jump\s+([A-Za-z_][A-Za-z_0-9]*)", statement)
+    spoken = re.fullmatch(r'wizard\s+("(?:[^"\\]|\\.)*")', statement)
+    action = statement[2:].strip() if statement.startswith("$ ") else None
+    if not jump and not spoken and action is None:
+        return None
+    legacy_event = (expression["name"] == "event" and expression["op"] == "=="
+                    and isinstance(expression.get("value"), str)
+                    and re.fullmatch(r"[a-z_]+", expression["value"], re.IGNORECASE))
+    if legacy_event and jump:
+        return rf"\if({expression['value']},{jump.group(1)})"
+    if legacy_event and spoken:
+        encoded = base64.urlsafe_b64encode(_quoted(spoken.group(1), location).encode("utf-8")).decode("ascii")
+        return rf"\iftext({expression['value']},{encoded})"
+    branch = {"condition": expression}
+    if jump:
+        branch["jump"] = jump.group(1)
+    elif spoken:
+        branch["text"] = _quoted(spoken.group(1), location)
+    else:
+        branch["command"] = _cue(action, location)
+    return r"\branch(" + encode_payload(branch) + ")"
+
+
+def _compile_nodes(nodes, defaults=""):
+    lines = []
+    pending = defaults
+    before_pending = False
+    control_lines = set()
+
+    def append_cue(cue):
+        nonlocal pending
+        if lines:
+            lines[-1] = (lines[-1][0], lines[-1][1] + cue)
+        else:
+            pending += cue
+
+    for kind, number, value in nodes:
+        location = f"line {number}"
+        if kind == "if":
+            cue = _single_branch(*value[0]) if len(value) == 1 else None
+            if cue is None:
+                arms = [{"condition": condition, "lines": _compile_nodes(body)}
+                        for condition, body in value]
+                cue = r"\choose(" + encode_payload(arms) + ")"
+            append_cue(cue)
             continue
-        label = re.fullmatch(r"label\s+([A-Za-z_][A-Za-z_0-9]*):", stripped)
-        if label and not raw[:1].isspace():
-            if pending:
-                raise ValueError(f"{location}: unused before command")
-            name = label.group(1)
-            if name in labels:
-                raise ValueError(f"{location}: duplicate label {name!r}")
-            current = labels[name] = []
+        if kind == "menu":
+            jumps = [re.fullmatch(r"jump\s+([A-Za-z_][A-Za-z_0-9]*)", body[0][2])
+                     if len(body) == 1 and body[0][0] == "statement" else None
+                     for _, body in value]
+            if all(jumps) and all(text and not any(char in text for char in ",()") for text, _ in value):
+                for (text, _), jump in zip(value, jumps):
+                    append_cue(rf"\button({text},{jump.group(1)})")
+            else:
+                options = [{"text": text, "lines": _compile_nodes(body)} for text, body in value]
+                append_cue(r"\choices(" + encode_payload(options) + ")")
             continue
-        if current is None or not raw.startswith("    "):
-            raise ValueError(f"{location}: expected an indented statement inside a label")
-        marker = re.fullmatch(r"checkpoint\s+(\d+)", stripped)
+
+        statement = value
+        marker = re.fullmatch(r"checkpoint\s+(\d+)", statement)
         if marker:
             pending += _cue(f"checkpoint({marker.group(1)})", location)
+            before_pending = True
             continue
-        dialogue = re.fullmatch(r'(wizard|extend)\s+("(?:[^"\\]|\\.)*")', stripped)
+        dialogue = re.fullmatch(r'(wizard|extend)\s+("(?:[^"\\]|\\.)*")', statement)
         if dialogue:
             text = _quoted(dialogue.group(2), location)
             if dialogue.group(1) == "extend":
-                if not current or pending:
+                if not lines or pending:
                     raise ValueError(f"{location}: extend requires a previous line")
-                current[-1] = (current[-1][0], current[-1][1] + text)
+                lines[-1] = (lines[-1][0], lines[-1][1] + text)
             else:
-                current.append(("Setup Wizard", pending + text))
+                lines.append(("Setup Wizard", pending + text))
                 pending = ""
+                before_pending = False
             continue
-        if stripped.startswith("before "):
-            pending += _cue(stripped[7:].strip(), location)
+        if statement.startswith("before "):
+            pending += _cue(statement[7:].strip(), location)
+            before_pending = True
+        elif statement.startswith("$ "):
+            append_cue(_cue(statement[2:].strip(), location))
+        elif re.fullmatch(r"jump\s+[A-Za-z_][A-Za-z_0-9]*", statement):
+            append_cue(r"\jump(" + statement.split()[1] + ")")
+        elif statement == "return" or re.fullmatch(r"call\s+[A-Za-z_][A-Za-z_0-9]*", statement):
+            # Bare call/return run after the preceding dialogue is advanced.
+            # Dollar-prefixed cues retain the existing inline-action behavior.
+            control_lines.add(len(lines))
+            lines.append(("Setup Wizard", pending + _cue(statement, location)))
+            pending = ""
+        else:
+            raise ValueError(f"{location}: unrecognized statement {statement!r}")
+
+    if before_pending:
+        raise ValueError("end of block: unused before command")
+    if pending and nodes:
+        # A block containing only commands must continue without a blank click.
+        lines.append(("Setup Wizard", pending + r"\flow"))
+    for index in control_lines:
+        lines[index] = (lines[index][0], lines[index][1] + r"\flow")
+    return lines
+
+
+def compile_script(source):
+    """Return label -> dialogue lines; compile blocks without evaluating code."""
+    parser = _ScriptParser(source)
+    labels = {}
+    defaults = ""
+    while parser.index < len(parser.rows):
+        number, depth, statement = parser.rows[parser.index]
+        parser.index += 1
+        location = f"line {number}"
+        default = re.fullmatch(r"default\s+([A-Za-z_][A-Za-z_0-9]*)\s*=\s*(.+)", statement)
+        if not depth and default and not labels:
+            defaults += _cue(f"default({default.group(1)}, {default.group(2)})", location)
             continue
-        if stripped.startswith("$ "):
-            if not current:
-                raise ValueError(f"{location}: command requires a dialogue line")
-            current[-1] = (current[-1][0], current[-1][1] + _cue(stripped[2:].strip(), location))
-            continue
-        direct_jump = re.fullmatch(r"jump\s+([A-Za-z_][A-Za-z_0-9]*)", stripped)
-        if direct_jump:
-            if not current:
-                raise ValueError(f"{location}: jump requires a dialogue line")
-            current[-1] = (current[-1][0], current[-1][1] + rf"\jump({direct_jump.group(1)})")
-            continue
-        condition = re.fullmatch(r'if\s+event\s*==\s*("(?:[^"\\]|\\.)*"):', stripped)
-        if condition:
-            if not current or i >= len(lines):
-                raise ValueError(f"{location}: if requires a dialogue line and jump")
-            event = _quoted(condition.group(1), location)
-            jump = re.fullmatch(r'\s{8,}jump\s+([A-Za-z_][A-Za-z_0-9]*)\s*', lines[i])
-            spoken = re.fullmatch(r'\s{8,}wizard\s+("(?:[^"\\]|\\.)*")\s*', lines[i])
-            if not jump and not spoken:
-                raise ValueError(f"{location}: expected an indented jump or wizard line")
-            i += 1
-            if jump:
-                cue = rf"\if({event},{jump.group(1)})"
-            else:
-                text = _quoted(spoken.group(1), f"line {i}")
-                encoded = base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii")
-                cue = rf"\iftext({event},{encoded})"
-            current[-1] = (current[-1][0], current[-1][1] + cue)
-            continue
-        if stripped == "menu:":
-            if not current:
-                raise ValueError(f"{location}: menu requires a dialogue line")
-            found = False
-            while i < len(lines):
-                option = re.fullmatch(r'\s{8}("(?:[^"\\]|\\.)*"):\s*', lines[i])
-                if not option:
-                    break
-                if i + 1 >= len(lines):
-                    raise ValueError(f"line {i + 1}: missing menu jump")
-                jump = re.fullmatch(r'\s{12,}jump\s+([A-Za-z_][A-Za-z_0-9]*)\s*', lines[i + 1])
-                if not jump:
-                    raise ValueError(f"line {i + 2}: expected a menu jump")
-                text = _quoted(option.group(1), f"line {i + 1}")
-                if any(char in text for char in ",()"):
-                    raise ValueError(f"line {i + 1}: menu text cannot contain commas or parentheses")
-                current[-1] = (current[-1][0], current[-1][1] + rf"\button({text},{jump.group(1)})")
-                found = True
-                i += 2
-            if not found:
-                raise ValueError(f"{location}: menu has no options")
-            continue
-        raise ValueError(f"{location}: unrecognized statement {stripped!r}")
-    if pending:
-        raise ValueError("end of file: unused before command")
+        label = re.fullmatch(r"label\s+([A-Za-z_][A-Za-z_0-9]*):", statement)
+        if depth or not label:
+            raise ValueError(f"{location}: expected a label or an initial default")
+        name = label.group(1)
+        if name in labels:
+            raise ValueError(f"{location}: duplicate label {name!r}")
+        labels[name] = _compile_nodes(parser.block(4), defaults)
     return labels
 
 

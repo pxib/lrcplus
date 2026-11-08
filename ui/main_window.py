@@ -1093,6 +1093,26 @@ class Player(
                     border: 2px solid @ACCENT@;
                     border-radius: 7px;
                 }
+                QSlider#volumeSlider::groove:horizontal {
+                    height: 4px;
+                    background: @SEEK_TRACK@;
+                    border-radius: 2px;
+                }
+                QSlider#volumeSlider::sub-page:horizontal {
+                    background: @ACCENT@;
+                    border-radius: 2px;
+                }
+                QSlider#volumeSlider::add-page:horizontal {
+                    background: @SEEK_TRACK@;
+                    border-radius: 2px;
+                }
+                QSlider#volumeSlider::handle:horizontal {
+                    width: 12px;
+                    margin: -5px 0;
+                    background: @SLIDER_HANDLE@;
+                    border: 2px solid @ACCENT@;
+                    border-radius: 7px;
+                }
             """
             replacements = {
                 "@ACCENT@": "accent",

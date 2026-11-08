@@ -7,23 +7,38 @@ import re
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QCoreApplication, QEasingCurve, QEvent, QEventLoop, QPoint, QPointF, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QEasingCurve, QEvent, QEventLoop, QPoint, QPointF, QPropertyAnimation, QRect, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QCursor, QKeySequence, QMouseEvent, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QMenu, QPushButton, QStyle, QStyleOptionToolButton, QToolButton, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel, QLayout, QMenu, QPushButton, QSizePolicy, QStyle, QStyleOptionToolButton, QToolButton, QVBoxLayout, QWidget,
 )
 
 from core import settings
 from core.onboarding_events import onboarding_events
 from core.onboarding_script import SCRIPT_PATH, load_script
+from core.onboarding_state import apply_state, decode_payload, matches_condition
 
 
 DIALOGUE_PATH = Path(__file__).resolve().parent.parent / "assets" / "onboarding" / "dialogue.json"
 ROUTES_PATH = DIALOGUE_PATH.with_name("dialogueroute.json")
+STEPS = (
+    ("firststeplanguage", "Welcome", "Welcome to LRCPlus", ""),
+    ("secondstepmusiclibraryfolders", "Music library", "Your music library", ""),
+    ("thirdstepappearance", "Appearance", "Appearance", ""),
+    ("readingpreferences", "Reading preferences", "Reading preferences", ""),
+    ("fourthsteplyrics", "Lyrics", "Lyrics", ""),
+    (None, "Ready", "Ready to listen", "Setup is complete. You can change your settings and manage your music library at any time."),
+)
+READING_PAGE = 3
+LYRICS_PAGE = 4
+FINISH_PAGE = len(STEPS) - 1
+DIALOGUE_STEPS = tuple(step[0] for step in STEPS[:-1])
 SCRIPT_COMMAND = re.compile(r"\\(?:iftext\(\s*[a-z_]+\s*,\s*[a-z0-9_=-]*\s*\)|idle\(\s*\d+(?:\.\d+)?\s*\)|pointat\(\s*lyrics_button(?:\s*,\s*[a-z_]+)?\s*\)|jump\(\s*[a-z_][a-z_0-9]*\s*\)|watchmenu\(\s*lyrics_menu\s*,\s*[a-z_][a-z_0-9]*\s*\)|clickmenu\(\s*lyrics_menu\s*,\s*search_lyrics\s*,\s*[a-z_][a-z_0-9]*\s*\)|clickcontrol\(\s*lyrics_button\s*,\s*[a-z_][a-z_0-9]*\s*\)|waitevent\(\s*(?:[a-z_]+|idle\(\d+(?:\.\d+)?\))(?:\s*,\s*(?:[a-z_]+|idle\(\d+(?:\.\d+)?\)))*\s*\)|if\(\s*[a-z_]+\s*,\s*[^(),]+\)|toggleoutsideclick(?:\(\s*(?:true|false)\s*\))?|button\([^(),]+,[^(),]+\)|click\(\s*-?\d+(?:\.\d+)?%?\s*,\s*-?\d+(?:\.\d+)?%?\s*\)|pos\(\s*-?\d+(?:\.\d+)?%?\s*,\s*-?\d+(?:\.\d+)?%?(?:\s*,\s*[a-z_]+)?\s*\)|wait(?:\(\s*\d+(?:\.\d+)?\s*\))?|curhide|res(?:\(\s*[a-z_]+\s*\))?|cr\d+|c\d+|nw\d+|n|e|c)", re.IGNORECASE)
 
 EASINGS = {"linear": QEasingCurve.Type.Linear, "in_out_cubic": QEasingCurve.Type.InOutCubic,
            "out_cubic": QEasingCurve.Type.OutCubic}
+
+SCRIPT_COMMAND = re.compile(r"\\(?:state|branch|choose|choices)\([a-z0-9_=-]+\)|\\call\([a-z_][a-z_0-9]*\)|\\return|\\flow|" + SCRIPT_COMMAND.pattern, re.IGNORECASE)
 
 
 def relative_coordinate(value, length):
@@ -98,6 +113,11 @@ class OnboardingDialog(QDialog):
     def __init__(self, player, parent=None):
         super().__init__(parent if parent is not None else player)
         self.player = player
+        self.pacing = settings.get_onboarding_pacing()
+        self.variables = {}
+        self._call_stack = []
+        self._read_delay_ms = None
+        self._pause_active = False
         self.outside_click_enabled = False
         self.watched_menu = None
         self.menu_recovery_route = None
@@ -125,7 +145,7 @@ class OnboardingDialog(QDialog):
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.advance_dialogue)
         self.typing_timer = QTimer(self)
-        self.typing_timer.setInterval(25)
+        self.typing_timer.setInterval(settings.ONBOARDING_TEXT_INTERVALS[self.pacing["text_speed"]])
         self.typing_timer.timeout.connect(self.type_character)
         self.full_text = ""
         self.tokens = []
@@ -136,9 +156,13 @@ class OnboardingDialog(QDialog):
         self.checkpoints = {}
         self.step_dialogue_lines = []
         self.script_busy = False
+        self._running_commands = False
+        self._command_requested = False
+        self._activity_revision = 0
+        self._dialogue_closed = False
         self.script_timer = QTimer(self)
         self.script_timer.setSingleShot(True)
-        self.script_timer.timeout.connect(self.run_script_command)
+        self.script_timer.timeout.connect(self.finish_script_wait)
         self.idle_timer = QTimer(self)
         self.idle_timer.setSingleShot(True)
         self.idle_timer.timeout.connect(self.idle_finished)
@@ -172,16 +196,30 @@ class OnboardingDialog(QDialog):
         self.space.activated.connect(self.advance_dialogue)
         self.space.setEnabled(False)
         self.setWindowTitle("Welcome to LRCPlus")
-        self.setFixedSize(620, 320)
-        layout = QVBoxLayout(self)
+        self.setFixedWidth(620)
+        self._content_widget = QWidget(self)
+        layout = QVBoxLayout(self._content_widget)
+        self._content_layout = layout
+        # Let the animation pass through heights below the new content minimum.
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._height_target = None
+        self.size_animation = QVariantAnimation(self)
+        self.size_animation.setDuration(220)
+        self.size_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self.size_animation.valueChanged.connect(self._set_animated_height)
+        self.size_animation.finished.connect(self._finish_content_resize)
         self.title = QLabel()
         self.title.setStyleSheet("font-size: 20px; font-weight: bold;")
+        self.title.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.description = DialogueText()
         self.description.setTextFormat(Qt.TextFormat.PlainText)
         self.description.setWordWrap(True)
+        self.description.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.description.clicked.connect(self.advance_dialogue)
         layout.addWidget(self.title)
         text_row = QHBoxLayout()
+        self._dialogue_row = text_row
         text_row.addWidget(self.description, 1)
         self.dialogue_indicator = QPushButton("∨")
         self.dialogue_indicator.setFlat(True)
@@ -229,22 +267,108 @@ class OnboardingDialog(QDialog):
         self.folders = QLabel()
         self.folders.setWordWrap(True)
         layout.addWidget(self.folders)
-        layout.addStretch()
+        self.reading_preferences = None
+        self.reading_container = QWidget()
+        self.reading_layout = QVBoxLayout(self.reading_container)
+        self.reading_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.reading_container)
+        pacing_row = QHBoxLayout()
+        speed_label = QLabel("Text speed")
+        self.text_speed_combo = QComboBox()
+        self.text_speed_combo.setAccessibleName("Text speed")
+        speed_label.setBuddy(self.text_speed_combo)
+        for name in settings.ONBOARDING_TEXT_INTERVALS:
+            self.text_speed_combo.addItem(name.title(), name)
+        self.text_speed_combo.setCurrentIndex(self.text_speed_combo.findData(self.pacing["text_speed"]))
+        self.text_speed_combo.currentIndexChanged.connect(self.change_text_speed)
+        pacing_row.addWidget(speed_label)
+        pacing_row.addWidget(self.text_speed_combo)
+        pacing_row.addStretch()
+        self.auto_read_check = QCheckBox("Auto-read")
+        self.auto_read_check.setToolTip("Advance dialogue automatically after reading. Choices and application events still wait for you.")
+        self.auto_read_check.setChecked(self.pacing["auto_read"])
+        self.auto_read_check.toggled.connect(self.change_auto_read)
+        self.auto_read_check.installEventFilter(self)
+        pacing_row.addWidget(self.auto_read_check)
+        self.reduced_motion_check = QCheckBox("Reduce motion")
+        self.reduced_motion_check.setToolTip("Move the guide into place without animation and hide the demonstration cursor.")
+        self.reduced_motion_check.setChecked(self.pacing["reduced_motion"])
+        self.reduced_motion_check.toggled.connect(self.change_reduced_motion)
+        self.text_speed_combo.installEventFilter(self)
+        self.reduced_motion_check.installEventFilter(self)
+        pacing_row.addWidget(self.reduced_motion_check)
+        layout.addLayout(pacing_row)
         controls = QHBoxLayout()
         self.skip = QPushButton("Skip setup")
         self.skip.clicked.connect(self.accept)
         self.back = QPushButton("Back")
         self.back.clicked.connect(self.previous_page)
+        self.skip_reading = QPushButton("Do this later")
+        self.skip_reading.setToolTip("Continue without saving previewed reading preferences.")
+        self.skip_reading.clicked.connect(self.skip_reading_preferences)
+        self.skip_reading.installEventFilter(self)
         self.next = QPushButton("Next")
         self.next.clicked.connect(self.next_page)
         self.debug_button = QPushButton("Debug")
         self.debug_button.clicked.connect(self.show_debug)
         self.debug_dialog = None
-        for button in (self.debug_button, self.skip, self.back, self.next):
+        for button in (self.debug_button, self.skip, self.skip_reading, self.back, self.next):
             controls.addWidget(button)
         layout.addLayout(controls)
+        self._content_ready = True
+        self._content_widget.installEventFilter(self)
         self.set_page(0)
         self.show_dialogue()
+        self._fit_content()
+
+    def _fit_content(self):
+        if self._dialogue_closed:
+            return
+        layout = self._content_layout
+        layout.activate()
+        height = layout.totalHeightForWidth(self.width())
+        if height < 0:
+            height = layout.sizeHint().height()
+        # Lay out content at its destination size, independent of animation frames.
+        self._content_widget.setGeometry(0, 0, self.width(), height)
+        if not self.isVisible() or self.pacing["reduced_motion"]:
+            self.size_animation.stop()
+            self._height_target = height
+            self.setFixedHeight(height)
+        elif self._height_target != height:
+            self.size_animation.stop()
+            self._height_target = height
+            if self.height() != height:
+                self.setMinimumHeight(min(self.height(), height))
+                self.setMaximumHeight(max(self.height(), height))
+                self.size_animation.setStartValue(self.height())
+                self.size_animation.setEndValue(height)
+                self.size_animation.start()
+            else:
+                self.setFixedHeight(height)
+
+    def _set_animated_height(self, height):
+        # Keep native size constraints steady throughout the animation.
+        self.resize(self.width(), height)
+
+    def _finish_content_resize(self):
+        self.setFixedHeight(self._height_target)
+
+    def _reserve_dialogue_height(self, text):
+        """Reserve the whole line so typing does not resize the window per word."""
+        self.description.setVisible(bool(text))
+        indicator_policy = self.dialogue_indicator.sizePolicy()
+        indicator_policy.setRetainSizeWhenHidden(bool(text))
+        self.dialogue_indicator.setSizePolicy(indicator_policy)
+        margins = self._content_layout.contentsMargins()
+        width = (self.width() - margins.left() - margins.right()
+                 - self.dialogue_indicator.sizeHint().width() - self._dialogue_row.spacing())
+        metrics = self.description.fontMetrics()
+        height = metrics.boundingRect(
+            QRect(0, 0, max(1, width), 0),
+            Qt.TextFlag.TextWordWrap | Qt.TextFlag.TextExpandTabs, text,
+        ).height()
+        self.description.setMinimumHeight(max(metrics.height(), height) if text else 0)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -287,7 +411,63 @@ class OnboardingDialog(QDialog):
         self.user_move_timer.stop()
         self.motion_settle_timer.stop()
         self.script_moving_window = True
-        self.move_animation.start()
+        if self.pacing["reduced_motion"]:
+            self.move(self.move_animation.endValue())
+            self.finish_wizard_motion()
+        else:
+            self.move_animation.start()
+
+    def start_cursor_motion(self):
+        if self.pacing["reduced_motion"]:
+            self.fake_cursor.hide()
+            self._defer_activity(self.perform_script_click)
+        else:
+            self.fake_cursor.show()
+            self.cursor_animation.start()
+
+    def change_text_speed(self):
+        speed = self.text_speed_combo.currentData()
+        self.pacing["text_speed"] = speed
+        self.typing_timer.setInterval(settings.ONBOARDING_TEXT_INTERVALS[speed])
+        if speed == "instant" and self.typing_timer.isActive():
+            self.finish_typing()
+
+    def change_auto_read(self, enabled):
+        self.pacing["auto_read"] = enabled
+        self.timer.stop()
+        if (enabled and self._read_delay_ms is not None and self.dialogue_lines
+                and not self.script_busy and not self.typing_timer.isActive()):
+            self.timer.start(self._read_delay_ms)
+
+    def ready_for_reading(self, delay_ms=None):
+        if not self.dialogue_lines or self.route_buttons.count():
+            return
+        self._read_delay_ms = delay_ms if delay_ms is not None else min(10000, max(1200, 700 + len(self.visible_text) * 45))
+        self.script_busy = False
+        self.dialogue_indicator.show()
+        if self.pacing["auto_read"]:
+            self.timer.start(self._read_delay_ms)
+
+    def finish_script_wait(self):
+        if self._pause_active:
+            self._pause_active = False
+            if self.dialogue_lines:
+                self.dialogue_indicator.show()
+        self.run_script_command()
+
+    def change_reduced_motion(self, enabled):
+        self.pacing["reduced_motion"] = enabled
+        if not enabled:
+            return
+        self._fit_content()
+        self.fake_cursor.hide()
+        if self.move_animation.state() == QPropertyAnimation.State.Running:
+            self.move_animation.stop()
+            self.move(self.move_animation.endValue())
+            self.finish_wizard_motion()
+        if self.cursor_animation.state() == QPropertyAnimation.State.Running:
+            self.cursor_animation.stop()
+            self._defer_activity(self.perform_script_click)
 
     def finish_wizard_motion(self):
         self.motion_settle_timer.start()
@@ -314,6 +494,13 @@ class OnboardingDialog(QDialog):
         return self.result()
 
     def eventFilter(self, watched, event):
+        if watched is self._content_widget and event.type() == QEvent.Type.LayoutRequest:
+            self._fit_content()
+        if (event.type() == QEvent.Type.ShortcutOverride
+                and watched in (self.text_speed_combo, self.reduced_motion_check, self.auto_read_check, self.skip_reading)
+                and event.key() == Qt.Key.Key_Space):
+            event.accept()
+            return True
         if event.spontaneous() and event.type() in (
             QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease,
             QEvent.Type.MouseButtonDblClick, QEvent.Type.KeyPress, QEvent.Type.KeyRelease,
@@ -355,25 +542,63 @@ class OnboardingDialog(QDialog):
         self.run_script_command()
 
     def set_page(self, page):
+        self._call_stack.clear()
+        self._cancel_dialogue_activity()
+        self.dialogue_lines = []
+        self.space.setEnabled(False)
+        self.dialogue_indicator.hide()
+        self.next.setEnabled(True)
         self.page = page
-        pages = [
-            ("Welcome to LRCPlus", ""),
-            ("Your music library", ""),
-            ("Appearance", ""),
-            ("Lyrics", ""),
-            ("Ready to listen", "Setup is complete. You can change your settings and manage your music library at any time."),
-        ]
-        self.setWindowTitle(pages[page][0])
+        if page == READING_PAGE:
+            self._load_reading_preferences()
+        self.setWindowTitle(STEPS[page][2])
         self.title.setText("Setup Wizard")
-        self.description.setText(pages[page][1])
-        self.language_combo.setVisible(page == 0)
-        self.theme_combo.setVisible(page == 2)
-        self.preset_combo.setVisible(page == 2)
-        self.folder_button.setVisible(page == 1)
-        self.folders.setVisible(page == 1)
+        self.description.setText(STEPS[page][3])
+        self._reserve_dialogue_height(STEPS[page][3])
+        self._show_setup_controls()
+        self.skip_reading.setVisible(page == READING_PAGE)
         self.folders.setText("\n".join(self.player.library_folders) or "No folders added yet.")
         self.back.setEnabled(page > 0)
-        self.next.setText("Finish" if page == 4 else "Next")
+        self.next.setText("Finish" if page == FINISH_PAGE else "Apply and Next" if page == READING_PAGE else "Next")
+
+    def _show_setup_controls(self, *, dialogue=False):
+        page = self.page
+        self.language_combo.setVisible(page == 0)
+        self.theme_combo.setVisible(page == 2 and not dialogue)
+        self.preset_combo.setVisible(page == 2 and not dialogue)
+        self.folder_button.setVisible(page == 1 and not dialogue)
+        self.folders.setVisible(page == 1 and not dialogue)
+        self.reading_container.setVisible(page == READING_PAGE and not dialogue)
+
+    def _load_reading_preferences(self):
+        values = settings.get_global_lyrics_settings()
+        if self.reading_preferences is None:
+            from ui.onboarding_reading import ReadingPreferences
+            self.reading_preferences = ReadingPreferences(values)
+            self.reading_layout.addWidget(self.reading_preferences)
+        else:
+            self.reading_preferences.set_settings(values)
+
+    def apply_reading_preferences(self):
+        changes = self.reading_preferences.changes() if self.reading_preferences is not None else {}
+        if not changes:
+            return
+        values = settings.get_global_lyrics_settings()
+        values.update(changes)
+        # Reading modes are mutually exclusive, including after concurrent edits.
+        if any(key in changes for key in ("show_ruby", "show_romaji", "all_romaji")):
+            values.update({key: self.reading_preferences.values()[key]
+                           for key in ("show_ruby", "show_romaji", "all_romaji")})
+        values = settings.normalize_lyrics_settings(values)
+        settings.save_global_lyrics_settings(values)
+        self.player.global_lyrics_settings = values
+        refresh = getattr(self.player, "refresh_lyrics_settings_for_current_file", None)
+        if callable(refresh):
+            refresh()
+
+    def skip_reading_preferences(self):
+        if self.page == READING_PAGE:
+            self._advance_setup_page()
 
     def change_theme(self):
         mode = self.theme_combo.currentData()
@@ -441,7 +666,7 @@ class OnboardingDialog(QDialog):
             debug_layout.addWidget(skip_line)
             step_row = QHBoxLayout()
             self.debug_step = QComboBox()
-            self.debug_step.addItems(["Welcome", "Music library", "Appearance", "Lyrics", "Ready"])
+            self.debug_step.addItems([step[1] for step in STEPS])
             self.debug_step.setCurrentIndex(self.page)
             step_row.addWidget(self.debug_step)
             jump_step = QPushButton("Go to step")
@@ -467,6 +692,15 @@ class OnboardingDialog(QDialog):
         self.update_debug()
 
     def debug_cancel_activity(self):
+        self._cancel_dialogue_activity()
+
+    def _cancel_dialogue_activity(self):
+        """Invalidate deferred work and stop all activity owned by the old scene."""
+        self._activity_revision += 1
+        self._read_delay_ms = None
+        self._pause_active = False
+        self._command_requested = False
+        self.disruption_pending = False
         self.user_move_timer.stop()
         self.timer.stop()
         self.typing_timer.stop()
@@ -485,10 +719,20 @@ class OnboardingDialog(QDialog):
         self.pending_control = None
         self.script_commands = []
         self.tokens = []
+        self.current_text = ""
         self.waiting_events.clear()
         self.event_auto_advance = False
         self.script_busy = False
         self.clear_route_buttons()
+
+    def _defer_activity(self, callback):
+        revision = self._activity_revision
+
+        def run_if_current():
+            if revision == self._activity_revision and not self._dialogue_closed:
+                callback()
+
+        QTimer.singleShot(0, run_if_current)
 
     def debug_skip_line(self):
         if not self.dialogue_lines:
@@ -500,6 +744,7 @@ class OnboardingDialog(QDialog):
         self.update_debug()
 
     def debug_jump_step(self):
+        self._call_stack.clear()
         page = self.debug_step.currentIndex()
         self.debug_cancel_activity()
         self.dialogue_lines = []
@@ -507,7 +752,7 @@ class OnboardingDialog(QDialog):
         self.dialogue_indicator.hide()
         self.next.setEnabled(True)
         self.set_page(page)
-        if page < 4:
+        if page < FINISH_PAGE:
             self.show_dialogue()
         self.update_debug()
 
@@ -537,6 +782,8 @@ class OnboardingDialog(QDialog):
             f"Waiting for events: {', '.join(sorted(self.waiting_events)) or 'none'}\n"
             f"Idle wait: {'active' if self.idle_timer.isActive() else 'none'}\n"
             f"Last event: {self.last_event or 'none'}\n"
+            f"Variables: {json.dumps(self.variables, ensure_ascii=False)}\n"
+            f"Call depth: {len(self._call_stack)}\n"
             f"Pending commands: {', '.join(self.script_commands) or 'none'}\n"
             f"Checkpoints: {', '.join(sorted(self.checkpoints)) or 'none'}"
         )
@@ -544,7 +791,11 @@ class OnboardingDialog(QDialog):
             self.debug_text.setText(text)
 
     def show_dialogue(self):
-        key = ("firststeplanguage", "secondstepmusiclibraryfolders", "thirdstepappearance", "fourthsteplyrics")[self.page]
+        self._call_stack.clear()
+        self._cancel_dialogue_activity()
+        key = STEPS[self.page][0]
+        if key is None:
+            return
         lines = load_dialogue_data(key)
         if lines:
             self.clear_route_buttons()
@@ -560,10 +811,7 @@ class OnboardingDialog(QDialog):
             self.dialogue_indicator.show()
             self.back.setEnabled(False)
             self.next.setEnabled(False)
-            self.folder_button.setVisible(False)
-            self.folders.setVisible(False)
-            self.theme_combo.setVisible(False)
-            self.preset_combo.setVisible(False)
+            self._show_setup_controls(dialogue=True)
             self.advance_dialogue()
 
     def advance_dialogue(self):
@@ -575,8 +823,13 @@ class OnboardingDialog(QDialog):
         if self.script_busy:
             return
         self.timer.stop()
+        self._read_delay_ms = None
+        self.dialogue_indicator.show()
         self.dialogue_index += 1
         if self.dialogue_index >= len(self.dialogue_lines):
+            if self._call_stack:
+                self.return_from_call()
+                return
             self.dialogue_lines = []
             self.space.setEnabled(False)
             self.dialogue_indicator.hide()
@@ -585,14 +838,12 @@ class OnboardingDialog(QDialog):
                 self.set_page(self.page)
             else:
                 self.back.setEnabled(self.page > 0)
-                self.folder_button.setVisible(self.page == 1)
-                self.folders.setVisible(self.page == 1)
-                self.theme_combo.setVisible(self.page == 2)
-                self.preset_combo.setVisible(self.page == 2)
+                self._show_setup_controls()
             return
         speaker, text = self.dialogue_lines[self.dialogue_index]
         self.title.setText(speaker)
         self.full_text, _ = parse_dialogue_line(text)
+        self._reserve_dialogue_height(self.full_text)
         self.tokens = dialogue_tokens(text)
         self.script_commands = []
         self.visible_text = ""
@@ -605,13 +856,21 @@ class OnboardingDialog(QDialog):
             if self.event_auto_advance:
                 self.event_auto_advance = False
                 self.advance_dialogue()
+            else:
+                self.ready_for_reading()
             return
         self.event_auto_advance = False
         kind, value = self.tokens.pop(0)
         if kind == "text":
             self.current_text = value
             self.current_text_index = 0
-            self.typing_timer.start()
+            if self.pacing["text_speed"] == "instant":
+                self.visible_text += value
+                self.current_text = ""
+                self.description.setText(self.visible_text)
+                self.run_script_command()
+            else:
+                self.typing_timer.start()
             return
         self.script_commands = [value]
         while self.tokens and self.tokens[0][0] == "command":
@@ -633,26 +892,81 @@ class OnboardingDialog(QDialog):
         self.resume_line()
 
     def run_script_command(self):
+        """Drain immediate commands without recursion, yielding to Qt in batches."""
+        if self._dialogue_closed:
+            return
+        self._command_requested = True
+        if self._running_commands:
+            return
+        self._running_commands = True
+        try:
+            for _ in range(256):
+                if not self._command_requested:
+                    break
+                self._command_requested = False
+                self._execute_script_command()
+            if self._command_requested:
+                self.script_timer.start(0)
+        finally:
+            self._running_commands = False
+
+    def _execute_script_command(self):
         if not self.script_commands:
             self.resume_line()
             return
         original_command = self.script_commands.pop(0)
         command = original_command.lower()
+        if command.startswith(r"\call("):
+            self.call_route(original_command[6:-1])
+            return
+        if command == r"\return":
+            self.return_from_call()
+            return
+        if command.startswith(r"\choose("):
+            arms = decode_payload(original_command[8:-1])
+            for arm in arms:
+                if arm["condition"] is None or matches_condition(self.variables, arm["condition"], self.last_event):
+                    self.splice_dialogue(arm["lines"])
+                    return
+            self.run_script_command()
+            return
+        if command.startswith(r"\choices("):
+            revision = self._activity_revision
+            for option in decode_payload(original_command[9:-1]):
+                button = QPushButton(option["text"])
+                button.clicked.connect(
+                    lambda checked=False, lines=option["lines"], version=revision:
+                    self.splice_dialogue(lines) if version == self._activity_revision else None)
+                self.route_buttons.addWidget(button)
+            self.script_busy = True
+            self.dialogue_indicator.hide()
+            return
+        if command.startswith(r"\state("):
+            try:
+                apply_state(self.variables, decode_payload(original_command[7:-1]))
+            except ValueError:
+                logging.exception("Unable to apply onboarding variable command")
+            self.run_script_command()
+            return
+        if command.startswith(r"\branch("):
+            branch = decode_payload(original_command[8:-1])
+            if matches_condition(self.variables, branch["condition"], self.last_event):
+                if "jump" in branch:
+                    if load_route(branch["jump"]):
+                        self.select_route(branch["jump"])
+                        return
+                elif "text" in branch:
+                    self.show_conditional_text(branch["text"])
+                    return
+                else:
+                    self.script_commands.insert(0, branch["command"])
+            self.run_script_command()
+            return
         if command.startswith(r"\iftext("):
             event_name, encoded = (part.strip() for part in original_command[8:-1].split(",", 1))
             if event_name.lower() == self.last_event:
                 text = base64.urlsafe_b64decode(encoded).decode("utf-8")
-                continuation = "".join(self.script_commands) + "".join(value for _, value in self.tokens)
-                insert = [("Setup Wizard", text)]
-                if continuation:
-                    insert.append(("Setup Wizard", continuation + r"\nw0"))
-                self.dialogue_lines = (self.dialogue_lines[:self.dialogue_index + 1] + insert
-                                       + self.dialogue_lines[self.dialogue_index + 1:])
-                self.script_commands = []
-                self.tokens = []
-                self.event_auto_advance = False
-                self.script_busy = False
-                self.advance_dialogue()
+                self.show_conditional_text(text)
             else:
                 self.run_script_command()
             return
@@ -713,10 +1027,9 @@ class OnboardingDialog(QDialog):
             self.fake_cursor.setPixmap(self.cursor_normal)
             if not self.fake_cursor.isVisible():
                 self.fake_cursor.move(self.mapToGlobal(self.rect().center()))
-            self.fake_cursor.show()
             self.cursor_animation.setStartValue(self.fake_cursor.pos())
             self.cursor_animation.setEndValue(target)
-            self.cursor_animation.start()
+            self.start_cursor_motion()
             return
         if command.startswith(r"\clickmenu("):
             menu_name, action_name, route = (part.strip() for part in original_command[11:-1].split(","))
@@ -733,10 +1046,9 @@ class OnboardingDialog(QDialog):
             self.fake_cursor.setPixmap(self.cursor_normal)
             if not self.fake_cursor.isVisible():
                 self.fake_cursor.move(self.mapToGlobal(self.rect().center()))
-            self.fake_cursor.show()
             self.cursor_animation.setStartValue(self.fake_cursor.pos())
             self.cursor_animation.setEndValue(target)
-            self.cursor_animation.start()
+            self.start_cursor_motion()
             return
         if command.startswith(r"\waitevent("):
             names = [name.strip().lower() for name in original_command[11:-1].split(",")]
@@ -789,7 +1101,7 @@ class OnboardingDialog(QDialog):
                         for label, lines in labels.items():
                             for index, (_, text) in enumerate(lines):
                                 if any(item.lower() == marker for item in parse_dialogue_line(text)[1]):
-                                    steps = ("firststeplanguage", "secondstepmusiclibraryfolders", "thirdstepappearance", "fourthsteplyrics")
+                                    steps = DIALOGUE_STEPS
                                     if label in steps and self.page != steps.index(label):
                                         self.set_page(steps.index(label))
                                     if label in steps:
@@ -801,6 +1113,7 @@ class OnboardingDialog(QDialog):
                     except (OSError, ValueError):
                         logging.exception("Unable to resolve checkpoint %s", command[3:])
             if checkpoint:
+                self._call_stack.clear()
                 self.dialogue_lines, self.dialogue_index = checkpoint[0], checkpoint[1]
                 self.script_busy = False
                 self.advance_dialogue()
@@ -814,6 +1127,8 @@ class OnboardingDialog(QDialog):
         if command.startswith(r"\wait"):
             match = re.search(r"\(([^)]+)\)", command)
             seconds = float(match.group(1)) if match else 1.0
+            self._pause_active = True
+            self.dialogue_indicator.hide()
             self.script_timer.start(round(min(seconds, 3600) * 1000))
             return
         if command.startswith(r"\click("):
@@ -827,10 +1142,9 @@ class OnboardingDialog(QDialog):
             self.fake_cursor.setPixmap(self.cursor_normal)
             if not self.fake_cursor.isVisible():
                 self.fake_cursor.move(self.mapToGlobal(self.rect().center()))
-            self.fake_cursor.show()
             self.cursor_animation.setStartValue(self.fake_cursor.pos())
             self.cursor_animation.setEndValue(target)
-            self.cursor_animation.start()
+            self.start_cursor_motion()
             return
         if command == r"\curhide":
             self.fake_cursor.hide()
@@ -856,25 +1170,28 @@ class OnboardingDialog(QDialog):
             self.start_wizard_motion()
             return
         if command.startswith(r"\nw"):
+            self.ready_for_reading(min(int(command[3:]), 3600) * 1000)
+            return
+        if command == r"\flow":
             self.script_busy = False
-            self.timer.start(int(command[3:]) * 1000)
+            self.advance_dialogue()
             return
         if command == r"\n":
             self.tokens = []
             self.script_commands = []
-            self.script_busy = False
+            self.ready_for_reading()
             return
         if command == r"\e":
+            self._call_stack.clear()
+            self._read_delay_ms = None
+            self.timer.stop()
             self.script_busy = False
             self.dialogue_lines = []
             self.space.setEnabled(False)
             self.dialogue_indicator.hide()
             self.next.setEnabled(True)
             self.back.setEnabled(self.page > 0)
-            self.folder_button.setVisible(self.page == 1)
-            self.folders.setVisible(self.page == 1)
-            self.theme_combo.setVisible(self.page == 2)
-            self.preset_combo.setVisible(self.page == 2)
+            self._show_setup_controls()
         elif command == r"\c":
             self.return_to_setup = True
             self.dialogue_index = len(self.dialogue_lines) - 1
@@ -882,10 +1199,66 @@ class OnboardingDialog(QDialog):
         else:
             self.run_script_command()
 
+    def show_conditional_text(self, text):
+        self.splice_dialogue([("Setup Wizard", text)])
+
+    def splice_dialogue(self, lines):
+        continuation = "".join(self.script_commands) + "".join(value for _, value in self.tokens)
+        insert = list(lines)
+        if continuation:
+            has_text = any(kind == "text" and value for kind, value in self.tokens)
+            insert.append(("Setup Wizard", continuation + ("" if has_text else r"\flow")))
+        self.dialogue_lines = (self.dialogue_lines[:self.dialogue_index + 1] + insert
+                               + self.dialogue_lines[self.dialogue_index + 1:])
+        self._cancel_dialogue_activity()
+        self.advance_dialogue()
+
+    def call_route(self, route):
+        lines = load_route(route)
+        if not lines or len(self._call_stack) >= 64:
+            logging.warning("Unable to call onboarding label %s (missing/empty label or call depth limit)", route)
+            self.run_script_command()
+            return
+        remaining = [("command", command) for command in self.script_commands] + list(self.tokens)
+        if not any(kind == "text" and value for kind, value in remaining):
+            remaining.append(("command", r"\flow"))
+        self._call_stack.append({
+            "lines": self.dialogue_lines, "index": self.dialogue_index,
+            "tokens": remaining, "speaker": self.title.text(),
+            "full_text": self.full_text, "visible_text": self.visible_text,
+            "event_auto_advance": self.event_auto_advance,
+        })
+        self._cancel_dialogue_activity()
+        self.dialogue_lines = lines
+        self.dialogue_index = -1
+        self.dialogue_indicator.show()
+        self.advance_dialogue()
+
+    def return_from_call(self):
+        if not self._call_stack:
+            # A top-level return leaves this conversation, as an explicit end does.
+            self.script_commands = [r"\e"]
+            self.run_script_command()
+            return
+        frame = self._call_stack.pop()
+        self._cancel_dialogue_activity()
+        self.dialogue_lines = frame["lines"]
+        self.dialogue_index = frame["index"]
+        self.title.setText(frame["speaker"])
+        self.full_text = frame["full_text"]
+        self.visible_text = frame["visible_text"]
+        self.description.setText(self.visible_text)
+        self._reserve_dialogue_height(self.full_text)
+        self.tokens = frame["tokens"]
+        self.event_auto_advance = frame["event_auto_advance"]
+        self.dialogue_indicator.show()
+        self.run_script_command()
+
     def clear_route_buttons(self):
         while self.route_buttons.count():
             widget = self.route_buttons.takeAt(0).widget()
             if widget is not None:
+                widget.hide()
                 widget.deleteLater()
 
     def receive_event(self, name):
@@ -924,7 +1297,7 @@ class OnboardingDialog(QDialog):
                 self.recover_from_disruption()
                 return
             self.menu_recovery_route = None
-            QTimer.singleShot(0, control.showMenu)
+            self._defer_activity(control.showMenu)
             self.cursor_hide_timer.start(180)
             return
         if self.pending_menu_action is not None:
@@ -936,7 +1309,7 @@ class OnboardingDialog(QDialog):
             self.watched_menu = None
             self.menu_recovery_route = None
             menu.close()
-            QTimer.singleShot(0, action.trigger)
+            self._defer_activity(action.trigger)
             self.cursor_hide_timer.start(180)
             return
         popup = self.menu_at(global_pos)
@@ -948,7 +1321,7 @@ class OnboardingDialog(QDialog):
                     submenu.popup(popup.mapToGlobal(popup.actionGeometry(action).topRight()))
                 else:
                     popup.close()
-                    QTimer.singleShot(0, action.trigger)
+                    self._defer_activity(action.trigger)
             self.cursor_hide_timer.start(180)
             return
         else:
@@ -998,31 +1371,15 @@ class OnboardingDialog(QDialog):
         if self.disruption_pending or not self.menu_recovery_route:
             return
         route = self.menu_recovery_route
+        self._cancel_dialogue_activity()
         self.disruption_pending = True
-        self.user_move_timer.stop()
-        self.watched_menu = None
-        self.menu_recovery_route = None
-        self.pending_menu_action = None
-        self.pending_control = None
-        self.timer.stop()
-        self.typing_timer.stop()
-        self.script_timer.stop()
-        self.idle_timer.stop()
-        self.idle_cursor_timer.stop()
-        self.move_animation.stop()
-        self.motion_settle_timer.stop()
-        self.script_moving_window = False
-        self.cursor_animation.stop()
-        self.cursor_hide_timer.stop()
-        self.fake_cursor.hide()
-        self.script_commands = []
-        self.tokens = []
-        self.script_busy = False
+
         def resume():
             self.disruption_pending = False
             if self.isVisible():
                 self.select_route(route)
-        QTimer.singleShot(0, resume)
+
+        self._defer_activity(resume)
 
     def finish_script_click(self):
         self.fake_cursor.setPixmap(self.cursor_normal)
@@ -1033,8 +1390,11 @@ class OnboardingDialog(QDialog):
         lines = load_route(route)
         if not lines:
             return
-        self.clear_route_buttons()
+        self._cancel_dialogue_activity()
+        self.space.setEnabled(True)
         self.dialogue_indicator.show()
+        self.next.setEnabled(False)
+        self.back.setEnabled(False)
         self.dialogue_lines = lines
         self.dialogue_index = -1
         self.script_commands = []
@@ -1042,30 +1402,27 @@ class OnboardingDialog(QDialog):
         self.advance_dialogue()
 
     def next_page(self):
-        if self.page == 4:
+        if self.page == FINISH_PAGE:
             self.accept()
         else:
-            self.set_page(self.page + 1)
-            if self.page < 4:
-                self.show_dialogue()
+            if self.page == READING_PAGE:
+                self.apply_reading_preferences()
+            self._advance_setup_page()
+
+    def _advance_setup_page(self):
+        self.set_page(self.page + 1)
+        if self.page < FINISH_PAGE:
+            self.show_dialogue()
 
     def previous_page(self):
         self.set_page(self.page - 1)
         self.show_dialogue()
 
     def done(self, result):
-        self.user_move_timer.stop()
-        self.timer.stop()
-        self.typing_timer.stop()
-        self.script_timer.stop()
-        self.idle_timer.stop()
-        self.idle_cursor_timer.stop()
-        self.move_animation.stop()
-        self.motion_settle_timer.stop()
-        self.script_moving_window = False
-        self.cursor_animation.stop()
-        self.cursor_hide_timer.stop()
-        self.fake_cursor.hide()
+        self._dialogue_closed = True
+        self._call_stack.clear()
+        self.size_animation.stop()
+        self._cancel_dialogue_activity()
         try:
             self.events.occurred.disconnect(self.receive_event)
         except (RuntimeError, TypeError):
@@ -1073,5 +1430,6 @@ class OnboardingDialog(QDialog):
         # Skipping or closing is also a deliberate choice to leave setup.
         payload = settings.load_all_settings()
         payload["onboarding_complete"] = True
+        payload["onboarding_pacing"] = dict(self.pacing)
         settings.save_all_settings(payload)
         super().done(result)
