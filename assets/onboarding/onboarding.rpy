@@ -361,7 +361,9 @@ label fourthsteplyrics:
                     $ pause(0.29)
                     extend " .chr"
                     $ pause(0.43)
-                    extend " file."
+                    extend " file,"
+                    $ pause (0.30)
+                    extend " okay?"
                     $ auto(3)
                     before terminal_close
                     before voice("dev/onestrike.wav")
