@@ -60,8 +60,11 @@ def get_onboarding_pacing(payload=None):
     auto_read = values.get("auto_read", True)
     if not isinstance(auto_read, bool):
         auto_read = True
+    sound_enabled = values.get("sound_enabled", True)
+    if not isinstance(sound_enabled, bool):
+        sound_enabled = True
     return {"text_speed": speed, "reduced_motion": values.get("reduced_motion") is True,
-            "auto_read": auto_read}
+            "auto_read": auto_read, "sound_enabled": sound_enabled}
 
 
 UPDATE_DEFAULTS = {

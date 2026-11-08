@@ -18,6 +18,14 @@ overrides are preserved. **Do this later** skips the step without saving the
 draft, including during its introduction; returning to the step reloads the
 current saved preferences.
 
+Closing the wizard, pressing Escape, or choosing **Skip setup** asks whether to
+leave. **Keep setting up** is the default and Escape action. The confirmation
+pauses dialogue timers, scripted motion, and queued actions, and buffers incoming
+application events. Keeping setup resumes the current scene; leaving retains
+saved preferences and discards any unapplied reading preview. **Finish** completes
+setup directly, and **Do this later** skips only the reading step without an exit
+confirmation.
+
 ## Reading and pauses
 
 The wizard's **Auto-read** checkbox starts enabled and is remembered alongside
@@ -39,6 +47,54 @@ advances dialogue. Turning it on while a line is ready starts a fresh reading de
 Instant text changes only text rendering. Scripted pauses, actions, choices, and
 event waits keep their execution order. Space operates a focused pacing control
 instead of advancing dialogue.
+
+## Reaction sounds
+
+Put local audio files in `assets/onboarding/sound`. Sound cues are nonblocking
+and use their own audio player, leaving music playback and its volume alone.
+They support the supplied OGG and MP3 files, plus WAV files.
+
+```renpy
+label reaction:
+    before sound("playful")
+    wizard "I have an idea."
+    $ pause(1)
+    $ sound("idea.ogg")
+    extend " There it is."
+    $ next
+    play sound "interesting.ogg"
+    wizard "Hey!"
+    stop sound
+    $ end
+```
+
+`before sound("name")` starts a reaction before the following `wizard` line or
+`extend` continuation types. Before an `extend`, the cue runs after preceding
+inline actions such as `pause(...)`, immediately before the appended text.
+`$ sound("name")` starts it when the script reaches that action. A name can be
+a filename or its stem, such as `sigh.ogg` or `sigh`. `play sound "file.ogg"`
+is the Ren'Py-style action form; `$ stop_sound` and `stop sound` stop playback.
+Names refer only to files directly in the sound folder, not paths or URLs.
+
+Only one reaction plays at a time. Another sound replaces it; changing scenes,
+skipping dialogue in Debug, muting, or closing setup stops the active clip.
+Missing files or playback errors are logged without blocking the dialogue.
+The **Sound** checkbox mutes reactions immediately and is remembered when setup
+closes. Unmuting does not replay an earlier cue. Reduce motion and Auto-read
+remain independent of sound.
+
+A small text expression appears beside the speaker's name when a sound cue runs,
+such as **Thinking...**, **Confused**, or **Playful**. It remains for that dialogue
+line, including pauses, and clears when the next line has no reaction cue.
+Another cue in an `extend` continuation updates it at that point. The expression
+still appears when Sound is muted; explicit `stop sound` clears it. Scene changes
+and returning from a helper also clear stale expressions.
+
+The bundled names are `adore`, `confused`, `idea`, `interested`,
+`interesting`, `love`, `offended`, `playful`, `responsereceived`, `sad`, `shy`,
+`sigh`, `sleeping`, `speechless`, `steaming`, `surprised`, `sweating`, and
+`thinking`. The tour uses selected reactions rather than playing a clip for
+every line.
 
 ## Variables and flags
 
@@ -114,6 +170,55 @@ The first matching branch is chosen once; changing a variable in that branch
 does not cause a later `elif` to run. There are no arbitrary Python expressions
 or function evaluations. Unlike-type ordering comparisons are false; booleans
 are distinct from numbers. The Debug panel displays current variables.
+
+## Random dialogue
+
+`random:` picks one variant each time execution reaches the block. Each entry
+has an equal chance; a later visit may pick the same entry again. The selected
+dialogue follows the usual text speed and Auto-read settings, then execution
+continues after the block. The player does not need to make a choice.
+
+For a list of individual lines, use `wizard` statements or quoted strings:
+
+```renpy
+label greeting:
+    before sound("playful")
+    random:
+        wizard "Hey! Ready for the tour?"
+        wizard "Welcome back. I've been practicing my introduction."
+        "There you are. Let's get started."
+    $ auto(3)
+    wizard "First up: your music library."
+    $ end
+```
+
+The `before` cue applies to the selected variant's first line. Common inline
+actions after the block, such as `$ auto(3)` or `$ pause(1)`, apply to its last
+line. A common `extend` appends text to that selected line as well.
+
+Use `choice:` for a variant with several lines or its own actions:
+
+```renpy
+label reaction:
+    random:
+        choice:
+            before sound("playful")
+            wizard "Aha. There you are."
+            $ pause(0.5)
+            extend " Ready?"
+        choice:
+            before sound("thinking")
+            wizard "Where were we?"
+            $ auto(2)
+            wizard "Right. Music."
+    wizard "Let's continue."
+    $ end
+```
+
+Only the selected variant runs its actions or changes variables. A choice body
+can include conditions, calls, event waits, or another `random:` block. Keep
+variants indented by four spaces and their `choice:` bodies by another four.
+An empty random block or choice is reported with its script line number.
 
 ## Reusable conversations
 

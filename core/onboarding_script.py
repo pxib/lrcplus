@@ -25,13 +25,20 @@ def _quoted(value, location):
 
 
 def _cue(statement, location):
+    sound = re.fullmatch(r"sound\((.*)\)", statement)
+    play_sound = re.fullmatch(r"play\s+sound\s+(.+)", statement)
+    if sound or play_sound:
+        name = _quoted((sound or play_sound).group(1).strip(), location)
+        if not re.fullmatch(r"[a-z_0-9-]+(?:\.(?:ogg|mp3|wav))?", name, re.IGNORECASE):
+            raise ValueError(f"{location}: sound must name a bundled OGG, MP3, or WAV file")
+        return r"\sound(" + encode_payload(name) + ")"
     state = state_command(statement, location)
     if state is not None:
         return r"\state(" + encode_payload(state) + ")"
     fixed = {
         "next": r"\n", "end": r"\e", "continue_setup": r"\c",
         "hide_cursor": r"\curhide", "toggle_outside_click": r"\toggleoutsideclick",
-        "reset": r"\res", "return": r"\return",
+        "reset": r"\res", "return": r"\return", "stop_sound": r"\soundstop", "stop sound": r"\soundstop",
     }
     if statement in fixed:
         return fixed[statement]
@@ -84,6 +91,9 @@ class _ScriptParser:
     """Parse indentation explicitly so an unselected block never leaks statements."""
 
     def __init__(self, source):
+        # Editors may retain a UTF-8 signature when source is decoded as utf-8.
+        # Remove only the file prefix, preserving dialogue and line numbers.
+        source = source.removeprefix("\ufeff")
         self.rows = []
         self.index = 0
         for number, raw in enumerate(source.splitlines(), 1):
@@ -131,6 +141,28 @@ class _ScriptParser:
                         raise ValueError(f"line {arm_line}: conditional block is empty")
                     arms.append((expression, body))
                 nodes.append(("if", number, arms))
+            elif text == "random:":
+                variants = []
+                while self.index < len(self.rows):
+                    variant_line, variant_depth, variant_text = self.rows[self.index]
+                    if variant_depth < indent + 4:
+                        break
+                    if variant_depth != indent + 4:
+                        raise ValueError(f"line {variant_line}: unexpected random variant indentation")
+                    self.index += 1
+                    if variant_text == "choice:":
+                        body = self.block(indent + 8)
+                        if not body:
+                            raise ValueError(f"line {variant_line}: random choice is empty")
+                    else:
+                        spoken = re.fullmatch(r'(?:wizard\s+)?("(?:[^"\\]|\\.)*")', variant_text)
+                        if not spoken:
+                            raise ValueError(f"line {variant_line}: expected a dialogue string or choice block in random")
+                        body = [("statement", variant_line, "wizard " + spoken.group(1))]
+                    variants.append(body)
+                if not variants:
+                    raise ValueError(f"line {number}: random block is empty")
+                nodes.append(("random", number, variants))
             elif text == "menu:":
                 options = []
                 while self.index < len(self.rows):
@@ -187,16 +219,43 @@ def _compile_nodes(nodes, defaults=""):
     pending = defaults
     before_pending = False
     control_lines = set()
+    random_lines = {}
+
+    def append_random_tail(index, value):
+        variants = random_lines[index]
+        for variant in variants:
+            speaker, text = variant[-1]
+            if text.endswith(r"\flow"):
+                text = text[:-5] + value + r"\flow"
+            else:
+                text += value
+            variant[-1] = (speaker, text)
+        lines[index] = ("Setup Wizard", r"\random(" + encode_payload(variants) + ")")
 
     def append_cue(cue):
         nonlocal pending
         if lines:
-            lines[-1] = (lines[-1][0], lines[-1][1] + cue)
+            if len(lines) - 1 in random_lines:
+                append_random_tail(len(lines) - 1, cue)
+            else:
+                lines[-1] = (lines[-1][0], lines[-1][1] + cue)
         else:
             pending += cue
 
     for kind, number, value in nodes:
         location = f"line {number}"
+        if kind == "random":
+            variants = [_compile_nodes(body) for body in value]
+            for variant in variants:
+                speaker, text = variant[0]
+                variant[0] = (speaker, pending + text)
+            pending = ""
+            before_pending = False
+            index = len(lines)
+            random_lines[index] = variants
+            control_lines.add(index)
+            lines.append(("Setup Wizard", r"\random(" + encode_payload(variants) + ")"))
+            continue
         if kind == "if":
             cue = _single_branch(*value[0]) if len(value) == 1 else None
             if cue is None:
@@ -227,9 +286,14 @@ def _compile_nodes(nodes, defaults=""):
         if dialogue:
             text = _quoted(dialogue.group(2), location)
             if dialogue.group(1) == "extend":
-                if not lines or pending:
+                if not lines:
                     raise ValueError(f"{location}: extend requires a previous line")
-                lines[-1] = (lines[-1][0], lines[-1][1] + text)
+                if len(lines) - 1 in random_lines:
+                    append_random_tail(len(lines) - 1, pending + text)
+                else:
+                    lines[-1] = (lines[-1][0], lines[-1][1] + pending + text)
+                pending = ""
+                before_pending = False
             else:
                 lines.append(("Setup Wizard", pending + text))
                 pending = ""
@@ -240,6 +304,8 @@ def _compile_nodes(nodes, defaults=""):
             before_pending = True
         elif statement.startswith("$ "):
             append_cue(_cue(statement[2:].strip(), location))
+        elif statement.startswith("play sound ") or statement == "stop sound":
+            append_cue(_cue(statement, location))
         elif re.fullmatch(r"jump\s+[A-Za-z_][A-Za-z_0-9]*", statement):
             append_cue(r"\jump(" + statement.split()[1] + ")")
         elif statement == "return" or re.fullmatch(r"call\s+[A-Za-z_][A-Za-z_0-9]*", statement):
@@ -285,4 +351,4 @@ def compile_script(source):
 
 
 def load_script(path=SCRIPT_PATH):
-    return compile_script(path.read_text(encoding="utf-8"))
+    return compile_script(path.read_text(encoding="utf-8-sig"))

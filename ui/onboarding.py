@@ -3,6 +3,7 @@
 import json
 import base64
 import logging
+import random
 import re
 import sys
 from pathlib import Path
@@ -10,13 +11,14 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication, QEasingCurve, QEvent, QEventLoop, QPoint, QPointF, QPropertyAnimation, QRect, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QCursor, QKeySequence, QMouseEvent, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel, QLayout, QMenu, QPushButton, QSizePolicy, QStyle, QStyleOptionToolButton, QToolButton, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QLayout, QMenu, QMessageBox, QPushButton, QSizePolicy, QStyle, QStyleOptionToolButton, QToolButton, QVBoxLayout, QWidget,
 )
 
 from core import settings
 from core.onboarding_events import onboarding_events
 from core.onboarding_script import SCRIPT_PATH, load_script
 from core.onboarding_state import apply_state, decode_payload, matches_condition
+from ui.onboarding_sound import OnboardingSounds, sound_expression
 
 
 DIALOGUE_PATH = Path(__file__).resolve().parent.parent / "assets" / "onboarding" / "dialogue.json"
@@ -38,7 +40,7 @@ SCRIPT_COMMAND = re.compile(r"\\(?:iftext\(\s*[a-z_]+\s*,\s*[a-z0-9_=-]*\s*\)|id
 EASINGS = {"linear": QEasingCurve.Type.Linear, "in_out_cubic": QEasingCurve.Type.InOutCubic,
            "out_cubic": QEasingCurve.Type.OutCubic}
 
-SCRIPT_COMMAND = re.compile(r"\\(?:state|branch|choose|choices)\([a-z0-9_=-]+\)|\\call\([a-z_][a-z_0-9]*\)|\\return|\\flow|" + SCRIPT_COMMAND.pattern, re.IGNORECASE)
+SCRIPT_COMMAND = re.compile(r"\\(?:state|branch|choose|choices|sound|random)\([a-z0-9_=-]+\)|\\soundstop|\\call\([a-z_][a-z_0-9]*\)|\\return|\\flow|" + SCRIPT_COMMAND.pattern, re.IGNORECASE)
 
 
 def relative_coordinate(value, length):
@@ -114,6 +116,7 @@ class OnboardingDialog(QDialog):
         super().__init__(parent if parent is not None else player)
         self.player = player
         self.pacing = settings.get_onboarding_pacing()
+        self.sounds = OnboardingSounds(self, enabled=self.pacing["sound_enabled"])
         self.variables = {}
         self._call_stack = []
         self._read_delay_ms = None
@@ -160,6 +163,8 @@ class OnboardingDialog(QDialog):
         self._command_requested = False
         self._activity_revision = 0
         self._dialogue_closed = False
+        self._confirming_exit = False
+        self._confirmation_deferred = []
         self.script_timer = QTimer(self)
         self.script_timer.setSingleShot(True)
         self.script_timer.timeout.connect(self.finish_script_wait)
@@ -212,12 +217,28 @@ class OnboardingDialog(QDialog):
         self.title = QLabel()
         self.title.setStyleSheet("font-size: 20px; font-weight: bold;")
         self.title.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        header = QHBoxLayout()
+        header.setSpacing(10)
+        header.addWidget(self.title)
+        self.expression_label = QLabel()
+        self.expression_label.setAccessibleName("Wizard expression")
+        self.expression_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.expression_label.setStyleSheet(
+            "font-size: 12px; color: palette(text); border: 1px solid palette(mid); "
+            "border-radius: 6px; padding: 2px 7px;"
+        )
+        expression_policy = self.expression_label.sizePolicy()
+        expression_policy.setRetainSizeWhenHidden(True)
+        self.expression_label.setSizePolicy(expression_policy)
+        self.expression_label.hide()
+        header.addWidget(self.expression_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        header.addStretch(1)
         self.description = DialogueText()
         self.description.setTextFormat(Qt.TextFormat.PlainText)
         self.description.setWordWrap(True)
         self.description.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.description.clicked.connect(self.advance_dialogue)
-        layout.addWidget(self.title)
+        layout.addLayout(header)
         text_row = QHBoxLayout()
         self._dialogue_row = text_row
         text_row.addWidget(self.description, 1)
@@ -272,6 +293,12 @@ class OnboardingDialog(QDialog):
         self.reading_layout = QVBoxLayout(self.reading_container)
         self.reading_layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.reading_container)
+        self.dialogue_separator = QFrame()
+        self.dialogue_separator.setFrameShape(QFrame.Shape.HLine)
+        self.dialogue_separator.setFrameShadow(QFrame.Shadow.Plain)
+        self.dialogue_separator.setFixedHeight(1)
+        self.dialogue_separator.setStyleSheet("color: palette(mid);")
+        layout.addWidget(self.dialogue_separator)
         pacing_row = QHBoxLayout()
         speed_label = QLabel("Text speed")
         self.text_speed_combo = QComboBox()
@@ -284,6 +311,12 @@ class OnboardingDialog(QDialog):
         pacing_row.addWidget(speed_label)
         pacing_row.addWidget(self.text_speed_combo)
         pacing_row.addStretch()
+        self.sound_check = QCheckBox("Sound")
+        self.sound_check.setToolTip("Play the guide's reaction sounds without changing music playback.")
+        self.sound_check.setChecked(self.pacing["sound_enabled"])
+        self.sound_check.toggled.connect(self.change_sound)
+        self.sound_check.installEventFilter(self)
+        pacing_row.addWidget(self.sound_check)
         self.auto_read_check = QCheckBox("Auto-read")
         self.auto_read_check.setToolTip("Advance dialogue automatically after reading. Choices and application events still wait for you.")
         self.auto_read_check.setChecked(self.pacing["auto_read"])
@@ -300,7 +333,7 @@ class OnboardingDialog(QDialog):
         layout.addLayout(pacing_row)
         controls = QHBoxLayout()
         self.skip = QPushButton("Skip setup")
-        self.skip.clicked.connect(self.accept)
+        self.skip.clicked.connect(self.request_exit)
         self.back = QPushButton("Back")
         self.back.clicked.connect(self.previous_page)
         self.skip_reading = QPushButton("Do this later")
@@ -322,7 +355,7 @@ class OnboardingDialog(QDialog):
         self._fit_content()
 
     def _fit_content(self):
-        if self._dialogue_closed:
+        if self._dialogue_closed or self._confirming_exit:
             return
         layout = self._content_layout
         layout.activate()
@@ -439,6 +472,15 @@ class OnboardingDialog(QDialog):
                 and not self.script_busy and not self.typing_timer.isActive()):
             self.timer.start(self._read_delay_ms)
 
+    def change_sound(self, enabled):
+        self.pacing["sound_enabled"] = enabled
+        self.sounds.set_enabled(enabled)
+
+    def show_expression(self, sound_name=None):
+        expression = sound_expression(sound_name)
+        self.expression_label.setText(expression)
+        self.expression_label.setVisible(bool(expression))
+
     def ready_for_reading(self, delay_ms=None):
         if not self.dialogue_lines or self.route_buttons.count():
             return
@@ -494,10 +536,12 @@ class OnboardingDialog(QDialog):
         return self.result()
 
     def eventFilter(self, watched, event):
+        if not getattr(self, "_content_ready", False) or getattr(self, "_dialogue_closed", False):
+            return super().eventFilter(watched, event)
         if watched is self._content_widget and event.type() == QEvent.Type.LayoutRequest:
             self._fit_content()
         if (event.type() == QEvent.Type.ShortcutOverride
-                and watched in (self.text_speed_combo, self.reduced_motion_check, self.auto_read_check, self.skip_reading)
+                and watched in (self.text_speed_combo, self.reduced_motion_check, self.auto_read_check, self.sound_check, self.skip_reading)
                 and event.key() == Qt.Key.Key_Space):
             event.accept()
             return True
@@ -696,7 +740,10 @@ class OnboardingDialog(QDialog):
 
     def _cancel_dialogue_activity(self):
         """Invalidate deferred work and stop all activity owned by the old scene."""
+        self.sounds.stop()
+        self.show_expression()
         self._activity_revision += 1
+        self._confirmation_deferred.clear()
         self._read_delay_ms = None
         self._pause_active = False
         self._command_requested = False
@@ -730,7 +777,10 @@ class OnboardingDialog(QDialog):
 
         def run_if_current():
             if revision == self._activity_revision and not self._dialogue_closed:
-                callback()
+                if self._confirming_exit:
+                    self._confirmation_deferred.append((revision, callback))
+                else:
+                    callback()
 
         QTimer.singleShot(0, run_if_current)
 
@@ -815,6 +865,8 @@ class OnboardingDialog(QDialog):
             self.advance_dialogue()
 
     def advance_dialogue(self):
+        if self._confirming_exit:
+            return
         if not self.dialogue_lines:
             return
         if self.typing_timer.isActive():
@@ -825,6 +877,7 @@ class OnboardingDialog(QDialog):
         self.timer.stop()
         self._read_delay_ms = None
         self.dialogue_indicator.show()
+        self.show_expression()
         self.dialogue_index += 1
         if self.dialogue_index >= len(self.dialogue_lines):
             if self._call_stack:
@@ -893,7 +946,7 @@ class OnboardingDialog(QDialog):
 
     def run_script_command(self):
         """Drain immediate commands without recursion, yielding to Qt in batches."""
-        if self._dialogue_closed:
+        if self._dialogue_closed or self._confirming_exit:
             return
         self._command_requested = True
         if self._running_commands:
@@ -916,6 +969,21 @@ class OnboardingDialog(QDialog):
             return
         original_command = self.script_commands.pop(0)
         command = original_command.lower()
+        if command.startswith(r"\random("):
+            variants = decode_payload(original_command[8:-1])
+            self.splice_dialogue(random.choice(variants))
+            return
+        if command.startswith(r"\sound("):
+            name = decode_payload(original_command[7:-1])
+            self.show_expression(name)
+            self.sounds.play(name)
+            self.run_script_command()
+            return
+        if command == r"\soundstop":
+            self.sounds.stop()
+            self.show_expression()
+            self.run_script_command()
+            return
         if command.startswith(r"\call("):
             self.call_route(original_command[6:-1])
             return
@@ -1274,7 +1342,7 @@ class OnboardingDialog(QDialog):
         self.consume_event()
 
     def consume_event(self):
-        if not self.waiting_events:
+        if self._confirming_exit or not self.waiting_events:
             return
         for index, event in enumerate(self.pending_events):
             if event in self.waiting_events:
@@ -1418,11 +1486,86 @@ class OnboardingDialog(QDialog):
         self.set_page(self.page - 1)
         self.show_dialogue()
 
+    def _ask_exit_confirmation(self):
+        box = QMessageBox(self)
+        box.setWindowTitle("Leave setup?")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText("Leave setup for now?")
+        message = "Preferences already saved will be kept. You can reopen setup later."
+        if self.page == READING_PAGE and self.reading_preferences is not None and self.reading_preferences.changes():
+            message += " Your reading preview changes have not been saved."
+        box.setInformativeText(message)
+        leave = box.addButton("Leave setup", QMessageBox.ButtonRole.AcceptRole)
+        keep = box.addButton("Keep setting up", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(keep)
+        box.setEscapeButton(keep)
+        box.setWindowModality(Qt.WindowModality.ApplicationModal)
+        try:
+            box.exec()
+            return box.clickedButton() is leave
+        finally:
+            box.deleteLater()
+
+    def request_exit(self):
+        if self._dialogue_closed:
+            return True
+        if self._confirming_exit:
+            return False
+        self._confirming_exit = True
+        revision = self._activity_revision
+        timers = []
+        for timer in (self.timer, self.typing_timer, self.script_timer, self.idle_timer,
+                      self.idle_cursor_timer, self.user_move_timer, self.motion_settle_timer,
+                      self.cursor_hide_timer):
+            if timer.isActive():
+                timers.append((timer, max(0, timer.remainingTime()) if timer.isSingleShot() else timer.interval()))
+                timer.stop()
+        animations = []
+        for animation in (self.move_animation, self.cursor_animation, self.size_animation):
+            if animation.state() == QPropertyAnimation.State.Running:
+                animation.pause()
+                animations.append(animation)
+        cursor_visible = self.fake_cursor.isVisible()
+        self.fake_cursor.hide()
+        self.sounds.stop()
+        try:
+            leave = self._ask_exit_confirmation()
+        finally:
+            self._confirming_exit = False
+        if leave:
+            self.done(QDialog.DialogCode.Rejected)
+            return True
+        if not self._dialogue_closed and revision == self._activity_revision:
+            for timer, interval in timers:
+                timer.start(self.idle_interval_ms if timer is self.idle_timer else interval)
+            for animation in animations:
+                if animation.state() == QPropertyAnimation.State.Paused:
+                    animation.resume()
+            if cursor_visible:
+                self.fake_cursor.show()
+            deferred, self._confirmation_deferred = self._confirmation_deferred, []
+            for version, callback in deferred:
+                if version == self._activity_revision:
+                    self._defer_activity(callback)
+            self.consume_event()
+            self._fit_content()
+        return self._dialogue_closed
+
+    def reject(self):
+        self.request_exit()
+
+    def closeEvent(self, event):
+        if self.request_exit():
+            event.accept()
+        else:
+            event.ignore()
+
     def done(self, result):
         self._dialogue_closed = True
         self._call_stack.clear()
         self.size_animation.stop()
         self._cancel_dialogue_activity()
+        self.sounds.close()
         try:
             self.events.occurred.disconnect(self.receive_event)
         except (RuntimeError, TypeError):

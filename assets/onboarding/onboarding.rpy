@@ -1,7 +1,10 @@
-# LRCPlus onboarding script. Edit the dialogue and cues below.
+﻿# LRCPlus onboarding script. Edit the dialogue and cues below.
 # Supported Ren'Py-inspired subset; this does not execute Python.
 # Checkpoints: 1 welcome, 2 library, 3 appearance, 6 lyrics wrap-up, 7 search.
 # Optional explanations use call/return; checkpoints handle nonlocal recovery.
+# Voice: theatrical music nerd, fond of Sakura, easily flustered, kind about skips.
+# Slang is occasional seasoning for banter; keep setup instructions plain.
+# Keep instructions and checkpoint anchors clear; vary the reactions around them.
 
 default detailed_tour = true
 default library_tips_read = false
@@ -11,14 +14,26 @@ default lyrics_found = false
 default search_in_progress = false
 default wizard_moves = 0
 default idle_reminders = 0
+default pink_mentions = 0
 
 label firststeplanguage:
+    before sound("interested")
     wizard "Youkoso to LRCPlus!"
     $ auto(2)
-    wizard "I'm the setup wizard. Tiny window. Big responsibility."
+    random:
+        choice:
+            before sound("playful")
+            wizard "I'm the setup wizard. Tiny window. Big responsibility. Absolutely no clipboard."
+        choice:
+            before sound("shy")
+            wizard "I'm your setup wizard. I rehearsed this introduction and still forgot where my hands go."
+        choice:
+            before sound("interested")
+            wizard "Your setup wizard, reporting for duty. Qualifications: I live here and have opinions about colors."
     $ auto(3)
     wizard "To COMMENCE forth, please choose a language."
     $ auto(2)
+    before sound("sweating")
     wizard "Oh, right."
     $ pause(0.8)
     extend " I didn't even localize this software. English it is. Mb."
@@ -29,6 +44,7 @@ label firststeplanguage:
     $ auto(4)
     wizard "If I stop for a choice or wait for you to do something in the player, Auto-read will wait too."
     $ auto(4)
+    before sound("thinking")
     wizard "So. How much tour are we doing?"
     menu:
         "Show me around":
@@ -41,7 +57,16 @@ label firststeplanguage:
 
 label welcome_detailed:
     $ detailed_tour = true
-    wizard "A fellow appreciator of unnecessary dialogue. Excellent."
+    random:
+        choice:
+            before sound("playful")
+            wizard "A fellow appreciator of unnecessary dialogue. I've found my people, fr."
+        choice:
+            before sound("shy")
+            wizard "The scenic route? Oh. You actually want the whole presentation. Gimme a sec to look professional."
+        choice:
+            before sound("interested")
+            wizard "Full tour? Alright. Imaginary clipboard acquired. Let's make this player feel like yours."
     $ auto(3)
     wizard "I'll point out the useful stuff, and you can ask for a little more detail along the way."
     $ auto(3)
@@ -52,12 +77,22 @@ label welcome_detailed:
 
 label welcome_quick:
     $ detailed_tour = false
-    wizard "Got you. Short explanations, optional detours, then music."
+    random:
+        choice:
+            before sound("responsereceived")
+            wizard "Got you. Essentials first, music soon. Folding the dramatic monologue back into my pocket."
+        choice:
+            before sound("playful")
+            wizard "Bet. Speedrun route. I'll keep the folder poetry to myself."
+        choice:
+            before sound("shy")
+            wizard "Essentials. Right. Quietly putting these twenty imaginary cue cards away."
     $ auto(3)
     wizard "If something catches your eye, the longer explanations will still be there."
     return
 
 label secondstepmusiclibraryfolders:
+    before sound("interested")
     wizard "First up: where does your music live?"
     $ auto(2)
     wizard "LRCPlus can scan folders you add to your library."
@@ -66,6 +101,7 @@ label secondstepmusiclibraryfolders:
         wizard "You don't need to solve your entire folder situation today. One folder is a perfectly respectable start."
     wizard "If you have a... lot of music, the scan may take a little while."
     $ pause(0.7)
+    before sound("idea")
     extend " Your collection has lore. I respect that."
     $ auto(3)
     wizard "Want a couple of folder tips before the controls appear?"
@@ -89,21 +125,42 @@ label library_tips:
     $ auto(4)
     wizard "And if you keep lyric files beside your songs, leave those together. Future you will appreciate it."
     $ auto(4)
-    wizard "There. Folder wisdom. Delivered by a window that doesn't own any folders."
+    random:
+        choice:
+            before sound("playful")
+            wizard "There. Folder wisdom. Delivered by a window that doesn't own any folders."
+        choice:
+            before sound("idea")
+            wizard "That's the folder lecture. Shorter than reorganizing the entire collection at 2 a.m. Been there, tbh."
+        choice:
+            before sound("interesting")
+            wizard "One folder is enough to start. We can leave the grand music archive renovation for another day."
     $ library_tips_read = true
     return
 
 label library_ready:
-    wizard "Fair. You know where the music is. I was just checking."
+    random:
+        choice:
+            before sound("responsereceived")
+            wizard "Fair. You know where the music is. mb, I was just checking."
+        choice:
+            before sound("playful")
+            wizard "No folder lecture. Understood. The folder professor has left the building."
+        choice:
+            before sound("interested")
+            wizard "You have a plan. Excellent. I'm very supportive of plans that end in music."
     $ pause(2)
     if library_tips_read:
         wizard "And we've already covered the folder wisdom. I am capable of remembering things now."
     return
 
 label thirdstepappearance:
+    before sound("playful")
     wizard "Alrighhht, this is the spicy part. Appearance."
     $ auto(3)
+    before sound("adore")
     wizard "I prefer Sakura ngl. But this is your player, so my vote is purely decorative."
+    $ pink_mentions += 1
     $ pause(4)
     if detailed_tour:
         wizard "The light and dark modes change the overall look. The presets give you different color choices."
@@ -128,14 +185,27 @@ label appearance_tips:
     $ auto(4)
     wizard "The best theme is the one you still like after staring at it for a while."
     $ pause(0.6)
+    before sound("sweating")
     extend " Deeply scientific advice."
     return
 
 label appearance_ready:
-    wizard "Go for it. I'll stand here and pretend I have no strong opinions about pink."
+    random:
+        choice:
+            before sound("adore")
+            wizard "Go for it. I'll stand here and pretend I have no strong opinions about pink."
+            $ pink_mentions += 1
+        choice:
+            before sound("interested")
+            wizard "Five minutes picking a color? Lowkey, I get it. I've lost entire evenings to a slightly different shade."
+        choice:
+            before sound("shy")
+            wizard "Your player, your colors. I'll try not to say 'Sakura' again. That one doesn't count."
+            $ pink_mentions += 1
     return
 
 label readingpreferences:
+    before sound("interesting")
     wizard "One more thing before the lyrics search: can you actually read the lyrics comfortably?"
     $ auto(4)
     wizard "There's a sample coming up. Adjust the lyric size and try furigana or romaji to see what feels right."
@@ -178,14 +248,28 @@ label fourthsteplyrics:
     $ pause(5)
     if detailed_tour:
         wizard "Start with a song you know well. It's much easier to notice whether the lyrics and timing feel right."
+    if pink_mentions >= 2:
+        before sound("shy")
+        wizard "And yes, I heard myself mention pink more than once. I'm working on having a second personality trait."
+        $ auto(4)
     wizard "That's the tour. Pick a track, get comfortable, and let the player do its thing."
     $ auto(3)
-    wizard "Thanks for hanging out with a setup window for this long. Next takes you to the finish."
+    before sound("shy")
+    wizard "Thanks for hanging out with a setup window for this long. Seriously. Next takes you to the finish."
     $ end
 
 label lyrics_local:
     $ local_lyrics_explained = true
-    wizard "Local lyrics are lyric files you already have. No search required to explain that one."
+    random:
+        choice:
+            before sound("interested")
+            wizard "Local lyrics are lyric files you already have. Little files beside the music. Very cozy arrangement."
+        choice:
+            before sound("idea")
+            wizard "Already have lyric files? Excellent. We can put those to work without an online treasure hunt."
+        choice:
+            before sound("playful")
+            wizard "The local route. Actual files, actual folders. Something I can point at with confidence."
     $ auto(3)
     wizard "LRC files can include line timestamps. LRCX can carry extra detail such as word timing and furigana."
     $ auto(4)
@@ -203,10 +287,12 @@ label lyrics_local:
             jump lyrics_continue
 
 label lyrics_online:
+    before sound("playful")
     wizard "You can search for lyrics online from LRCPlus."
     $ next
     if local_lyrics_explained:
         wizard "Same goal as local files. Different way of finding the words."
+    before sound("thinking")
     wizard "Let's see..."
     $ pause(1)
     $ point_at(lyrics_button,in_out_cubic)
@@ -221,6 +307,7 @@ label lyrics_online:
     $ move(78.4%,20%,out_cubic)
     extend " Hmm..."
     $ auto(2)
+    before sound("idea")
     wizard "Ah, there it is."
     $ pause(1)
     $ click_menu(lyrics_menu,search_lyrics,menu_disrupted)
@@ -260,7 +347,16 @@ label lyrics_waiting_results:
         jump youretakingtoolongbro
 
 label menu_disrupted:
-    wizard "Where the f... where did that go? I was trying to show you the search, bro."
+    random:
+        choice:
+            before sound("confused")
+            wizard "Where the f... where did that go? I had a whole presentation ready, bro."
+        choice:
+            before sound("speechless")
+            wizard "The menu has left the chat. Bruh. Bold artistic direction."
+        choice:
+            before sound("offended")
+            wizard "I was pointing at something. It was here a second ago. I swear I am qualified for this job."
     $ auto(3)
     wizard "No big deal. The lyrics menu will still be there after setup."
     $ auto(3)
@@ -270,7 +366,16 @@ label menu_disrupted:
 
 label search_failed:
     $ search_in_progress = false
-    wizard "Yikes... something went wrong with the search. "
+    random:
+        choice:
+            before sound("sad")
+            wizard "Yikes... something went wrong with the search. "
+        choice:
+            before sound("sweating")
+            wizard "That was... not part of my carefully imagined demonstration. "
+        choice:
+            before sound("sigh")
+            wizard "The search tripped over its shoelaces. "
     $ toggle_outside_click(false)
     extend "That doesn't mean your song has no lyrics."
     $ pause(4)
@@ -287,7 +392,16 @@ label search_failed:
 
 label no_results:
     $ search_in_progress = false
-    wizard "No lyrics this time... "
+    random:
+        choice:
+            before sound("sigh")
+            wizard "No lyrics this time... "
+        choice:
+            before sound("sad")
+            wizard "An empty result list. Not the big reveal I was going for. "
+        choice:
+            before sound("thinking")
+            wizard "Hm. Nothing turned up for that search. "
     $ toggle_outside_click(false)
     extend "Could be the search terms. Could be the catalog."
     $ auto(4)
@@ -304,6 +418,7 @@ label no_results:
 
 label search_tips:
     before toggle_outside_click(false)
+    before sound("idea")
     wizard "Start with the artist and song title. Those are usually the useful bits."
     $ auto(3)
     wizard "If the query includes a track number, extension, or release tag, try leaving that part out."
@@ -322,7 +437,16 @@ label search_tips:
 label results_found:
     $ search_in_progress = false
     $ lyrics_found = true
-    wizard "There we go! You can pick a result to take a closer look."
+    random:
+        choice:
+            before sound("love")
+            wizard "There we go! You can pick a result to take a closer look. Tiny victory dance happening off-screen."
+        choice:
+            before sound("surprised")
+            wizard "Oh! Results! I was completely calm the entire time. Trust. Pick one to take a look."
+        choice:
+            before sound("idea")
+            wizard "Found some! Artist, title, a promising little list. Pick a result and see if it fits your recording."
     $ pause(3)
     wizard "Give the title and artist a quick check. A familiar title can still belong to a different song."
     $ auto(4)
@@ -338,13 +462,15 @@ label results_found:
 # Keep the two search waits together so fast search responses can be buffered.
 label lyrics_retry:
     before toggle_outside_click(true)
+    before sound("responsereceived")
     wizard "Go ahead, give it another try. You can close the search window if you'd rather move on."
     $ wait_event(lyrics_search_started,lyrics_search_closed)
     if event == "lyrics_search_closed":
         jump search_closed
     $ lyrics_attempts += 1
     $ search_in_progress = true
-    wizard "Let's see... fingers crossed for a useful result."
+    before sound("thinking")
+    wizard "Let's see... I'm trying very hard to look confident rn."
     $ wait_event(lyrics_search_results,lyrics_search_failed,lyrics_search_empty,lyrics_search_closed)
     if event == "lyrics_search_closed":
         jump search_closed
@@ -357,15 +483,26 @@ label lyrics_retry:
 
 label search_closed:
     $ search_in_progress = false
+    before sound("speechless")
     wizard "Did you just... close the search? Okay, that's fine. You can always search again later."
     $ pause(2)
-    wizard "We'll keep moving. No compulsory lyric research on my watch."
+    random:
+        choice:
+            before sound("responsereceived")
+            wizard "We'll keep moving. No compulsory lyric research on my watch."
+        choice:
+            before sound("playful")
+            wizard "The search window disappeared. I'm choosing to call that an artistic transition. Onward."
+        choice:
+            before sound("shy")
+            wizard "I had a speech prepared. It was mostly 'click Search,' so we can safely move on."
     $ pause(3)
     $ reset
     $ return_checkpoint(6)
 
 label lyrics_continue:
     $ search_in_progress = false
+    before sound("responsereceived")
     wizard "No worries, you can always search again later."
     $ pause(3)
     if local_lyrics_explained:
@@ -377,13 +514,30 @@ label lyrics_continue:
 
 label window_moved:
     $ wizard_moves += 1
-    wizard "What are you doing? Get off me!"
+    random:
+        choice:
+            before sound("offended")
+            wizard "What are you doing? Get off me! I was standing there very professionally."
+        choice:
+            before sound("surprised")
+            wizard "Whoa. Okay. We're moving. A little warning for the resident setup wizard?"
+        choice:
+            before sound("speechless")
+            wizard "I appear to have been relocated. Filing a tiny complaint with the tiny window department."
     $ pause(1)
     if wizard_moves >= 3:
-        wizard "At this point I'm going to need a seatbelt."
+        before sound("steaming")
+        random:
+            wizard "At this point I'm going to need a seatbelt. And possibly a union representative."
+            wizard "Again? My imaginary clipboard is on the floor. smh."
+            wizard "New plan: I become a desktop shortcut. Less room to throw me around."
         $ pause(1)
     elif wizard_moves >= 2:
-        wizard "We are rearranging the furniture again. Okay. Finding my balance."
+        before sound("confused")
+        random:
+            wizard "We are rearranging the furniture again. Okay. Finding my balance."
+            wizard "Second relocation. Are we decorating, or are you trying to tell me something?"
+            wizard "Right. New spot again. Please picture me straightening a little tie."
         $ pause(1)
     else:
         wizard "Okay. New spot. Finding my feet."
@@ -398,7 +552,16 @@ label window_moved:
 
 label youretakingtoolong:
     $ idle_reminders += 1
-    wizard "You still there? No rush. I'm just checking the window didn't eat you."
+    random:
+        choice:
+            before sound("sleeping")
+            wizard "You still there? No rush. I'm just checking the window didn't eat you."
+        choice:
+            before sound("shy")
+            wizard "You still there? I was about to start narrating the loading spinner. Nobody needs that."
+        choice:
+            before sound("interested")
+            wizard "I can wait. I'm a window. My schedule is surprisingly open."
     $ pause(3)
     if idle_reminders >= 2:
         wizard "We can leave search for later if this isn't a good moment."
@@ -413,7 +576,16 @@ label youretakingtoolong:
 
 label youretakingtoolongbro:
     $ idle_reminders += 1
-    wizard "Still waiting on that search? We can give it more time."
+    random:
+        choice:
+            before sound("thinking")
+            wizard "Still waiting on that search? We can give it more time. I'm practicing patience. Quietly. Mostly."
+        choice:
+            before sound("sleeping")
+            wizard "Still waiting. Almost took a nap, ngl. Didn't want to miss the dramatic results reveal, though."
+        choice:
+            before sound("interested")
+            wizard "The search can have a little more time if you want. I'll keep you company."
     $ auto(3)
     wizard "Or we can move on. You don't need to wait here just to finish setting up."
     menu:
@@ -424,12 +596,22 @@ label youretakingtoolongbro:
 
 label lyrics_more_time:
     before toggle_outside_click(true)
+    before sound("responsereceived")
     wizard "Take your time. I'll be right here."
     $ pause(2)
     $ return_checkpoint(7)
 
 label ok:
-    wizard "Fair enough."
+    random:
+        choice:
+            before sound("responsereceived")
+            wizard "Fair enough."
+        choice:
+            before sound("playful")
+            wizard "No online quest today. Got it."
+        choice:
+            before sound("shy")
+            wizard "Just here for the music? Honestly, excellent plan."
     $ pause(1)
     extend " Local files, online search, or just listening for now. All valid."
     $ pause(4)

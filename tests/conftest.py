@@ -10,6 +10,18 @@ collect_ignore = ["test_simple.py", "test_repetition.py"]
 
 
 @pytest.fixture(autouse=True)
+def quiet_onboarding_sounds(request, monkeypatch):
+    if request.node.path.name.startswith("test_onboarding") and request.node.path.name != "test_onboarding_sound.py":
+        monkeypatch.setattr("ui.onboarding_sound.OnboardingSounds.play", lambda self, name: False)
+
+
+@pytest.fixture(autouse=True)
+def dismiss_onboarding_during_test_cleanup(request, monkeypatch):
+    if request.node.path.name.startswith("test_onboarding") and request.node.path.name != "test_onboarding_exit.py":
+        monkeypatch.setattr("ui.onboarding.OnboardingDialog._ask_exit_confirmation", lambda self: True)
+
+
+@pytest.fixture(autouse=True)
 def isolated_settings(tmp_path, monkeypatch):
     import core.settings as settings
 

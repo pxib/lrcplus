@@ -4,7 +4,7 @@ import pytest
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QWidget
 
-from core.onboarding_script import compile_script
+from core.onboarding_script import compile_script, load_script
 from ui.onboarding import OnboardingDialog
 
 
@@ -300,3 +300,37 @@ label helper:
 def test_invalid_blocks_have_line_diagnostics(body):
     with pytest.raises(ValueError, match="line"):
         compile_script("label start:\n    " + body + "\n")
+
+
+@pytest.mark.parametrize("prefix", ["", "# Saved by an editor\n", "\n", "default ready = true\n"])
+def test_compiler_accepts_leading_utf8_bom(prefix):
+    source = prefix + 'label start:\n    wizard "こんにちは"\n    $ end\n'
+    assert compile_script("\ufeff" + source) == compile_script(source)
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_load_script_accepts_utf8_with_or_without_bom(tmp_path, encoding):
+    source = '# Dialogue\nlabel start:\n    wizard "こんにちは"\n    $ end\n'
+    path = tmp_path / "onboarding.rpy"
+    path.write_text(source, encoding=encoding)
+    assert load_script(path) == compile_script(source)
+
+
+def test_bom_handling_preserves_dialogue_characters_and_line_diagnostics():
+    source = '\ufefflabel start:\n    wizard "keep\ufeffthis"\n'
+    assert compile_script(source)["start"][0][1] == "keep\ufeffthis"
+    with pytest.raises(ValueError, match="line 3"):
+        compile_script('\ufeff# Header\nlabel start:\n  wizard "Bad indent"\n')
+
+
+@pytest.mark.parametrize("cue", ['sound("idea")', "pause(0.01)", "hide_cursor", "checkpoint(9)"])
+def test_before_cues_apply_to_extended_dialogue(cue):
+    prefix = 'label start:\n    wizard "Before."\n    $ pause(0.01)\n'
+    suffix = '    extend " After."\n    $ end\n'
+    assert compile_script(prefix + "    before " + cue + "\n" + suffix) == compile_script(
+        prefix + "    $ " + cue + "\n" + suffix)
+
+
+def test_extend_with_a_before_cue_still_requires_previous_dialogue():
+    with pytest.raises(ValueError, match="line 3: extend requires a previous line"):
+        compile_script('label start:\n    before sound("idea")\n    extend "No previous line."\n')

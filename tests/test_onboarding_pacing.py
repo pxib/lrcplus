@@ -33,10 +33,10 @@ def play(dialog, text):
 
 
 @pytest.mark.parametrize("value", [None, [], {"text_speed": []}, {"text_speed": "turbo"},
-                                       {"reduced_motion": "false"}])
+                                       {"reduced_motion": "false"}, {"sound_enabled": "false"}])
 def test_invalid_pacing_settings_use_defaults(value):
     assert settings.get_onboarding_pacing({"onboarding_pacing": value}) == {
-        "text_speed": "normal", "reduced_motion": False, "auto_read": True,
+        "text_speed": "normal", "reduced_motion": False, "auto_read": True, "sound_enabled": True,
     }
 
 
@@ -136,7 +136,7 @@ def test_pacing_preferences_survive_reopening(wizard):
     wizard.text_speed_combo.setCurrentIndex(wizard.text_speed_combo.findData("instant"))
     wizard.reduced_motion_check.setChecked(True)
     wizard.close()
-    assert settings.get_onboarding_pacing() == {"text_speed": "instant", "reduced_motion": True, "auto_read": True}
+    assert settings.get_onboarding_pacing() == {"text_speed": "instant", "reduced_motion": True, "auto_read": True, "sound_enabled": True}
     reopened = OnboardingDialog(wizard.player)
     try:
         assert reopened.text_speed_combo.currentData() == "instant"
@@ -180,7 +180,8 @@ def test_window_resize_animates_and_retargets_from_current_height(wizard, qapp):
     target = wizard._height_target
     assert target > start
     assert wizard.size_animation.state() == QPropertyAnimation.State.Running
-    QTest.qWait(60)
+    wizard.size_animation.setCurrentTime(60)
+    qapp.processEvents()
     assert start < wizard.height() < target
     current = wizard.height()
     play(wizard, r"Short again.\n")
