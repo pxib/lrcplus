@@ -40,6 +40,32 @@ def qapp():
     yield app
 
 
+@pytest.fixture(autouse=True)
+def cleanup_onboarding_windows(request, dismiss_onboarding_during_test_cleanup):
+    """Destroy wizard test windows between tests, rather than during cyclic GC."""
+    if not request.node.path.name.startswith("test_onboarding"):
+        yield
+        return
+
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from shiboken6 import isValid
+    from ui.onboarding import OnboardingDialog
+
+    app = request.getfixturevalue("qapp")
+    existing = set(app.topLevelWidgets())
+    yield
+    windows = set(app.topLevelWidgets()) - existing
+    for window in windows:
+        if (isValid(window) and isinstance(window, OnboardingDialog)
+                and not window._dialogue_closed):
+            window.done(window.DialogCode.Rejected)
+    for window in windows:
+        if isValid(window):
+            window.hide()
+            window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 @pytest.fixture
 def fake_midi():
     """Exercise game audio controls without playing sound during UI tests."""

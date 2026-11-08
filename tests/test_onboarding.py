@@ -8,6 +8,25 @@ from core.onboarding_script import compile_script, load_script
 from ui.onboarding import FINISH_PAGE, LYRICS_PAGE, OnboardingDialog, load_dialogue, load_route, needs_onboarding, parse_dialogue_line
 
 
+def test_deleted_dialog_cancels_queued_callbacks(qapp, monkeypatch):
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from shiboken6 import isValid
+
+    calls = []
+    monkeypatch.setattr(OnboardingDialog, "enable_window_move_tracking",
+                        lambda self: calls.append("tracking"))
+    player = QWidget()
+    player.library_folders = []
+    dialog = OnboardingDialog(player)
+    dialog.show()
+    dialog._defer_activity(lambda: calls.append("activity"))
+    dialog.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not isValid(dialog)
+    qapp.processEvents()
+    assert calls == []
+
+
 def test_renpy_style_script_compiles_menu_conditions_and_inline_actions():
     script = '''label intro:
     before checkpoint(6)

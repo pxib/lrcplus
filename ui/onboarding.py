@@ -407,7 +407,7 @@ class OnboardingDialog(QDialog):
         super().showEvent(event)
         if self.start_position is None:
             self.start_position = self.player.mapFromGlobal(self.pos())
-        QTimer.singleShot(0, self.enable_window_move_tracking)
+        QTimer.singleShot(0, self, self.enable_window_move_tracking)
 
     def enable_window_move_tracking(self):
         if self.isVisible():
@@ -782,7 +782,7 @@ class OnboardingDialog(QDialog):
                 else:
                     callback()
 
-        QTimer.singleShot(0, run_if_current)
+        QTimer.singleShot(0, self, run_if_current)
 
     def debug_skip_line(self):
         if not self.dialogue_lines:
