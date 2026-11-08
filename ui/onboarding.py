@@ -18,7 +18,7 @@ from core import settings
 from core.onboarding_events import onboarding_events
 from core.onboarding_script import SCRIPT_PATH, load_script
 from core.onboarding_state import apply_state, decode_payload, matches_condition
-from ui.onboarding_sound import OnboardingSounds, sound_expression
+from ui.onboarding_sound import OnboardingSounds, sound_expression, voice_duration_ms
 
 
 DIALOGUE_PATH = Path(__file__).resolve().parent.parent / "assets" / "onboarding" / "dialogue.json"
@@ -40,7 +40,7 @@ SCRIPT_COMMAND = re.compile(r"\\(?:iftext\(\s*[a-z_]+\s*,\s*[a-z0-9_=-]*\s*\)|id
 EASINGS = {"linear": QEasingCurve.Type.Linear, "in_out_cubic": QEasingCurve.Type.InOutCubic,
            "out_cubic": QEasingCurve.Type.OutCubic}
 
-SCRIPT_COMMAND = re.compile(r"\\(?:state|branch|choose|choices|sound|random)\([a-z0-9_=-]+\)|\\soundstop|\\call\([a-z_][a-z_0-9]*\)|\\return|\\flow|" + SCRIPT_COMMAND.pattern, re.IGNORECASE)
+SCRIPT_COMMAND = re.compile(r"\\(?:state|branch|choose|choices|sound|voice|random)\([a-z0-9_=-]+\)|\\terminalclose|\\sceneclose|\\soundstop|\\call\([a-z_][a-z_0-9]*\)|\\return|\\flow|" + SCRIPT_COMMAND.pattern, re.IGNORECASE)
 
 
 def relative_coordinate(value, length):
@@ -115,6 +115,12 @@ class OnboardingDialog(QDialog):
     def __init__(self, player, parent=None):
         super().__init__(parent if parent is not None else player)
         self.player = player
+        self.developer_window = None
+        self.terminal_window = None
+        self._scene_speaker = "Setup Wizard"
+        self._terminal_history = ""
+        self._voice_duration_ms = None
+        self._voice_scripted = False
         self.pacing = settings.get_onboarding_pacing()
         self.sounds = OnboardingSounds(self, enabled=self.pacing["sound_enabled"])
         self.variables = {}
@@ -586,6 +592,7 @@ class OnboardingDialog(QDialog):
         self.run_script_command()
 
     def set_page(self, page):
+        self.close_scene_windows()
         self._call_stack.clear()
         self._cancel_dialogue_activity()
         self.dialogue_lines = []
@@ -742,6 +749,8 @@ class OnboardingDialog(QDialog):
         """Invalidate deferred work and stop all activity owned by the old scene."""
         self.sounds.stop()
         self.show_expression()
+        self._voice_duration_ms = None
+        self._voice_scripted = False
         self._activity_revision += 1
         self._confirmation_deferred.clear()
         self._read_delay_ms = None
@@ -878,11 +887,14 @@ class OnboardingDialog(QDialog):
         self._read_delay_ms = None
         self.dialogue_indicator.show()
         self.show_expression()
+        self._voice_scripted = False
+        self._voice_duration_ms = None
         self.dialogue_index += 1
         if self.dialogue_index >= len(self.dialogue_lines):
             if self._call_stack:
                 self.return_from_call()
                 return
+            self.close_scene_windows()
             self.dialogue_lines = []
             self.space.setEnabled(False)
             self.dialogue_indicator.hide()
@@ -894,14 +906,97 @@ class OnboardingDialog(QDialog):
                 self._show_setup_controls()
             return
         speaker, text = self.dialogue_lines[self.dialogue_index]
-        self.title.setText(speaker)
+        if self._scene_speaker == "Terminal":
+            self._terminal_history += self.visible_text.removeprefix("$ ") + "\n>>> "
+        self._scene_speaker = speaker
+        if speaker in ("Developer", "Terminal"):
+            self.show_scene_window(speaker)
+        else:
+            self.title.setText(speaker)
         self.full_text, _ = parse_dialogue_line(text)
-        self._reserve_dialogue_height(self.full_text)
+        if speaker == "Developer":
+            self.fit_developer_window(self.full_text)
+        elif speaker != "Terminal":
+            self._reserve_dialogue_height(self.full_text)
         self.tokens = dialogue_tokens(text)
         self.script_commands = []
         self.visible_text = ""
-        self.description.setText("")
+        self.set_scene_text("")
         self.resume_line()
+
+    def show_scene_window(self, speaker):
+        if speaker == "Developer" and self.developer_window is None:
+            window = QDialog(self, Qt.WindowType.Window)
+            window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            window.setWindowTitle("Developer")
+            layout = QVBoxLayout(window)
+            layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+            label = DialogueText()
+            label.setWordWrap(True)
+            label.clicked.connect(self.advance_dialogue)
+            layout.addWidget(label)
+            window.scene_text = label
+            window.resize(380, 70)
+            window.scene_resize = QPropertyAnimation(window, b"size", window)
+            window.scene_resize.setDuration(220)
+            window.scene_resize.setEasingCurve(QEasingCurve.Type.InOutCubic)
+            self.developer_window = window
+        if speaker == "Terminal" and self.terminal_window is None:
+            window = QDialog(self, Qt.WindowType.Window)
+            window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            window.setWindowTitle("Command Prompt")
+            window.resize(680, 320)
+            window.setStyleSheet("QDialog { background: #0c0c0c; } QLabel { color: #cccccc; font: 13px Consolas; background: #0c0c0c; }")
+            layout = QVBoxLayout(window)
+            label = DialogueText()
+            label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.clicked.connect(self.advance_dialogue)
+            layout.addWidget(label)
+            window.scene_text = label
+            self._terminal_history = "Microsoft Windows [Version 10.0.26200.9457]\n(c) Microsoft Corporation. All rights reserved.\n\nC:\\Windows\\System32> python\n>>> "
+            self.terminal_window = window
+        window = self.developer_window if speaker == "Developer" else self.terminal_window
+        window.show()
+
+    def fit_developer_window(self, text):
+        window = self.developer_window
+        label = window.scene_text
+        margins = window.layout().contentsMargins()
+        width = window.width()
+        text_width = max(1, width - margins.left() - margins.right())
+        # Measure the complete line before typing starts, avoiding per-word resizing.
+        metrics = label.fontMetrics()
+        bounds = metrics.boundingRect(0, 0, text_width, 10000,
+                                      Qt.TextFlag.TextWordWrap, text or " ")
+        height = max(50, bounds.height() + margins.top() + margins.bottom())
+        animation = window.scene_resize
+        animation.stop()
+        target = window.size()
+        target.setHeight(height)
+        if self.pacing["reduced_motion"] or not window.isVisible():
+            window.resize(target)
+        elif target != window.size():
+            animation.setStartValue(window.size())
+            animation.setEndValue(target)
+            animation.start()
+
+    def set_scene_text(self, text):
+        if self._scene_speaker == "Developer" and self.developer_window:
+            self.developer_window.scene_text.setText(text)
+        elif self._scene_speaker == "Terminal" and self.terminal_window:
+            self.terminal_window.scene_text.setText(self._terminal_history + text.removeprefix("$ "))
+        else:
+            self.description.setText(text)
+
+    def close_scene_windows(self):
+        for name in ("developer_window", "terminal_window"):
+            window = getattr(self, name, None)
+            if window is not None:
+                window.close()
+                window.deleteLater()
+                setattr(self, name, None)
+        self._scene_speaker = "Setup Wizard"
 
     def resume_line(self):
         self.script_busy = False
@@ -917,10 +1012,19 @@ class OnboardingDialog(QDialog):
         if kind == "text":
             self.current_text = value
             self.current_text_index = 0
-            if self.pacing["text_speed"] == "instant":
+            if self._voice_scripted:
                 self.visible_text += value
                 self.current_text = ""
-                self.description.setText(self.visible_text)
+                self.set_scene_text(self.visible_text)
+                self.run_script_command()
+            elif self._voice_duration_ms and value:
+                self.typing_timer.setInterval(max(1, round(self._voice_duration_ms / len(value))))
+                self._voice_duration_ms = None
+                self.typing_timer.start()
+            elif self.pacing["text_speed"] == "instant":
+                self.visible_text += value
+                self.current_text = ""
+                self.set_scene_text(self.visible_text)
                 self.run_script_command()
             else:
                 self.typing_timer.start()
@@ -933,15 +1037,16 @@ class OnboardingDialog(QDialog):
 
     def type_character(self):
         self.current_text_index += 1
-        self.description.setText(self.visible_text + self.current_text[:self.current_text_index])
+        self.set_scene_text(self.visible_text + self.current_text[:self.current_text_index])
         if self.current_text_index >= len(self.current_text):
             self.finish_typing()
 
     def finish_typing(self):
         self.typing_timer.stop()
+        self.typing_timer.setInterval(settings.ONBOARDING_TEXT_INTERVALS[self.pacing["text_speed"]])
         self.visible_text += self.current_text
         self.current_text = ""
-        self.description.setText(self.visible_text)
+        self.set_scene_text(self.visible_text)
         self.resume_line()
 
     def run_script_command(self):
@@ -977,6 +1082,26 @@ class OnboardingDialog(QDialog):
             name = decode_payload(original_command[7:-1])
             self.show_expression(name)
             self.sounds.play(name)
+            self.run_script_command()
+            return
+        if command.startswith(r"\voice("):
+            name = decode_payload(original_command[7:-1])
+            if self.sounds.play(name):
+                self._voice_scripted = any(kind == "command" and token.lower().startswith(r"\wait(")
+                                           for kind, token in self.tokens)
+                if not self._voice_scripted:
+                    self._voice_duration_ms = voice_duration_ms(name, self.sounds.directory)
+            self.run_script_command()
+            return
+        if command == r"\terminalclose":
+            if self.terminal_window is not None:
+                self.terminal_window.close()
+                self.terminal_window.deleteLater()
+                self.terminal_window = None
+            self.run_script_command()
+            return
+        if command == r"\sceneclose":
+            self.close_scene_windows()
             self.run_script_command()
             return
         if command == r"\soundstop":
@@ -1562,6 +1687,7 @@ class OnboardingDialog(QDialog):
 
     def done(self, result):
         self._dialogue_closed = True
+        self.close_scene_windows()
         self._call_stack.clear()
         self.size_animation.stop()
         self._cancel_dialogue_activity()

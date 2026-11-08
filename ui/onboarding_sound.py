@@ -2,6 +2,7 @@
 
 import logging
 import re
+import wave
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QUrl
@@ -9,7 +10,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
 
 SOUND_DIR = Path(__file__).resolve().parent.parent / "assets" / "onboarding" / "sound"
-SOUND_NAME = re.compile(r"[a-z_0-9-]+(?:\.(?:ogg|mp3|wav))?", re.IGNORECASE)
+SOUND_NAME = re.compile(r"(?:[a-z_0-9-]+[/\\])*[a-z_0-9-]+(?:\.(?:ogg|mp3|wav))?", re.IGNORECASE)
 REACTION_LABELS = {
     "adore": "Adoring", "angry": "Angry", "confused": "Confused",
     "idea": "Inspired", "interested": "Curious", "interesting": "Intrigued",
@@ -25,20 +26,33 @@ def sound_expression(name):
     """Describe the script's reaction independently of audio playback or mute."""
     if not isinstance(name, str) or not SOUND_NAME.fullmatch(name):
         return ""
-    stem = Path(name).stem.lower()
+    stem = Path(name.replace("\\", "/")).stem.lower()
     return REACTION_LABELS.get(stem, stem.replace("_", " ").replace("-", " ").capitalize())
 
 
 def resolve_sound(name, directory=SOUND_DIR):
     if not isinstance(name, str) or not SOUND_NAME.fullmatch(name):
         return None
+    name = name.replace("\\", "/")
     root = directory.resolve()
     candidates = [root / name] if Path(name).suffix else [root / (name + ext) for ext in (".ogg", ".mp3", ".wav")]
     for candidate in candidates:
         resolved = candidate.resolve()
-        if resolved.parent == root and resolved.is_file():
+        if resolved.is_relative_to(root) and resolved.is_file():
             return resolved
     return None
+
+
+def voice_duration_ms(name, directory=SOUND_DIR):
+    """Return the duration of a bundled WAV voice clip, if readable."""
+    path = resolve_sound(name, directory)
+    if path is None or path.suffix.lower() != ".wav":
+        return None
+    try:
+        with wave.open(str(path), "rb") as clip:
+            return round(1000 * clip.getnframes() / clip.getframerate())
+    except (OSError, EOFError, wave.Error, ZeroDivisionError):
+        return None
 
 
 def make_media_player(parent):

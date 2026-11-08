@@ -25,13 +25,13 @@ def _quoted(value, location):
 
 
 def _cue(statement, location):
-    sound = re.fullmatch(r"sound\((.*)\)", statement)
+    sound = re.fullmatch(r"(sound|voice)\((.*)\)", statement)
     play_sound = re.fullmatch(r"play\s+sound\s+(.+)", statement)
     if sound or play_sound:
-        name = _quoted((sound or play_sound).group(1).strip(), location)
-        if not re.fullmatch(r"[a-z_0-9-]+(?:\.(?:ogg|mp3|wav))?", name, re.IGNORECASE):
+        name = _quoted((sound.group(2) if sound else play_sound.group(1)).strip(), location)
+        if not re.fullmatch(r"(?:[a-z_0-9-]+[/\\])*[a-z_0-9-]+(?:\.(?:ogg|mp3|wav))?", name, re.IGNORECASE):
             raise ValueError(f"{location}: sound must name a bundled OGG, MP3, or WAV file")
-        return r"\sound(" + encode_payload(name) + ")"
+        return (r"\voice(" if sound and sound.group(1) == "voice" else r"\sound(") + encode_payload(name) + ")"
     state = state_command(statement, location)
     if state is not None:
         return r"\state(" + encode_payload(state) + ")"
@@ -39,6 +39,7 @@ def _cue(statement, location):
         "next": r"\n", "end": r"\e", "continue_setup": r"\c",
         "hide_cursor": r"\curhide", "toggle_outside_click": r"\toggleoutsideclick",
         "reset": r"\res", "return": r"\return", "stop_sound": r"\soundstop", "stop sound": r"\soundstop",
+        "terminal_close": r"\terminalclose", "scene_close": r"\sceneclose",
     }
     if statement in fixed:
         return fixed[statement]
@@ -282,7 +283,7 @@ def _compile_nodes(nodes, defaults=""):
             pending += _cue(f"checkpoint({marker.group(1)})", location)
             before_pending = True
             continue
-        dialogue = re.fullmatch(r'(wizard|extend)\s+("(?:[^"\\]|\\.)*")', statement)
+        dialogue = re.fullmatch(r'(wizard|developer|terminal|extend)\s+("(?:[^"\\]|\\.)*")', statement)
         if dialogue:
             text = _quoted(dialogue.group(2), location)
             if dialogue.group(1) == "extend":
@@ -295,7 +296,8 @@ def _compile_nodes(nodes, defaults=""):
                 pending = ""
                 before_pending = False
             else:
-                lines.append(("Setup Wizard", pending + text))
+                speaker = {"wizard": "Setup Wizard", "developer": "Developer", "terminal": "Terminal"}[dialogue.group(1)]
+                lines.append((speaker, pending + text))
                 pending = ""
                 before_pending = False
             continue

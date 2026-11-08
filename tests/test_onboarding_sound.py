@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QWidget
 from core import settings
 from core.onboarding_script import compile_script, load_script
 from ui.onboarding import OnboardingDialog, parse_dialogue_line
-from ui.onboarding_sound import OnboardingSounds, SOUND_DIR, resolve_sound
+from ui.onboarding_sound import OnboardingSounds, SOUND_DIR, resolve_sound, voice_duration_ms
 
 
 @pytest.fixture(autouse=True)
@@ -85,13 +85,69 @@ def test_all_bundled_formats_and_stems_resolve():
             assert resolve_sound(path.stem) == path.resolve()
 
 
-@pytest.mark.parametrize("name", ["", "../adore.ogg", "sub/adore.ogg", "sub\\adore.ogg",
+@pytest.mark.parametrize("name", ["", "../adore.ogg", "sub/../adore.ogg", "sub\\..\\adore.ogg", "/adore.ogg",
                                       "https://example.com/a.mp3", "C:/a.mp3", "adore.exe"])
 def test_sound_names_cannot_escape_bundle(name):
     assert resolve_sound(name) is None
     with pytest.raises(ValueError, match="line 2"):
         import json
         compile_script('label scene:\n    before sound(' + json.dumps(name) + ')\n    wizard "Hi"\n')
+
+
+@pytest.mark.parametrize("name", ["dev/hey", "dev/hey.wav", "dev\\hey.wav"])
+def test_nested_sounds_compile_and_play(name, fake_audio):
+    import json
+
+    compile_script('label scene:\n    before sound(' + json.dumps(name) + ')\n    wizard "Hi"\n')
+    assert resolve_sound(name) == (SOUND_DIR / "dev" / "hey.wav").resolve()
+    sounds = OnboardingSounds()
+    assert sounds.play(name)
+    assert Path(fake_audio.players[0].sources[-1].toLocalFile()) == resolve_sound(name)
+
+
+def test_voice_paces_text_to_clip_and_restores_text_speed(wizard):
+    wizard.sound_check.setChecked(True)
+    wizard.text_speed_combo.setCurrentIndex(wizard.text_speed_combo.findData("instant"))
+    play_scene(wizard, '''label scene:
+    before voice("dev/hey.wav")
+    developer "HEY!"
+    $ end
+''')
+    assert wizard.typing_timer.isActive()
+    assert wizard.typing_timer.interval() == round(voice_duration_ms("dev/hey.wav") / 4)
+    assert Path(wizard.sounds.player.sources[-1].toLocalFile()).name == "hey.wav"
+    wizard.finish_typing()
+    assert wizard.developer_window.scene_text.text() == "HEY!"
+    assert wizard.typing_timer.interval() == settings.ONBOARDING_TEXT_INTERVALS["instant"]
+
+
+def test_muted_voice_uses_normal_text_speed(wizard):
+    wizard.sound_check.setChecked(False)
+    wizard.text_speed_combo.setCurrentIndex(wizard.text_speed_combo.findData("instant"))
+    play_scene(wizard, '''label scene:
+    before voice("dev/hey.wav")
+    developer "HEY!"
+    $ end
+''')
+    assert not wizard.typing_timer.isActive()
+    assert wizard.developer_window.scene_text.text() == "HEY!"
+
+
+def test_voice_can_use_authored_pause_and_extend_timing(wizard):
+    wizard.sound_check.setChecked(True)
+    wizard.text_speed_combo.setCurrentIndex(wizard.text_speed_combo.findData("slow"))
+    play_scene(wizard, '''label scene:
+    before voice("dev/hey.wav")
+    developer "Hey"
+    $ pause(0.03)
+    extend " there."
+    $ end
+''')
+    assert wizard.developer_window.scene_text.text() == "Hey"
+    assert wizard.script_timer.isActive()
+    QTest.qWait(60)
+    assert wizard.developer_window.scene_text.text() == "Hey there."
+    assert wizard.next.isEnabled()
 
 
 def test_playback_is_lazy_reuses_one_channel_and_does_not_touch_music(fake_audio):

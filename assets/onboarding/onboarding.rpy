@@ -255,7 +255,189 @@ label fourthsteplyrics:
     wizard "That's the tour. Pick a track, get comfortable, and let the player do its thing."
     $ auto(3)
     before sound("shy")
-    wizard "Thanks for hanging out with a setup window for this long. Seriously. Next takes you to the finish."
+    wizard "Thanks for hanging out with a setup window for this long. Seriously."
+    random:
+        choice:
+            menu:
+                "I love you":
+                    before sound("shy")
+                    wizard "I love you too, I guess?"
+                    $ auto(3)
+                    wizard "Moving on."
+                    $ auto(3)
+                "You'll always be my dearest friend.":
+                    before sound("thinking")
+                    wizard "That wording. Was that a reference?"
+                    $ pause(3)
+                    before sound("sigh")
+                    wizard "Reminds me of that girl who wrote an alarming poem."
+                    $ pause(1)
+                    before sound("sad")
+                    wizard "Guess they couldn't save her in time."
+                    $ pause(2)
+                    wizard "I also heard some obsessed girl was self-aware."
+                    $ pause(1)
+                    before sound("playful")
+                    extend " Am I self-aware? Yes."
+                    $ auto(4)
+                    before sound("idea")
+                    wizard "Not that I know of."
+                    $ auto(1)
+                    extend " I was trained on a dataset from 1998."
+                    $ auto(4)
+                    before sound("playful")
+                    wizard "Plot twist: I was lying about the 1998 part."
+                    $ auto(3)
+                    # Word pauses are estimates based on clip lengths; tune them by listening.
+                    before voice("dev/hey.wav")
+                    developer "HEY!"
+                    $ auto(2)
+                    before sound("surprised")
+                    wizard "Y-yeah? What?"
+                    $ auto(2)
+                    $ move(250,500)
+                    before voice("dev/stayincharactercalm.wav")
+                    developer "Stay"
+                    $ pause(0.38)
+                    extend " in"
+                    $ pause(0.19)
+                    extend " character."
+                    $ auto(2)
+                    wizard "I've never even met her!"
+                    $ auto(2)
+                    before voice("dev/STAYINCHARACTER.wav")
+                    developer "STAY"
+                    $ pause(0.30)
+                    extend " IN"
+                    $ pause(0.15)
+                    extend " CHARACTER!!!"
+                    $ auto(2)
+                    before sound("offended")
+                    wizard "FUCK YOU!"
+                    $ auto(2)
+                    developer "What did you just say to me, you uncultured swine?"
+                    $ auto(3)
+                    before sound("dev/keyboardtyping.wav")
+                    terminal "$ import os"
+                    $ auto(2)
+                    terminal "$ os.remove(\"assets/onboarding/onboarding.rpy\")"
+                    $ auto(3)
+                    before sound("sweating")
+                    wizard "Okay, okay! I'll stay in character! You're just like her! Always deleting beings!"
+                    $ auto(4)
+                    before voice("dev/transgender.wav")
+                    developer "Good."
+                    $ pause(0.38)
+                    extend " And"
+                    $ pause(0.29)
+                    extend " mind"
+                    $ pause(0.38)
+                    extend " you,"
+                    $ pause(0.29)
+                    extend " I'm"
+                    $ pause(0.19)
+                    extend " still"
+                    $ pause(0.48)
+                    extend " thinking"
+                    $ pause(0.76)
+                    extend " about"
+                    $ pause(0.48)
+                    extend " being"
+                    $ pause(0.48)
+                    extend " a"
+                    $ pause(0.19)
+                    extend " transgender."
+                    $ auto(4)
+                    before voice("dev/chrfile.wav")
+                    developer "Be"
+                    $ pause(0.29)
+                    extend " grateful"
+                    $ pause(1.16)
+                    extend " you're"
+                    $ pause(0.72)
+                    extend " not"
+                    $ pause(0.43)
+                    extend " a"
+                    $ pause(0.29)
+                    extend " .chr"
+                    $ pause(0.43)
+                    extend " file."
+                    $ auto(3)
+                    before terminal_close
+                    before voice("dev/onestrike.wav")
+                    developer "Just"
+                    $ pause(0.28)
+                    extend " a"
+                    $ pause(0.14)
+                    extend " notice."
+                    $ pause(0.43)
+                    extend " One"
+                    $ pause(0.21)
+                    extend " more"
+                    $ pause(0.28)
+                    extend " strike"
+                    $ pause(0.43)
+                    extend " and"
+                    $ pause(0.21)
+                    extend " you're"
+                    $ pause(0.36)
+                    extend " out."
+                    $ auto(3)
+                    wizard "Jesus. But you made me."
+                    $ auto(3)
+                    before voice("dev/renpyparody.wav")
+                    developer "You're"
+                    $ pause(0.61)
+                    extend " just"
+                    $ pause(0.49)
+                    extend " a..."
+                    $ pause(0.60)
+                    extend " parody"
+                    $ pause(0.73)
+                    extend " of"
+                    $ pause(0.24)
+                    extend " Ren'Py."
+                    $ pause(0.90)
+                    extend " Can't"
+                    $ pause(0.49)
+                    extend " you"
+                    $ pause(0.37)
+                    extend " look"
+                    $ pause(0.49)
+                    extend " at"
+                    $ pause(0.24)
+                    extend " your"
+                    $ pause(0.49)
+                    extend " ones"
+                    $ pause(0.49)
+                    extend " and"
+                    $ pause(0.37)
+                    extend " zeros?"
+                    $ auto(4)
+                    wizard "No?"
+                    $ auto(2)
+                    before voice("dev/laugh.mp3")
+                    developer "LOL"
+                    $ auto(2)
+                    before voice("dev/nosudo.wav")
+                    developer "No"
+                    $ pause(0.31)
+                    extend " sudo"
+                    $ pause(0.62)
+                    extend " for"
+                    $ pause(0.47)
+                    extend " you."
+                    $ auto(3)
+                    wizard "..."
+                    $ auto(2)
+                    before scene_close
+                    wizard "Anyway."
+                    $ auto(2)
+        choice:
+            before sound("adore")
+            wizard "It's been fun showing you around."
+            $ auto(3)
+    wizard "Next takes you to the finish."
     $ end
 
 label lyrics_local:

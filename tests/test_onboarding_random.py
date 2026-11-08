@@ -1,6 +1,7 @@
 """Random dialogue selects one complete variant and preserves surrounding flow."""
 
 import pytest
+from pathlib import Path
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QWidget
 
@@ -188,6 +189,61 @@ def test_random_block_can_nest_inside_another_choice(scene):
     assert dialog.description.text() == "Nested one."
     dialog.advance_dialogue()
     assert dialog.description.text() == "After."
+
+
+@pytest.mark.parametrize("pick", [0, 1])
+def test_actual_ddlc_choices_are_randomly_shown(scene, pick):
+    script = Path("assets/onboarding/onboarding.rpy").read_text(encoding="utf-8")
+    start = script.index('    wizard "Thanks for hanging out with a setup window')
+    end = script.index('    $ end', start)
+    dialog = scene("label start:\n" + script[start:end] + "    $ end\n", pick)
+    dialog.advance_dialogue()
+    if pick == 0:
+        assert [dialog.route_buttons.itemAt(i).widget().text() for i in range(dialog.route_buttons.count())] == [
+            "I love you", "You'll always be my dearest friend."
+        ]
+    else:
+        assert dialog.route_buttons.count() == 0
+        assert dialog.description.text() == "It's been fun showing you around."
+
+
+@pytest.mark.parametrize("option", [0, 1])
+def test_actual_ddlc_responses_continue_without_a_blank_screen(scene, option):
+    script = Path("assets/onboarding/onboarding.rpy").read_text(encoding="utf-8")
+    start = script.index('    wizard "Thanks for hanging out with a setup window')
+    end = script.index('    $ end', start)
+    dialog = scene("label start:\n" + script[start:end] + "    $ end\n")
+    dialog.advance_dialogue()
+    dialog.route_buttons.itemAt(option).widget().click()
+    saw_developer = saw_terminal = False
+    for _ in range(100):
+        if dialog.developer_window is not None:
+            saw_developer = True
+        if dialog.terminal_window is not None:
+            saw_terminal = True
+            assert "Microsoft Windows" in dialog.terminal_window.scene_text.text()
+        if dialog.description.text() == "Next takes you to the finish.":
+            break
+        assert dialog.description.text(), "Unexpected blank dialogue after a choice"
+        if dialog.script_timer.isActive():
+            dialog.script_timer.stop()
+            dialog.finish_script_wait()
+        else:
+            dialog.advance_dialogue()
+    assert dialog.description.text() == "Next takes you to the finish."
+    if option == 1:
+        assert saw_developer and saw_terminal
+        assert dialog.developer_window is None and dialog.terminal_window is None
+
+
+def test_developer_window_resizes_for_long_dialogue(scene):
+    line = "You're just a... parody of Ren'Py. Can't you look at your ones and zeros?"
+    dialog = scene('label start:\n    developer "' + line + '"\n    $ end\n')
+    window = dialog.developer_window
+    QTest.qWait(300)
+    label = window.scene_text
+    assert label.text() == line
+    assert label.height() >= label.heightForWidth(label.width())
 
 
 @pytest.mark.parametrize("body", [
