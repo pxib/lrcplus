@@ -128,7 +128,7 @@ def test_random_is_selected_again_each_time_label_is_visited(scene, monkeypatch)
         wizard "Second visit."
 ''')
     assert dialog.description.text() == "First visit."
-    monkeypatch.setattr("ui.onboarding.random.choice", lambda variants: variants[1])
+    monkeypatch.setattr("ui.onboarding.random.choice", lambda variants: variants[0])
     dialog.select_route("start")
     assert dialog.description.text() == "Second visit."
 
@@ -191,49 +191,77 @@ def test_random_block_can_nest_inside_another_choice(scene):
     assert dialog.description.text() == "After."
 
 
-@pytest.mark.parametrize("pick", [0, 1])
-def test_actual_ddlc_choices_are_randomly_shown(scene, pick):
+def farewell_script():
     script = Path("assets/onboarding/onboarding.rpy").read_text(encoding="utf-8")
     start = script.index('    wizard "Thanks for hanging out with a setup window')
-    end = script.index('    $ end', start)
-    dialog = scene("label start:\n" + script[start:end] + "    $ end\n", pick)
-    dialog.advance_dialogue()
-    if pick == 0:
-        assert [dialog.route_buttons.itemAt(i).widget().text() for i in range(dialog.route_buttons.count())] == [
-            "I love you", "You'll always be my dearest friend."
-        ]
+    end = script.index("\nlabel lyrics_local:", start)
+    return "label start:\n" + script[start:end]
+
+
+def advance_scene(dialog):
+    if dialog.script_timer.isActive():
+        dialog.script_timer.stop()
+        dialog.finish_script_wait()
     else:
-        assert dialog.route_buttons.count() == 0
-        assert dialog.description.text() == "It's been fun showing you around."
+        dialog.advance_dialogue()
 
 
-@pytest.mark.parametrize("option", [0, 1])
-def test_actual_ddlc_responses_continue_without_a_blank_screen(scene, option):
-    script = Path("assets/onboarding/onboarding.rpy").read_text(encoding="utf-8")
-    start = script.index('    wizard "Thanks for hanging out with a setup window')
-    end = script.index('    $ end', start)
-    dialog = scene("label start:\n" + script[start:end] + "    $ end\n")
+@pytest.mark.parametrize("pick", [0, 1])
+def test_actual_farewell_always_offers_optional_ddlc_route(scene, pick):
+    dialog = scene(farewell_script(), pick)
     dialog.advance_dialogue()
-    dialog.route_buttons.itemAt(option).widget().click()
+    assert [dialog.route_buttons.itemAt(i).widget().text() for i in range(dialog.route_buttons.count())] == [
+        "I love you", "You'll always be my dearest friend.", "Let's play some music"
+    ]
+
+
+@pytest.mark.parametrize("farewell, decisions, expected", [
+    (0, [], "I'll do my best to keep your lyrics on time."),
+    (2, [], "Best idea I've heard all day."),
+    (1, ["Back to the music"], "Meeting adjourned."),
+    (1, ["Keep going", "Back to the music"], "Meeting adjourned."),
+    (1, ["Keep going", "She's part of the club."], "Thanks for sticking up for me."),
+    (1, ["Keep going", "Offer the developer a playlist."], "Diplomacy through playlists."),
+])
+def test_actual_ddlc_branches_return_to_setup_and_close_windows(scene, qapp, farewell, decisions, expected):
+    dialog = scene(farewell_script())
+    dialog.reduced_motion_check.setChecked(True)
+    dialog.advance_dialogue()
+    dialog.route_buttons.itemAt(farewell).widget().click()
+    pending = list(decisions)
     saw_developer = saw_terminal = False
-    for _ in range(100):
-        if dialog.developer_window is not None:
-            saw_developer = True
+    displayed = []
+    for _ in range(250):
+        qapp.processEvents()
+        saw_developer |= dialog.developer_window is not None
         if dialog.terminal_window is not None:
             saw_terminal = True
             assert "Microsoft Windows" in dialog.terminal_window.scene_text.text()
+        displayed.append(dialog.description.text())
         if dialog.description.text() == "Next takes you to the finish.":
             break
         assert dialog.description.text(), "Unexpected blank dialogue after a choice"
-        if dialog.script_timer.isActive():
-            dialog.script_timer.stop()
-            dialog.finish_script_wait()
+        if dialog.route_buttons.count():
+            assert pending, "Unexpected extra choice"
+            wanted = pending.pop(0)
+            buttons = [dialog.route_buttons.itemAt(i).widget() for i in range(dialog.route_buttons.count())]
+            next(button for button in buttons if button.text() == wanted).click()
         else:
-            dialog.advance_dialogue()
+            advance_scene(dialog)
     assert dialog.description.text() == "Next takes you to the finish."
-    if option == 1:
-        assert saw_developer and saw_terminal
-        assert dialog.developer_window is None and dialog.terminal_window is None
+    assert any(expected in text for text in displayed), "\n".join(displayed)
+    assert not pending
+    assert not dialog._call_stack
+    assert not dialog.route_buttons.count()
+    assert not dialog.waiting_events
+    assert dialog.next.isEnabled()
+    assert dialog.developer_window is None and dialog.terminal_window is None
+    reaches_developer = len(decisions) == 2
+    assert saw_developer == reaches_developer
+    assert saw_terminal == reaches_developer
+    if reaches_developer and decisions[-1] != "Back to the music":
+        assert dialog.variables["ddlc_defended"] == (decisions[-1] == "She's part of the club.")
+        assert any("Keep the song you love. Leave room for the next." in text for text in displayed)
 
 
 def test_developer_window_resizes_for_long_dialogue(scene):

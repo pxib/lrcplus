@@ -28,6 +28,14 @@ confirmation.
 
 ## Reading and pauses
 
+The lyrics farewell always offers a short goodbye or the optional DDLC route
+through **You'll always be my dearest friend.** The detour has an early exit,
+a developer confrontation with two responses and another exit, and a closing
+poem. `ddlc_defended` selects the closing response for the current session.
+The `ddlc_*` helpers return to the farewell after closing scene windows,
+stopping scene audio, and restoring the guide's position. Retained developer
+recordings keep their authored word pauses; terminal dialogue is display only.
+
 The wizard's **Auto-read** checkbox starts enabled and is remembered alongside
 text speed and reduced motion when setup closes. Turning it off stops automatic
 dialogue advancement; clicking the text, pressing Space, or using the arrow still
@@ -35,6 +43,7 @@ advances dialogue. Turning it on while a line is ready starts a fresh reading de
 
 - `$ auto(3)` waits three seconds after the preceding text finishes, then advances
   if Auto-read is enabled. Its arrow stays visible for manual advancement.
+  Fractional seconds, such as `$ auto(0.4)`, are supported too.
 - `$ next` ends the current line. Auto-read uses a delay based on the displayed
   text length (1.2–10 seconds); otherwise the line waits for manual advancement.
   Lines without a final command use the same behavior.
@@ -173,8 +182,11 @@ are distinct from numbers. The Debug panel displays current variables.
 
 ## Random dialogue
 
-`random:` picks one variant each time execution reaches the block. Each entry
-has an equal chance; a later visit may pick the same entry again. The selected
+`random:` picks one unused variant each time execution reaches the block. Each
+block has its own session bag: all variants run once before the bag refills.
+Each remaining entry has an equal chance. A refill avoids the previous bag's
+last entry when a distinct alternative exists. Bags survive route and setup-page changes and reset when a
+new wizard opens. The selected
 dialogue follows the usual text speed and Auto-read settings, then execution
 continues after the block. The player does not need to make a choice.
 
@@ -261,3 +273,66 @@ frames; missing/empty targets or excess depth are logged and skipped.
 Menu options can contain multiple statements, including calls and conditional
 blocks. Selecting an option runs its body and then continues after the menu.
 Existing single-`jump` menu options keep their original behavior.
+
+## Conditional menu choices
+
+Add `if condition` after a choice's quoted title to hide it when false. Use
+`enabled_if condition` to keep a false choice visible but disabled. Conditions
+use the same safe flags and scalar comparisons as dialogue branches, and are
+evaluated when the menu opens. Reopening the menu evaluates them again.
+
+```renpy
+label search_options:
+    wizard "What next?"
+    menu:
+        "Try again" if retries >= 1:
+            call search
+        "Use these lyrics" enabled_if lyrics_found:
+            jump done
+        "Later":
+            return
+```
+
+Keep an unconditional exit available when practical. If no choice is enabled,
+the engine clears the menu and continues after it so setup cannot get stuck.
+
+## Interrupt-and-resume reactions
+
+Register an event handler with `react(event_name, label)` before the dialogue
+it should interrupt. Use `react(event_name, none)` to remove it. Registrations
+last for the current setup page; a new page clears them.
+
+```renpy
+label introduction:
+    before react(wizard_moved, moved)
+    wizard "Let me show you around."
+    $ pause(2)
+    extend " First, your library."
+
+label moved:
+    before sound("surprised")
+    wizard "Oh! New coordinates. Where was I?"
+    return
+```
+
+A reaction saves the current line, typed character position, remaining actions,
+call stack, event wait, expression, and remaining reading/pause time. `return`,
+reaching the label's end, or `$ end` restores that continuation without replaying
+its actions. Reaction variables remain changed. As with other inline commands,
+`$ end` runs immediately; use bare `return` to keep the final reaction readable.
+Reaction sounds replace current audio; interrupted clips are not replayed.
+
+An explicit `wait_event` gets first claim on matching events. Other registered
+events interrupt typing, reading delays, pauses, or event waits. Menus, scene
+windows, and scripted movement defer reactions until ordinary dialogue resumes.
+Incoming events stay buffered during exit confirmation and reactions; reactions
+do not nest. Changing setup pages or closing setup discards the continuation.
+The bundled welcome, library, and appearance introductions react to user moves.
+
+Appearance also registers reactions for all built-in presets and the five basic
+accent colors (Green, Blue, Purple, Rose, and Orange). Choosing a preset emits its `theme_` event
+(for example, `theme_oled_black`) after the appearance has been applied. These
+reactions also work after the introduction ends, while setup controls remain
+usable, and restore the prior text and keyboard state when finished. Initial
+preset restoration is silent. Consecutive selections of the same preset are
+silent, and rapid browsing retains only the latest queued theme reaction.

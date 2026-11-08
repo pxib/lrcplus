@@ -53,7 +53,10 @@ label inner:
     dialog.advance_dialogue()
     assert dialog.description.text() == "Inner."
     assert len(dialog._call_stack) == 2
-    QTest.qWait(30)
+    for _ in range(50):
+        if dialog.variables["count"] == 1010:
+            break
+        QTest.qWait(10)
     assert dialog.description.text() == "Inner."
     assert dialog.variables["count"] == 1010
     dialog.advance_dialogue()

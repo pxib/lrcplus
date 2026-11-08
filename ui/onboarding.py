@@ -35,12 +35,12 @@ READING_PAGE = 3
 LYRICS_PAGE = 4
 FINISH_PAGE = len(STEPS) - 1
 DIALOGUE_STEPS = tuple(step[0] for step in STEPS[:-1])
-SCRIPT_COMMAND = re.compile(r"\\(?:iftext\(\s*[a-z_]+\s*,\s*[a-z0-9_=-]*\s*\)|idle\(\s*\d+(?:\.\d+)?\s*\)|pointat\(\s*lyrics_button(?:\s*,\s*[a-z_]+)?\s*\)|jump\(\s*[a-z_][a-z_0-9]*\s*\)|watchmenu\(\s*lyrics_menu\s*,\s*[a-z_][a-z_0-9]*\s*\)|clickmenu\(\s*lyrics_menu\s*,\s*search_lyrics\s*,\s*[a-z_][a-z_0-9]*\s*\)|clickcontrol\(\s*lyrics_button\s*,\s*[a-z_][a-z_0-9]*\s*\)|waitevent\(\s*(?:[a-z_]+|idle\(\d+(?:\.\d+)?\))(?:\s*,\s*(?:[a-z_]+|idle\(\d+(?:\.\d+)?\)))*\s*\)|if\(\s*[a-z_]+\s*,\s*[^(),]+\)|toggleoutsideclick(?:\(\s*(?:true|false)\s*\))?|button\([^(),]+,[^(),]+\)|click\(\s*-?\d+(?:\.\d+)?%?\s*,\s*-?\d+(?:\.\d+)?%?\s*\)|pos\(\s*-?\d+(?:\.\d+)?%?\s*,\s*-?\d+(?:\.\d+)?%?(?:\s*,\s*[a-z_]+)?\s*\)|wait(?:\(\s*\d+(?:\.\d+)?\s*\))?|curhide|res(?:\(\s*[a-z_]+\s*\))?|cr\d+|c\d+|nw\d+|n|e|c)", re.IGNORECASE)
+SCRIPT_COMMAND = re.compile(r"\\(?:iftext\(\s*[a-z_]+\s*,\s*[a-z0-9_=-]*\s*\)|idle\(\s*\d+(?:\.\d+)?\s*\)|pointat\(\s*lyrics_button(?:\s*,\s*[a-z_]+)?\s*\)|jump\(\s*[a-z_][a-z_0-9]*\s*\)|watchmenu\(\s*lyrics_menu\s*,\s*[a-z_][a-z_0-9]*\s*\)|clickmenu\(\s*lyrics_menu\s*,\s*search_lyrics\s*,\s*[a-z_][a-z_0-9]*\s*\)|clickcontrol\(\s*lyrics_button\s*,\s*[a-z_][a-z_0-9]*\s*\)|waitevent\(\s*(?:[a-z_]+|idle\(\d+(?:\.\d+)?\))(?:\s*,\s*(?:[a-z_]+|idle\(\d+(?:\.\d+)?\)))*\s*\)|if\(\s*[a-z_]+\s*,\s*[^(),]+\)|toggleoutsideclick(?:\(\s*(?:true|false)\s*\))?|button\([^(),]+,[^(),]+\)|click\(\s*-?\d+(?:\.\d+)?%?\s*,\s*-?\d+(?:\.\d+)?%?\s*\)|pos\(\s*-?\d+(?:\.\d+)?%?\s*,\s*-?\d+(?:\.\d+)?%?(?:\s*,\s*[a-z_]+)?\s*\)|wait(?:\(\s*\d+(?:\.\d+)?\s*\))?|curhide|res(?:\(\s*[a-z_]+\s*\))?|cr\d+|c\d+|nw\d+(?:\.\d+)?|n|e|c)", re.IGNORECASE)
 
 EASINGS = {"linear": QEasingCurve.Type.Linear, "in_out_cubic": QEasingCurve.Type.InOutCubic,
            "out_cubic": QEasingCurve.Type.OutCubic}
 
-SCRIPT_COMMAND = re.compile(r"\\(?:state|branch|choose|choices|sound|voice|random)\([a-z0-9_=-]+\)|\\terminalclose|\\sceneclose|\\soundstop|\\call\([a-z_][a-z_0-9]*\)|\\return|\\flow|" + SCRIPT_COMMAND.pattern, re.IGNORECASE)
+SCRIPT_COMMAND = re.compile(r"\\(?:state|branch|choose|choices|sound|voice|random|react)\([a-z0-9_=-]+\)|\\terminalclose|\\sceneclose|\\soundstop|\\call\([a-z_][a-z_0-9]*\)|\\return|\\flow|" + SCRIPT_COMMAND.pattern, re.IGNORECASE)
 
 
 def relative_coordinate(value, length):
@@ -125,6 +125,9 @@ class OnboardingDialog(QDialog):
         self.sounds = OnboardingSounds(self, enabled=self.pacing["sound_enabled"])
         self.variables = {}
         self._call_stack = []
+        self._random_bags = {}
+        self._reaction_routes = {}
+        self._last_theme_reaction = None
         self._read_delay_ms = None
         self._pause_active = False
         self.outside_click_enabled = False
@@ -488,6 +491,8 @@ class OnboardingDialog(QDialog):
         self.expression_label.setVisible(bool(expression))
 
     def ready_for_reading(self, delay_ms=None):
+        if self.pending_events:
+            self._defer_activity(self.consume_event)
         if not self.dialogue_lines or self.route_buttons.count():
             return
         self._read_delay_ms = delay_ms if delay_ms is not None else min(10000, max(1200, 700 + len(self.visible_text) * 45))
@@ -592,6 +597,8 @@ class OnboardingDialog(QDialog):
         self.run_script_command()
 
     def set_page(self, page):
+        self._reaction_routes.clear()
+        self._last_theme_reaction = None
         self.close_scene_windows()
         self._call_stack.clear()
         self._cancel_dialogue_activity()
@@ -687,6 +694,15 @@ class OnboardingDialog(QDialog):
         self.theme_combo.blockSignals(True)
         self.theme_combo.setCurrentIndex(self.theme_combo.findData(values["theme_mode"]))
         self.theme_combo.blockSignals(False)
+        event = "theme_" + re.sub(r"[^a-z0-9]+", "_", self.preset_combo.itemText(index).casefold()).strip("_")
+        if self.page == 2:
+            previous = self._last_theme_reaction
+            self._last_theme_reaction = event
+            # Rapid browsing should leave only the newest theme reaction queued.
+            if event != previous:
+                self.pending_events = [name for name in self.pending_events if not name.startswith("theme_")]
+                if event in self._reaction_routes:
+                    self.receive_event(event)
 
     def add_folder(self):
         self.player.add_music_folder()
@@ -850,6 +866,7 @@ class OnboardingDialog(QDialog):
             self.debug_text.setText(text)
 
     def show_dialogue(self):
+        self._reaction_routes.clear()
         self._call_stack.clear()
         self._cancel_dialogue_activity()
         key = STEPS[self.page][0]
@@ -999,6 +1016,8 @@ class OnboardingDialog(QDialog):
         self._scene_speaker = "Setup Wizard"
 
     def resume_line(self):
+        if self.pending_events:
+            self._defer_activity(self.consume_event)
         self.script_busy = False
         if not self.tokens:
             if self.event_auto_advance:
@@ -1074,9 +1093,29 @@ class OnboardingDialog(QDialog):
             return
         original_command = self.script_commands.pop(0)
         command = original_command.lower()
+        if command.startswith(r"\react("):
+            event, route = decode_payload(original_command[7:-1])
+            if route == "none":
+                self._reaction_routes.pop(event, None)
+            else:
+                self._reaction_routes[event] = route
+            self.run_script_command()
+            return
         if command.startswith(r"\random("):
-            variants = decode_payload(original_command[8:-1])
-            self.splice_dialogue(random.choice(variants))
+            payload = decode_payload(original_command[8:-1])
+            variants = payload["variants"]
+            key = (payload["id"], original_command)
+            bag = self._random_bags.setdefault(key, {"remaining": [], "last": None})
+            remaining = bag["remaining"]
+            if not remaining:
+                remaining.extend(variants)
+            candidates = remaining
+            if len(remaining) == len(variants) and len(variants) > 1:
+                candidates = [variant for variant in remaining if variant != bag["last"]] or remaining
+            selected = random.choice(candidates)
+            remaining.remove(selected)
+            bag["last"] = selected
+            self.splice_dialogue(selected)
             return
         if command.startswith(r"\sound("):
             name = decode_payload(original_command[7:-1])
@@ -1125,12 +1164,23 @@ class OnboardingDialog(QDialog):
             return
         if command.startswith(r"\choices("):
             revision = self._activity_revision
+            enabled_count = 0
             for option in decode_payload(original_command[9:-1]):
+                available = (option.get("condition") is None or
+                             matches_condition(self.variables, option["condition"], self.last_event))
+                if option.get("mode") == "if" and not available:
+                    continue
                 button = QPushButton(option["text"])
+                button.setEnabled(available)
+                enabled_count += available
                 button.clicked.connect(
                     lambda checked=False, lines=option["lines"], version=revision:
                     self.splice_dialogue(lines) if version == self._activity_revision else None)
                 self.route_buttons.addWidget(button)
+            if not enabled_count:
+                self.clear_route_buttons()
+                self.run_script_command()
+                return
             self.script_busy = True
             self.dialogue_indicator.hide()
             return
@@ -1363,7 +1413,7 @@ class OnboardingDialog(QDialog):
             self.start_wizard_motion()
             return
         if command.startswith(r"\nw"):
-            self.ready_for_reading(min(int(command[3:]), 3600) * 1000)
+            self.ready_for_reading(round(min(float(command[3:]), 3600) * 1000))
             return
         if command == r"\flow":
             self.script_busy = False
@@ -1375,6 +1425,11 @@ class OnboardingDialog(QDialog):
             self.ready_for_reading()
             return
         if command == r"\e":
+            if any("reaction" in frame for frame in self._call_stack):
+                while "reaction" not in self._call_stack[-1]:
+                    self._call_stack.pop()
+                self.return_from_call()
+                return
             self._call_stack.clear()
             self._read_delay_ms = None
             self.timer.stop()
@@ -1435,6 +1490,9 @@ class OnboardingDialog(QDialog):
             return
         frame = self._call_stack.pop()
         self._cancel_dialogue_activity()
+        if "reaction" in frame:
+            self._restore_reaction(frame)
+            return
         self.dialogue_lines = frame["lines"]
         self.dialogue_index = frame["index"]
         self.title.setText(frame["speaker"])
@@ -1456,7 +1514,7 @@ class OnboardingDialog(QDialog):
 
     def receive_event(self, name):
         name = name.lower()
-        if name == "wizard_moved":
+        if name == "wizard_moved" or name in self._reaction_routes:
             self.pending_events = [event for event in self.pending_events if event != name]
         if name == "lyrics_search_started":
             self.pending_events = [event for event in self.pending_events if event not in {
@@ -1467,7 +1525,7 @@ class OnboardingDialog(QDialog):
         self.consume_event()
 
     def consume_event(self):
-        if self._confirming_exit or not self.waiting_events:
+        if self._confirming_exit or self._dialogue_closed:
             return
         for index, event in enumerate(self.pending_events):
             if event in self.waiting_events:
@@ -1479,6 +1537,80 @@ class OnboardingDialog(QDialog):
                 self.event_auto_advance = True
                 self.run_script_command()
                 return
+        self._try_reaction()
+
+    def _try_reaction(self):
+        # Menus, scene windows, and scripted motion own interactions that cannot
+        # safely be suspended. Leave their events queued until a dialogue wait.
+        if (self.route_buttons.count()
+                or self._scene_speaker != "Setup Wizard"
+                or any("reaction" in frame for frame in self._call_stack)
+                or (self.script_busy and not self._pause_active and not self.waiting_events)
+                or self.move_animation.state() != QPropertyAnimation.State.Stopped
+                or self.cursor_animation.state() != QPropertyAnimation.State.Stopped
+                or self.cursor_hide_timer.isActive()):
+            return
+        for index, event in enumerate(self.pending_events):
+            route = self._reaction_routes.get(event)
+            if not route:
+                continue
+            self.pending_events.pop(index)
+            lines = load_route(route)
+            if not lines or len(self._call_stack) >= 64:
+                logging.warning("Unable to react with onboarding label %s", route)
+                return
+            names = ("dialogue_lines", "dialogue_index", "tokens", "script_commands",
+                     "current_text", "current_text_index", "visible_text", "full_text",
+                     "waiting_events", "last_event", "event_auto_advance", "script_busy",
+                     "_pause_active", "_read_delay_ms", "_voice_duration_ms", "_voice_scripted",
+                     "idle_interval_ms", "idle_cursor_position", "return_to_setup",
+                     "outside_click_enabled")
+            state = {name: getattr(self, name) for name in names}
+            state["waiting_events"] = set(self.waiting_events)
+            timers = [(timer, max(0, timer.remainingTime()), timer.interval())
+                      for timer in (self.timer, self.typing_timer, self.script_timer,
+                                    self.idle_timer, self.idle_cursor_timer) if timer.isActive()]
+            frame = {"reaction": state, "timers": timers, "speaker": self.title.text(),
+                     "expression": self.expression_label.text(),
+                     "text_speed": self.pacing["text_speed"],
+                     "space_enabled": self.space.isEnabled(),
+                     "indicator": not self.dialogue_indicator.isHidden()}
+            self._call_stack.append(frame)
+            self._cancel_dialogue_activity()
+            self.last_event = event
+            self.dialogue_lines = lines
+            self.dialogue_index = -1
+            self.space.setEnabled(True)
+            self.dialogue_indicator.show()
+            self.advance_dialogue()
+            return
+
+    def _restore_reaction(self, frame):
+        self.close_scene_windows()
+        for name, value in frame["reaction"].items():
+            setattr(self, name, value)
+        self._scene_speaker = "Setup Wizard"
+        self.title.setText(frame["speaker"])
+        self.expression_label.setText(frame["expression"])
+        self.expression_label.setVisible(bool(frame["expression"]))
+        self.set_scene_text(self.visible_text + self.current_text[:self.current_text_index])
+        self._reserve_dialogue_height(self.full_text)
+        self.dialogue_indicator.setVisible(frame["indicator"])
+        self.space.setEnabled(frame["space_enabled"])
+        for timer, remaining, interval in frame["timers"]:
+            if timer is self.timer and not self.pacing["auto_read"]:
+                continue
+            if timer is self.typing_timer and frame["text_speed"] != self.pacing["text_speed"]:
+                if self.pacing["text_speed"] == "instant":
+                    self._defer_activity(self.finish_typing)
+                    continue
+                interval = settings.ONBOARDING_TEXT_INTERVALS[self.pacing["text_speed"]]
+            timer.start(remaining if timer.isSingleShot() else interval)
+        if (self.pacing["auto_read"] and self._read_delay_ms is not None
+                and not self.script_busy and not self.typing_timer.isActive()
+                and not self.timer.isActive()):
+            self.timer.start(self._read_delay_ms)
+        self._defer_activity(self.consume_event)
 
     def perform_script_click(self):
         self.fake_cursor.setPixmap(self.cursor_click)

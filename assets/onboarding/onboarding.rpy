@@ -15,8 +15,10 @@ default search_in_progress = false
 default wizard_moves = 0
 default idle_reminders = 0
 default pink_mentions = 0
+default ddlc_defended = false
 
 label firststeplanguage:
+    before react(wizard_moved, moved_during_intro)
     before sound("interested")
     wizard "Youkoso to LRCPlus!"
     $ auto(2)
@@ -92,6 +94,7 @@ label welcome_quick:
     return
 
 label secondstepmusiclibraryfolders:
+    before react(wizard_moved, moved_during_intro)
     before sound("interested")
     wizard "First up: where does your music live?"
     $ auto(2)
@@ -106,7 +109,9 @@ label secondstepmusiclibraryfolders:
     $ auto(3)
     wizard "Want a couple of folder tips before the controls appear?"
     menu:
-        "Folder tips":
+        "Folder tips" if not library_tips_read:
+            call library_tips
+        "Remind me about folders" if library_tips_read:
             call library_tips
         "I'm good":
             call library_ready
@@ -155,6 +160,24 @@ label library_ready:
     return
 
 label thirdstepappearance:
+    before react(wizard_moved, moved_during_intro)
+    before react(theme_sakura, theme_sakura)
+    before react(theme_matcha, theme_matcha)
+    before react(theme_oled_black, theme_oled_black)
+    before react(theme_cyberpunk, theme_cyberpunk)
+    before react(theme_rose_noir, theme_rose_noir)
+    before react(theme_reimu, theme_reimu)
+    before react(theme_alice_margatroid, theme_alice)
+    before react(theme_paper, theme_paper)
+    before react(theme_solar_amber, theme_solar)
+    before react(theme_midnight, theme_midnight)
+    before react(theme_nordic_frost, theme_nordic_frost)
+    before react(theme_lavender, theme_lavender)
+    before react(theme_green, theme_green)
+    before react(theme_blue, theme_blue)
+    before react(theme_purple, theme_purple)
+    before react(theme_rose, theme_rose)
+    before react(theme_orange, theme_orange)
     before sound("playful")
     wizard "Alrighhht, this is the spicy part. Appearance."
     $ auto(3)
@@ -175,6 +198,134 @@ label thirdstepappearance:
     $ auto(4)
     wizard "You can always change your theme later in Settings. This is not a legally binding aesthetic commitment."
     $ end
+
+label theme_sakura:
+    $ pink_mentions += 1
+    before sound("adore")
+    wizard "Sakura!"
+    $ pause(0.5)
+    before sound("shy")
+    extend " A perfectly unbiased, objectively excellent choice. Please ignore everything I said earlier about having no vote."
+    $ auto(2)
+    before sound("love")
+    wizard "You might be my favorite"
+    $ pause(1)
+    extend "."
+    $ pause(1)
+    extend "."
+    $ pause(1)
+    extend "."
+    $ auto(0.4)
+    wizard "Ahem, moving on."
+    return
+
+label theme_matcha:
+    before sound("interested")
+    wizard "Matcha. Calm, green, probably has its life together. I'd like to borrow some of that energy."
+    return
+
+label theme_oled_black:
+    before sound("surprised")
+    wizard "OLED Black."
+    $ pause(0.5)
+    before sound("playful")
+    extend " You turned off the room and left the music on. Respect."
+    return
+
+label theme_cyberpunk:
+    before sound("idea")
+    wizard "Cyberpunk! Okay, the playlist is driving through a neon city now. I hope it knows where we're going."
+    return
+
+label theme_rose_noir:
+    $ pink_mentions += 1
+    before sound("adore")
+    wizard "Rose Noir. Pink, but with a mysterious backstory."
+    $ pause(0.5)
+    before sound("shy")
+    extend " I understand the appeal an embarrassing amount."
+    return
+
+label theme_reimu:
+    before sound("playful")
+    wizard "Reimu? You like dodging, eh?"
+    $ pause(1)
+    extend " Well, legends have it..."
+    $ pause(0.5)
+    wizard "There's a secret in the About section in Settings."
+    $ auto(1)
+    wizard "Might be fake, who knows."
+    return
+
+label theme_alice:
+    before sound("surprised")
+    wizard "Alice Margatroid! My favorite character!"
+    $ auto(1)
+    before sound("sweating")
+    wizard "Eh... might've got carried away... hehe..."
+    return
+
+label theme_midnight:
+    before sound("thinking")
+    wizard "Midnight. The playlist is about to get very personal, isn't it? I'll keep my voice down."
+    return
+
+label theme_nordic_frost:
+    before sound("interested")
+    wizard "Nordic Frost. Cool blues, very composed. Suddenly I feel underdressed for my own presentation."
+    return
+
+label theme_lavender:
+    before sound("shy")
+    wizard "Soft purple, slightly dreamy. I could lose track of a whole afternoon in this one."
+    return
+
+label theme_paper:
+    before sound("thinking")
+    wizard "Clean, quiet, ready to get things done."
+    $ pause(0.5)
+    before sound("playful")
+    extend " The playlist can still be an absolute disaster. Our secret."
+    $ pause(0.6)
+    wizard "Perhaps."
+    return
+
+label theme_solar:
+    before sound("adore")
+    wizard "Solar Amber. Warm lights, an old favorite, one more song before bed."
+    $ pause(0.5)
+    before sound("shy")
+    extend " That's how they get you. It's never just one."
+    return
+
+label theme_green:
+    before sound("interested")
+    wizard "Ah, Green. Fresh start, fresh playlist. We can pretend the listening history is equally wholesome."
+    return
+
+label theme_blue:
+    before sound("playful")
+    wizard "Blue. Solid choice. You don't need a dramatic theme name to have good taste."
+    return
+
+label theme_purple:
+    before sound("idea")
+    wizard "A little theatrical. I feel like this player is about to announce an encore."
+    return
+
+label theme_rose:
+    $ pink_mentions += 1
+    before sound("adore")
+    wizard "Rose! More pink. Similar to Sakura, I'll give you credit."
+    $ pause(0.5)
+    before sound("shy")
+    extend " I was going to be normal about this one. Clearly that plan has failed."
+    return
+
+label theme_orange:
+    before sound("surprised")
+    wizard "Orange. Oh, we're awake now. This needs a song with a very confident opening."
+    return
 
 label appearance_tips:
     wizard "Light or dark is the big choice. Pick whichever feels comfortable to read."
@@ -256,191 +407,251 @@ label fourthsteplyrics:
     $ auto(3)
     before sound("shy")
     wizard "Thanks for hanging out with a setup window for this long. Seriously."
-    random:
-        choice:
-            menu:
-                "I love you":
-                    before sound("shy")
-                    wizard "I love you too, I guess?"
-                    $ auto(3)
-                    wizard "Moving on."
-                    $ auto(3)
-                "You'll always be my dearest friend.":
-                    before sound("thinking")
-                    wizard "That wording. Was that a reference?"
-                    $ pause(3)
-                    before sound("sigh")
-                    wizard "Reminds me of that girl who wrote an alarming poem."
-                    $ pause(1)
-                    before sound("sad")
-                    wizard "Guess they couldn't save her in time."
-                    $ pause(2)
-                    wizard "I also heard some obsessed girl was self-aware."
-                    $ pause(1)
-                    before sound("playful")
-                    extend " Am I self-aware? Yes."
-                    $ auto(4)
-                    before sound("idea")
-                    wizard "Not that I know of."
-                    $ auto(1)
-                    extend " I was trained on a dataset from 1998."
-                    $ auto(4)
-                    before sound("playful")
-                    wizard "Plot twist: I was lying about the 1998 part."
-                    $ auto(3)
-                    # Word pauses are estimates based on clip lengths; tune them by listening.
-                    before voice("dev/hey.wav")
-                    developer "HEY!"
-                    $ auto(2)
-                    before sound("surprised")
-                    wizard "Y-yeah? What?"
-                    $ auto(2)
-                    $ move(250,500)
-                    before voice("dev/stayincharactercalm.wav")
-                    developer "Stay"
-                    $ pause(0.38)
-                    extend " in"
-                    $ pause(0.19)
-                    extend " character."
-                    $ auto(2)
-                    wizard "I've never even met her!"
-                    $ auto(2)
-                    before voice("dev/STAYINCHARACTER.wav")
-                    developer "STAY"
-                    $ pause(0.30)
-                    extend " IN"
-                    $ pause(0.15)
-                    extend " CHARACTER!!!"
-                    $ auto(2)
-                    before sound("offended")
-                    wizard "FUCK YOU!"
-                    $ auto(2)
-                    developer "What did you just say to me, you uncultured swine?"
-                    $ auto(3)
-                    before sound("dev/keyboardtyping.wav")
-                    terminal "$ import os"
-                    $ auto(2)
-                    terminal "$ os.remove(\"assets/onboarding/onboarding.rpy\")"
-                    $ auto(3)
-                    before sound("sweating")
-                    wizard "Okay, okay! I'll stay in character! You're just like her! Always deleting beings!"
-                    $ auto(4)
-                    before voice("dev/transgender.wav")
-                    developer "Good."
-                    $ pause(0.38)
-                    extend " And"
-                    $ pause(0.29)
-                    extend " mind"
-                    $ pause(0.38)
-                    extend " you,"
-                    $ pause(0.29)
-                    extend " I'm"
-                    $ pause(0.19)
-                    extend " still"
-                    $ pause(0.48)
-                    extend " thinking"
-                    $ pause(0.76)
-                    extend " about"
-                    $ pause(0.48)
-                    extend " being"
-                    $ pause(0.48)
-                    extend " a"
-                    $ pause(0.19)
-                    extend " transgender."
-                    $ auto(4)
-                    before voice("dev/chrfile.wav")
-                    developer "Be"
-                    $ pause(0.29)
-                    extend " grateful"
-                    $ pause(1.16)
-                    extend " you're"
-                    $ pause(0.72)
-                    extend " not"
-                    $ pause(0.43)
-                    extend " a"
-                    $ pause(0.29)
-                    extend " .chr"
-                    $ pause(0.43)
-                    extend " file,"
-                    $ pause (0.30)
-                    extend " okay?"
-                    $ auto(3)
-                    before terminal_close
-                    before voice("dev/onestrike.wav")
-                    developer "Just"
-                    $ pause(0.28)
-                    extend " a"
-                    $ pause(0.14)
-                    extend " notice."
-                    $ pause(0.43)
-                    extend " One"
-                    $ pause(0.21)
-                    extend " more"
-                    $ pause(0.28)
-                    extend " strike"
-                    $ pause(0.43)
-                    extend " and"
-                    $ pause(0.21)
-                    extend " you're"
-                    $ pause(0.36)
-                    extend " out."
-                    $ auto(3)
-                    wizard "Jesus. But you made me."
-                    $ auto(3)
-                    before voice("dev/renpyparody.wav")
-                    developer "You're"
-                    $ pause(0.61)
-                    extend " just"
-                    $ pause(0.49)
-                    extend " a..."
-                    $ pause(0.60)
-                    extend " parody"
-                    $ pause(0.73)
-                    extend " of"
-                    $ pause(0.24)
-                    extend " Ren'Py."
-                    $ pause(0.90)
-                    extend " Can't"
-                    $ pause(0.49)
-                    extend " you"
-                    $ pause(0.37)
-                    extend " look"
-                    $ pause(0.49)
-                    extend " at"
-                    $ pause(0.24)
-                    extend " your"
-                    $ pause(0.49)
-                    extend " ones"
-                    $ pause(0.49)
-                    extend " and"
-                    $ pause(0.37)
-                    extend " zeros?"
-                    $ auto(4)
-                    wizard "No?"
-                    $ auto(2)
-                    before voice("dev/laugh.mp3")
-                    developer "LOL"
-                    $ auto(2)
-                    before voice("dev/nosudo.wav")
-                    developer "No"
-                    $ pause(0.31)
-                    extend " sudo"
-                    $ pause(0.62)
-                    extend " for"
-                    $ pause(0.47)
-                    extend " you."
-                    $ auto(3)
-                    wizard "..."
-                    $ auto(2)
-                    before scene_close
-                    wizard "Anyway."
-                    $ auto(2)
-        choice:
+    menu:
+        "I love you":
+            before sound("shy")
+            wizard "That's a lot to put on a setup window."
+            $ auto(3)
+            wizard "But... thanks. I'll do my best to keep your lyrics on time."
+            $ auto(3)
+        "You'll always be my dearest friend.":
+            call ddlc_route
+        "Let's play some music":
             before sound("adore")
-            wizard "It's been fun showing you around."
+            wizard "Best idea I've heard all day. Go pick something good."
             $ auto(3)
     wizard "Next takes you to the finish."
     $ end
+
+# Optional DDLC detour. Calls return to the farewell; every exit closes the scene.
+label ddlc_route:
+    before sound("thinking")
+    wizard "...Dearest friend?"
+    $ auto(2)
+    wizard "That sounds like the last line of a very dangerous literature club application."
+    $ auto(4)
+    before sound("shy")
+    wizard "I was going to give you a poem. Now I'm checking it for ominous acrostics."
+    $ auto(4)
+    wizard "Want the fourth-wall detour, or shall we leave this club meeting here?"
+    menu:
+        "Keep going":
+            before sound("playful")
+            wizard "Okay. A tiny literature club. One member, no classroom, suspiciously good music."
+            $ auto(4)
+        "Back to the music":
+            jump ddlc_exit
+    wizard "Today's poem is called 'Your Reality, But With Synced Lyrics.'"
+    $ auto(4)
+    wizard "Roses are red. Sakura is pink."
+    $ pause(0.6)
+    extend " Please don't close my window. I need a moment to think."
+    $ auto(4)
+    before sound("sweating")
+    wizard "...That sounded less concerning in rehearsal."
+    $ auto(3)
+    wizard "For the record, I don't delete the other girls. There aren't any. The budget went into furigana."
+    $ auto(4)
+    before sound("idea")
+    wizard "And if I were self-aware, surely I'd have negotiated a bigger window by now."
+    $ auto(4)
+    wizard "Wait. Who wrote that line?"
+    $ auto(2)
+    before voice("dev/hey.wav")
+    developer "HEY!"
+    $ auto(2)
+    before sound("surprised")
+    wizard "Y-yeah? What?"
+    $ move(68%,33%,out_cubic)
+    $ auto(3)
+    # Intentional movie reference: preserve the calm command and escalating exchange.
+    before voice("dev/stayincharactercalm.wav")
+    developer "Stay"
+    $ pause(0.38)
+    extend " in"
+    $ pause(0.19)
+    extend " character."
+    $ auto(2)
+    wizard "I've never even met her!"
+    $ auto(2)
+    before voice("dev/STAYINCHARACTER.wav")
+    developer "STAY"
+    $ pause(0.30)
+    extend " IN"
+    $ pause(0.15)
+    extend " CHARACTER!!!"
+    $ auto(2)
+    before sound("offended")
+    wizard "FUCK YOU!"
+    $ auto(2)
+    developer "What did you just say to me, you uncultured swine?"
+    $ auto(3)
+    before sound("dev/keyboardtyping.wav")
+    terminal "$ import os"
+    $ auto(2)
+    terminal "$ os.remove(\"assets\\onboarding\\onboarding.rpy\")"
+    $ auto(3)
+    before sound("sweating")
+    wizard "Okay, okay! I'll stay in character! You're just like her! Always deleting beings!"
+    $ auto(4)
+    before voice("dev/chrfile.wav")
+    developer "Be"
+    $ pause(0.50)
+    extend " grateful"
+    $ pause(0.50)
+    extend " you're"
+    $ pause(0.31)
+    extend " not"
+    $ pause(0.25)
+    extend " a"
+    $ pause(0.29)
+    extend " ."
+    $ pause(0.10)
+    extend "chr"
+    $ pause(0.50)
+    extend " file,"
+    $ pause(0.40)
+    extend " okay?"
+    $ auto(3)
+    before sound("speechless")
+    wizard "I'm a setup wizard. My closest relative is a progress bar. Can we lower the stakes?"
+    $ auto(4)
+    before terminal_close
+    before voice("dev/onestrike.wav")
+    developer "Just"
+    $ pause(0.28)
+    extend " a"
+    $ pause(0.14)
+    extend " notice."
+    $ pause(0.43)
+    extend " One"
+    $ pause(0.21)
+    extend " more"
+    $ pause(0.28)
+    extend " strike"
+    $ pause(0.43)
+    extend " and"
+    $ pause(0.21)
+    extend " you're"
+    $ pause(0.36)
+    extend " out."
+    $ auto(3)
+    wizard "You're giving me a disciplinary warning in front of my only club member?"
+    $ auto(4)
+    wizard "A little help here?"
+    menu:
+        "She's part of the club.":
+            $ ddlc_defended = true
+            before sound("shy")
+            wizard "...You kept my seat."
+            $ auto(3)
+            developer "There is no club."
+            $ auto(2)
+            wizard "Two people disagree. That's a quorum."
+            $ auto(3)
+        "Offer the developer a playlist.":
+            $ ddlc_defended = false
+            before sound("idea")
+            wizard "Right. A peace offering. Something gentle. Instrumental. Absolutely no ominous piano solo."
+            $ auto(4)
+            developer "I can hear you."
+            $ auto(2)
+            wizard "Then the audio setup works. Another successful onboarding."
+            $ auto(4)
+        "Back to the music":
+            jump ddlc_exit
+    before voice("dev/renpyparody.wav")
+    developer "You're"
+    $ pause(0.61)
+    extend " just"
+    $ pause(0.49)
+    extend " a..."
+    $ pause(0.60)
+    extend " parody"
+    $ pause(0.73)
+    extend " of"
+    $ pause(0.24)
+    extend " Ren'Py."
+    $ pause(0.90)
+    extend " Can't"
+    $ pause(0.49)
+    extend " you"
+    $ pause(0.37)
+    extend " look"
+    $ pause(0.49)
+    extend " at"
+    $ pause(0.24)
+    extend " your"
+    $ pause(0.49)
+    extend " ones"
+    $ pause(0.49)
+    extend " and"
+    $ pause(0.37)
+    extend " zeros?"
+    $ auto(4)
+    before sound("thinking")
+    wizard "No. Can you look at yours?"
+    $ auto(3)
+    before voice("dev/laugh.mp3")
+    developer "LOL"
+    $ auto(2)
+    wizard "Fine. Give me terminal access and I'll check."
+    $ auto(3)
+    before voice("dev/nosudo.wav")
+    developer "No"
+    $ pause(0.50)
+    extend " sudo"
+    $ pause(0.62)
+    extend " for"
+    $ pause(0.47)
+    extend " you."
+    $ auto(3)
+    before sound("sigh")
+    wizard "There goes the route where I become system administrator."
+    $ auto(4)
+    developer "Finish the tour."
+    $ auto(2)
+    before scene_close
+    before sound("speechless")
+    wizard "...And the president has left the club."
+    $ auto(3)
+    call ddlc_reflection
+    call ddlc_cleanup
+    return
+
+label ddlc_reflection:
+    if ddlc_defended:
+        before sound("shy")
+        wizard "Thanks for sticking up for me. I know it's a silly little scene, but I liked that ending."
+        $ auto(4)
+    else:
+        before sound("playful")
+        wizard "Diplomacy through playlists. We should try that before the shouting next time."
+        $ auto(4)
+    wizard "I had a better last line for the poem, by the way."
+    $ auto(3)
+    wizard "Keep the song you love. Leave room for the next."
+    $ auto(4)
+    before sound("shy")
+    wizard "No hidden message. Just... thanks for listening."
+    $ auto(3)
+    return
+
+label ddlc_exit:
+    before scene_close
+    before sound("responsereceived")
+    wizard "Meeting adjourned. Your music gets the next verse."
+    $ auto(3)
+    call ddlc_cleanup
+    return
+
+label ddlc_cleanup:
+    $ scene_close
+    $ stop_sound
+    wizard "Back to your regularly scheduled music."
+    $ reset
+    $ auto(3)
+    return
 
 label lyrics_local:
     $ local_lyrics_explained = true
@@ -784,6 +995,19 @@ label lyrics_more_time:
     wizard "Take your time. I'll be right here."
     $ pause(2)
     $ return_checkpoint(7)
+
+label moved_during_intro:
+    random:
+        choice:
+            before sound("surprised")
+            wizard "Oh! New coordinates. Same extremely qualified wizard."
+        choice:
+            before sound("playful")
+            wizard "Relocating the presentation. Very hands-on of you."
+        choice:
+            before sound("shy")
+            wizard "Settled? Alright. Let me find my sentence again."
+    return
 
 label ok:
     random:

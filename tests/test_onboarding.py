@@ -577,6 +577,7 @@ def test_wait_event_races_idle_and_other_events(monkeypatch, event_name):
 
 def test_user_window_movement_emits_event_but_scripted_motion_does_not(monkeypatch):
     app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr("ui.onboarding.load_dialogue_data", lambda key: [("Guide", r"Welcome.\n")])
     monkeypatch.setattr(settings, "save_all_settings", lambda payload: None)
     player = QWidget()
     player.library_folders = []

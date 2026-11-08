@@ -25,6 +25,9 @@ def _quoted(value, location):
 
 
 def _cue(statement, location):
+    reaction = re.fullmatch(r"react\(\s*([a-z_][a-z_0-9]*)\s*,\s*([A-Za-z_][A-Za-z_0-9]*|none)\s*\)", statement)
+    if reaction:
+        return r"\react(" + encode_payload(list(reaction.groups())) + ")"
     sound = re.fullmatch(r"(sound|voice)\((.*)\)", statement)
     play_sound = re.fullmatch(r"play\s+sound\s+(.+)", statement)
     if sound or play_sound:
@@ -66,8 +69,8 @@ def _cue(statement, location):
             raise ValueError(f"{location}: checkpoint must be a non-negative integer")
         return (r"\c" if name == "checkpoint" else r"\cr") + args
     if name == "auto":
-        if not args.isdigit():
-            raise ValueError(f"{location}: auto requires whole seconds")
+        if not re.fullmatch(r"\d+(?:\.\d+)?", args):
+            raise ValueError(f"{location}: auto requires non-negative seconds")
         return r"\nw" + args
     patterns = {
         "pause": r"\d+(?:\.\d+)?",
@@ -170,14 +173,17 @@ class _ScriptParser:
                     option_line, option_depth, option_text = self.rows[self.index]
                     if option_depth < indent + 4:
                         break
-                    option = re.fullmatch(r'("(?:[^"\\]|\\.)*"):', option_text)
+                    option = re.fullmatch(r'("(?:[^"\\]|\\.)*")(?:\s+(if|enabled_if)\s+(.+))?:', option_text)
                     if option_depth != indent + 4 or not option:
                         raise ValueError(f"line {option_line}: expected a menu option")
                     self.index += 1
                     body = self.block(indent + 8)
                     if not body:
                         raise ValueError(f"line {option_line}: menu option is empty")
-                    options.append((_quoted(option.group(1), f"line {option_line}"), body))
+                    condition = (parse_condition(option.group(3), f"line {option_line}")
+                                 if option.group(2) else None)
+                    options.append((_quoted(option.group(1), f"line {option_line}"), body,
+                                    option.group(2), condition))
                 if not options:
                     raise ValueError(f"line {number}: menu has no options")
                 nodes.append(("menu", number, options))
@@ -223,7 +229,8 @@ def _compile_nodes(nodes, defaults=""):
     random_lines = {}
 
     def append_random_tail(index, value):
-        variants = random_lines[index]
+        payload = random_lines[index]
+        variants = payload["variants"]
         for variant in variants:
             speaker, text = variant[-1]
             if text.endswith(r"\flow"):
@@ -231,7 +238,7 @@ def _compile_nodes(nodes, defaults=""):
             else:
                 text += value
             variant[-1] = (speaker, text)
-        lines[index] = ("Setup Wizard", r"\random(" + encode_payload(variants) + ")")
+        lines[index] = ("Setup Wizard", r"\random(" + encode_payload(payload) + ")")
 
     def append_cue(cue):
         nonlocal pending
@@ -253,9 +260,10 @@ def _compile_nodes(nodes, defaults=""):
             pending = ""
             before_pending = False
             index = len(lines)
-            random_lines[index] = variants
+            payload = {"id": number, "variants": variants}
+            random_lines[index] = payload
             control_lines.add(index)
-            lines.append(("Setup Wizard", r"\random(" + encode_payload(variants) + ")"))
+            lines.append(("Setup Wizard", r"\random(" + encode_payload(payload) + ")"))
             continue
         if kind == "if":
             cue = _single_branch(*value[0]) if len(value) == 1 else None
@@ -268,12 +276,14 @@ def _compile_nodes(nodes, defaults=""):
         if kind == "menu":
             jumps = [re.fullmatch(r"jump\s+([A-Za-z_][A-Za-z_0-9]*)", body[0][2])
                      if len(body) == 1 and body[0][0] == "statement" else None
-                     for _, body in value]
-            if all(jumps) and all(text and not any(char in text for char in ",()") for text, _ in value):
-                for (text, _), jump in zip(value, jumps):
+                     for _, body, _, _ in value]
+            if all(jumps) and all(text and not mode and not any(char in text for char in ",()")
+                                  for text, _, mode, _ in value):
+                for (text, _, _, _), jump in zip(value, jumps):
                     append_cue(rf"\button({text},{jump.group(1)})")
             else:
-                options = [{"text": text, "lines": _compile_nodes(body)} for text, body in value]
+                options = [{"text": text, "lines": _compile_nodes(body), "mode": mode,
+                            "condition": condition} for text, body, mode, condition in value]
                 append_cue(r"\choices(" + encode_payload(options) + ")")
             continue
 

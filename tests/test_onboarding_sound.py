@@ -287,7 +287,7 @@ def test_authored_sound_cues_reference_real_assets():
                     cues.append(name)
                     assert resolve_sound(name) is not None
                 elif command.startswith(r"\random("):
-                    pending.extend(decode_payload(command[8:-1]))
+                    pending.extend(decode_payload(command[8:-1])["variants"])
                 elif command.startswith((r"\choose(", r"\choices(")):
                     offset = 8 if command.startswith(r"\choose(") else 9
                     pending.extend(arm["lines"] for arm in decode_payload(command[offset:-1]))
