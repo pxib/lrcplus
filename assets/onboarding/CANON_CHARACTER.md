@@ -29,6 +29,8 @@ Her dialogue is entirely scripted, using LRCPlus's custom Ren'Py-inspired dialog
 | Favorite aesthetic | 桜 (cherry blossoms) |
 | First development | November 6, 2026 |
 | Sexuality | Secret |
+| Appearance | Better Call Qt |
+| Family | Secret |
 
 Ayami's birthday commemorates the date her character first began development.
 
