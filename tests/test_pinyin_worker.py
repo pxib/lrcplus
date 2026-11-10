@@ -140,7 +140,7 @@ def test_client_command_and_temporary_files_are_cleaned(monkeypatch, frozen):
             assert command[:2] == [sys.executable, "--lrcplus-pinyin-worker"]
         else:
             assert command[:3] == [sys.executable, "-I", "-u"]
-            assert command[3] == str(Path(pinyin_worker.__file__))
+            assert Path(command[3]).resolve() == Path(pinyin_worker.__file__).resolve()
         assert options["timeout"] == 30
         assert options["stdout"] == subprocess.DEVNULL
         assert options["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)

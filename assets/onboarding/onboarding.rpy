@@ -277,12 +277,12 @@ label theme_nordic_frost:
 
 label theme_lavender:
     before sound("shy")
-    wizard "Soft purple, slightly dreamy. I could lose track of a whole afternoon in this one."
+    wizard "Ooh, Lavender? Soft purple, slightly dreamy. I could lose track of a whole afternoon in this one."
     return
 
 label theme_paper:
     before sound("thinking")
-    wizard "Clean, quiet, ready to get things done."
+    wizard "Paper, eh? Clean, quiet, ready to get things done."
     $ pause(0.5)
     before sound("playful")
     extend " The playlist can still be an absolute disaster. Our secret."
@@ -310,7 +310,7 @@ label theme_blue:
 
 label theme_purple:
     before sound("idea")
-    wizard "A little theatrical. I feel like this player is about to announce an encore."
+    wizard "Purple. A little theatrical. I feel like this player is about to announce an encore."
     return
 
 label theme_rose:
