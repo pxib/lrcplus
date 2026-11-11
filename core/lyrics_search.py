@@ -21,6 +21,17 @@ class LyricsSearchMixin:
         return tuple(stamps)
 
     @staticmethod
+    def _lyrics_file_signature(files):
+        stamps = []
+        for file_path in files:
+            try:
+                stat = file_path.stat()
+                stamps.append((stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size))
+            except OSError:
+                stamps.append(None)
+        return tuple(stamps)
+
+    @staticmethod
     def _normalise_lyrics_name(value):
         """Normalise lyric/audio filenames for forgiving matching."""
         value = str(value).casefold()
@@ -184,6 +195,7 @@ class LyricsSearchMixin:
 
         Directory timestamps detect additions, renames and removals, including
         inside nested folders, without reopening every lyric on track changes.
+        File metadata also detects in-place edits to attachment tags.
         """
         folder_path = Path(folder_path)
         folder_key = cls._normalise_path_key(folder_path)
@@ -191,7 +203,10 @@ class LyricsSearchMixin:
             generation = cls._lyrics_index_generation
             cached = cls._lyrics_folder_index_cache.get(folder_key)
         if cached is not None:
-            if cached["signature"] == cls._directory_signature(cached["directories"]):
+            if (cached["signature"] == cls._directory_signature(cached["directories"])
+                    and cached["file_signature"] == cls._lyrics_file_signature(
+                        entry[0] for entry in cached["entries"]
+                    )):
                 return cached
 
         directories = [folder_path]
@@ -200,6 +215,7 @@ class LyricsSearchMixin:
         by_title = {}
         by_parts = {}
         attachments = {}
+        file_stamps = []
 
         if folder_path.exists() and folder_path.is_dir():
             try:
@@ -219,6 +235,9 @@ class LyricsSearchMixin:
 
                     entry = (file_path, name, title, parts_key)
                     entries.append(entry)
+                    # Sample before reading so an edit during the read cannot
+                    # leave old tags cached with the newer file's metadata.
+                    file_stamps.extend(cls._lyrics_file_signature((file_path,)))
                     if name:
                         by_name.setdefault(name, []).append(entry)
                     if title:
@@ -243,6 +262,7 @@ class LyricsSearchMixin:
         index = {
             "directories": directories,
             "signature": cls._directory_signature(directories),
+            "file_signature": tuple(file_stamps),
             "entries": entries,
             "by_name": by_name,
             "by_title": by_title,
