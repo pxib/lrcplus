@@ -1561,7 +1561,7 @@ class Player(
                 dialog.accept()
                 def open_wizard():
                     from ui.onboarding import OnboardingDialog
-                    OnboardingDialog(self).run()
+                    OnboardingDialog(self, companion=True).run()
                 QTimer.singleShot(0, open_wizard)
 
             dialog.relaunch_wizard_requested.connect(relaunch_wizard)

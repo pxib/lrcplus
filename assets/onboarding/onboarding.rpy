@@ -22,6 +22,8 @@ label firststeplanguage:
     before sound("interested")
     wizard "Youkoso to LRCPlus!"
     $ auto(2)
+    wizard "I'm Sakurabayashi Ayami. Ayami is fine! I'll be your guide."
+    $ auto(3)
     random:
         choice:
             before sound("playful")
@@ -55,6 +57,13 @@ label firststeplanguage:
             call welcome_quick
     before checkpoint(1)
     wizard "We'll sort out your music folders, pick a look, try some reading preferences, and talk lyrics. Hit Next when you're ready."
+    $ end
+
+label companion_welcome:
+    before sound("interested")
+    wizard "Hey, welcome back! Ayami here. Tiny window, same questionable clipboard situation."
+    $ auto(3)
+    wizard "Want to talk? Set up your AI provider below, then send me a message. Or we can run setup again."
     $ end
 
 label welcome_detailed:

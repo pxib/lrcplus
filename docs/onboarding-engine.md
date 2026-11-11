@@ -5,6 +5,76 @@ language. It never executes Python.
 
 ## Setup steps
 
+Reopening the wizard from Settings opens **Ayami**, a returning-user companion
+window. Its scripted `companion_welcome` greeting introduces the optional chat
+input above the pacing separator. **Run setup again** returns to the original
+wizard; first-run setup has no AI controls or network requests.
+
+**AI settings** accepts an OpenAI-compatible Chat Completions API base URL,
+model ID, and optional API key (local servers may not need one). HTTPS is
+required except for localhost. No provider or model is selected automatically.
+The key is session-only unless the user enables Windows account-bound encrypted
+storage. If account encryption is unavailable, the key remains session-only and
+the window explains that it was not saved. Clearing the key and saving removes
+the stored credential. The request
+format follows the [Chat Completions API](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
+
+Requests run off the UI thread, only after Send, without automatic retries.
+They include Ayami's character instructions and up to ten recent exchanges;
+they do not attach player state, file paths, songs, lyrics, or settings. History
+is kept in memory and cleared on close, restarting setup, or changing providers.
+Replies are displayed as plain text and cannot execute script commands or app
+actions. Closing discards any pending reply; an already-sent request may finish
+at the provider. This prototype does not stream replies or provide persistent
+AI memory. Its character prompt is in `core/companion_chat.py`.
+
+Conversation history is displayed inline as one exchange per page:
+**You:** the sent message, followed by **Ayami:** its reply. **Previous** and
+**Next** browse the session's exchanges, with a **Page N of M** indicator and
+disabled buttons at either end. Long exchanges scroll within their own bounded
+page. Sending always opens the newest page and continues the latest conversation;
+browsing an earlier page does not branch or roll back the chat. The page shows a
+pending/failed state until a reply arrives; retrying the same failed message
+reuses its page. A reply arriving while an older page is selected updates its own
+page without changing the selected page. Browsing restores expression labels
+without replaying sounds, making requests, or changing token totals. All exchanges
+remain browsable until the chat is cleared/closed, independently of the ten recent
+exchanges supplied to the model. No separate history window is used.
+
+AI replies may start with one optional `[expression:playful]`-style prefix.
+Only the fixed set of bundled reaction names is accepted; unknown names are
+stripped without playing a sound. The prefix is removed from displayed text and
+history. One reaction plays before the reply appears, respecting the existing
+Sound toggle. The expression label still updates while muted. Replies without a
+tag clear the preceding expression. Text elsewhere cannot trigger reactions or
+script commands. The prompt asks for sparse reactions, with ordinary replies
+silent by default.
+
+The **Tokens** line shows the latest reply's input/output/total usage and the
+window's cumulative reported total. Counts come from the provider response's
+`usage` object, never from model-authored text. When input and output counts are
+both present, a missing total is computed from their sum. Missing usage is marked
+as unreported, so an incomplete session total is not presented as complete.
+The tooltip shows cached/reasoning token details when available; these are not
+added a second time. Counts include instructions and resent conversation history,
+and are not a context-size meter or billing estimate. Failed/discarded requests
+may consume tokens without appearing here. Session counts survive changes to AI
+settings and reset when the companion window is reopened. The response fields
+are documented in [NanoGPT's Chat Completion reference](https://docs.nano-gpt.com/api-reference/endpoint/chat-completion).
+
+**AI settings > Advanced parameters** accepts three optional JSON fields:
+additional body parameters (object), excluded body parameter names (array), and
+additional request headers (object of strings). For example, include
+`{"service_tier": "flex", "reasoning_effort": "low"}` and exclude
+`["temperature"]`. The provider/model must support the chosen parameters.
+Body parameters are merged before exclusions are applied. `model`, `messages`,
+and `stream` cannot be overridden or excluded. Bearer authentication uses the
+API key field; managed authentication and transport headers cannot be replaced.
+Body parameters and exclusions are saved with preferences; custom headers follow
+the same session-only/encrypted storage choice as the API key. Do not put
+credentials in the body parameters field. Blank fields use empty objects/arrays.
+Invalid JSON, non-finite numbers, and invalid headers block saving and sending.
+
 The wizard visits Welcome, Music library, Appearance, Reading preferences,
 Lyrics, and Ready. `STEPS` in `ui/onboarding.py` defines the order and the Debug
 step selector; the reading introduction uses the `readingpreferences` label.

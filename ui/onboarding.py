@@ -112,9 +112,11 @@ class DialogueText(QLabel):
 
 
 class OnboardingDialog(QDialog):
-    def __init__(self, player, parent=None):
+    def __init__(self, player, parent=None, *, companion=False):
         super().__init__(parent if parent is not None else player)
         self.player = player
+        self.companion_mode = companion
+        self.companion_chat = None
         self.developer_window = None
         self.terminal_window = None
         self._scene_speaker = "Setup Wizard"
@@ -302,6 +304,10 @@ class OnboardingDialog(QDialog):
         self.reading_layout = QVBoxLayout(self.reading_container)
         self.reading_layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.reading_container)
+        if companion:
+            from ui.onboarding_chat import CompanionChat
+            self.companion_chat = CompanionChat(self)
+            layout.addWidget(self.companion_chat)
         self.dialogue_separator = QFrame()
         self.dialogue_separator.setFrameShape(QFrame.Shape.HLine)
         self.dialogue_separator.setFrameShadow(QFrame.Shadow.Plain)
@@ -341,6 +347,11 @@ class OnboardingDialog(QDialog):
         pacing_row.addWidget(self.reduced_motion_check)
         layout.addLayout(pacing_row)
         controls = QHBoxLayout()
+        self.restart_setup = QPushButton("Run setup again")
+        self.restart_setup.setAutoDefault(False)
+        self.restart_setup.setVisible(companion)
+        self.restart_setup.clicked.connect(self.start_setup_again)
+        controls.addWidget(self.restart_setup)
         self.skip = QPushButton("Skip setup")
         self.skip.clicked.connect(self.request_exit)
         self.back = QPushButton("Back")
@@ -359,9 +370,32 @@ class OnboardingDialog(QDialog):
         layout.addLayout(controls)
         self._content_ready = True
         self._content_widget.installEventFilter(self)
+        self.set_page(FINISH_PAGE if companion else 0)
+        if companion:
+            self.setWindowTitle("Ayami · LRCPlus")
+            self.title.setText("Ayami")
+            self.skip.hide()
+            self.back.hide()
+            self.debug_button.hide()
+            self.next.setText("Close")
+            self.outside_click_enabled = True
+            self.select_route("companion_welcome")
+        else:
+            self.show_dialogue()
+        self._fit_content()
+
+    def start_setup_again(self):
+        self.companion_mode = False
+        if self.companion_chat is not None:
+            self.companion_chat.close_chat()
+            self.companion_chat.hide()
+        self.restart_setup.hide()
+        self.skip.show()
+        self.back.show()
+        self.debug_button.show()
+        self.outside_click_enabled = False
         self.set_page(0)
         self.show_dialogue()
-        self._fit_content()
 
     def _fit_content(self):
         if self._dialogue_closed or self._confirming_exit:
@@ -621,6 +655,11 @@ class OnboardingDialog(QDialog):
 
     def _show_setup_controls(self, *, dialogue=False):
         page = self.page
+        if self.companion_mode:
+            for widget in (self.language_combo, self.theme_combo, self.preset_combo,
+                           self.folder_button, self.folders, self.reading_container):
+                widget.hide()
+            return
         self.language_combo.setVisible(page == 0)
         self.theme_combo.setVisible(page == 2 and not dialogue)
         self.preset_combo.setVisible(page == 2 and not dialogue)
@@ -929,7 +968,7 @@ class OnboardingDialog(QDialog):
         if speaker in ("Developer", "Terminal"):
             self.show_scene_window(speaker)
         else:
-            self.title.setText(speaker)
+            self.title.setText("Ayami" if self.companion_mode and speaker == "Setup Wizard" else speaker)
         self.full_text, _ = parse_dialogue_line(text)
         if speaker == "Developer":
             self.fit_developer_window(self.full_text)
@@ -1766,6 +1805,9 @@ class OnboardingDialog(QDialog):
     def request_exit(self):
         if self._dialogue_closed:
             return True
+        if self.companion_mode:
+            self.done(QDialog.DialogCode.Rejected)
+            return True
         if self._confirming_exit:
             return False
         self._confirming_exit = True
@@ -1819,6 +1861,8 @@ class OnboardingDialog(QDialog):
 
     def done(self, result):
         self._dialogue_closed = True
+        if self.companion_chat is not None:
+            self.companion_chat.close_chat()
         self.close_scene_windows()
         self._call_stack.clear()
         self.size_animation.stop()
