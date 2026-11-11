@@ -19,14 +19,89 @@ the window explains that it was not saved. Clearing the key and saving removes
 the stored credential. The request
 format follows the [Chat Completions API](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
 
-Requests run off the UI thread, only after Send, without automatic retries.
-They include Ayami's character instructions and up to ten recent exchanges;
-they do not attach player state, file paths, songs, lyrics, or settings. History
-is kept in memory and cleared on close, restarting setup, or changing providers.
+**Don't know where to get an API key?** opens a four-step local guide with
+maiko's introduction, NanoGPT and NVIDIA NIM links, setup instructions, and
+usage/cost information. Previous/Next navigate the guide; Done or Close returns
+to the untouched settings form, including unsaved fields. Provider links open
+externally only when clicked. Opening/browsing the guide makes no AI requests.
+The guide text is maintained in `ui/ai_key_guide.py`; provider requirements and
+pricing should be rechecked when editing it.
+
+Chat requests use Qt's asynchronous HTTP transport after Send or Regenerate,
+without automatic retries. They include Ayami's character instructions, up to ten
+recent completed exchanges, and enabled user-authored memories; they do not
+attach player state, file paths, songs, lyrics, or settings. Chats are saved
+locally and can be reopened from the conversation picker.
 Replies are displayed as plain text and cannot execute script commands or app
 actions. Closing discards any pending reply; an already-sent request may finish
-at the provider. This prototype does not stream replies or provide persistent
-AI memory. Its character prompt is in `core/companion_chat.py`.
+at the provider. This prototype does not stream replies. Its character prompt is
+in `core/companion_chat.py`. Optional memory checks make separate requests as
+described below.
+
+**New conversation**, **Rename**, and **Delete** manage locally saved chats.
+Chats are named from the first message until renamed. Sending and receiving
+autosave the exchange; unfinished requests reopen as stopped. Reopening restores
+pages and recent model context without replaying sounds or making a request.
+Changing AI settings starts a new view while retaining the old saved chat. Chat
+records and memory facts are readable JSON in the app data directory's
+`companion.json`; they contain no provider key or custom authentication headers.
+Writes are atomic. Invalid existing data is preserved and saving is disabled
+rather than overwriting it. A failed save is reported in the window.
+
+While a request is pending, **Send** becomes **Stop**. Stop aborts the local HTTP
+connection and ignores stale completions; it cannot guarantee cancellation or
+refunds at the provider. **Regenerate** requests a replacement for the latest
+answer using the conversation before that exchange. The original answer remains
+until a replacement succeeds, including after stopping or failing regeneration.
+Regeneration replaces the answer on the same page and its model context; token
+usage for every completed request remains counted for the window.
+
+**Memories** opens a user-edited list: one fact per line, up to 20 facts of 200
+characters each. Save adds/edits/removes facts explicitly; clearing the list
+removes all saved memories. The inclusion checkbox can disable their use without
+deleting them. Enabled facts are supplied with future messages to the selected
+provider, labeled as factual data rather than instructions. Disabling/removing a fact does not erase prior chat messages
+or provider records that already contain it.
+
+The automatic memory mode has **Off**, **Suggest for approval** (default), and
+**Automatically save ordinary preferences**. While inclusion is enabled, it checks
+new user messages every three completed exchanges, using a separate request to
+the configured provider/model. **Check now** saves the editor settings and checks
+the last three completed user messages immediately. No extraction starts on
+close. Checkpoints prevent automatic retries of the same batch, including after
+a failed or stopped check. Provider-specific body parameters are retained except
+chat-only tools, response formats, and stop sequences. Extraction sends selected
+user messages and existing/dismissed facts, without assistant dialogue or the full
+character prompt. It asks for stable, explicitly stated facts, excluding moods,
+roleplay, guesses, third-party statements, sensitive details, and credentials.
+
+Each accepted candidate must have a category, topic, source page, and exact
+supporting user quote. Invalid candidates, exact duplicates, and recently
+dismissed/removed facts are ignored. Up to 50 pending suggestions are stored.
+**Review** shows the source and supports editing, Save/Replace, or Dismiss.
+**Sources** shows provenance for approved/automatic memories; manual edits retain
+source details only for unchanged facts. Automatic mode saves only ordinary
+preferences or communication preferences with no detected conflict. Names,
+projects, topic conflicts, full memory lists, and potential overlaps with
+unclassified manual facts require approval. Fact extraction and semantic conflict
+detection depend on the model; review remains available for corrections.
+
+Memory checks can run alongside chat. Their reported tokens contribute to the
+window total and are labeled **Last memory check** when shown. **Stop check**
+cancels local waiting; switching chats, disabling extraction/inclusion, or closing
+the companion also cancels it. A failed check leaves chat unaffected, and an
+invalid suggestion response still contributes its reported usage. Extraction
+results arriving during manual editing become suggestions rather than changing
+the list underneath the editor. Suggestions, dismissals, checkpoints, and source
+details persist locally with chats and memories.
+
+The AI prompt is a curated adaptation of `assets/onboarding/CANON_CHARACTER.md`:
+identity, voice, relevant preferences, relationships, and ways to respond to the
+user. Character traits are translated into delivery guidance rather than a full
+biography. Runtime capabilities and expression syntax are defined by the actual
+chat implementation, independently of the canon document's older description of
+script-only dialogue. The canon file is not loaded or appended to each request;
+edit the compact prompt explicitly when changing the AI characterization.
 
 Conversation history is displayed inline as one exchange per page:
 **You:** the sent message, followed by **Ayami:** its reply. **Previous** and
@@ -38,7 +113,7 @@ pending/failed state until a reply arrives; retrying the same failed message
 reuses its page. A reply arriving while an older page is selected updates its own
 page without changing the selected page. Browsing restores expression labels
 without replaying sounds, making requests, or changing token totals. All exchanges
-remain browsable until the chat is cleared/closed, independently of the ten recent
+remain browsable in the saved conversation independently of the ten recent
 exchanges supplied to the model. No separate history window is used.
 
 AI replies may start with one optional `[expression:playful]`-style prefix.

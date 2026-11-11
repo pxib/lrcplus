@@ -5,16 +5,17 @@ import json
 from PySide6.QtCore import QEvent, QRect, Qt
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
+    QLayout, QLineEdit, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
 from core import settings
-from core.background_job import BackgroundJob
+from core.companion_job import CompanionJob
 from core.companion_chat import EXPRESSIONS, parse_advanced, request_reply, validate_advanced, validate_config
 from core.secret_storage import SecretStorageError, decrypt_secret, encrypt_secret
+from ui.companion_library import CompanionLibrary
 
 
-class CompanionChat(QWidget):
+class CompanionChat(QWidget, CompanionLibrary):
     def __init__(self, wizard):
         super().__init__(wizard)
         self.wizard = wizard
@@ -41,13 +42,12 @@ class CompanionChat(QWidget):
                 self.extra_headers = validate_advanced(extra_headers=json.loads(saved_headers))[2]
         except (SecretStorageError, ValueError, TypeError):
             self.key_error = "Could not restore saved request headers. Enter them again in Advanced parameters."
-        self.job = BackgroundJob(self, "companion-chat")
+        self.job = CompanionJob(self)
         self.job.finished.connect(self.receive_reply)
         self.job.failed.connect(self.failed)
-        executor = self.job._executor
-        self.destroyed.connect(lambda: executor.shutdown(wait=False, cancel_futures=True))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        self.init_library(layout)
         self.pages = QWidget()
         page_layout = QVBoxLayout(self.pages)
         page_layout.setContentsMargins(0, 0, 0, 0)
@@ -70,6 +70,12 @@ class CompanionChat(QWidget):
         navigation.addWidget(self.previous_button)
         navigation.addWidget(self.page_number, 1)
         navigation.addWidget(self.next_button)
+        self.regenerate_button = QPushButton("Regenerate")
+        self.regenerate_button.setAutoDefault(False)
+        self.regenerate_button.setEnabled(False)
+        self.regenerate_button.setToolTip("Generate a replacement for Ayami's latest answer. Uses another API request.")
+        self.regenerate_button.clicked.connect(self.regenerate)
+        navigation.addWidget(self.regenerate_button)
         page_layout.addLayout(navigation)
         self.pages.hide()
         layout.addWidget(self.pages)
@@ -82,7 +88,7 @@ class CompanionChat(QWidget):
         self.input.returnPressed.connect(self.send)
         self.send_button = QPushButton("Send")
         self.send_button.setAutoDefault(False)
-        self.send_button.clicked.connect(self.send)
+        self.send_button.clicked.connect(self.submit_or_stop)
         self.configure_button = QPushButton("AI settings…")
         self.configure_button.setAutoDefault(False)
         self.configure_button.clicked.connect(self.configure)
@@ -90,9 +96,10 @@ class CompanionChat(QWidget):
         row.addWidget(self.send_button)
         row.addWidget(self.configure_button)
         layout.addLayout(row)
-        self.status = QLabel("Optional AI · Uses your provider and key · Chat stays in this window")
+        self.status = QLabel(self.store.error or "Optional AI · Chats saved locally · Memories are optional")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        self.init_auto_memories(layout)
         self.token_counter = QLabel("Tokens · No usage reported yet")
         self.token_counter.setAccessibleName("AI token usage")
         self.token_counter.setWordWrap(True)
@@ -105,12 +112,16 @@ class CompanionChat(QWidget):
             return
         self.current_page = index
         exchange = self.exchanges[index]
-        if exchange.get("failed"):
+        if exchange.get("stopped") and exchange.get("reply") is None:
+            answer = "Stopped. Send again to retry."
+        elif exchange.get("failed") and exchange.get("reply") is None:
             answer = "Message failed. Edit or send it again."
         elif exchange.get("reply") is None:
             answer = "Ayami is thinking…"
         else:
             answer = "Ayami: " + exchange["reply"]
+            if self.pending is not None and self.pending_page == index:
+                answer += "\n\nGenerating another reply…"
         self.wizard._reserve_dialogue_height("")
         text = "You: " + exchange["user"] + "\n\n" + answer
         self.page_text.setPlainText(text)
@@ -179,9 +190,10 @@ class CompanionChat(QWidget):
         dialog.setWindowTitle("Ayami · AI settings")
         dialog.setMinimumWidth(560)
         form = QFormLayout(dialog)
+        form.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
         notice = QLabel("Use a provider with an OpenAI-compatible Chat Completions API. "
                         "Sending a message shares this chat and Ayami's character instructions with that provider; charges may apply. "
-                        "Songs, lyrics, and settings are not attached.")
+                        "Enabled saved memories are included. Songs, lyrics, and settings are not attached.")
         notice.setWordWrap(True)
         form.addRow(notice)
         endpoint = QLineEdit(self.config.get("endpoint", ""))
@@ -195,6 +207,11 @@ class CompanionChat(QWidget):
         form.addRow("API base URL", endpoint)
         form.addRow("Model ID", model)
         form.addRow("API key", key)
+        key_help = QPushButton("Don't know where to get an API key?")
+        key_help.setObjectName("api_key_help")
+        key_help.setAutoDefault(False)
+        key_help.clicked.connect(lambda: self.show_key_guide(dialog))
+        form.addRow(key_help)
         form.addRow(remember)
         advanced_toggle = QPushButton("Advanced parameters")
         advanced_toggle.setCheckable(True)
@@ -265,8 +282,7 @@ class CompanionChat(QWidget):
                 return
             # Switching providers starts a fresh chat, avoiding accidental history sharing.
             if config != self.config or key.text().strip() != self.key or extra_headers != self.extra_headers:
-                self.history.clear()
-                self.clear_pages()
+                self.new_conversation()
             self.config, self.key = config, key.text().strip()
             self.extra_headers = extra_headers
             self.key_error = ""
@@ -281,6 +297,10 @@ class CompanionChat(QWidget):
             dialog.exec()
         finally:
             dialog.deleteLater()
+
+    def show_key_guide(self, parent):
+        from ui.ai_key_guide import show_api_key_guide
+        show_api_key_guide(parent)
 
     def send(self):
         text = self.input.text().strip()
@@ -297,8 +317,9 @@ class CompanionChat(QWidget):
         self.wizard.next.setEnabled(True)
         self.wizard.title.setText("Ayami")
         self.pending = {"role": "user", "content": text}
-        # Retrying an unchanged failed message reuses its page.
-        if self.exchanges and self.exchanges[-1].get("failed") and self.exchanges[-1]["user"] == text:
+        # Retrying an unchanged failed or stopped message reuses its page.
+        if (self.exchanges and (self.exchanges[-1].get("failed") or self.exchanges[-1].get("stopped"))
+                and self.exchanges[-1]["user"] == text and self.exchanges[-1].get("reply") is None):
             self.pending_page = len(self.exchanges) - 1
             self.exchanges[self.pending_page] = {"user": text, "reply": None}
         else:
@@ -306,16 +327,60 @@ class CompanionChat(QWidget):
             self.pending_page = len(self.exchanges) - 1
         self.show_page(self.pending_page)
         self.input.clear()
+        self.start_request(self.history)
+
+    def start_request(self, context):
         self.set_busy(True)
         self.status.setText("Ayami is thinking…")
+        self.save_conversation()
+        memories = self.store.data.get("memories", []) if self.store.data.get("memories_enabled", True) else []
         self.job.start(request_reply, self.config["endpoint"], self.config["model"], self.key,
-                       [*self.history[-20:], self.pending], self.config.get("extra_body"),
-                       self.config.get("exclude_body"), dict(self.extra_headers))
+                       [*context[-20:], self.pending], self.config.get("extra_body"),
+                       self.config.get("exclude_body"), dict(self.extra_headers), list(memories))
         self.wizard._fit_content()
+
+    def submit_or_stop(self):
+        if self.pending is not None:
+            self.stop_request()
+        else:
+            self.send()
+
+    def stop_request(self):
+        if self.pending is None:
+            return
+        self.job.cancel()
+        exchange = self.pending_exchange()
+        if exchange.get("reply") is None:
+            exchange["stopped"] = True
+            self.input.setText(self.pending["content"])
+        self.pending = None
+        self.pending_page = None
+        self.show_page(self.current_page)
+        self.set_busy(False)
+        self.status.setText("Stopped locally. The provider may still process or charge for the request.")
+        self.save_conversation()
+
+    def regenerate(self):
+        if self.pending is not None or not self.exchanges or self.exchanges[-1].get("reply") is None:
+            return
+        if not self.config.get("endpoint") or not self.config.get("model"):
+            self.configure()
+            return
+        self.pending_page = len(self.exchanges) - 1
+        self.pending = {"role": "user", "content": self.exchanges[-1]["user"]}
+        self.show_page(self.pending_page)
+        self.start_request(self.rebuild_history(before=self.pending_page))
 
     def set_busy(self, busy):
         self.input.setEnabled(not busy)
-        self.send_button.setEnabled(not busy)
+        self.send_button.setEnabled(True)
+        self.send_button.setText("Stop" if busy else "Send")
+        self.regenerate_button.setEnabled(not busy and bool(self.exchanges) and self.exchanges[-1].get("reply") is not None)
+        self.chat_picker.setEnabled(not busy)
+        self.new_chat_button.setEnabled(not busy)
+        self.rename_chat_button.setEnabled(not busy and self.conversation_id is not None)
+        self.delete_chat_button.setEnabled(not busy and self.conversation_id is not None)
+        self.memories_button.setEnabled(not busy)
         self.configure_button.setEnabled(not busy)
         self.wizard.restart_setup.setEnabled(not busy)
 
@@ -323,39 +388,50 @@ class CompanionChat(QWidget):
         if self.pending is None or self.wizard._dialogue_closed:
             return
         text = reply.text
-        self.history.extend([self.pending, {"role": "assistant", "content": text}])
-        self.history = self.history[-20:]
         exchange = self.pending_exchange()
         # Only a fixed cue name can reach the existing sound engine, never model paths.
         expression = reply.expression if reply.expression in EXPRESSIONS else None
         exchange.update(reply=text, expression=expression)
-        if self.current_page == self.pending_page:
+        exchange.pop("failed", None)
+        exchange.pop("stopped", None)
+        self.history = self.rebuild_history()
+        viewing_reply = self.current_page == self.pending_page
+        self.pending = None
+        self.pending_page = None
+        if viewing_reply:
             self.wizard.sounds.stop()
             self.show_page(self.current_page)
             if expression:
                 self.wizard.sounds.play(expression)
         else:
             self.show_page(self.current_page)
-        self.pending = None
-        self.pending_page = None
         self.record_usage(reply.usage)
-        self.status.setText("AI reply · Conversation is kept only until this window closes")
+        self.status.setText("AI reply · Saved locally")
+        self.save_conversation()
         self.set_busy(False)
         self.input.setFocus()
+        self.check_memories()
 
     def failed(self, message):
         if self.pending is None or self.wizard._dialogue_closed:
             return
-        self.input.setText(self.pending["content"])
-        self.pending_exchange()["failed"] = True
-        self.show_page(self.current_page)
+        exchange = self.pending_exchange()
+        if exchange.get("reply") is None:
+            self.input.setText(self.pending["content"])
+        exchange["failed"] = True
         self.pending = None
         self.pending_page = None
+        self.show_page(self.current_page)
         # Never display raw transport exceptions, which can include credentials.
         self.status.setText(message.replace(self.key, "[key]") if self.key else message)
         self.set_busy(False)
+        self.save_conversation()
 
     def close_chat(self):
+        self.cancel_memory_check()
+        if self.pending is not None:
+            self.stop_request()
+        self.save_conversation()
         self.job.close()
         self.pending = None
         self.history.clear()

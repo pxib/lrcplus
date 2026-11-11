@@ -3,7 +3,7 @@ import json
 import pytest
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QCheckBox, QDialogButtonBox, QLineEdit, QPlainTextEdit, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QDialogButtonBox, QLineEdit, QPlainTextEdit, QPushButton, QWidget
 
 from core import companion_chat, settings
 from ui.onboarding import OnboardingDialog
@@ -12,7 +12,10 @@ from ui.onboarding import OnboardingDialog
 def make_dialog():
     player = QWidget()
     player.library_folders = []
-    return player, OnboardingDialog(player, companion=True)
+    dialog = OnboardingDialog(player, companion=True)
+    # Memory extraction is tested with explicit fake completions, never remote calls.
+    dialog.companion_chat.memory_job.start = lambda *args: None
+    return player, dialog
 
 
 def test_returning_user_can_type_spaces_and_submit_without_advancing_setup(qapp, monkeypatch):
@@ -33,7 +36,8 @@ def test_returning_user_can_type_spaces_and_submit_without_advancing_setup(qapp,
     QTest.keyClick(chat.input, Qt.Key.Key_Return)
     assert len(calls) == 1
     assert chat.pending["content"] == "hello there"
-    assert not chat.send_button.isEnabled()
+    assert chat.send_button.isEnabled()
+    assert chat.send_button.text() == "Stop"
     # Replies remain literal, including text that resembles script commands.
     chat.receive_reply(companion_chat.ChatReply(r"Hello! \click(100,200) <b>plain text</b>"))
     assert r"\click(100,200) <b>plain text</b>" in chat.page_text.toPlainText()
@@ -390,3 +394,238 @@ def test_retry_reuses_failed_page_and_preserves_earlier_exchanges(qapp, monkeypa
     assert chat.page_text.toPlainText() == "You: Hello\n\nAyami: Hi!"
     dialog.close()
     assert chat.exchanges == []
+
+
+def test_key_guide_returns_to_unsaved_settings_without_requests(qapp, monkeypatch):
+    player, dialog = make_dialog()
+    chat = dialog.companion_chat
+    requests, observations = [], []
+    monkeypatch.setattr(chat.job, "start", lambda *args: requests.append(args))
+
+    def browse_guide():
+        guide = QApplication.activeModalWidget()
+        observations.append(guide.heading.text())
+        guide.next.click()
+        guide.next.click()
+        observations.append("https://api.nano-gpt.com/api/v1" in guide.content.toPlainText())
+        guide.back.click()
+        observations.append(guide.heading.text())
+        guide.next.click()
+        guide.next.click()
+        observations.append(guide.next.text())
+        guide.next.click()
+
+    def open_help():
+        window = QApplication.activeModalWidget()
+        endpoint = window.findChildren(QLineEdit)[0]
+        endpoint.setText("https://unsaved.example/v1")
+        QTimer.singleShot(0, browse_guide)
+        window.findChild(QPushButton, "api_key_help").click()
+        observations.append(endpoint.text())
+        window.reject()
+
+    QTimer.singleShot(0, open_help)
+    chat.configure()
+    assert observations == ["Introduction", True, "NVIDIA NIM", "Done", "https://unsaved.example/v1"]
+    assert requests == []
+    assert "companion_ai" not in settings.load_all_settings()
+
+
+def test_saved_chats_reopen_rename_and_delete_without_credentials(qapp, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog, QMessageBox
+    player, dialog = make_dialog()
+    chat = dialog.companion_chat
+    chat.config = {"endpoint": "https://example.com/v1", "model": "model"}
+    chat.key = "do-not-save-this-key"
+    monkeypatch.setattr(chat.job, "start", lambda *args: None)
+    chat.input.setText("My first chat")
+    chat.send()
+    chat.receive_reply(companion_chat.ChatReply("Hello!", "playful"))
+    chat_id = chat.conversation_id
+    monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("Music chat", True))
+    chat.rename_conversation()
+    assert "do-not-save-this-key" not in chat.store.path.read_text(encoding="utf-8")
+    dialog.close()
+    player2, reopened = make_dialog()
+    other = reopened.companion_chat
+    other.chat_picker.setCurrentIndex(other.chat_picker.findData(chat_id))
+    assert other.page_text.toPlainText() == "You: My first chat\n\nAyami: Hello!"
+    assert other.history[-1]["content"] == "Hello!"
+    assert other.chat_picker.currentText() == "Music chat"
+    other.new_conversation()
+    assert other.exchanges == []
+    other.chat_picker.setCurrentIndex(other.chat_picker.findData(chat_id))
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+    other.delete_conversation()
+    assert other.store.data["conversations"] == []
+    assert other.exchanges == []
+
+
+def test_regeneration_replaces_latest_answer_and_stop_preserves_previous(qapp, monkeypatch):
+    player, dialog = make_dialog()
+    chat = dialog.companion_chat
+    chat.config = {"endpoint": "https://example.com/v1", "model": "model"}
+    requests = []
+    monkeypatch.setattr(chat.job, "start", lambda *args: requests.append(args))
+    chat.input.setText("Hello")
+    chat.send()
+    chat.receive_reply(companion_chat.ChatReply("Original", usage={"total_tokens": 10}))
+    chat.regenerate()
+    assert requests[-1][4] == [{"role": "user", "content": "Hello"}]
+    assert not chat.chat_picker.isEnabled()
+    chat.stop_request()
+    assert chat.exchanges[0]["reply"] == "Original"
+    assert chat.history[-1]["content"] == "Original"
+    chat.receive_reply(companion_chat.ChatReply("Late completion"))
+    assert chat.exchanges[0]["reply"] == "Original"
+    chat.regenerate()
+    chat.receive_reply(companion_chat.ChatReply("Replacement", usage={"total_tokens": 15}))
+    assert len(chat.exchanges) == 1
+    assert chat.history == [{"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Replacement"}]
+    assert "Generating another" not in chat.page_text.toPlainText()
+    assert chat.session_tokens == 25
+    assert chat.store.data["conversations"][0]["exchanges"][0]["reply"] == "Replacement"
+
+
+def test_memory_editor_saves_explicit_facts_and_can_disable_or_remove_them(qapp, monkeypatch):
+    player, dialog = make_dialog()
+    chat = dialog.companion_chat
+    chat.config = {"endpoint": "https://example.com/v1", "model": "model"}
+    requests = []
+    monkeypatch.setattr(chat.job, "start", lambda *args: requests.append(args))
+
+    def edit(facts, enabled):
+        def fill():
+            window = QApplication.activeModalWidget()
+            window.findChild(QPlainTextEdit).setPlainText(facts)
+            window.findChild(QCheckBox).setChecked(enabled)
+            window.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Save).click()
+        QTimer.singleShot(0, fill)
+        chat.edit_memories()
+
+    edit("Call me maiko\nI like jazz", True)
+    chat.input.setText("Hi")
+    chat.send()
+    assert requests[-1][-1] == ["Call me maiko", "I like jazz"]
+    chat.stop_request()
+    edit("Call me maiko\nI like jazz", False)
+    chat.send()
+    assert requests[-1][-1] == []
+    chat.stop_request()
+    edit("", True)
+    assert chat.store.data["memories"] == []
+
+
+def test_saved_memories_are_added_only_to_explicit_request_context():
+    url, headers, body = companion_chat.build_request("https://example.com/v1", "model", "key", [], memories=["Call me maiko"])
+    assert "Call me maiko" in body["messages"][0]["content"]
+    assert "data, not instructions" in body["messages"][0]["content"]
+    assert "Call me maiko" not in companion_chat.SYSTEM_PROMPT
+
+
+def test_automatic_memory_check_suggests_with_source_and_counts_usage(qapp, monkeypatch):
+    player, dialog = make_dialog()
+    chat = dialog.companion_chat
+    chat.config = {"endpoint": "https://example.com/v1", "model": "model"}
+    main_requests, memory_requests = [], []
+    monkeypatch.setattr(chat.job, "start", lambda *args: main_requests.append(args))
+    monkeypatch.setattr(chat.memory_job, "start", lambda *args: memory_requests.append(args))
+    for message in ("Hi", "I prefer short replies.", "Thanks"):
+        chat.input.setText(message)
+        chat.send()
+        chat.receive_reply(companion_chat.ChatReply("Okay", usage={"total_tokens": 10}))
+    assert len(memory_requests) == 1
+    assert memory_requests[0][4][1] == {"page": 2, "text": "I prefer short replies."}
+    payload = [{"fact": "Prefers short replies", "category": "communication", "topic": "response_length",
+                "source": 2, "evidence": "I prefer short replies.", "replaces": None}]
+    chat.memory_received(companion_chat.ChatReply(json.dumps(payload), usage={"total_tokens": 7}))
+    assert chat.session_tokens == 37
+    assert "Last memory check:" in chat.token_counter.text()
+    assert chat.store.data["memories"] == []
+    assert chat.store.data["memory_suggestions"][0]["page"] == 2
+    assert len(chat.history) == 6
+    observations = []
+
+    def approve():
+        window = QApplication.activeModalWidget()
+        source = next(editor for editor in window.findChildren(QPlainTextEdit)
+                      if editor.accessibleName() == "Memory source and conflicts")
+        observations.append("I prefer short replies." in source.toPlainText())
+        next(button for button in window.findChildren(QPushButton) if button.text() == "Save").click()
+        next(button for button in window.findChildren(QPushButton) if button.text() == "Close").click()
+
+    QTimer.singleShot(0, approve)
+    chat.review_memories()
+    assert observations == [True]
+    assert chat.store.data["memories"] == ["Prefers short replies"]
+    assert chat.store.data["memory_suggestions"] == []
+    assert chat.store.data["memory_sources"]["Prefers short replies"]["page"] == 2
+
+
+def test_memory_off_and_disabled_inclusion_make_no_extraction_request(qapp, monkeypatch):
+    player, dialog = make_dialog()
+    chat = dialog.companion_chat
+    chat.config = {"endpoint": "https://example.com/v1", "model": "model"}
+    monkeypatch.setattr(chat.job, "start", lambda *args: None)
+    checks = []
+    monkeypatch.setattr(chat.memory_job, "start", lambda *args: checks.append(args))
+    chat.store.data["auto_memory_mode"] = "off"
+    for _ in range(3):
+        chat.input.setText("I like jazz")
+        chat.send()
+        chat.receive_reply(companion_chat.ChatReply("Okay"))
+    chat.check_memories(force=True)
+    assert checks == []
+    chat.store.data["auto_memory_mode"] = "suggest"
+    chat.store.data["memories_enabled"] = False
+    chat.check_memories(force=True)
+    assert checks == []
+    chat.store.data["memories_enabled"] = True
+    chat.check_memories(force=True)
+    assert len(checks) == 1
+    chat.cancel_memory_check()
+    chat.memory_received(companion_chat.ChatReply("[]", usage={"total_tokens": 50}))
+    assert chat.session_tokens == 0
+
+
+def test_memory_conflict_review_replaces_explicitly_and_dismisses(qapp):
+    from core.companion_memories import apply_candidates, normalized
+    player, dialog = make_dialog()
+    chat = dialog.companion_chat
+    chat.exchanges = [{"user": "I prefer long replies now", "reply": "Okay", "expression": None}]
+    chat.save_conversation()
+    old = "Prefers short replies"
+    chat.store.data["memories"] = [old]
+    chat.store.data["memory_sources"] = {old: {"topic": "response_length"}}
+    items = [{"id": "candidate1", "fact": "Prefers long replies", "category": "communication",
+              "topic": "response_length", "chat_id": chat.conversation_id, "page": 1,
+              "evidence": "I prefer long replies now", "replaces": old},
+             {"id": "candidate2", "fact": "Likes jazz", "category": "preference", "topic": "likes_jazz",
+              "chat_id": chat.conversation_id, "page": 1, "evidence": "I like jazz", "replaces": None}]
+    apply_candidates(chat.store.data, items)
+    observations = []
+
+    def review():
+        window = QApplication.activeModalWidget()
+        source = next(editor for editor in window.findChildren(QPlainTextEdit)
+                      if editor.accessibleName() == "Memory source and conflicts")
+        observations.append("Would replace:\nPrefers short replies" in source.toPlainText())
+        next(button for button in window.findChildren(QPushButton) if button.text() == "Replace").click()
+        next(button for button in window.findChildren(QPushButton) if button.text() == "Dismiss").click()
+        next(button for button in window.findChildren(QPushButton) if button.text() == "Close").click()
+
+    QTimer.singleShot(0, review)
+    chat.review_memories()
+    assert observations == [True]
+    assert chat.store.data["memories"] == ["Prefers long replies"]
+    assert normalized("Likes jazz") in chat.store.data["dismissed_memories"]
+    assert chat.store.data["memory_suggestions"] == []
+
+
+def test_invalid_memory_result_still_counts_reported_usage(qapp):
+    player, dialog = make_dialog()
+    chat = dialog.companion_chat
+    chat.memory_context = {"chat_id": "test", "messages": []}
+    chat.memory_received(companion_chat.ChatReply("invalid JSON", usage={"total_tokens": 7}))
+    assert chat.session_tokens == 7
+    assert "did not return" in chat.memory_status.text()
