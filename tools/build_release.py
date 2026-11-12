@@ -121,7 +121,11 @@ def main(argv=None) -> int:
 
     app_folder = dist / "LRCPlus"
     required = (app_folder / "LRCPlus.exe", app_folder / "LRCPlusUpdater.exe",
-                app_folder / "lrcplus-update.json")
+                app_folder / "lrcplus-update.json",
+                app_folder / "docs" / "manual" / "index.html",
+                app_folder / "docs" / "manual" / "ja.html",
+                app_folder / "docs" / "manual" / "manual.js",
+                app_folder / "docs" / "manual" / "manual.css")
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise RuntimeError("The packaged application is missing: " + ", ".join(missing))

@@ -5,6 +5,8 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Added
 
+- Add Help → User manual and the F1 shortcut to open the offline manual in a browser. Include both manual languages and their assets in packaged builds.
+
 ## [2026-11-06]
 
 ### Added

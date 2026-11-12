@@ -6,7 +6,7 @@ idk
 
 ## User manual
 
-Open [docs/manual/index.html](docs/manual/index.html) in your browser for the local user manual. It includes offline search and needs no server or installation.
+Choose **Help → User manual** in the app, or press **F1**, to open the bundled manual in your browser. You can also open [docs/manual/index.html](docs/manual/index.html) directly. It includes offline search and needs no server or installation. Switch to Japanese using **Languages** in the manual's sidebar.
 
 ## LRCLIB
 

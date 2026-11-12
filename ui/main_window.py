@@ -62,6 +62,7 @@ from lyrics.widgets import FuriganaWidget, ScrollingLyricsWidget
 from lyrics.waveform import WaveformWidget, find_ffmpeg
 from lyrics.writer import convert_lyrics
 from ui.settings_dialog import SettingsDialog
+from ui.user_manual import open_user_manual
 from ui.lrc_editor import LrcEditorDialog
 from ui.queue_actions import QueueActionsMixin
 from ui.library_lyrics_search import LibraryLyricsSearchMixin
@@ -436,6 +437,19 @@ class Player(
                 self.open_settings
             )
 
+            self.help_button = QToolButton()
+            self.help_button.setText("Help")
+            self.help_button.setPopupMode(
+                QToolButton.ToolButtonPopupMode.InstantPopup
+            )
+            self.help_menu = QMenu(self.help_button)
+            self.user_manual_action = QAction("User manual", self)
+            self.user_manual_action.setShortcut(QKeySequence("F1"))
+            self.user_manual_action.triggered.connect(lambda: open_user_manual(self))
+            self.addAction(self.user_manual_action)
+            self.help_menu.addAction(self.user_manual_action)
+            self.help_button.setMenu(self.help_menu)
+
             # --------------------------------------------------
             # LYRICS MENU
             # --------------------------------------------------
@@ -657,6 +671,7 @@ class Player(
                 self.recent_button,
                 self.playlist_button,
                 self.settings_button,
+                self.help_button,
             ):
                 button.setObjectName("headerAction")
                 button.setMinimumHeight(34)
@@ -669,6 +684,7 @@ class Player(
             self.plugin_buttons_layout.setContentsMargins(0, 0, 0, 0)
             header_layout.addLayout(self.plugin_buttons_layout)
             header_layout.addWidget(self.settings_button)
+            header_layout.addWidget(self.help_button)
 
             layout = QVBoxLayout()
             layout.setContentsMargins(18, 14, 18, 14)
