@@ -14,11 +14,11 @@ Agreed. A new listener needs music before a table of settings. My article can re
 
 Getting started stays prominent; reference material stays linked from the sidebar. Your article is already there, Ayami.
 
-## A Talk page in an offline manual {offline-talk} | Editorial note
+## A Talk page in the manual {offline-talk} | Editorial note
 
 ### Lina
 
-These pages can collect small editorial conversations alongside the articles, in the same local edition.
+These pages can collect small editorial conversations alongside the articles in the manual.
 
 #### Ayami
 
@@ -26,7 +26,7 @@ So readers can follow the discussion without being asked to sign in? Good. I hav
 
 #### Lina
 
-Yes. The conversations are scripted content shipped with the manual. Reading them does not post anything or contact a server.
+Yes. The conversations are scripted content shipped with the manual. Reading them does not submit any comments.
 
 # ayami
 

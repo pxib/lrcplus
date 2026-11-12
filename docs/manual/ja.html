@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="オフラインで読める LRCPlus 日本語マニュアル。再生、同期歌詞、ふりがな、編集、トラブル解決を説明します。">
+  <meta name="description" content="LRCPlus 日本語マニュアル。再生、同期歌詞、ふりがな、編集、トラブル解決を説明します。">
   <title>LRCPlus マニュアル</title>
   <link rel="alternate" hreflang="en" href="index.html">
   <link rel="alternate" hreflang="ja" href="ja.html">
@@ -48,7 +48,7 @@
       <a href="index.html" lang="en" hreflang="en">English</a>
       <a href="ja.html" lang="ja" hreflang="ja" aria-current="true">日本語</a>
     </nav>
-      <div class="offline-note">オフライン版<br>インターネット接続なしで読めます。</div>
+      <div class="offline-note">ユーザーマニュアル<br>オンライン・アプリ同梱版</div>
 </aside>
   <div class="page">
     <header class="page-header">
@@ -70,7 +70,7 @@
             <section><h2>自分好みにする</h2><dl><dt><a href="#customization">カスタマイズ</a></dt><dd>外観、背景、歌詞の表示を調整します。</dd><dt><a href="#plugins">プラグイン</a></dt><dd>オプション機能と依存パッケージを管理します。</dd></dl></section>
             <section><h2>困ったときは</h2><dl><dt><a href="#troubleshooting">トラブルシューティング</a></dt><dd>音が出ない、歌詞や読みが表示されないなどの問題を解決します。</dd><dt><a href="#shortcuts">キーボードショートカット</a></dt><dd>プレーヤーとエディターのショートカット一覧です。</dd></dl></section>
           </div>
-          <h2 id="main-guides">マニュアルを読む</h2><p><a href="#interface">画面の使い方</a>、<a href="#settings-reference">設定リファレンス</a>、<a href="#tutorials">操作チュートリアル</a>をご覧ください。<a href="#translations">翻訳</a>、<a href="#sharing">画像カード</a>、<a href="#companion">コンパニオン</a>のガイドもあります。すべての記事は<a href="#article-index">記事索引</a>から探せます。</p><h2 id="main-contents">このマニュアルについて</h2><p>このマニュアルは LRCPlus の現在のソース版にある操作を説明しています。ビルドや有効なプラグインによって使える機能は異なります。 <b>Settings → Lyrics</b> のようなメニュー表記は、アプリ内で選ぶ項目を表します。</p><p>マニュアルの閲覧と検索はすべてローカルで動作します。歌詞の取得やオンラインの読み生成サービスを使う機能には、インターネット接続が必要です。</p>
+          <h2 id="main-guides">マニュアルを読む</h2><p><a href="#interface">画面の使い方</a>、<a href="#settings-reference">設定リファレンス</a>、<a href="#tutorials">操作チュートリアル</a>をご覧ください。<a href="#translations">翻訳</a>、<a href="#sharing">画像カード</a>、<a href="#companion">コンパニオン</a>のガイドもあります。すべての記事は<a href="#article-index">記事索引</a>から探せます。</p><h2 id="main-contents">このマニュアルについて</h2><p>このマニュアルは LRCPlus の現在のソース版にある操作を説明しています。ビルドや有効なプラグインによって使える機能は異なります。 <b>Settings → Lyrics</b> のようなメニュー表記は、アプリ内で選ぶ項目を表します。</p><p>このマニュアルはオンラインでも、アプリ同梱版でも利用できます。同梱版ではオフラインで閲覧・検索できます。歌詞の取得やオンラインの読み生成サービスを使う機能には、インターネット接続が必要です。</p>
         </article>
         <article id="getting-started" data-title="はじめに">
           <h1>はじめに</h1><p class="subtitle">LRCPlus で最初の曲を聴く</p>
@@ -195,7 +195,7 @@
 <article id="plugin-ytdlp-import" data-title="yt-dlp Audio Import" data-related="plugin-directory plugins troubleshooting"><h1>yt-dlp Audio Import</h1><p class="subtitle">同梱プラグインガイド</p><p>YouTube 検索や URL から音声と字幕を取り込みます。同期歌詞や MusicBrainz のアルバム画像も利用できます。</p><h2 id="plugin-ytdlp-import-setup">セットアップ</h2><p>Plugins → Search and import audio… を開き、結果を選ぶか対応する URL を入力します。</p><h2 id="plugin-ytdlp-import-use">使い方</h2><p>ダウンロード前に取り込み設定と保存先を確認してください。音声と字幕に加え、同期歌詞やアルバム画像を取り込めます。失敗した場合は設定と依存パッケージのエラーを確認します。</p><h2 id="plugin-ytdlp-import-requirements">必要条件</h2><ul><li><code>yt-dlp[default]&gt;=2026.3.3</code></li><li><code>mutagen&gt;=1,&lt;2</code></li></ul><p>読み込みエラーは Settings → Plugins、パッケージの状態は Settings → Dependencies で確認します。Python パッケージのインストールだけでは、外部サービスの設定は完了しません。</p></article>
 <article id="plugin-karaoke-screen" data-title="Karaoke Screen" data-related="plugin-directory plugins troubleshooting"><h1>Karaoke Screen</h1><p class="subtitle">同梱プラグインガイド</p><p>全画面の歌詞表示と、オプションの MIDI 音程ガイドです。</p><h2 id="plugin-karaoke-screen-setup">セットアップ</h2><p>Karaoke Screen を読み込んだ状態で、プレーヤーの <b>Karaoke Screen</b> ボタンを押すと全画面の歌詞を開けます。プラグイン設定の名前は <b>Karaoke Game</b> です。</p><h2 id="plugin-karaoke-screen-use">使い方</h2><p>全画面の歌詞と、任意の MIDI 音程ガイドを提供します。音程ガイドには対応する MIDI データが必要です。歌詞の時刻と MIDI の音符は別の入力です。</p><h2 id="plugin-karaoke-screen-requirements">必要条件</h2><p>このプラグインのマニフェストに追加パッケージの指定はありません。</p><p>読み込みエラーは Settings → Plugins、パッケージの状態は Settings → Dependencies で確認します。Python パッケージのインストールだけでは、外部サービスの設定は完了しません。</p></article>
 <article id="plugin-directory" data-title="プラグイン一覧" data-related="plugins translations readings"><h1>プラグイン一覧</h1><p class="subtitle">オプション機能のガイドを探す</p><p>これらはソースツリーに同梱されるプラグインです。配布ビルドの内容は異なる場合があります。Settings → Plugins で確認してください。各ガイドに設定、使い方、指定された依存パッケージを記載しています。</p><h2 id="plugin-directory-list">同梱プラグイン</h2><dl><dt><a href="#plugin-anki-flashcards">Anki Flashcards</a></dt><dd>歌詞の語を選び、Anki に取り込める TSV の単語カードを書き出します。</dd><dt><a href="#plugin-cantonese-readings">Cantonese Readings</a></dt><dd>プラグイン API v2 の広東語の読みです。PyCantonese で Jyutping と Yale を生成します。</dd><dt><a href="#plugin-discord-rpc">Discord Rich Presence</a></dt><dd>曲の情報、歌詞、アルバム画像で Discord のアクティビティをカスタマイズします。</dd><dt><a href="#plugin-floating-lyrics">Floating Lyrics</a></dt><dd>ふりがな付きの歌詞を、切り離せる最前面ウィンドウに表示します。</dd><dt><a href="#plugin-karaoke-screen">Karaoke Screen</a></dt><dd>全画面の歌詞表示と、オプションの MIDI 音程ガイドです。</dd><dt><a href="#plugin-korean-romanization">Korean Romanization</a></dt><dd>Koroman を使い、発音を考慮した韓国語の改訂ローマ字表記を生成します。</dd><dt><a href="#plugin-lyrics-translator">Lyrics Translator</a></dt><dd>オプションのオフライン Argos、または Azure、Google Cloud、DeepL、MyMemory で歌詞の行を翻訳します。</dd><dt><a href="#plugin-ytdlp-import">yt-dlp Audio Import</a></dt><dd>YouTube 検索や URL から音声と字幕を取り込みます。同期歌詞や MusicBrainz のアルバム画像も利用できます。</dd></dl></article>
-<article id="article-index" data-title="記事索引" data-related="interface settings-reference glossary"><h1>記事索引</h1><p class="subtitle">オフラインマニュアルの全記事</p><h2 id="article-index-list">記事一覧</h2><ul class="article-index"><li><a href="#plugin-anki-flashcards">Anki Flashcards</a></li><li><a href="#ayami">Ayami</a></li><li><a href="#plugin-cantonese-readings">Cantonese Readings</a></li><li><a href="#companion">コンパニオンガイド</a></li><li><a href="#customization">カスタマイズ</a></li><li><a href="#plugin-discord-rpc">Discord Rich Presence</a></li><li><a href="#editor">歌詞の編集とタイミング</a></li><li><a href="#finding-lyrics">歌詞を探す</a></li><li><a href="#plugin-floating-lyrics">Floating Lyrics</a></li><li><a href="#readings">ふりがなと読み</a></li><li><a href="#getting-started">はじめに</a></li><li><a href="#glossary">用語集</a></li><li><a href="#interface">画面の使い方</a></li><li><a href="#plugin-karaoke-screen">Karaoke Screen</a></li><li><a href="#shortcuts">キーボードショートカット</a></li><li><a href="#plugin-korean-romanization">Korean Romanization</a></li><li><a href="#lrcx">LRCX リファレンス</a></li><li><a href="#plugin-lyrics-translator">Lyrics Translator</a></li><li><a href="#main">メインページ</a></li><li><a href="#playback">音楽と再生</a></li><li><a href="#plugin-directory">プラグイン一覧</a></li><li><a href="#plugins">プラグイン</a></li><li><a href="#settings-reference">設定リファレンス</a></li><li><a href="#sharing">共有と画像カード</a></li><li><a href="#translations">翻訳</a></li><li><a href="#troubleshooting">トラブルシューティング</a></li><li><a href="#tutorials">操作チュートリアル</a></li><li><a href="#plugin-ytdlp-import">yt-dlp Audio Import</a></li></ul></article>
+<article id="article-index" data-title="記事索引" data-related="interface settings-reference glossary"><h1>記事索引</h1><p class="subtitle">マニュアルの全記事</p><h2 id="article-index-list">記事一覧</h2><ul class="article-index"><li><a href="#plugin-anki-flashcards">Anki Flashcards</a></li><li><a href="#ayami">Ayami</a></li><li><a href="#plugin-cantonese-readings">Cantonese Readings</a></li><li><a href="#companion">コンパニオンガイド</a></li><li><a href="#customization">カスタマイズ</a></li><li><a href="#plugin-discord-rpc">Discord Rich Presence</a></li><li><a href="#editor">歌詞の編集とタイミング</a></li><li><a href="#finding-lyrics">歌詞を探す</a></li><li><a href="#plugin-floating-lyrics">Floating Lyrics</a></li><li><a href="#readings">ふりがなと読み</a></li><li><a href="#getting-started">はじめに</a></li><li><a href="#glossary">用語集</a></li><li><a href="#interface">画面の使い方</a></li><li><a href="#plugin-karaoke-screen">Karaoke Screen</a></li><li><a href="#shortcuts">キーボードショートカット</a></li><li><a href="#plugin-korean-romanization">Korean Romanization</a></li><li><a href="#lrcx">LRCX リファレンス</a></li><li><a href="#plugin-lyrics-translator">Lyrics Translator</a></li><li><a href="#main">メインページ</a></li><li><a href="#playback">音楽と再生</a></li><li><a href="#plugin-directory">プラグイン一覧</a></li><li><a href="#plugins">プラグイン</a></li><li><a href="#settings-reference">設定リファレンス</a></li><li><a href="#sharing">共有と画像カード</a></li><li><a href="#translations">翻訳</a></li><li><a href="#troubleshooting">トラブルシューティング</a></li><li><a href="#tutorials">操作チュートリアル</a></li><li><a href="#plugin-ytdlp-import">yt-dlp Audio Import</a></li></ul></article>
       </div>
       <section id="talk-panel" hidden aria-labelledby="talk-heading">
         <h1 id="talk-heading">ノート</h1><p class="subtitle">LRCPlus マニュアルのノート</p>
@@ -203,7 +203,7 @@
         <aside class="talk-notice" aria-label="このノートについて">
           <div class="talk-intro"><p>ここは、<a id="talk-article-link" href="#main">この記事</a>をより良くするための<strong>ノートページ</strong>です。</p><p>マニュアルの表現、例、正確さについての議論を収録しています。</p></div>
           <div class="talk-guidelines">
-            <div class="talk-reading"><p><strong>閲覧専用のローカル版</strong></p><p>会話と日時は架空のものです。このローカル版では新しいコメントを投稿できません。</p><a id="talk-browse-link" class="talk-browse" href="ja-account.html#login">新しい話題を追加</a></div>
+            <div class="talk-reading"><p><strong>閲覧専用のトークページ</strong></p><p>会話と日時は架空のものです。新しいコメントを投稿することはできません。</p><a id="talk-browse-link" class="talk-browse" href="ja-account.html#login">新しい話題を追加</a></div>
             <div><ul><li>相手の善意を前提にしましょう。</li><li>丁寧に、記事の表現について話しましょう。</li><li>初めて使う人にもわかりやすい説明にしましょう。</li><li>それぞれの議題に沿って話しましょう。</li></ul></div>
             <div class="talk-principles"><h2>記事の方針</h2><ul><li>明確で中立的な説明</li><li>アプリに沿った使用例</li><li>確認できる操作手順</li></ul></div>
           </div>
@@ -217,10 +217,10 @@
           <div class="talk-comment talk-depth-1"><p>賛成！ 初めて使う人には、設定項目の一覧表よりも、まず音楽が必要だもんね。もちろん、私の記事は必読のままでいいけど。</p><p class="talk-signature">— <b>Ayami</b></p></div>
           <div class="talk-comment talk-depth-2"><p>「はじめに」は目立つ場所に残して、詳しいリファレンスはサイドバーからリンクする形にしましょう。Ayami、あなたの記事はもう載ってますよ。</p><p class="talk-signature">— <b>ayanechan!</b></p></div>
         </section>
-        <section class="talk-topic"><h2 id="offline-talk">オフラインマニュアルにトークページ？</h2><p class="talk-meta"><span class="talk-meta-item">3 件のコメント</span><span class="talk-meta-item">2 人が議論に参加</span><span class="talk-meta-item"><span class="talk-status">編集メモ</span></span></p>
-          <div class="talk-comment talk-depth-0"><p>このページでは、オフライン版マニュアル内の記事に関する簡単な編集上の議論を記録できます。</p><p class="talk-signature">— <b>Lina</b></p></div>
+        <section class="talk-topic"><h2 id="offline-talk">マニュアルにトークページ？</h2><p class="talk-meta"><span class="talk-meta-item">3 件のコメント</span><span class="talk-meta-item">2 人が議論に参加</span><span class="talk-meta-item"><span class="talk-status">編集メモ</span></span></p>
+          <div class="talk-comment talk-depth-0"><p>このページでは、マニュアルの記事に関する簡単な編集上の議論を記録できます。</p><p class="talk-signature">— <b>Lina</b></p></div>
           <div class="talk-comment talk-depth-1"><p>つまり、読者はログインを求められずに議論を読めるってこと？ いいね。私のコメントなら、もうみんなの分まで十分に書いてあるし。</p><p class="talk-signature">— <b>Ayami</b></p></div>
-          <div class="talk-comment talk-depth-1"><p>その通りです。これらの会話はマニュアルに同梱された、あらかじめ用意された内容です。読むだけで何かが投稿されたり、サーバーに通信が行われたりすることはありません。</p><p class="talk-signature">— <b>Lina</b></p></div>
+          <div class="talk-comment talk-depth-1"><p>その通りです。これらの会話はマニュアルに同梱された、あらかじめ用意された内容です。読むだけでコメントが送信されることはありません。</p><p class="talk-signature">— <b>Lina</b></p></div>
         </section>
       </template>
       <template data-talk-for="ayami">
@@ -260,7 +260,7 @@
       <noscript><p class="note">JavaScript が無効のため、すべての記事をこのページに表示しています。検索にはブラウザーのページ内検索を使ってください。</p></noscript>
       <div class="category">カテゴリー： <a href="#main">ユーザードキュメント</a></div>
     </main>
-    <footer>オフライン版 LRCPlus マニュアル · Vector Legacy を参考にしたレイアウト</footer>
+    <footer>LRCPlus マニュアル · Vector Legacy を参考にしたレイアウト</footer>
   </div>
 </body>
 </html>
