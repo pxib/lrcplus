@@ -26,3 +26,5 @@ pyvenv.cfg
 *.mp3
 .pytest*
 *.jsonl
+talk-editor.*
+*_*manual*

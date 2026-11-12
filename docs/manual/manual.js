@@ -20,6 +20,103 @@
   const queryInput = document.getElementById('query');
   const articleTab = document.getElementById('article-tab');
   const contentsTab = document.getElementById('contents-tab');
+  const talkTab = document.getElementById('talk-tab');
+  const talkPanel = document.getElementById('talk-panel');
+  const talkPages = new Map([...document.querySelectorAll('template[data-talk-for]')]
+    .map(template => [template.dataset.talkFor, template]));
+  const talkLabel = japanese ? 'ノート' : 'Talk';
+  function talkLoginLink(returnHash) {
+    const url = new URL(japanese ? 'ja-account.html' : 'account.html', location.href);
+    url.searchParams.set('return', returnHash);
+    url.hash = 'login';
+    return url.href;
+  }
+
+  function decorateComment(comment, articleId, index, date) {
+    comment.id = `talk-comment-${articleId}-${index + 1}`;
+    const hash = `#${articleId}/talk/${comment.id}`;
+    const permalink = new URL(location.href);
+    permalink.hash = hash;
+    const signature = comment.querySelector('.talk-signature');
+    const time = document.createElement('time');
+    time.dateTime = date.toISOString();
+    time.textContent = window.ManualTalkTimestamps.format(date, japanese ? 'ja' : 'en');
+    time.title = japanese ? '架空の会話の日時' : 'Fictional discussion timestamp';
+    const timestamp = document.createElement('a');
+    timestamp.href = permalink.href;
+    timestamp.append(time);
+    signature.append(' ', timestamp);
+
+    const actions = document.createElement('div');
+    actions.className = 'talk-actions';
+    const reply = document.createElement('a');
+    reply.href = talkLoginLink(hash);
+    reply.textContent = japanese ? '返信' : 'Reply';
+    const menu = document.createElement('details');
+    menu.className = 'talk-comment-menu';
+    const summary = document.createElement('summary');
+    summary.textContent = '•••';
+    summary.setAttribute('aria-label', japanese ? 'コメントのその他の操作' : 'More comment options');
+    const popup = document.createElement('div');
+    popup.className = 'talk-comment-popup';
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.textContent = japanese ? 'リンクをコピー' : 'Copy link';
+    const status = document.createElement('span');
+    status.className = 'talk-copy-status';
+    status.setAttribute('role', 'status');
+    copy.addEventListener('click', async () => {
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(permalink.href);
+        copied = true;
+      } catch {
+        // Local file pages may not expose the Clipboard API.
+        const field = document.createElement('textarea');
+        field.value = permalink.href;
+        field.readOnly = true;
+        field.className = 'visually-hidden';
+        popup.append(field);
+        field.select();
+        try { copied = document.execCommand('copy'); } catch { /* Offer manual copy below. */ }
+        field.remove();
+        copy.focus({preventScroll: true});
+      }
+      status.textContent = copied ? (japanese ? 'コピーしました。' : 'Link copied.')
+        : (japanese ? 'リンクを選択してコピーしてください。' : 'Select the link below to copy it.');
+      if (!copied && !popup.querySelector('input')) {
+        const field = document.createElement('input');
+        field.type = 'text';
+        field.readOnly = true;
+        field.value = permalink.href;
+        field.setAttribute('aria-label', japanese ? 'コメントの固定リンク' : 'Comment permalink');
+        popup.append(field);
+        field.focus();
+        field.select();
+      }
+    });
+    popup.append(copy, status);
+    menu.append(summary, popup);
+    menu.addEventListener('toggle', () => {
+      if (menu.open) document.querySelectorAll('.talk-comment-menu[open]').forEach(other => {
+        if (other !== menu) other.open = false;
+      });
+    });
+    menu.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        menu.open = false;
+        summary.focus();
+        event.stopPropagation();
+      }
+    });
+    actions.append(reply, menu);
+    comment.append(actions);
+  }
+  document.addEventListener('click', event => {
+    document.querySelectorAll('.talk-comment-menu[open]').forEach(menu => {
+      if (!menu.contains(event.target)) menu.open = false;
+    });
+  });
   const readTab = document.getElementById('read-tab');
   const sourceTab = document.getElementById('source-tab');
   const sourcePanel = document.getElementById('source-panel');
@@ -95,10 +192,10 @@
     article.append(nav);
   }
 
-  function showBreadcrumbs(article, searching) {
+  function showBreadcrumbs(article, searching, viewingTalk = false) {
     const nav = document.getElementById('breadcrumbs');
     nav.replaceChildren();
-    nav.hidden = !searching && article.id === 'main';
+    nav.hidden = !searching && !viewingTalk && article.id === 'main';
     if (nav.hidden) return;
     const home = document.createElement('a');
     home.href = '#main';
@@ -154,31 +251,107 @@
     let route;
     try { route = decodeURIComponent(location.hash.slice(1)); }
     catch { route = 'main'; }
-    const [pageId, anchor] = route.split('/');
+    const [pageId, anchor, topic] = route.split('/');
     const searching = pageId === 'search';
     const article = byId.get(pageId) || byId.get('main');
     const viewingSource = !searching && anchor === 'source';
-    articles.forEach(page => { page.hidden = searching || viewingSource || page !== article; });
+    const viewingTalk = !searching && anchor === 'talk';
+    articles.forEach(page => { page.hidden = searching || viewingSource || viewingTalk || page !== article; });
     searchPanel.hidden = !searching;
     sourcePanel.hidden = !viewingSource;
+    talkPanel.hidden = !viewingTalk;
     document.querySelectorAll('.sidebar nav:not(.language-switch) a').forEach(link => {
       if (!searching && link.hash === `#${article.id}`) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     });
     articleTab.textContent = searching ? messages.search : article.id === 'main' ? messages.home : messages.article;
     articleTab.href = searching ? location.hash : `#${article.id}`;
-    readTab.href = articleTab.href;
+    talkTab.hidden = searching;
+    talkTab.href = `#${article.id}/talk`;
+    for (const [tab, active] of [[articleTab, !viewingTalk], [talkTab, viewingTalk]]) {
+      if (active) tab.setAttribute('aria-current', 'page');
+      else tab.removeAttribute('aria-current');
+    }
+    readTab.href = viewingTalk ? talkTab.href : articleTab.href;
     sourceTab.href = `#${article.id}/source`;
-    sourceTab.hidden = searching;
+    sourceTab.hidden = searching || viewingTalk;
     for (const [tab, active] of [[readTab, !viewingSource], [sourceTab, viewingSource]]) {
       if (active) tab.setAttribute('aria-current', 'page');
       else tab.removeAttribute('aria-current');
     }
-    contentsTab.hidden = searching || viewingSource;
-    showBreadcrumbs(article, searching);
+    contentsTab.hidden = searching || viewingSource || viewingTalk;
+    showBreadcrumbs(article, searching, viewingTalk);
+    if (viewingTalk) {
+      const current = document.querySelector('#breadcrumbs [aria-current="page"]');
+      if (current) current.textContent = `${talkLabel}: ${article.dataset.title}`;
+    }
     contentsTab.href = `#${article.id}/${article.id === 'main' ? 'main-contents' : article.id + '-contents'}`;
     if (searching) showSearch(route.slice('search/'.length));
-    else if (viewingSource) {
+    else if (viewingTalk) {
+      document.title = `${talkLabel}: ${article.dataset.title} — ${messages.manual}`;
+      document.getElementById('talk-heading').textContent = `${talkLabel}: ${article.dataset.title}`;
+      const body = document.getElementById('talk-body');
+      body.replaceChildren();
+      const template = talkPages.get(article.id);
+      if (template) {
+        body.append(template.content.cloneNode(true));
+        const toc = document.createElement('details');
+        toc.className = 'toc';
+        toc.id = 'talk-contents';
+        toc.open = true;
+        const summary = document.createElement('summary');
+        summary.textContent = messages.contents;
+        const list = document.createElement('ol');
+        for (const heading of body.querySelectorAll('h2[id]')) {
+          const item = document.createElement('li');
+          const link = document.createElement('a');
+          link.href = `#${article.id}/talk/${heading.id}`;
+          link.textContent = heading.textContent;
+          item.append(link);
+          list.append(item);
+          const permalink = link.cloneNode();
+          permalink.className = 'section-link';
+          permalink.textContent = '§';
+          permalink.setAttribute('aria-label', `${messages.permalink}: ${heading.textContent}`);
+          heading.append(' ', permalink);
+        }
+        toc.append(summary, list);
+        body.prepend(toc);
+      } else {
+        const empty = document.createElement('p');
+        empty.className = 'note';
+        empty.textContent = japanese ? 'この記事には、まだ収録された議論がありません。' : 'No discussions have been included for this article yet.';
+        body.append(empty);
+      }
+      const articleLink = document.getElementById('talk-article-link');
+      articleLink.href = articleTab.href;
+      articleLink.textContent = article.dataset.title;
+      const browseLink = document.getElementById('talk-browse-link');
+      browseLink.hidden = false;
+      browseLink.href = talkLoginLink(`#${article.id}/talk`);
+      const latest = document.getElementById('talk-latest');
+      latest.replaceChildren();
+      const comments = [...body.querySelectorAll('.talk-comment')];
+      const dates = window.ManualTalkTimestamps.dates(comments, article.id);
+      comments.forEach((comment, index) => {
+        decorateComment(comment, article.id, index, dates[index]);
+      });
+      const comment = comments.at(-1);
+      if (comment) {
+        const heading = comment.closest('.talk-topic').querySelector('h2');
+        const author = comment.querySelector('.talk-signature b').textContent;
+        const commentLink = document.createElement('a');
+        commentLink.href = `#${article.id}/talk/${comment.id}`;
+        commentLink.textContent = japanese ? '最後に収録されたコメント' : 'Latest included comment';
+        const topicLink = document.createElement('a');
+        topicLink.href = `#${article.id}/talk/${heading.id}`;
+        topicLink.textContent = heading.firstChild.textContent;
+        latest.append(commentLink, japanese ? `：${author}、議題「` : `: by ${author} in topic `,
+          topicLink, japanese ? '」' : '');
+      } else {
+        latest.textContent = japanese ? 'この記事には、まだコメントが収録されていません。' : 'No comments included for this article yet.';
+      }
+    } else if (viewingSource) {
       document.title = `${messages.source}: ${article.dataset.title} — ${messages.manual}`;
       document.getElementById('source-heading').textContent = `${messages.source}: ${article.dataset.title}`;
       document.getElementById('source-code').textContent = sources.get(article.id);
@@ -192,7 +365,11 @@
       link.href = url.href;
     });
     content.focus({preventScroll: true});
-    if (anchor && !searching && !viewingSource) {
+    if (viewingTalk) {
+      const target = topic && document.getElementById(topic);
+      if (target && talkPanel.contains(target)) target.scrollIntoView();
+      else window.scrollTo(0, 0);
+    } else if (anchor && !searching && !viewingSource) {
       const target = document.getElementById(anchor);
       if (target && article.contains(target)) target.scrollIntoView();
       else window.scrollTo(0, 0);

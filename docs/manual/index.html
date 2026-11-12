@@ -10,6 +10,7 @@
   <script src="theme.js"></script>
   <link rel="stylesheet" href="manual.css">
   <link rel="icon" type="image/png" href="../../assets/media/iconwiki.png">
+  <script src="talk-timestamps.js" defer></script>
   <script src="manual.js" defer></script>
 </head>
 <body>
@@ -53,7 +54,7 @@
     <header class="page-header">
       <div class="utility"><span class="account-state">Not logged in</span><nav class="account-links" aria-label="Personal tools"><a href="account.html#create-account">Create account</a><a href="account.html#login">Log in</a></nav></div>
       <div class="toolbar">
-        <div class="page-tabs"><a href="#main" id="article-tab" aria-current="page">Main page</a><a href="#main/main-contents" id="contents-tab">Contents</a></div>
+        <div class="page-tabs"><a href="#main" id="article-tab" aria-current="page">Main page</a><a href="#main/talk" id="talk-tab" hidden>Talk</a><a href="#main/main-contents" id="contents-tab">Contents</a></div>
         <div class="tools"><div class="view-tabs"><a id="read-tab" href="#main" aria-current="page">Read</a><a id="source-tab" href="#main/source" hidden>View source</a><button id="print" type="button" hidden>Print</button><button id="theme-toggle" type="button" aria-pressed="false" hidden>Dark mode</button></div><form id="search" role="search" hidden><label class="visually-hidden" for="query">Search</label><input id="query" type="search" placeholder="Search LRCPlus manual" autocomplete="off"><button type="submit" aria-label="Search"><span class="search-icon" aria-hidden="true"></span></button></form></div>
       </div>
     </header>
@@ -196,6 +197,64 @@
 <article id="plugin-directory" data-title="Plugin directory" data-related="plugins translations readings"><h1>Plugin directory</h1><p class="subtitle">Find the guide for an optional feature</p><p>These plugins are included in the source tree. Packaged builds may include a different selection. Check Settings → Plugins for availability; each linked guide covers setup, use, and declared dependencies.</p><h2 id="plugin-directory-list">Bundled plugins</h2><dl><dt><a href="#plugin-anki-flashcards">Anki Flashcards</a></dt><dd>Select lyric words and export Anki-ready TSV flashcards.</dd><dt><a href="#plugin-cantonese-readings">Cantonese Readings</a></dt><dd>Plugin API v2 Cantonese readings: Jyutping and Yale via PyCantonese.</dd><dt><a href="#plugin-discord-rpc">Discord Rich Presence</a></dt><dd>Customize Discord activity with track metadata, lyrics, and album artwork.</dd><dt><a href="#plugin-floating-lyrics">Floating Lyrics</a></dt><dd>A detachable always-on-top lyric window with furigana.</dd><dt><a href="#plugin-karaoke-screen">Karaoke Screen</a></dt><dd>Fullscreen lyrics with an optional MIDI pitch guide.</dd><dt><a href="#plugin-korean-romanization">Korean Romanization</a></dt><dd>Generate pronunciation-aware Revised Romanization readings using Koroman.</dd><dt><a href="#plugin-lyrics-translator">Lyrics Translator</a></dt><dd>Translate lyric rows with optional offline Argos or Azure, Google Cloud, DeepL and MyMemory.</dd><dt><a href="#plugin-ytdlp-import">yt-dlp Audio Import</a></dt><dd>Search YouTube or import URL audio and subtitles, with optional synced lyrics and MusicBrainz album covers.</dd></dl></article>
 <article id="article-index" data-title="A–Z article index" data-related="interface settings-reference glossary"><h1>A–Z article index</h1><p class="subtitle">Every article in the local manual</p><h2 id="article-index-list">All articles</h2><ul class="article-index"><li><a href="#plugin-anki-flashcards">Anki Flashcards</a></li><li><a href="#ayami">Ayami</a></li><li><a href="#plugin-cantonese-readings">Cantonese Readings</a></li><li><a href="#companion">Companion guide</a></li><li><a href="#customization">Customization</a></li><li><a href="#plugin-discord-rpc">Discord Rich Presence</a></li><li><a href="#editor">Editing and timing</a></li><li><a href="#finding-lyrics">Finding lyrics</a></li><li><a href="#plugin-floating-lyrics">Floating Lyrics</a></li><li><a href="#readings">Furigana and readings</a></li><li><a href="#getting-started">Getting started</a></li><li><a href="#glossary">Glossary</a></li><li><a href="#interface">Interface guide</a></li><li><a href="#plugin-karaoke-screen">Karaoke Screen</a></li><li><a href="#shortcuts">Keyboard shortcuts</a></li><li><a href="#plugin-korean-romanization">Korean Romanization</a></li><li><a href="#lrcx">LRCX reference</a></li><li><a href="#plugin-lyrics-translator">Lyrics Translator</a></li><li><a href="#main">Main page</a></li><li><a href="#playback">Music and playback</a></li><li><a href="#plugin-directory">Plugin directory</a></li><li><a href="#plugins">Plugins</a></li><li><a href="#settings-reference">Settings reference</a></li><li><a href="#sharing">Sharing and image cards</a></li><li><a href="#translations">Translations</a></li><li><a href="#troubleshooting">Troubleshooting</a></li><li><a href="#tutorials">Worked tutorials</a></li><li><a href="#plugin-ytdlp-import">yt-dlp Audio Import</a></li></ul></article>
       </div>
+      <section id="talk-panel" hidden aria-labelledby="talk-heading">
+        <h1 id="talk-heading">Talk</h1><p class="subtitle">From the LRCPlus manual discussion pages</p>
+        <p id="talk-latest" class="talk-latest"></p>
+        <aside class="talk-notice" aria-label="About this Talk page">
+          <div class="talk-intro"><p>This is the <strong>talk page</strong> for discussing improvements to <a id="talk-article-link" href="#main">this article</a>.</p><p>Discussions focus on the manual’s wording, examples, and accuracy.</p></div>
+          <div class="talk-guidelines">
+            <div class="talk-reading"><ul><li>Add new text under old text.</li><li>New to LRCPlus.wiki? Youkoso! Please log in to join in the discussion.</li><a id="talk-browse-link" class="talk-browse" href="account.html#login">Start a new topic</a></div>
+            <div><ul><li>Assume good faith.</li><li>Be polite and discuss the wording.</li><li>Make explanations welcoming to new listeners.</li><li>Keep each discussion focused on its topic.</li></ul></div>
+            <div class="talk-principles"><h2>Article principles</h2><ul><li>Clear, neutral descriptions</li><li>Examples that match the app</li><li>Verifiable instructions</li></ul></div>
+          </div>
+          <p class="talk-references"><i>Manual references:</i> <a href="#getting-started">Getting started</a> · <a href="#settings-reference">Settings reference</a> · <a href="#troubleshooting">Troubleshooting</a></p>
+        </aside>
+        <div id="talk-body"></div>
+      </section>
+      <template data-talk-for="main">
+        <section class="talk-topic"><h2 id="manual-scope">What belongs in this manual?</h2><p class="talk-meta"><span class="talk-meta-item">3 comments</span><span class="talk-meta-item">2 people in discussion</span><span class="talk-meta-item"><span class="talk-status">Resolved</span></span></p>
+          <div class="talk-comment talk-depth-0"><p>The main page should help someone get their first song playing. Can we keep detailed settings and plugin setup in their own articles?</p><p class="talk-signature">— <b>ayanechan!</b></p></div>
+          <div class="talk-comment talk-depth-1"><p>Agreed. A new listener needs music before a table of settings. My article can remain essential reading, of course.</p><p class="talk-signature">— <b>Ayami</b></p></div>
+          <div class="talk-comment talk-depth-2"><p>Getting started stays prominent; reference material stays linked from the sidebar. Your article is already there, Ayami.</p><p class="talk-signature">— <b>ayanechan!</b></p></div>
+        </section>
+        <section class="talk-topic"><h2 id="offline-talk">A Talk page in an offline manual</h2><p class="talk-meta"><span class="talk-meta-item">3 comments</span><span class="talk-meta-item">2 people in discussion</span><span class="talk-meta-item"><span class="talk-status">Editorial note</span></span></p>
+          <div class="talk-comment talk-depth-0"><p>These pages can collect small editorial conversations alongside the articles, in the same local edition.</p><p class="talk-signature">— <b>Lina</b></p></div>
+          <div class="talk-comment talk-depth-1"><p>So readers can follow the discussion without being asked to sign in? Good. I have already supplied enough commentary for everyone.</p><p class="talk-signature">— <b>Ayami</b></p></div>
+          <div class="talk-comment talk-depth-1"><p>Yes. The conversations are scripted content shipped with the manual. Reading them does not post anything or contact a server.</p><p class="talk-signature">— <b>Lina</b></p></div>
+        </section>
+      </template>
+      <template data-talk-for="ayami">
+        <section class="talk-topic"><h2 id="ayami-description">Neutral wording in the introduction</h2><p class="talk-meta"><span class="talk-meta-item">3 comments</span><span class="talk-meta-item">2 people in discussion</span><span class="talk-meta-item"><span class="talk-status">Resolved</span></span></p>
+          <div class="talk-comment talk-depth-0"><p>I propose restoring “exceptionally talented” to the introduction. It is concise, informative, and written by an expert on Ayami.</p><p class="talk-signature">— <b>Ayami</b></p></div>
+          <div class="talk-comment talk-depth-1"><p>the introduction should explain your role in lrcplus selfawarded superlatives belong on this talk page</p><p class="talk-signature">— <b>Maiko</b></p></div>
+          <div class="talk-comment talk-depth-2"><p>Fine. Please record that I accepted this with exceptional grace.</p><p class="talk-signature">— <b>Ayami</b></p></div>
+        </section>
+        <section class="talk-topic"><h2 id="ayami-companion">Character page and setup instructions</h2><p class="talk-meta"><span class="talk-meta-item">2 comments</span><span class="talk-meta-item">2 people in discussion</span><span class="talk-meta-item"><span class="talk-status">Editorial note</span></span></p>
+          <div class="talk-comment talk-depth-0"><p>Keep character details here and link to the Companion guide for provider setup and saved memories.</p><p class="talk-signature">— <b>Lorja</b></p></div>
+          <div class="talk-comment talk-depth-1"><p>That seems fair. A biography should not begin by asking for an API key.</p><p class="talk-signature">— <b>Ayami</b></p></div>
+        </section>
+        <section class="talk-topic"><h2 id="whos-ayami">Who&#x27;s Ayami?</h2><p class="talk-meta"><span class="talk-meta-item">4 comments</span><span class="talk-meta-item">2 people in discussion</span></p>
+          <div class="talk-comment talk-depth-0" data-talk-jump-months="6"><p>Who the hell is Ayami</p><p class="talk-signature">— <b>Noah</b></p></div>
+          <div class="talk-comment talk-depth-1"><p>Seriously?</p><p class="talk-signature">— <b>Ayami</b></p></div>
+          <div class="talk-comment talk-depth-2"><p>I&#x27;m asking.</p><p class="talk-signature">— <b>Noah</b></p></div>
+          <div class="talk-comment talk-depth-2"><p>I heard you the first time.</p><p class="talk-signature">— <b>Ayami</b></p></div>
+        </section>
+      </template>
+      <template data-talk-for="editor">
+        <section class="talk-topic"><h2 id="editor-offset">Timing shift or playback offset?</h2><p class="talk-meta"><span class="talk-meta-item">3 comments</span><span class="talk-meta-item">2 people in discussion</span><span class="talk-meta-item"><span class="talk-status">Resolved</span></span></p>
+          <div class="talk-comment talk-depth-0"><p>The timing guide needs to distinguish shifting saved timestamps from adjusting the playback offset. They can look similar while listening.</p><p class="talk-signature">— <b>Wiki editor</b></p></div>
+          <div class="talk-comment talk-depth-1"><p>Use a concrete example: moving a line from 00:12 to 00:10 changes the lyric file. A listening adjustment is a different choice.</p><p class="talk-signature">— <b>Ayami</b></p></div>
+          <div class="talk-comment talk-depth-1"><p>The worked tutorial covers the two-second shift and recommends a backup. Keep that example linked from the editor guide.</p><p class="talk-signature">— <b>Wiki editor</b></p></div>
+        </section>
+      </template>
+      <template data-talk-for="playback">
+        <section class="talk-topic"><h2 id="how-play">How do I play music?</h2><p class="talk-meta"><span class="talk-meta-item">4 comments</span><span class="talk-meta-item">2 people in discussion</span></p>
+          <div class="talk-comment talk-depth-0" data-talk-jump-months="11"><p>I just downloaded this.</p><p class="talk-signature">— <b>nincompoop</b></p></div>
+          <div class="talk-comment talk-depth-1"><p>You can&#x27;t be... serious, right?</p><p class="talk-signature">— <b>Ayami</b></p></div>
+          <div class="talk-comment talk-depth-2"><p>I am serious.</p><p class="talk-signature">— <b>nincompoop</b></p></div>
+          <div class="talk-comment talk-depth-3"><p>...</p><p class="talk-signature">— <b>Ayami</b></p></div>
+        </section>
+      </template>
       <section id="source-panel" hidden aria-labelledby="source-heading"><h1 id="source-heading">View source</h1><p>This is the article's HTML source. To edit it, open <code>docs/manual/index.html</code> in a text editor.</p><pre class="article-source" tabindex="0" aria-label="Article HTML source"><code id="source-code"></code></pre></section>
       <section id="search-results" hidden aria-labelledby="search-heading"><h1 id="search-heading">Search results</h1><p id="search-summary" role="status"></p><div id="results-list"></div></section>
       <noscript><p class="note">JavaScript is disabled. All articles are displayed on this page; use your browser's Find command to search them.</p></noscript>

@@ -8,6 +8,7 @@
   --green-border:#a3bfb1; --green-panel:#f5fffa; --green-heading:#cef2e0;
   --blue-border:#a3b0bf; --blue-panel:#f5faff; --blue-heading:#cedff2;
   --purple-border:#afa3bf; --purple-panel:#faf5ff; --purple-heading:#ddcef2;
+  --talk-panel:#f8edc4; --talk-border:#c9be91;
 }
 /* Dark colors apply on screen only; printing always uses the light palette. */
 @media screen {
@@ -20,6 +21,7 @@
     --green-border:#48685b; --green-panel:#202f29; --green-heading:#304d40;
     --blue-border:#49657d; --blue-panel:#222e3a; --blue-heading:#30465c;
     --purple-border:#69567d; --purple-panel:#2c2635; --purple-heading:#453653;
+    --talk-panel:#393421; --talk-border:#756b44;
   }
 }
 /* Local Vector Legacy interpretation. Reference: https://github.com/wikimedia/mediawiki-skins-Vector/tree/master/resources/skins.vector.styles.legacy */
@@ -67,6 +69,50 @@ figcaption{padding:7px 5px 3px;font-size:12px;color:var(--muted);line-height:1.5
 #theme-toggle[aria-pressed="true"]{background:var(--surface);color:var(--text);border-bottom-color:var(--surface)}
 #theme-toggle::before{content:'\25d0';margin-right:5px}
 
+.page-tabs a[aria-current=page]{color:var(--text);background:var(--surface);border-bottom-color:var(--surface);z-index:1}
+.page-tabs a:first-child:not([aria-current=page]){color:var(--link);background:linear-gradient(to top,var(--tab) 0,var(--surface) 100%);border-bottom-color:var(--frame)}
+.talk-latest{color:var(--muted);margin:14px 0 18px;overflow-wrap:anywhere}
+.talk-notice{border:1px solid var(--talk-border);background:var(--talk-panel);padding:4px;margin:16px auto 20px;max-width:1100px;overflow-wrap:anywhere}
+.talk-intro{text-align:center;font-weight:bold;font-size:16px;padding:2px 12px 8px;border-bottom:1px solid var(--talk-border)}
+.talk-intro p{margin:3px 0}
+.talk-guidelines{display:grid;grid-template-columns:1.4fr 1fr .8fr;gap:0;margin:5px 0}
+.talk-guidelines>div{padding:6px 14px;min-width:0}
+.talk-guidelines .talk-reading{background:var(--surface);border:1px solid var(--talk-border);padding:12px 16px}
+.talk-reading p{margin:0 0 8px}
+.talk-guidelines ul{margin:4px 0;padding-left:20px}.talk-guidelines li{margin:5px 0}
+.talk-principles{border-left:1px solid var(--talk-border)}
+.talk-principles h2{font:bold 15px/1.6 Arial,Helvetica,sans-serif;border:0;text-align:center;margin:0 0 4px}
+.talk-browse,.talk-browse:visited{display:table;margin:14px auto 2px;padding:6px 14px;border:1px solid #2a4b8d;border-radius:2px;background:#36c;color:#fff;font-weight:bold;text-align:center}
+.talk-browse:hover{background:#2a4b8d;text-decoration:none}
+.talk-references{border-top:1px solid var(--talk-border);text-align:center;margin:0;padding:6px 12px 2px;font-size:13px}
+@media(max-width:1000px){.talk-guidelines{grid-template-columns:1fr 1fr}.talk-guidelines .talk-reading{grid-column:1/-1}}
+@media(max-width:600px){.talk-guidelines{display:block}.talk-principles{border-left:0;border-top:1px solid var(--talk-border)}.talk-intro{font-size:14px}.talk-guidelines>div{padding:10px 12px}}
+.talk-topic{margin-bottom:28px;overflow-wrap:anywhere}
+.talk-meta,.talk-signature{color:var(--muted);font-size:12.8px}
+.talk-meta{display:flex;flex-wrap:wrap;align-items:center;row-gap:6px}
+.talk-meta-item{display:inline-flex;align-items:center;line-height:1.4}
+.talk-meta-item+.talk-meta-item{border-inline-start:1px solid var(--border);margin-inline-start:12px;padding-inline-start:12px}
+.talk-status{border:1px solid var(--border);background:var(--panel);padding:1px 6px}
+.talk-comment{margin:14px 0}
+.talk-comment p{margin:4px 0}
+.talk-actions{display:flex;align-items:center;gap:14px;font-size:12.8px;margin-top:4px}
+.talk-actions>a{font-weight:bold}
+.talk-comment-menu{position:relative}
+.talk-comment-menu summary{cursor:pointer;list-style:none;color:var(--muted);letter-spacing:2px;padding:2px 4px;line-height:1.4}
+.talk-comment-menu summary::-webkit-details-marker{display:none}
+.talk-comment-menu summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.talk-comment-popup{position:absolute;top:100%;left:0;z-index:3;background:var(--surface);border:1px solid var(--border);box-shadow:0 2px 6px #0003;padding:6px;width: min(250px,55vw);letter-spacing:normal}
+.talk-comment-popup button{display:block;width:100%;text-align:left;color:var(--link);background:transparent;border:0;padding:6px 8px;font-size:13px}
+.talk-comment-popup button:hover{background:var(--panel)}
+.talk-copy-status{display:block;font-size:12px;padding:0 8px;color:var(--muted)}
+.talk-comment-popup input{display:block;border:1px solid var(--border);margin-top:6px;color:var(--text)}
+.talk-signature time{color:var(--muted)}
+@media print{.talk-actions{display:none}}
+.talk-comment:not(.talk-depth-0){border-left:1px solid var(--border-soft);padding-left:16px;margin-left:144px}
+.talk-comment.talk-depth-1{margin-left:24px}.talk-comment.talk-depth-2{margin-left:64px}.talk-comment.talk-depth-3{margin-left:104px}
+.talk-depth-label{font-size:12px;color:var(--muted)}
+@media(max-width:760px){.talk-comment:not(.talk-depth-0){margin-left:60px;padding-left:10px}.talk-comment.talk-depth-1{margin-left:12px}.talk-comment.talk-depth-2{margin-left:28px}.talk-comment.talk-depth-3{margin-left:44px}}
+@media print{.talk-topic h2{break-after:avoid}.talk-comment{break-inside:avoid}}
 .article-source{white-space:pre-wrap;overflow-wrap:anywhere;tab-size:2}
 .article-source:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 /* Secret zero-gravity playground; original text nodes are restored on exit. */
