@@ -1,0 +1,77 @@
+
+name: Deploy LRCPlus.wiki
+
+on:
+  push:
+    branches: [release]
+    paths:
+      - "docs/manual/**"
+      - "assets/media/iconwiki.png"
+      - "assets/media/logowiki.png"
+      - "assets/onboarding/CANON_CHARACTER.md"
+      - "LRCX_SPEC.md"
+      - "PLUGIN_API.md"
+      - "docs/onboarding-engine.md"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare website
+        shell: bash
+        run: |
+          mkdir -p _site/assets/media
+          mkdir -p _site/assets/onboarding
+
+          cp -a docs/manual/. _site/
+          cp assets/media/iconwiki.png _site/assets/media/
+          cp assets/media/logowiki.png _site/assets/media/
+          cp assets/onboarding/CANON_CHARACTER.md _site/assets/onboarding/
+
+          cp LRCX_SPEC.md _site/
+          cp PLUGIN_API.md _site/
+          cp docs/onboarding-engine.md _site/
+
+          python - <<'PY'
+          from pathlib import Path
+
+          for path in Path("_site").glob("*.html"):
+              text = path.read_text(encoding="utf-8")
+              text = text.replace('../../assets/', 'assets/')
+              text = text.replace('../../LRCX_SPEC.md', 'LRCX_SPEC.md')
+              text = text.replace('../../PLUGIN_API.md', 'PLUGIN_API.md')
+              text = text.replace('../onboarding-engine.md', 'onboarding-engine.md')
+              path.write_text(text, encoding="utf-8")
+          PY
+
+          touch _site/.nojekyll
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload website
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
