@@ -31,8 +31,15 @@ and `"mutagen>=1,<2"` in their Python environment.
 
 ## Usage
 
-Open **Plugins > Import audio from URL…**. Use **Check setup** to inspect the
-downloader, FFmpeg, and runtime. Paste a URL and select **Preview** to see the
+Open **Plugins > Search and import audio…**. Use **Check setup** to inspect the
+downloader, FFmpeg, and runtime. Enter a title or artist and select **Search**
+to find up to ten YouTube results with titles, channels, durations, and thumbnails
+when available. Live and upcoming broadcasts are excluded. Click a result (or
+use the arrow keys and Enter) to preview it. Results remain available to choose
+another track; editing the input clears them. Search runs in the cancellable
+worker and requires no additional dependency or API key.
+
+You can also paste a URL and select **Preview** to see the
 title, creator, duration, and artwork when supplied by the source. Choose a
 download folder and M4A or MP3, then select **Download**.
 

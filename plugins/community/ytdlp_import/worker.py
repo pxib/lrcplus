@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+from itertools import islice
 import os
 from pathlib import Path
 import re
@@ -208,6 +209,49 @@ def preview(url, config, *, musicbrainz_not_before=0):
             except Exception:
                 pass  # Artwork preview must not prevent importing audio.
         return result
+
+
+def search(query, config):
+    """Fetch a bounded YouTube result list without extracting audio formats."""
+    from yt_dlp import YoutubeDL
+    from yt_dlp.networking import Request
+
+    query = str(query).strip()
+    if not query or len(query) > 500:
+        raise ValueError("Enter a YouTube search of 1 to 500 characters.")
+    values = options(config)
+    values.update(playlistend=10, extract_flat=True, skip_download=True,
+                  ignoreerrors=True)
+    results = []
+    with YoutubeDL(values) as ydl:
+        info = ydl.extract_info("ytsearch10:" + query, download=False)
+        if not isinstance(info, dict):
+            raise ValueError("YouTube search failed. Please try again.")
+        for entry in islice(info.get("entries") or [], 10):
+            if not isinstance(entry, dict):
+                continue
+            video_id = str(entry.get("id") or "")
+            if (not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id)
+                    or entry.get("is_live") or entry.get("live_status") in {"is_live", "is_upcoming"}):
+                continue
+            result = {"url": "https://www.youtube.com/watch?v=" + video_id,
+                      "title": str(entry.get("title") or video_id),
+                      "artist": str(entry.get("channel") or entry.get("uploader") or ""),
+                      "duration": entry.get("duration")}
+            thumbnails = entry.get("thumbnails") or []
+            thumbnail = entry.get("thumbnail") or next(
+                (item.get("url") for item in thumbnails if item.get("url")), None)
+            if thumbnail and urlsplit(thumbnail).scheme in {"http", "https"}:
+                try:
+                    with ydl.urlopen(Request(thumbnail, extensions={"timeout": 3})) as response:
+                        data = response.read(120_001)
+                    if len(data) <= 120_000:
+                        result["thumbnail"] = base64.b64encode(data).decode("ascii")
+                except Exception:
+                    pass  # Missing artwork must not hide a search result.
+            results.append(result)
+            emit("search_result", result=result)
+    return {"results": results}
 
 
 def publish_bundle(stem, files, destination):
@@ -497,7 +541,9 @@ def main():
     try:
         request = json.load(sys.stdin)
         action = request["action"]
-        if action == "preview":
+        if action == "search":
+            result = search(request["query"], request["config"])
+        elif action == "preview":
             result = preview(request["url"], request["config"],
                              musicbrainz_not_before=request.get("musicbrainz_not_before", 0))
         elif action == "download":

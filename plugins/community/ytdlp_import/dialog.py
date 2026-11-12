@@ -3,11 +3,11 @@ import math
 from pathlib import Path
 import time
 
-from PySide6.QtCore import QDate, QEvent, QLocale, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QDate, QEvent, QLocale, QSize, Qt
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout,
 )
 
 from plugins.community.ytdlp_import.job import ImportJob
@@ -72,18 +72,27 @@ class ImportDialog(QDialog):
         self._existing = None
         self._existing_entry = {}
         self._caption_warning = ""
-        self.setWindowTitle("Import Audio from URL")
+        self.setWindowTitle("Search and Import Audio")
         self.resize(740, 520)
 
         self.url = QLineEdit()
-        self.url.setPlaceholderText("Paste a single video or audio URL…")
-        self.url.textChanged.connect(self._url_changed)
+        self.url.setPlaceholderText("Search YouTube or paste a URL")
+        self.url.setAccessibleName("Search YouTube or paste a URL")
+        self.url.textChanged.connect(self._input_changed)
         self.url.returnPressed.connect(self.preview)
-        self.preview_button = QPushButton("Preview")
+        self.preview_button = QPushButton("Search")
         self.preview_button.clicked.connect(self.preview)
         url_row = QHBoxLayout()
         url_row.addWidget(self.url, 1)
         url_row.addWidget(self.preview_button)
+        self.search_results = QListWidget()
+        self.search_results.setAccessibleName("YouTube search results. Select a track to preview.")
+        self.search_results.setIconSize(QSize(80, 50))
+        self.search_results.setFixedHeight(210)
+        self.search_results.setWordWrap(True)
+        self.search_results.itemClicked.connect(self._select_result)
+        self.search_results.itemActivated.connect(self._select_result)
+        self.search_results.hide()
         self.thumbnail = QLabel()
         self.thumbnail.setFixedSize(140, 100)
         self.thumbnail.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -212,6 +221,7 @@ class ImportDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addLayout(url_row)
+        layout.addWidget(self.search_results)
         layout.addLayout(info_row)
         layout.addLayout(form)
         layout.addWidget(self.use_musicbrainz_cover)
@@ -277,6 +287,45 @@ class ImportDialog(QDialog):
         self._url_changed()
         self.status.setText("Preview the track to update artwork. Existing files keep their current cover; use Download again to change it.")
 
+    def _input_changed(self):
+        self.search_results.clear()
+        self.search_results.hide()
+        self.preview_button.setText("Preview" if self._is_url() else "Search")
+        self._url_changed()
+
+    def _is_url(self):
+        value = self.url.text().strip().lower()
+        return value.startswith(("http:", "https:")) or "://" in value
+
+    def _add_search_result(self, result):
+        parts = [str(result.get("artist") or "")]
+        duration = result.get("duration")
+        if isinstance(duration, (int, float)) and math.isfinite(duration):
+            seconds = max(0, round(duration))
+            parts.append(f"{seconds // 60}:{seconds % 60:02d}")
+        item = QListWidgetItem(str(result.get("title") or "Untitled") + "\n" + " · ".join(filter(None, parts)))
+        item.setData(Qt.ItemDataRole.UserRole, result["url"])
+        item.setToolTip(result["url"])
+        item.setSizeHint(QSize(0, 62))
+        try:
+            pixmap = QPixmap()
+            if pixmap.loadFromData(base64.b64decode(result.get("thumbnail", ""))):
+                item.setIcon(QIcon(pixmap))
+        except (ValueError, TypeError):
+            pass
+        self.search_results.addItem(item)
+        self.search_results.show()
+
+    def _select_result(self, item):
+        if self.job is not None:
+            return
+        self.url.blockSignals(True)
+        self.url.setText(item.data(Qt.ItemDataRole.UserRole))
+        self.url.blockSignals(False)
+        self.preview_button.setText("Preview")
+        self._url_changed()
+        self.preview()
+
     def _url_changed(self):
         self.info = None
         self.preview_url = None
@@ -303,6 +352,16 @@ class ImportDialog(QDialog):
 
     def preview(self):
         if self.job is not None:
+            return
+        if not self._is_url():
+            query = self.url.text().strip()
+            if not query or len(query) > 500:
+                self.status.setText("Enter a YouTube search of 1 to 500 characters, or paste a URL.")
+                return
+            self._url_changed()
+            self.search_results.clear()
+            self.search_results.hide()
+            self._start("search")
             return
         try:
             self.preview_url = validate_url(self.url.text())
@@ -438,6 +497,8 @@ class ImportDialog(QDialog):
             return
         self._last_action = action
         request = {"action": action, "config": dict(self.config), "url": self.preview_url}
+        if action == "search":
+            request["query"] = self.url.text().strip()
         request["config"]["use_musicbrainz_cover"] = self.use_musicbrainz_cover.isChecked()
         request["config"]["automatically_find_lyrics"] = self.automatically_find_lyrics.isChecked()
         if action == "preview":
@@ -457,6 +518,7 @@ class ImportDialog(QDialog):
         self.retry_button.hide()
         self.progress.setRange(0, 0)
         self.status.setText({"preview": "Reading track information…", "download": "Starting download…",
+                             "search": "Searching YouTube…",
                              "lyrics": "Looking for lyrics for the existing audio…",
                              "subtitles": "Downloading subtitles for the existing audio…", "check": "Checking tools…"}[action])
         job = ImportJob(request, self)
@@ -472,7 +534,7 @@ class ImportDialog(QDialog):
     def _set_busy(self, busy):
         for widget in (self.url, self.folder, self.browse_button, self.codec, self.preview_button,
                        self.setup_button, self.add_to_queue, self.again_button, self.use_musicbrainz_cover,
-                       self.automatically_find_lyrics):
+                       self.automatically_find_lyrics, self.search_results):
             widget.setEnabled(not busy)
         self.cancel_button.setEnabled(busy)
         self.progress.setVisible(busy)
@@ -481,7 +543,9 @@ class ImportDialog(QDialog):
 
     def _event(self, event):
         kind = event.get("event")
-        if kind == "log":
+        if kind == "search_result":
+            self._add_search_result(event["result"])
+        elif kind == "log":
             self.details.appendPlainText(str(event.get("message", "")))
         elif kind == "subtitle_warning":
             self._caption_warning = str(event.get("message", ""))
@@ -507,7 +571,15 @@ class ImportDialog(QDialog):
             return
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
-        if action == "check":
+        if action == "search":
+            self.search_results.clear()
+            for entry in result.get("results", []):
+                self._add_search_result(entry)
+            count = self.search_results.count()
+            self.search_results.setVisible(bool(count))
+            self.status.setText(f"{count} results. Select a track to preview." if count
+                                else "No finished tracks found. Try another search.")
+        elif action == "check":
             self.status.setText(str(result.get("message", "Setup check complete.")))
         elif action == "preview":
             self.info = result
@@ -614,7 +686,7 @@ class ImportDialog(QDialog):
             self.download(force=True)
         elif self._last_action in {"subtitles", "lyrics"}:
             self.download()
-        elif self._last_action == "preview":
+        elif self._last_action in {"preview", "search"}:
             self.preview()
         else:
             self._start("check")

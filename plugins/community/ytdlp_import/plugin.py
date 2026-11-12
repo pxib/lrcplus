@@ -23,7 +23,7 @@ DEFAULTS = {
 class YtdlpImportPlugin:
     name = "yt-dlp Audio Import"
     version = "1.2.0"
-    description = "Import URL audio and subtitles, with optional synced lyrics."
+    description = "Search YouTube or import URL audio and subtitles, with optional synced lyrics."
 
     def __init__(self):
         self.context = None
@@ -33,7 +33,7 @@ class YtdlpImportPlugin:
     def on_load(self, context):
         self.context = context
         context.api.on("app_ready", self.on_app_ready)
-        context.api.add_menu_action("Plugins", "Import audio from URL…", self.open_import)
+        context.api.add_menu_action("Plugins", "Search and import audio…", self.open_import)
         context.api.register_settings_widget(
             "yt-dlp Audio Import", self.create_settings_widget,
             apply=self.apply_settings_widget,
