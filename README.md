@@ -4,6 +4,10 @@ media player
 
 idk
 
+## User manual
+
+Open [docs/manual/index.html](docs/manual/index.html) in your browser for the local user manual. It includes offline search and needs no server or installation.
+
 ## LRCLIB
 
 LRCPlus integrates with LRCLIB for searching and retrieving synchronized and plain-text lyrics. API integration is authorized by LRCLIB under its API Terms of Use.

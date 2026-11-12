@@ -1,0 +1,140 @@
+{
+  "library": {
+    "width": 1100,
+    "height": 740,
+    "markers": [
+      {
+        "number": 1,
+        "label": "Search the library",
+        "x": 30.45,
+        "y": 11.62
+      },
+      {
+        "number": 2,
+        "label": "Music library",
+        "x": 50.0,
+        "y": 44.73
+      },
+      {
+        "number": 3,
+        "label": "Open files",
+        "x": 65.18,
+        "y": 4.19
+      },
+      {
+        "number": 4,
+        "label": "Settings",
+        "x": 95.18,
+        "y": 4.19
+      },
+      {
+        "number": 5,
+        "label": "Playback controls",
+        "x": 18.36,
+        "y": 87.84
+      }
+    ]
+  },
+  "player": {
+    "width": 1100,
+    "height": 740,
+    "markers": [
+      {
+        "number": 1,
+        "label": "Library workspace",
+        "x": 16.27,
+        "y": 4.05
+      },
+      {
+        "number": 2,
+        "label": "LRC menu",
+        "x": 71.18,
+        "y": 4.19
+      },
+      {
+        "number": 3,
+        "label": "Lyric display",
+        "x": 50.0,
+        "y": 27.3
+      },
+      {
+        "number": 4,
+        "label": "Line list",
+        "x": 50.0,
+        "y": 48.24
+      },
+      {
+        "number": 5,
+        "label": "Seek bar",
+        "x": 68.91,
+        "y": 87.84
+      },
+      {
+        "number": 6,
+        "label": "Play or pause",
+        "x": 18.36,
+        "y": 87.84
+      },
+      {
+        "number": 7,
+        "label": "Volume",
+        "x": 87.09,
+        "y": 93.92
+      }
+    ]
+  },
+  "editor": {
+    "width": 1100,
+    "height": 760,
+    "markers": [
+      {
+        "number": 1,
+        "label": "Editor workspaces",
+        "x": 39.64,
+        "y": 3.29
+      },
+      {
+        "number": 2,
+        "label": "Timed lyric lines",
+        "x": 12.36,
+        "y": 51.97
+      },
+      {
+        "number": 3,
+        "label": "Mark Playback Time",
+        "x": 80.73,
+        "y": 28.42
+      },
+      {
+        "number": 4,
+        "label": "Save",
+        "x": 79.18,
+        "y": 96.84
+      }
+    ]
+  },
+  "settings": {
+    "width": 880,
+    "height": 640,
+    "markers": [
+      {
+        "number": 1,
+        "label": "Settings categories",
+        "x": 12.05,
+        "y": 49.53
+      },
+      {
+        "number": 2,
+        "label": "Gapless playback",
+        "x": 61.14,
+        "y": 15.78
+      },
+      {
+        "number": 3,
+        "label": "Output device",
+        "x": 66.14,
+        "y": 62.66
+      }
+    ]
+  }
+}
