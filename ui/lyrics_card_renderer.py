@@ -16,7 +16,7 @@ from core.fonts import library_font
 from ui.lyrics_card_text import CardLyrics, apply_character_styles, apply_block_quotes, quote_bar_rects
 from ui.lyrics_card_ruby import ruby_layout_source, install_ruby_objects, clone_ruby_handler
 from ui.lyrics_card_decorations import undecorated_document, paint_decorations
-from ui.lyrics_card_templates import cinema_bar_height, paint_cover, paint_new_template
+from ui.lyrics_card_templates import cinema_bar_height, paint_cover, paint_new_template, paint_notebook_rules
 from ui.lyrics_card_vertical import VerticalLyrics, fit_vertical_lyrics
 
 
@@ -24,13 +24,16 @@ CARD_SIZES = {
     "Square · 1080 × 1080": (1080, 1080),
     "Portrait · 1080 × 1350": (1080, 1350),
     "Landscape · 1920 × 1080": (1920, 1080),
+    "Story · 1080 × 1920": (1080, 1920),
 }
+CARD_QUALITIES = {"Standard · 1×": 1, "High · 2×": 2, "Ultra · 3×": 3}
 CARD_THEMES = {
     "Midnight": ("#101827", "#263750", "#f3f6fc", "#afbed3", "#7dd3fc"),
     "Paper": ("#faf5eb", "#eae1d0", "#292722", "#665d50", "#986b35"),
     "Rose": ("#331f35", "#69455c", "#fff1f5", "#e6bdce", "#fda4af"),
 }
-CARD_TEMPLATES = ("Classic", "Spotlight", "Record sleeve", "Polaroid", "Editorial", "Cinema")
+CARD_TEMPLATES = ("Classic", "Spotlight", "Record sleeve", "Polaroid", "Editorial", "Cinema",
+                  "Notebook", "Ticket", "Art Deco", "Streaming", "Receipt", "Mixtape")
 WATERMARK_POSITIONS = ("bottom_right", "bottom_left", "top_right", "top_left")
 DETAILS_PLACEMENTS = {"Below title": "below_title", "Beside cover": "beside_cover"}
 WRITING_MODES = {"Horizontal": "horizontal", "Vertical · right to left": "vertical_rl",
@@ -97,6 +100,22 @@ class CardStyle:
     ruby_color: str = ""
     ruby_inherit_stroke: bool = True
     ruby_inherit_shadow: bool = True
+    title_font_family: str = ""
+    title_font_size: int = 0
+    title_color: str = ""
+    credit_font_family: str = ""
+    credit_font_size: int = 0
+    credit_color: str = ""
+    export_scale: int = 1
+    cover_radius: int = 0
+    cover_border_width: int = 0
+    cover_border_color: str = "#ffffff"
+    cover_shadow_enabled: bool = False
+    cover_shadow_opacity: int = 35
+    cover_shadow_blur: int = 8
+    cover_shadow_offset_x: int = 0
+    cover_shadow_offset_y: int = 8
+    cover_placement: str = "auto"
 
 
 def _document(text, family, pixels, width, centered=False, line_spacing=100, lyric_style=None, source=None):
@@ -237,32 +256,35 @@ def _paint_lyrics(painter, document, x, y, color, style):
         paint_glyphs(painter)
         return
     from PIL import Image, ImageFilter
-    layer = QImage(style.width, style.height, QImage.Format.Format_RGBA8888)
+    scale = style.export_scale
+    width, height = style.width * scale, style.height * scale
+    layer = QImage(width, height, QImage.Format.Format_RGBA8888)
     layer.fill(Qt.GlobalColor.transparent)
     layer_painter = QPainter(layer)
+    layer_painter.scale(scale, scale)
     layer_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     layer_painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
     paint_glyphs(layer_painter, "all" if style.ruby_inherit_shadow else "base")
     layer_painter.end()
     # Blur the alpha mask so all scripts, decorations and the stroke cast
     # the same shadow. Its color stays independent of the lyric fill.
-    pixels = Image.frombuffer("RGBA", (style.width, style.height), layer.constBits(), "raw", "RGBA", 0, 1)
+    pixels = Image.frombuffer("RGBA", (width, height), layer.constBits(), "raw", "RGBA", 0, 1)
     alpha = pixels.getchannel("A")
     if style.shadow_blur:
-        alpha = alpha.filter(ImageFilter.GaussianBlur(style.shadow_blur))
+        alpha = alpha.filter(ImageFilter.GaussianBlur(style.shadow_blur * scale))
     alpha = alpha.point([round(value * style.shadow_opacity / 100) for value in range(256)])
     shadow_color = QColor(style.shadow_color)
     shadow = Image.new("RGBA", pixels.size, (shadow_color.red(), shadow_color.green(), shadow_color.blue(), 0))
     shadow.putalpha(alpha)
-    shadow_image = QImage(shadow.tobytes(), style.width, style.height, QImage.Format.Format_RGBA8888)
-    painter.drawImage(style.shadow_offset_x, style.shadow_offset_y, shadow_image)
-    painter.drawImage(0, 0, layer)
+    shadow_image = QImage(shadow.tobytes(), width, height, QImage.Format.Format_RGBA8888)
+    painter.drawImage(QRectF(style.shadow_offset_x, style.shadow_offset_y, style.width, style.height), shadow_image)
+    painter.drawImage(QRectF(0, 0, style.width, style.height), layer)
     if not style.ruby_inherit_shadow:
         paint_glyphs(painter, "ruby")
 
 
 def _fitted_document(text, style, size, width, height, centered=False, line_spacing=100, styled=False, source=None):
-    for pixels in range(size, 17, -2):
+    for pixels in range(size, min(size, 18) - 1, -2):
         document = _document(text, style.font_family, pixels, width, centered, line_spacing,
                              lyric_style=style if styled else None, source=source)
         fits_width = not hasattr(document, "_card_ruby_handler") or document.idealWidth() <= width + .5
@@ -284,8 +306,9 @@ def _image_background(path, modified, file_size, width, height, zoom, crop_x, cr
     reader = QImageReader(path)
     reader.setAutoTransform(True)
     original = reader.size()
-    if original.isValid() and max(original.width(), original.height()) > 3840:
-        reader.setScaledSize(original.scaled(QSize(3840, 3840), Qt.AspectRatioMode.KeepAspectRatio))
+    decode_limit = max(3840, width, height)
+    if original.isValid() and max(original.width(), original.height()) > decode_limit:
+        reader.setScaledSize(original.scaled(QSize(decode_limit, decode_limit), Qt.AspectRatioMode.KeepAspectRatio))
     source = reader.read()
     if source.isNull():
         raise ValueError("Could not read the background image. Choose another image.")
@@ -309,9 +332,12 @@ def _image_background(path, modified, file_size, width, height, zoom, crop_x, cr
 
 def card_background(style, colors):
     background, gradient_end = colors[:2]
-    result = QImage(style.width, style.height, QImage.Format.Format_ARGB32_Premultiplied)
+    scale = style.export_scale
+    result = QImage(style.width * scale, style.height * scale, QImage.Format.Format_ARGB32_Premultiplied)
     result.fill(QColor(background))
     painter = QPainter(result)
+    painter.scale(scale, scale)
+    rect = QRectF(0, 0, style.width, style.height)
     try:
         if style.background_mode == "Gradient":
             angle = math.radians(style.gradient_angle)
@@ -322,7 +348,7 @@ def card_background(style, colors):
                                        cx + dx * distance, cy + dy * distance)
             gradient.setColorAt(0, QColor(background))
             gradient.setColorAt(1, QColor(gradient_end))
-            painter.fillRect(result.rect(), gradient)
+            painter.fillRect(rect, gradient)
         elif style.background_mode == "Image":
             try:
                 stat = Path(style.image_path).stat() if style.image_path else None
@@ -331,10 +357,10 @@ def card_background(style, colors):
             if stat is None:
                 raise ValueError("The background image is missing. Choose an image or switch to a color background.")
             image = _image_background(style.image_path, stat.st_mtime_ns, stat.st_size,
-                                      style.width, style.height, style.image_zoom,
-                                      style.crop_x, style.crop_y, style.image_blur)
-            painter.drawImage(0, 0, image)
-            painter.fillRect(result.rect(), QColor(0, 0, 0, round(255 * style.image_dim / 100)))
+                                      style.width * scale, style.height * scale, style.image_zoom,
+                                      style.crop_x, style.crop_y, style.image_blur * scale)
+            painter.drawImage(rect, image)
+            painter.fillRect(rect, QColor(0, 0, 0, round(255 * style.image_dim / 100)))
     finally:
         painter.end()
     return result
@@ -368,12 +394,14 @@ def _song_details(style, width):
     entries = []
     height = 0
     credit = " · ".join(value.strip() for value in (style.credit, style.album) if value.strip())
-    title_size = 64 if style.template == "Editorial" else 30
-    for text, pixels, color_index in ((style.title.strip(), title_size, 3), (credit, 26, 4)):
+    title_size = style.title_font_size or (64 if style.template == "Editorial" else 30)
+    for text, pixels, color_index in ((style.title.strip(), title_size, 3), (credit, style.credit_font_size or 26, 4)):
         if not text:
             continue
         scale = min(1, pixels / style.font_size)
-        effects = replace(style, bold=style.template == "Editorial" and color_index == 3,
+        family = style.title_font_family if color_index == 3 else style.credit_font_family
+        effects = replace(style, font_family=family or style.font_family,
+                          bold=style.template == "Editorial" and color_index == 3,
                           italic=False, underline=False, strikeout=False,
                           alignment="left", centered=False, include_furigana=False,
                           stroke_width=max(1, round(style.stroke_width * scale)),
@@ -396,6 +424,8 @@ def _song_details(style, width):
 
 def render_lyric_card(text, style, cover_image=None):
     """Render at export resolution; reject overflow instead of clipping lyrics."""
+    if type(style.export_scale) is not int or style.export_scale not in CARD_QUALITIES.values():
+        raise ValueError("Choose Standard, High, or Ultra card quality.")
     source = text.trimmed() if isinstance(text, CardLyrics) else None
     text = source.text if source is not None else str(text).strip()
     if source is not None:
@@ -414,6 +444,8 @@ def render_lyric_card(text, style, cover_image=None):
     top_margin = bottom_margin = margin
     if style.template == "Cinema":
         top_margin = bottom_margin = max(margin, cinema_bar_height(style) + 24)
+    elif style.template == "Receipt":
+        bottom_margin = max(margin, 100)
     if watermark is not None:
         reserved = watermark[1].height() + 48 + 24
         if style.watermark_position.startswith("top"):
@@ -425,7 +457,12 @@ def render_lyric_card(text, style, cover_image=None):
     sidebar_width = min(420, round(style.width * .30))
     sidebar_padding = min(64, margin)
     has_cover = style.show_album_cover and cover_image is not None and not cover_image.isNull()
-    beside_cover = has_cover and style.details_placement == "beside_cover"
+    shadow_space = (style.cover_shadow_blur * 3 + max(abs(style.cover_shadow_offset_x),
+                                                    abs(style.cover_shadow_offset_y))
+                    if has_cover and style.cover_shadow_enabled and style.cover_shadow_opacity else 0)
+    cover_gap = max(32, shadow_space + 12) if shadow_space else 32
+    beside_cover = has_cover and (style.details_placement == "beside_cover" or style.cover_placement != "auto")
+    cover_on_left = beside_cover and style.cover_placement != "right"
     sidebar_details = style.template == "Record sleeve" and not beside_cover
     if style.template == "Record sleeve":
         content_x = sidebar_width + min(64, margin)
@@ -433,22 +470,28 @@ def render_lyric_card(text, style, cover_image=None):
     cover_size = min(style.cover_size, sidebar_width - 2 * sidebar_padding) if sidebar_details else style.cover_size
     metadata_x = sidebar_padding if sidebar_details else content_x
     metadata_width = sidebar_width - 2 * sidebar_padding if sidebar_details else content_width
+    photo_rect = None
+    if style.template == "Mixtape":
+        photo_rect = QRectF(content_x, top_margin, content_width, 144)
+        top_margin += 180
     if has_cover and not sidebar_details and (style.template != "Polaroid" or beside_cover):
-        metadata_width -= cover_size + 32
+        metadata_width -= cover_size + cover_gap
     details, details_height = _song_details(style, metadata_width)
     cover_rect = None
-    photo_rect = None
     if style.template == "Polaroid":
         photo_height = min(cover_size, (style.height - top_margin - bottom_margin) * .32)
         photo_rect = QRectF(content_x, top_margin, cover_size if beside_cover else content_width, photo_height)
         if beside_cover:
             block_height = max(photo_height, details_height)
             photo_rect.moveTop(top_margin + (block_height - photo_height) / 2)
-            metadata_x += cover_size + 32
+            if cover_on_left:
+                metadata_x += cover_size + cover_gap
+            else:
+                photo_rect.moveLeft(content_x + content_width - cover_size)
             details_y = top_margin + (block_height - details_height) / 2
-            body_top = top_margin + block_height + 44
+            body_top = top_margin + block_height + max(44, shadow_space + 12)
         else:
-            details_y = photo_rect.bottom() + 20
+            details_y = photo_rect.bottom() + (max(20, shadow_space + 12) if shadow_space else 20)
             body_top = details_y + details_height + 32
         if has_cover:
             cover_rect = photo_rect
@@ -457,21 +500,26 @@ def render_lyric_card(text, style, cover_image=None):
         details_y = style.height - bottom_margin - details_height
         if has_cover:
             cover_rect = QRectF((sidebar_width - cover_size) / 2, top_margin, cover_size, cover_size)
-        if details and details_y < top_margin + (cover_size if has_cover else 208) + 32:
+        if details and details_y < top_margin + (cover_size if has_cover else 208) + cover_gap:
             raise ValueError("The song details and artwork are too tall for this template. Shorten the details or choose another template.")
         body_top = top_margin
         body_bottom = style.height - bottom_margin
     else:
         block_height = max(details_height, cover_size if has_cover else 0)
-        block_y = style.height - bottom_margin - block_height if style.template == "Spotlight" else top_margin
+        footer_details = style.template in ("Spotlight", "Ticket", "Streaming")
+        block_y = style.height - bottom_margin - block_height if footer_details else top_margin
         details_y = block_y + (block_height - details_height) / 2 if beside_cover else block_y
         if has_cover:
-            cover_x = content_x if beside_cover else content_x + content_width - cover_size
+            cover_x = content_x if cover_on_left else content_x + content_width - cover_size
             cover_rect = QRectF(cover_x, block_y + (block_height - cover_size) / 2, cover_size, cover_size)
-            if beside_cover:
-                metadata_x += cover_size + 32
-        body_top = top_margin + 120 if style.template == "Spotlight" else block_y + block_height + (54 if block_height else 34)
-        body_bottom = block_y - 48 if style.template == "Spotlight" else style.height - bottom_margin
+            if cover_on_left:
+                metadata_x += cover_size + cover_gap
+        if footer_details:
+            body_top = top_margin + (120 if style.template == "Spotlight" else 24)
+            body_bottom = block_y - max(48 if style.template == "Spotlight" else 64, shadow_space + 12)
+        else:
+            body_top = block_y + block_height + (max(54, shadow_space + 12) if block_height else 34)
+            body_bottom = style.height - bottom_margin
     if style.template == "Editorial":
         content_x += 48
         content_width -= 48
@@ -491,8 +539,10 @@ def render_lyric_card(text, style, cover_image=None):
         lyrics = _fitted_document(text.strip(), style, style.font_size, lyric_width,
                                   lyric_height, style.centered, style.line_spacing, styled=True, source=source)
 
+    lyrics_y = body_top + effect_top + (lyric_height - lyrics.size().height()) * style.vertical_position / 100
     result = card_background(style, colors)
     painter = QPainter(result)
+    painter.scale(style.export_scale, style.export_scale)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
@@ -533,20 +583,23 @@ def render_lyric_card(text, style, cover_image=None):
         else:
             paint_new_template(painter, style, colors, QRectF(content_x, body_top, content_width, body_height),
                                photo_rect, cover_image if has_cover else None)
+        if style.template == "Notebook":
+            paint_notebook_rules(painter, style, QRectF(content_x, body_top, content_width, body_height),
+                                 lyrics, lyrics_y, accent)
 
         for document, dx, dy, color_index, effects in details:
             painter.save()
             painter.setClipRect(QRectF(metadata_x, details_y + dy - TEXT_PAINT_PADDING,
                                       metadata_width, document.size().height() + 2 * TEXT_PAINT_PADDING))
-            _paint_lyrics(painter, document, metadata_x + dx, details_y + dy, colors[color_index], effects)
+            detail_color = style.title_color if color_index == 3 else style.credit_color
+            _paint_lyrics(painter, document, metadata_x + dx, details_y + dy, detail_color or colors[color_index], effects)
             painter.restore()
-        lyrics_y = body_top + effect_top + (lyric_height - lyrics.size().height()) * style.vertical_position / 100
         painter.save()
         painter.setClipRect(QRectF(content_x, body_top, content_width, body_height))
         _paint_lyrics(painter, lyrics, content_x + effect_left + lyric_offset_x, lyrics_y, foreground, style)
         painter.restore()
         if has_cover:
-            paint_cover(painter, cover_rect, cover_image)
+            paint_cover(painter, cover_rect, cover_image, style)
         if watermark is not None:
             painter.save()
             painter.setOpacity(style.watermark_opacity / 100)

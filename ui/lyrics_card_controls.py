@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.fonts import library_font
-from ui.lyrics_card_renderer import CARD_SIZES, CARD_THEMES, CARD_TEMPLATES, WATERMARK_POSITIONS, DETAILS_PLACEMENTS, WRITING_MODES, theme_colors
+from ui.lyrics_card_renderer import CARD_SIZES, CARD_QUALITIES, CARD_THEMES, CARD_TEMPLATES, WATERMARK_POSITIONS, DETAILS_PLACEMENTS, WRITING_MODES, theme_colors
 
 
 def _field(label, control):
@@ -142,9 +142,15 @@ class LyricsCardControlsMixin:
         self.size_combo = QComboBox()
         for label, size in CARD_SIZES.items():
             self.size_combo.addItem(label, size)
+        self.quality_combo = QComboBox()
+        self.quality_combo.setAccessibleName("Card quality")
+        for label, scale in CARD_QUALITIES.items():
+            self.quality_combo.addItem(label, scale)
+        self.quality_combo.setToolTip("Render text and decorations at 1×, 2×, or 3× resolution. Higher quality produces larger images and files; artwork detail depends on the source image.")
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(CARD_THEMES)
-        for label, control in (("Template", self.template_combo), ("Canvas size", self.size_combo), ("Theme", self.theme_combo)):
+        for label, control in (("Template", self.template_combo), ("Canvas size", self.size_combo),
+                               ("Quality", self.quality_combo), ("Theme", self.theme_combo)):
             card.addWidget(_field(label, control))
         self.custom_colors, colors, _ = _section(layout, "Custom colors", optional=True)
         self._colors = list(theme_colors(self.theme_combo.currentText(), self.template_combo.currentText()))
@@ -172,7 +178,7 @@ class LyricsCardControlsMixin:
 
     def _build_text_controls(self):
         layout = self._control_page("Text")
-        _, typography, _ = _section(layout, "Typography")
+        _, typography, _ = _section(layout, "Lyric typography")
         self.font_combo = QFontComboBox()
         self.font_combo.setCurrentFont(library_font(QApplication.font()))
         typography.addWidget(_field("Font", self.font_combo))
@@ -210,6 +216,31 @@ class LyricsCardControlsMixin:
             self.text_style_buttons[key] = button
         emphasis_layout.addStretch()
         typography.addWidget(emphasis)
+        self.detail_typography = {}
+        self._detail_colors = {}
+        for key, label, color_index in (("title", "Title typography", 3), ("credit", "Artist / album typography", 4)):
+            group, content, _ = _section(layout, label, optional=True)
+            group.setToolTip("Customize this text independently. Turn off to use the template's typography.")
+            font = QFontComboBox()
+            font.setCurrentFont(self.font_combo.currentFont())
+            font.setAccessibleName(label + " font")
+            size = self._spin(key + "_font_size", 0, " px")
+            size.setSpecialValueText("Template default")
+            size.setAccessibleName(label + " size")
+            custom_color = QCheckBox("Custom color")
+            color = QPushButton()
+            color.setAccessibleName(label + " color")
+            self._detail_colors[key] = self._colors[color_index]
+            setattr(self, key + "_font_size", size)
+            self.detail_typography[key] = (group, font, custom_color, color)
+            content.addWidget(_field("Font", font))
+            content.addWidget(_field("Maximum size", size))
+            content.addWidget(_row(custom_color, color))
+            font.currentFontChanged.connect(self.schedule_refresh)
+            group.toggled.connect(self.schedule_refresh)
+            custom_color.toggled.connect(self._sync_detail_colors)
+            color.clicked.connect(lambda _checked=False, role=key: self.choose_detail_color(role))
+        self._sync_detail_colors()
         _, details, _ = _section(layout, "Song details")
         metadata = {}
         for entry in self.editor._document_metadata:
@@ -237,7 +268,7 @@ class LyricsCardControlsMixin:
         self.details_placement = QComboBox()
         for label, value in DETAILS_PLACEMENTS.items():
             self.details_placement.addItem(label, value)
-        self.details_placement.setToolTip("Beside cover groups the artwork and song details. Without available artwork, details appear below the title.")
+        self.details_placement.setToolTip("Beside cover groups the artwork and song details. Without available artwork, details appear below the title. Choose Template default for Artwork placement to use this setting.")
         self.details_placement.currentIndexChanged.connect(self.schedule_refresh)
         details.addWidget(_field("Details placement", self.details_placement))
         _, lyrics, _ = _section(layout, "Lyrics")
@@ -287,6 +318,35 @@ class LyricsCardControlsMixin:
         self.retry_cover_button.clicked.connect(self.album_art.retry)
         self.retry_cover_button.setEnabled(False)
         cover.addWidget(_field("Cover size", self.cover_size))
+        self.cover_size.setToolTip("Size of the artwork area. Shadows extend outside it without shrinking the image.")
+        self.cover_placement = QComboBox()
+        for label, value in (("Template default", "auto"), ("Left of song details", "left"),
+                             ("Right of song details", "right")):
+            self.cover_placement.addItem(label, value)
+        self.cover_placement.setToolTip("Place artwork beside the song details, or keep the template's original placement.")
+        self.cover_placement.currentIndexChanged.connect(self.schedule_refresh)
+        cover.addWidget(_field("Placement", self.cover_placement))
+        self.cover_radius = self._spin("cover_radius", 0, " px")
+        self.cover_radius.setToolTip("Zero keeps square corners. Larger values round the artwork corners.")
+        self.cover_border_width = self._spin("cover_border_width", 0, " px")
+        self.cover_border_width.setToolTip("Zero turns the artwork border off.")
+        cover.addWidget(_row(_field("Corner radius", self.cover_radius),
+                            _field("Border width", self.cover_border_width)))
+        self._cover_border_color = "#ffffff"
+        self.cover_border_color_button = QPushButton()
+        self.cover_border_color_button.setAccessibleName("Artwork border color")
+        self.cover_border_color_button.clicked.connect(self.choose_cover_border_color)
+        self.cover_border_width.valueChanged.connect(self._sync_cover_border)
+        cover.addWidget(_field("Border color", self.cover_border_color_button))
+        self._sync_cover_border()
+        self.cover_shadow_enabled, shadow, _ = _section(cover, "Artwork shadow", optional=True)
+        self.cover_shadow_opacity = self._spin("cover_shadow_opacity", 35, "%")
+        self.cover_shadow_blur = self._spin("cover_shadow_blur", 8, " px")
+        self.cover_shadow_offset_x = self._spin("cover_shadow_offset_x", 0, " px")
+        self.cover_shadow_offset_y = self._spin("cover_shadow_offset_y", 8, " px")
+        shadow.addWidget(_row(_field("Opacity", self.cover_shadow_opacity), _field("Blur", self.cover_shadow_blur)))
+        shadow.addWidget(_row(_field("Offset X", self.cover_shadow_offset_x), _field("Offset Y", self.cover_shadow_offset_y)))
+        self.cover_shadow_enabled.toggled.connect(self.schedule_refresh)
         self.album_cover_status = QLabel(self.album_art.message)
         self.album_cover_status.setWordWrap(True)
         self.album_cover_status.setMinimumWidth(0)

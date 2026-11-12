@@ -10,11 +10,15 @@ from ui.lyrics_card_renderer import CardStyle, CARD_SIZES, CARD_THEMES, CARD_TEM
 
 PRESETS_KEY = "lyrics_card_presets"
 STYLE_RANGES = {
+    "title_font_size": (0, 96), "credit_font_size": (0, 96),
     "font_size": (20, 96), "gradient_angle": (0, 360), "image_blur": (0, 40),
     "image_dim": (0, 90), "image_zoom": (100, 250), "crop_x": (0, 100),
     "crop_y": (0, 100), "padding": (48, 160), "line_spacing": (100, 200),
     "vertical_position": (0, 100),
     "cover_size": (96, 240),
+    "cover_radius": (0, 120), "cover_border_width": (0, 12),
+    "cover_shadow_opacity": (0, 100), "cover_shadow_blur": (0, 16),
+    "cover_shadow_offset_x": (-20, 20), "cover_shadow_offset_y": (-20, 20),
     "stroke_width": (1, 12), "shadow_opacity": (0, 100), "shadow_blur": (0, 30),
     "shadow_offset_x": (-40, 40), "shadow_offset_y": (-40, 40),
     "watermark_width": (80, 320), "watermark_opacity": (0, 100),
@@ -29,12 +33,16 @@ def style_from_preset(values):
         raise ValueError("Invalid card preset.")
     defaults = CardStyle()
     result = {}
+    scale = values.get("export_scale")
+    if type(scale) is int and scale in (1, 2, 3):
+        result["export_scale"] = scale
     for key, choices in (("theme", CARD_THEMES), ("template", CARD_TEMPLATES),
                          ("background_mode", ("Gradient", "Solid", "Image")),
                          ("alignment", ("left", "center", "right")),
                          ("writing_mode", WRITING_MODES.values()),
                          ("ruby_position", RUBY_POSITIONS),
                          ("details_placement", DETAILS_PLACEMENTS.values()),
+                         ("cover_placement", ("auto", "left", "right")),
                          ("watermark_position", WATERMARK_POSITIONS)):
         value = values.get(key)
         if isinstance(value, str) and value in choices:
@@ -46,16 +54,16 @@ def style_from_preset(values):
         value = values.get(key, getattr(defaults, key))
         if type(value) is int:
             result[key] = max(minimum, min(maximum, value))
-    for key, maximum in (("font_family", 200), ("image_path", 4096)):
+    for key, maximum in (("font_family", 200), ("title_font_family", 200), ("credit_font_family", 200), ("image_path", 4096)):
         value = values.get(key)
         if isinstance(value, str):
             result[key] = value[:maximum]
     for key in ("centered", "show_album_cover", "bold", "italic", "underline", "strikeout",
                 "stroke_enabled", "shadow_enabled", "watermark_enabled", "preserve_lrcx_formatting", "include_furigana",
-                "ruby_inherit_stroke", "ruby_inherit_shadow"):
+                "ruby_inherit_stroke", "ruby_inherit_shadow", "cover_shadow_enabled"):
         if isinstance(values.get(key), bool):
             result[key] = values[key]
-    for key in ("stroke_color", "shadow_color", "ruby_color"):
+    for key in ("stroke_color", "shadow_color", "ruby_color", "title_color", "credit_color", "cover_border_color"):
         value = values.get(key)
         if isinstance(value, str) and QColor(value).isValid():
             result[key] = QColor(value).name()

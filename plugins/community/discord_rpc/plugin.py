@@ -40,6 +40,8 @@ LITTERBOX_MAX_UPLOAD_BYTES = 1_000_000
 # Bound decoding work independently of the much smaller upload limits.
 LITTERBOX_MAX_INPUT_BYTES = 20_000_000
 LITTERBOX_MAX_INPUT_PIXELS = 25_000_000
+UGUU_UPLOAD_URL = "https://uguu.se/upload"
+UGUU_EXPIRY_SECONDS = 3 * 60 * 60
 
 MUSICBRAINZ_API = "https://musicbrainz.org/ws/2"
 MUSICBRAINZ_USER_AGENT = "LRCPlus/1.0 (Discord Rich Presence plugin)"
@@ -821,7 +823,45 @@ class DiscordRpcPlugin:
         except OSError:
             return str(path.resolve())
 
+    @staticmethod
+    def _upload_cover_to_litterbox(image_data, filename, mime):
+        response = requests.post(
+            LITTERBOX_UPLOAD_URL,
+            data={"reqtype": "fileupload", "time": LITTERBOX_EXPIRY},
+            files={"fileToUpload": (filename, image_data, mime)},
+            headers={"User-Agent": "LRCPlus/1.0 Discord-RPC-Plugin"},
+            timeout=30,
+        )
+        if not response.ok:
+            raise RuntimeError(f"Litterbox returned HTTP {response.status_code}")
+        url = response.text.strip()
+        if not url.startswith("https://"):
+            raise RuntimeError("Litterbox returned an invalid cover URL")
+        return url
+
+    @staticmethod
+    def _upload_cover_to_uguu(image_data, filename, mime):
+        response = requests.post(
+            UGUU_UPLOAD_URL,
+            files={"files[]": (filename, image_data, mime)},
+            headers={"User-Agent": "LRCPlus/1.0 Discord-RPC-Plugin"},
+            timeout=30,
+        )
+        if not response.ok:
+            raise RuntimeError(f"Uguu returned HTTP {response.status_code}")
+        try:
+            result = response.json()
+            if result.get("success") is not True:
+                raise ValueError("Upload rejected")
+            url = result["files"][0]["url"]
+            if not isinstance(url, str) or not url.startswith("https://"):
+                raise ValueError("Invalid URL")
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as error:
+            raise RuntimeError("Uguu returned an invalid upload response") from error
+        return url
+
     def _upload_embedded_cover(self, path: Path):
+        # Retain the legacy cache keys for both hosts and existing saved URLs.
         key = f"litterbox:{self._file_key(path)}"
         if key in self._cover_cache:
             return self._cover_cache[key]
@@ -834,7 +874,7 @@ class DiscordRpcPlugin:
             expires_at = float(cached.get("expires_at", 0))
             if isinstance(url, str) and url.startswith("https://") and expires_at - now > LITTERBOX_CACHE_SAFETY_SECONDS:
                 self._cover_cache[key] = url
-                self.log("Reusing cached Litterbox album cover URL.")
+                self.log("Reusing cached uploaded album cover URL.")
                 return url
 
         extracted = self._extract_cover(path)
@@ -853,51 +893,29 @@ class DiscordRpcPlugin:
         filename = f"lrcplus-cover{extension}"
         mime = "image/png" if extension == ".png" else "image/jpeg"
 
-        try:
-            response = requests.post(
-                LITTERBOX_UPLOAD_URL,
-                data={"reqtype": "fileupload", "time": LITTERBOX_EXPIRY},
-                files={
-                    "fileToUpload": (
-                        filename,
-                        image_data,
-                        mime,
-                    )
-                },
-                headers={
-                    "User-Agent": "LRCPlus/1.0 Discord-RPC-Plugin"
-                },
-                timeout=30,
-            )
-
-            if not response.ok:
-                raise RuntimeError(
-                    f"Litterbox returned HTTP {response.status_code}: "
-                    f"{response.text.strip()!r}"
-                )
-
-            url = response.text.strip()
-            if not url.startswith("https://"):
-                raise RuntimeError(
-                    f"Unexpected Litterbox response: {url!r}"
-                )
-
+        for host, upload, expiry in (
+            ("Litterbox", self._upload_cover_to_litterbox, LITTERBOX_EXPIRY_SECONDS),
+            ("Uguu", self._upload_cover_to_uguu, UGUU_EXPIRY_SECONDS),
+        ):
+            try:
+                url = upload(image_data, filename, mime)
+            except Exception as error:
+                self.log(f"{host} album cover upload failed: {error!r}")
+                continue
             self._cover_cache[key] = url
             self._persistent_cover_cache[persistent_key] = {
                 "url": url,
-                "expires_at": time.time() + LITTERBOX_EXPIRY_SECONDS,
+                "expires_at": time.time() + expiry,
             }
             self._save_persistent_cover_cache()
             self.log(
-                f"Uploaded embedded album cover to Litterbox "
-                f"(expires in {LITTERBOX_EXPIRY})."
+                f"Uploaded embedded album cover to {host} "
+                f"(expires in {expiry // 3600}h)."
             )
             return url
 
-        except Exception as error:
-            self.log(f"Album cover upload failed: {error!r}")
-            self._cover_cache[key] = None
-            return None
+        self._cover_cache[key] = None
+        return None
 
     def _resolve_cover(self, path: Path, metadata):
         # Album covers only: MusicBrainz/Cover Art Archive first, then the
@@ -1229,7 +1247,7 @@ class DiscordRpcPlugin:
             self.settings.get("upload_embedded_artwork", True)
         )
         widget.upload_embedded_artwork.setToolTip(
-            "Uploads artwork embedded in the audio file to Litterbox. The link expires after 12 hours."
+            "Uploads embedded artwork to Litterbox (12 hours), with Uguu as a fallback (3 hours)."
         )
         layout.addWidget(widget.upload_embedded_artwork)
 

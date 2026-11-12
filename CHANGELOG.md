@@ -51,6 +51,14 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 #### Lyric image cards
 
+- Preserve album-cover size when enabling its shadow. Paint shadows outside the image bounds and reserve spacing between artwork and text.
+
+- Add album-art corner radius, border width and color, an optional soft shadow with opacity, blur, and offsets, and placement to the left or right of song details. Keep template placement as the default, preserve artwork aspect ratio, keep shadows clear of text, and save styling with presets at every export quality.
+
+- Add **Quality** choices for Standard (1×), High (2×), and Ultra (3×) rendering. Repaint text, decorations, and effects at the chosen resolution while preserving layout, show the resulting pixel dimensions, and retain quality in presets, PNG exports, and clipboard images.
+
+- Add **Story (1080 × 1920)** canvas size and independent title and artist/album typography in the **Text** tab. Customize each font, maximum size, and color, or turn overrides off to restore template typography. Save the new settings with card presets while preserving older preset behavior.
+
 - Add image viewer. Click on the outputted image. click on it... click on it :)... click it. clcik. ckcc
 - Add an integrated **Share > Image card** page to the lyrics editor, alongside text sharing. Build an excerpt from explicitly checked lines in document order, including when the sidebar is sorted differently; use **Select All** to share the full song.
 - Preview the finished card while editing its style, copy the full-resolution image to the clipboard, or export it as PNG. Choose square (1080 x 1080), portrait (1080 x 1350), or landscape (1920 x 1080) output; the preview scales to the available space without changing export resolution.
@@ -59,6 +67,9 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 - Add **Polaroid**, with a paper frame, photo area, and lyrics below the artwork. Place song details below the photo or beside the cover; use a themed photo treatment when artwork is unavailable.
 - Add **Editorial**, with an oversized song heading, divider rules, and offset lyric text. Keep the composition usable with or without an album cover.
 - Add **Cinema**, with letterbox bars, lower-positioned lyrics, and a shaded, blurred artwork backdrop. With Gradient fill, reuse available album artwork for the backdrop; Solid and Image fill retain the chosen background.
+- Add **Notebook**, with ruled lines and binding marks; **Ticket**, with perforations and song details below the lyrics; and **Art Deco**, with a double frame and stepped corner ornaments. All three support custom backgrounds, artwork, and saved presets. Notebook and Ticket start in the **Paper** theme when selected manually.
+- Align Notebook's horizontal rules to the final lyric baselines, following wrapped lines, fitted font size, line spacing, translations, furigana, and vertical lyric position.
+- Add **Streaming**, inspired by rounded music-sharing cards, with lyrics above a waveform and song details; **Receipt**, with cut-paper edges and print rules; and **Mixtape**, with a cassette illustration above the song heading. Receipt and Mixtape start in **Paper**. Preserve editable themes, artwork, backgrounds, text effects, and preset round trips for all three.
 - Start Polaroid and Editorial in the **Paper** theme when selected manually. Allow theme changes afterward and restore the exact saved theme when loading a preset.
 - Offer **Midnight**, **Paper**, and **Rose** themes across all six templates. Override background, gradient end, lyrics, title, artist/album, and accent colors individually, or return to the theme colors.
 - Customize Solid, Gradient, and Image backgrounds. Adjust gradient angle and background-image crop position, zoom, blur, and dimming; preserve image proportions while filling the canvas.

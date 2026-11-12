@@ -233,4 +233,75 @@ def test_failed_upload_is_not_retried_for_every_presence_update(upload_plugin, t
     monkeypatch.setattr(rpc_module.requests, "post", fail_upload)
     assert upload_plugin._upload_embedded_cover(track) is None
     assert upload_plugin._upload_embedded_cover(track) is None
-    assert len(attempts) == 1
+    assert len(attempts) == 2  # One attempt per host, then session-cached failure.
+
+
+@pytest.mark.parametrize("failure", ["http", "connection", "invalid_url"])
+def test_uguu_fallback_upload_and_persistent_cache(upload_plugin, tmp_path, monkeypatch, failure):
+    track = tmp_path / "track.mp3"
+    track.write_bytes(b"audio")
+    monkeypatch.setattr(upload_plugin, "_extract_cover", lambda path: (cover_bytes(), ".png"))
+    monkeypatch.setattr(rpc_module.time, "time", lambda: 1000)
+    logs, calls = [], []
+    monkeypatch.setattr(upload_plugin, "log", logs.append)
+    url = "https://files.uguu.se/cover.png"
+
+    def post(endpoint, **kwargs):
+        calls.append((endpoint, kwargs))
+        if endpoint == rpc_module.LITTERBOX_UPLOAD_URL:
+            if failure == "connection":
+                raise rpc_module.requests.ConnectionError("Host unavailable")
+            return SimpleNamespace(ok=failure != "http", status_code=500,
+                                   text="<html>Internal Server Error</html>")
+        return SimpleNamespace(ok=True, json=lambda: {"success": True, "files": [{"url": url}]})
+
+    monkeypatch.setattr(rpc_module.requests, "post", post)
+    assert upload_plugin._upload_embedded_cover(track) == url
+    assert [endpoint for endpoint, _ in calls] == [rpc_module.LITTERBOX_UPLOAD_URL, rpc_module.UGUU_UPLOAD_URL]
+    primary = calls[0][1]["files"]["fileToUpload"]
+    assert calls[1][1]["files"]["files[]"] == primary
+    assert calls[1][1]["timeout"] == 30
+    cached = upload_plugin._persistent_cover_cache[upload_plugin._persistent_litterbox_key(track)]
+    assert cached == {"url": url, "expires_at": 1000 + 3 * 60 * 60}
+    assert len(upload_plugin.saved_caches) == 1
+    assert not any("<html>" in message for message in logs)
+    # Simulate a new session: reuse a valid saved fallback URL without uploading.
+    upload_plugin._cover_cache.clear()
+    assert upload_plugin._upload_embedded_cover(track) == url
+    assert len(calls) == 2
+    assert track.read_bytes() == b"audio"
+
+
+@pytest.mark.parametrize("payload", [
+    None, [], {"success": False}, {"success": True, "files": []},
+    {"success": True, "files": [{"url": "http://unsafe.example/cover.png"}]},
+    {"success": True, "files": [{"url": None}]},
+])
+def test_invalid_uguu_response_is_cached_as_failure(upload_plugin, tmp_path, monkeypatch, payload):
+    track = tmp_path / "track.mp3"
+    track.touch()
+    monkeypatch.setattr(upload_plugin, "_extract_cover", lambda path: (cover_bytes(), ".png"))
+    calls = []
+
+    def post(endpoint, **kwargs):
+        calls.append(endpoint)
+        if endpoint == rpc_module.LITTERBOX_UPLOAD_URL:
+            return SimpleNamespace(ok=False, status_code=500)
+        return SimpleNamespace(ok=True, json=lambda: payload)
+
+    monkeypatch.setattr(rpc_module.requests, "post", post)
+    assert upload_plugin._upload_embedded_cover(track) is None
+    assert upload_plugin._upload_embedded_cover(track) is None
+    assert len(calls) == 2
+    assert upload_plugin.saved_caches == []
+
+
+@pytest.mark.parametrize("failure", ["http", "invalid_json"])
+def test_uguu_transport_errors(failure, monkeypatch):
+    def invalid_json():
+        raise ValueError("Not JSON")
+
+    response = SimpleNamespace(ok=failure != "http", status_code=503, json=invalid_json)
+    monkeypatch.setattr(rpc_module.requests, "post", lambda *args, **kwargs: response)
+    with pytest.raises(RuntimeError, match="Uguu returned"):
+        DiscordRpcPlugin._upload_cover_to_uguu(b"image", "cover.png", "image/png")

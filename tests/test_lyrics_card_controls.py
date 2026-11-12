@@ -19,6 +19,49 @@ def open_card(editor, qapp):
     return card
 
 
+def test_separate_typography_and_story_export_round_trip_through_presets(editor, qapp, monkeypatch, tmp_path):
+    from PySide6.QtGui import QColor, QFontDatabase
+    import ui.lyrics_share_card as card_module
+    from ui.lyrics_card_presets import save_card_preset
+    card = open_card(editor, qapp)
+    for key, color, size in (("title", "#ff1234", 48), ("credit", "#12ff34", 24)):
+        group, font, custom, _ = card.detail_typography[key]
+        group.setChecked(True)
+        font.setCurrentFont(QFont(QFontDatabase.families()[0 if key == "title" else -1]))
+        getattr(card, key + "_font_size").setValue(size)
+        custom.setChecked(True)
+        monkeypatch.setattr(card_module.QColorDialog, "getColor", lambda *args, value=color: QColor(value))
+        card.choose_detail_color(key)
+    card.size_combo.setCurrentIndex(next(index for index in range(card.size_combo.count())
+                                        if tuple(card.size_combo.itemData(index)) == (1080, 1920)))
+    style = card.current_style()
+    assert style.title_font_size == 48 and style.credit_font_size == 24
+    assert style.title_color == "#ff1234" and style.credit_color == "#12ff34"
+    assert (style.width, style.height) == (1080, 1920)
+    save_card_preset("Typography", style)
+    card._reload_presets()
+    for group, _, _, _ in card.detail_typography.values():
+        group.setChecked(False)
+    assert card.current_style().title_font_size == 0
+    assert card.current_style().credit_color == ""
+    card.size_combo.setCurrentIndex(0)
+    card.preset_combo.setCurrentText("Typography")
+    assert card.current_style() == style
+    card.refresh()
+    target = tmp_path / "story.png"
+    monkeypatch.setattr(card_module.QFileDialog, "getSaveFileName", lambda *args: (str(target), ""))
+    card.export_image()
+    exported = QImage(str(target))
+    assert (exported.width(), exported.height()) == (1080, 1920)
+    assert exported.convertToFormat(card._image.format()) == card._image
+    # Older presets clear the new overrides and recover template defaults.
+    save_card_preset("Original", card_module.CardStyle())
+    card._reload_presets()
+    card.preset_combo.setCurrentText("Original")
+    assert not any(group.isChecked() for group, _, _, _ in card.detail_typography.values())
+    assert card.current_style().title_font_family == ""
+
+
 def test_expanded_settings_fit_narrow_pane_and_leave_export_visible(editor, qapp, tmp_path):
     card = open_card(editor, qapp)
     image = QImage(64, 64, QImage.Format.Format_RGB32)
@@ -28,7 +71,9 @@ def test_expanded_settings_fit_narrow_pane_and_leave_export_visible(editor, qapp
     card.image_path_edit.setText(str(path))
     card.background_mode.setCurrentText("Image")
     for group in (card.custom_colors, card.show_album_cover, card.stroke_enabled,
-                  card.shadow_enabled, card.watermark_enabled):
+                  card.shadow_enabled, card.watermark_enabled, card.cover_shadow_enabled):
+        group.setChecked(True)
+    for group, _, _, _ in card.detail_typography.values():
         group.setChecked(True)
     card.refresh()
 
@@ -46,7 +91,8 @@ def test_expanded_settings_fit_narrow_pane_and_leave_export_visible(editor, qapp
     card.options_tabs.setCurrentWidget(card.control_scrolls["Text"])
     qapp.processEvents()
     width = card.control_scrolls["Text"].viewport().width()
-    for field in (card.title_edit, card.credit_edit, card.font_combo):
+    for field in (card.title_edit, card.credit_edit, card.font_combo,
+                  *(font for _, font, _, _ in card.detail_typography.values())):
         assert field.width() >= width - 60
 
 

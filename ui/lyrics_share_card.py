@@ -156,7 +156,7 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         layout.addWidget(self.controls_splitter, 1)
         self.copy_button.setEnabled(False)
         self.save_button.setEnabled(False)
-        for combo in (self.template_combo, self.size_combo, self.theme_combo, self.alignment_combo):
+        for combo in (self.template_combo, self.size_combo, self.quality_combo, self.theme_combo, self.alignment_combo):
             combo.currentIndexChanged.connect(self.schedule_refresh)
         self.font_combo.currentFontChanged.connect(self.schedule_refresh)
         self.font_size.valueChanged.connect(self.schedule_refresh)
@@ -170,6 +170,7 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         self.delete_preset_button.clicked.connect(self.delete_preset)
         self._reload_presets()
         self.show_album_cover.toggled.connect(self._album_cover_toggled)
+        self.cover_placement.currentIndexChanged.connect(self._sync_details_placement)
         self._sync_details_placement()
         self.album_art.changed.connect(self._album_cover_changed)
 
@@ -179,12 +180,14 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         self._configure_album_art()
         self.schedule_refresh()
 
-    def _sync_details_placement(self):
+    def _sync_details_placement(self, *_args):
         item = self.details_placement.model().item(self.details_placement.findData("beside_cover"))
         item.setEnabled(self.show_album_cover.isChecked())
+        self.details_placement.setEnabled(self.cover_placement.currentData() == "auto")
 
     def _template_changed(self, *_args):
-        if not self._updating_style and self.template_combo.currentText() in ("Polaroid", "Editorial"):
+        if not self._updating_style and self.template_combo.currentText() in (
+                "Polaroid", "Editorial", "Notebook", "Ticket", "Receipt", "Mixtape"):
             self.theme_combo.setCurrentText("Paper")
         self._sync_color_controls()
 
@@ -244,7 +247,34 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
             button.setEnabled(self.custom_colors.isChecked())
         if hasattr(self, "ruby_color_button"):
             self._sync_ruby_color()
+        if hasattr(self, "detail_typography"):
+            self._sync_detail_colors()
         self.schedule_refresh()
+
+    def _sync_detail_colors(self, *_args):
+        for key, (_, _, custom, button) in self.detail_typography.items():
+            if not custom.isChecked():
+                self._detail_colors[key] = self._colors[3 if key == "title" else 4]
+            _color_swatch(button, self._detail_colors[key])
+            button.setEnabled(custom.isChecked())
+        self.schedule_refresh()
+
+    def _sync_cover_border(self, *_args):
+        _color_swatch(self.cover_border_color_button, self._cover_border_color)
+        self.cover_border_color_button.setEnabled(self.cover_border_width.value() > 0)
+        self.schedule_refresh()
+
+    def choose_cover_border_color(self):
+        color = QColorDialog.getColor(QColor(self._cover_border_color), self, "Choose Artwork Border Color")
+        if color.isValid():
+            self._cover_border_color = color.name()
+            self._sync_cover_border()
+
+    def choose_detail_color(self, key):
+        color = QColorDialog.getColor(QColor(self._detail_colors[key]), self, "Choose Text Color")
+        if color.isValid():
+            self._detail_colors[key] = color.name()
+            self._sync_detail_colors()
 
     def _sync_ruby_positions(self, *_args):
         previous = self.ruby_position.currentData()
@@ -355,12 +385,21 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         try:
             self.template_combo.setCurrentText(style.template)
             self.theme_combo.setCurrentText(style.theme)
+            self.quality_combo.setCurrentIndex(self.quality_combo.findData(style.export_scale))
             for index in range(self.size_combo.count()):
                 if tuple(self.size_combo.itemData(index)) == (style.width, style.height):
                     self.size_combo.setCurrentIndex(index)
                     break
             self.font_combo.setCurrentFont(QFont(style.font_family) if style.font_family else library_font(QApplication.font()))
             self.font_size.setValue(style.font_size)
+            for key, (group, font, custom, _) in self.detail_typography.items():
+                family = getattr(style, key + "_font_family")
+                size = getattr(style, key + "_font_size")
+                color = getattr(style, key + "_color")
+                group.setChecked(bool(family or size or color))
+                font.setCurrentFont(QFont(family) if family else self.font_combo.currentFont())
+                custom.setChecked(bool(color))
+                self._detail_colors[key] = color or self._colors[3 if key == "title" else 4]
             alignment = style.alignment or ("center" if style.centered else "left")
             self.alignment_combo.setCurrentIndex(self.alignment_combo.findData(alignment))
             self.writing_mode.setCurrentIndex(self.writing_mode.findData(style.writing_mode))
@@ -374,6 +413,9 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
                 self._effect_colors[key] = getattr(style, key)
             self._sync_effect_colors()
             self.show_album_cover.setChecked(style.show_album_cover)
+            self.cover_placement.setCurrentIndex(self.cover_placement.findData(style.cover_placement))
+            self.cover_shadow_enabled.setChecked(style.cover_shadow_enabled)
+            self._cover_border_color = style.cover_border_color
             self.details_placement.setCurrentIndex(self.details_placement.findData(style.details_placement))
             self.preserve_lrcx_formatting.setChecked(style.preserve_lrcx_formatting)
             self.include_furigana.setChecked(style.include_furigana)
@@ -385,6 +427,7 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
             self._sync_ruby_color()
             for key in STYLE_RANGES:
                 getattr(self, key).setValue(getattr(style, key))
+            self._sync_cover_border()
             self.custom_colors.setChecked(bool(style.colors))
             if style.colors:
                 self._colors = list(style.colors)
@@ -412,8 +455,16 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
 
     def current_style(self):
         width, height = self.size_combo.currentData()
+        details = {}
+        for key, (group, font, custom, _) in self.detail_typography.items():
+            enabled = group.isChecked()
+            details[key + "_font_family"] = font.currentFont().family() if enabled else ""
+            details[key + "_font_size"] = getattr(self, key + "_font_size").value() if enabled else 0
+            details[key + "_color"] = self._detail_colors[key] if enabled and custom.isChecked() else ""
         return CardStyle(
+            **details,
             width=width, height=height, theme=self.theme_combo.currentText(),
+            export_scale=self.quality_combo.currentData(),
             font_family=self.font_combo.currentFont().family(), font_size=self.font_size.value(),
             centered=self.alignment_combo.currentIndex() == 1,
             alignment=self.alignment_combo.currentData(),
@@ -425,6 +476,9 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
             title=self.title_edit.text(), credit=self.credit_edit.text(), album=self.album_edit.text(),
             details_placement=self.details_placement.currentData(), template=self.template_combo.currentText(),
             show_album_cover=self.show_album_cover.isChecked(),
+            cover_placement=self.cover_placement.currentData(),
+            cover_shadow_enabled=self.cover_shadow_enabled.isChecked(),
+            cover_border_color=self._cover_border_color,
             preserve_lrcx_formatting=self.preserve_lrcx_formatting.isChecked(),
             include_furigana=self.include_furigana.isChecked(),
             ruby_position=self.ruby_position.currentData(),
@@ -433,7 +487,8 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
             ruby_inherit_shadow=self.ruby_inherit_shadow.isChecked(),
             colors=tuple(self._colors) if self.custom_colors.isChecked() else (),
             background_mode=self.background_mode.currentText(), image_path=self.image_path_edit.text(),
-            **{key: getattr(self, key).value() for key in STYLE_RANGES if key != "font_size"},
+            **{key: getattr(self, key).value() for key in STYLE_RANGES
+               if key not in ("font_size", "title_font_size", "credit_font_size")},
         )
 
     def schedule_refresh(self, *_args):
@@ -488,7 +543,7 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         self.copy_button.setEnabled(not self.album_art.loading)
         self.save_button.setEnabled(not self.album_art.loading)
         count = len(lines)
-        self.preview_details.setText(f"{style.width} × {style.height} · {count} {'line' if count == 1 else 'lines'}")
+        self.preview_details.setText(f"{self._image.width()} × {self._image.height()} · {count} {'line' if count == 1 else 'lines'}")
         self.status.setText(self.album_art.message if self.album_art.loading else
                             "Ready to share. Long excerpts shrink to fit.")
 

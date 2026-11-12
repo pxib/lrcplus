@@ -33,7 +33,9 @@ The preview uses the current track when available and sample text otherwise.
 
 Lyric updates retain a five-second minimum cooldown. Playback progress appears
 only while playing. Artwork comes from MusicBrainz/Cover Art Archive or embedded
-audio artwork uploaded to Litterbox, according to your existing artwork settings.
+audio artwork uploaded to Litterbox, with Uguu as a fallback if the upload fails,
+according to your existing artwork settings. Litterbox links expire after 12 hours;
+Uguu links expire after 3 hours. Uploaded URLs are cached with their host's lifetime.
 The lyrics editor's **Share > Image card > Artwork > Album cover** option can reuse
 an already-resolved cover through the `discord_rpc.album_artwork` service. The
 service only reads the cover cache and reports pending resolution; it starts no
@@ -61,6 +63,7 @@ Chinese is an easter egg and is not listed in the language selector.
 
 A placeholder also appears while artwork resolves in the background, then gives
 way to the real cover. The language refreshes when lyrics arrive during playback,
-even with lyric sharing disabled. Failed Litterbox uploads are remembered for the
-session to avoid repeated attempts. The placeholder URLs work independently
-of MusicBrainz and Litterbox and require no Discord application asset uploads.
+even with lyric sharing disabled. If both upload hosts fail, the failure is
+remembered for the session to avoid repeated attempts. The placeholder URLs work
+independently of MusicBrainz and the upload hosts and require no Discord
+application asset uploads.

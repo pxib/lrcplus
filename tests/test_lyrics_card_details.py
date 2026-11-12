@@ -121,3 +121,35 @@ def test_details_controls_require_cover_option_and_preserve_album_on_preset_load
     assert card.current_style().album == "Current album"
     assert card.show_album_cover.isChecked()
     assert beside.isEnabled()
+
+
+def test_metadata_typography_changes_fonts_sizes_and_colors_independently(qapp, monkeypatch):
+    from PySide6.QtGui import QFontDatabase
+    families = QFontDatabase.families()
+    title_family, credit_family = families[0], families[-1]
+    captured = {}
+    def capture(painter, document, x, y, color, style):
+        captured[document.toPlainText()] = (document.defaultFont().family(),
+                                           document.defaultFont().pixelSize(), color)
+    monkeypatch.setattr(renderer, "_paint_lyrics", capture)
+    style = CardStyle(title="Title", credit="Artist", font_size=56,
+                      title_font_family=title_family, title_font_size=48, title_color="#ff1234",
+                      credit_font_family=credit_family, credit_font_size=8, credit_color="#12ff34")
+    render_lyric_card("Lyrics", style)
+    assert captured["Title"] == (title_family, 48, "#ff1234")
+    assert captured["Artist"] == (credit_family, 8, "#12ff34")
+    assert captured["Lyrics"][1:] == (56, renderer.theme_colors(style.theme, style.template)[2])
+
+
+def test_typography_presets_validate_new_fields():
+    style = style_from_preset({"title_font_family": "A" * 250, "credit_font_family": [],
+                              "title_font_size": 500, "credit_font_size": True,
+                              "title_color": "bad-color", "credit_color": "red",
+                              "width": 1080, "height": 1920})
+    assert len(style.title_font_family) == 200
+    assert style.credit_font_family == ""
+    assert style.title_font_size == 96
+    assert style.credit_font_size == 0
+    assert style.title_color == ""
+    assert style.credit_color == "#ff0000"
+    assert (style.width, style.height) == (1080, 1920)

@@ -8,9 +8,11 @@ import ui.lyrics_card_renderer as renderer
 import ui.lyrics_share_card as card_module
 from ui.lyrics_card_renderer import CardStyle, render_lyric_card
 from ui.lyrics_card_presets import load_card_presets
+from ui.lyrics_card_text import CardLyrics
 
 
-NEW_TEMPLATES = ("Polaroid", "Editorial", "Cinema")
+NEW_TEMPLATES = ("Polaroid", "Editorial", "Cinema", "Notebook", "Ticket", "Art Deco",
+                 "Streaming", "Receipt", "Mixtape")
 
 
 def solid_image(color):
@@ -27,7 +29,7 @@ def test_new_template_preview_export_and_preset_keep_explicit_theme(editor, monk
     editor.select_all_share_lines()
     card = editor.share_card
     card.template_combo.setCurrentText(template)
-    assert card.theme_combo.currentText() == ("Midnight" if template == "Cinema" else "Paper")
+    assert card.theme_combo.currentText() == ("Midnight" if template in ("Cinema", "Art Deco", "Streaming") else "Paper")
     card.theme_combo.setCurrentText("Rose")
     card.refresh()
     assert not card._image.isNull()
@@ -87,3 +89,67 @@ def test_polaroid_places_song_details_and_lyrics_below_the_photo(qapp):
     cover, title, artist, lyric = (rows(color) for color in ((0, 255, 0), (255, 255, 255),
                                                            (255, 0, 0), (255, 0, 255)))
     assert cover.max() < title.min() < title.max() < artist.min() < artist.max() < lyric.min()
+
+
+@pytest.mark.parametrize("placement", ("below_title", "beside_cover"))
+@pytest.mark.parametrize("template", ("Ticket", "Streaming"))
+def test_footer_templates_keep_metadata_and_artwork_below_lyrics(qapp, monkeypatch, placement, template):
+    positions = {}
+    def capture(painter, document, x, y, color, style):
+        positions[document.toPlainText()] = (y, y + document.size().height())
+    monkeypatch.setattr(renderer, "_paint_lyrics", capture)
+    style = CardStyle(template=template, title="Title", credit="Artist", show_album_cover=True,
+                      details_placement=placement, vertical_position=100)
+    render_lyric_card("Lyrics", style, solid_image("green"))
+    assert positions["Lyrics"][1] < positions["Title"][0] < positions["Artist"][0]
+
+
+@pytest.mark.parametrize("template", ("Notebook", "Ticket", "Art Deco", "Streaming", "Receipt", "Mixtape"))
+def test_added_templates_paint_distinct_surfaces_and_keep_custom_background(qapp, tmp_path, template):
+    background = solid_image("#246852")
+    path = tmp_path / "background.png"
+    assert background.save(str(path))
+    style = CardStyle(template=template, background_mode="Image", image_path=str(path), image_dim=0)
+    image = render_lyric_card("A lyric", style)
+    assert image.pixelColor(0, 0) == QColor("#246852")
+    assert image != render_lyric_card("A lyric", replace(style, template="Classic"))
+    # Each template must draw its own decoration outside the content area.
+    decoration = (style.padding, style.padding, style.width - 2 * style.padding, 144) if template == "Mixtape" else (16, 16, 32, style.height - 32)
+    assert image.copy(*decoration) != renderer.card_background(
+        style, renderer.theme_colors(style.theme, style.template)).copy(*decoration)
+
+
+@pytest.mark.parametrize("position", (0, 50, 100))
+@pytest.mark.parametrize("spacing", (100, 160))
+@pytest.mark.parametrize("excerpt", ("wrapped", "fitted", "formatted"))
+def test_notebook_rules_follow_every_rendered_lyric_baseline(qapp, monkeypatch, position, spacing, excerpt):
+    if excerpt == "formatted":
+        text = "Night sky\nA smaller translation\nOne more line"
+        source = CardLyrics(text, translations=((10, 31),), readings=((0, 5, "night"),))
+    else:
+        source = ("A long lyric that wraps onto another row and keeps going\n" *
+                  (12 if excerpt == "fitted" else 2)).strip()
+    baselines = []
+    paint = renderer._paint_lyrics
+    def capture(painter, document, x, y, color, style):
+        block = document.begin()
+        while block.isValid():
+            layout = block.layout()
+            for index in range(layout.lineCount()):
+                line = layout.lineAt(index)
+                baselines.append(y + layout.position().y() + line.y() + line.ascent())
+            block = block.next()
+        paint(painter, document, x, y, color, style)
+    monkeypatch.setattr(renderer, "_paint_lyrics", capture)
+    style = CardStyle(template="Notebook", width=1080, height=1350, font_size=96,
+                      line_spacing=spacing, vertical_position=position)
+    image = render_lyric_card(source, style)
+    background = renderer.card_background(style, renderer.theme_colors(style.theme, style.template))
+    # Sample just left of the text box, where only the paper rules are painted.
+    x = style.padding + 1
+    rules = [y for y in range(int(baselines[0]), min(style.height, int(baselines[-1]) + 5))
+             if image.pixelColor(x, y) != background.pixelColor(x, y)]
+    assert len(baselines) > 1
+    for baseline in baselines:
+        assert any(abs(row - (baseline + 2)) <= 1 for row in rules)
+    assert all(min(abs(row - (baseline + 2)) for baseline in baselines) <= 1 for row in rules)
