@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <meta http-equiv="Content-Security-Policy" content="form-action 'none'; connect-src 'none'">
+  <title>ログイン — LRCPlus マニュアル</title>
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="manual.css">
+  <link rel="icon" type="image/png" href="../../assets/media/iconwiki.png">
+  <script src="account.js" defer></script>
+</head>
+<body class="account-page">
+  <a class="skip-link" href="#content">本文へ移動</a>
+  <aside class="sidebar" aria-label="マニュアルのナビゲーション">
+    <a class="brand" href="ja.html#main"><img class="brand-logo" src="../../assets/media/iconwiki.png" width="112" height="112" alt="LRCPlus wiki：L とプラス記号のある多言語の銀色の地球"><img class="brand-wordmark" src="../../assets/media/logowiki.png" width="144" height="43" alt="LRCPlus wiki"><span>ユーザーマニュアル</span></a>
+    <nav>
+      <h2>ナビゲーション</h2>
+      <a href="ja.html#main">メインページ</a>
+      <a href="ja.html#getting-started">はじめに</a>
+      <a href="ja.html#interface">画面の使い方</a>
+      <a href="ja.html#playback">音楽と再生</a>
+      <h2>歌詞</h2>
+      <a href="ja.html#finding-lyrics">歌詞を探す</a>
+      <a href="ja.html#readings">ふりがなと読み</a>
+      <a href="ja.html#editor">歌詞の編集とタイミング</a>
+      <a href="ja.html#lrcx">LRCX リファレンス</a>
+      <h2>リファレンスとヘルプ</h2>
+      <a href="ja.html#settings-reference">設定リファレンス</a>
+      <a href="ja.html#translations">翻訳</a>
+      <a href="ja.html#sharing">共有と画像カード</a>
+      <a href="ja.html#ayami">Ayami</a>
+      <a href="ja.html#companion">コンパニオンガイド</a>
+      <a href="ja.html#plugin-directory">プラグイン一覧</a>
+      <a href="ja.html#tutorials">操作チュートリアル</a>
+      <a href="ja.html#glossary">用語集</a>
+      <a href="ja.html#article-index">記事索引</a>
+      <a href="ja.html#customization">カスタマイズ</a>
+      <a href="ja.html#plugins">プラグイン</a>
+      <a href="ja.html#troubleshooting">トラブルシューティング</a>
+      <a href="ja.html#shortcuts">キーボードショートカット</a>
+    </nav>
+    <nav class="language-switch" aria-label="言語">
+      <h2>言語</h2>
+      <a href="account.html" lang="en" hreflang="en">English</a>
+      <a href="ja-account.html" lang="ja" hreflang="ja" aria-current="true">日本語</a>
+    </nav>
+      <div class="offline-note">オフライン版<br>インターネット接続なしで読めます。</div>
+</aside>
+  <div class="page">
+    <header class="page-header">
+      <div class="utility"><span class="account-state">ログインしていません</span><nav class="account-links" aria-label="個人用ツール"><a href="ja-account.html#create-account">アカウント作成</a><a href="ja-account.html#login">ログイン</a></nav></div>
+      <div class="toolbar"><div class="page-tabs"><a href="#login" id="special-tab" aria-current="page">特別ページ</a><a href="ja.html#main" id="manual-return">マニュアルに戻る</a></div><div class="tools"><div class="view-tabs"><button id="theme-toggle" type="button" aria-pressed="false" hidden>ダークモード</button></div></div></div>
+    </header>
+    <main id="content" tabindex="-1">
+      <section id="login-panel" aria-labelledby="login-heading">
+        <h1 id="login-heading">ログイン</h1><p class="subtitle">LRCPlus ユーザーマニュアルより</p>
+        <p class="account-notice">LRCPlus.wiki アカウントにログインします。</p>
+        <div class="account-error" id="login-error" role="alert" tabindex="-1" hidden></div>
+        <form id="login-form" class="account-form" method="dialog" autocomplete="off" novalidate>
+          <div class="account-field"><label for="login-username">ユーザー名</label><input id="login-username" required type="text" placeholder="ユーザー名を入力" autocomplete="off" autocapitalize="none" spellcheck="false" disabled></div>
+          <div class="account-field"><label for="login-password">パスワード</label><input id="login-password" required type="password" placeholder="パスワードを入力" autocomplete="off" autocapitalize="none" spellcheck="false" disabled></div>
+          <label class="account-remember" for="login-remember"><input id="login-remember" type="checkbox" disabled><span>ログイン状態を保持する（最長 1 年間）</span></label>
+          <button class="account-submit" type="submit" disabled>ログイン</button>
+        </form>
+        <p class="account-alternative"><a href="#password-reset">パスワードをお忘れですか？</a></p>
+        <p class="account-alternative">アカウントをお持ちでない場合は、<a href="#create-account">LRCPlus.wiki に登録</a>してください。</p>
+      </section>
+      <section id="create-account-panel" aria-labelledby="create-account-heading" hidden>
+        <h1 id="create-account-heading">アカウント作成</h1><p class="subtitle">LRCPlus ユーザーマニュアルより</p>
+        <p class="account-notice">今日から LRCPlus.wiki に参加しましょう！ :3</p>
+        <div class="account-error" id="create-account-error" role="alert" tabindex="-1" hidden></div>
+        <form id="create-account-form" class="account-form" method="dialog" autocomplete="off" novalidate>
+          <div class="account-field"><label for="create-account-username">ユーザー名</label><input id="create-account-username" required type="text" placeholder="ユーザー名を入力" autocomplete="off" autocapitalize="none" spellcheck="false" disabled></div>
+          <div class="account-field"><label for="create-account-password">パスワード</label><input id="create-account-password" required type="password" placeholder="パスワードを入力" autocomplete="off" autocapitalize="none" spellcheck="false" disabled></div>
+          <div class="account-field"><label for="create-account-confirm">パスワードの確認</label><input id="create-account-confirm" required type="password" placeholder="パスワードをもう一度入力" autocomplete="off" autocapitalize="none" spellcheck="false" disabled></div>
+          <button class="account-submit" type="submit" disabled>アカウント作成</button>
+        </form>
+        <p class="account-alternative">すでにアカウントをお持ちですか？<a href="#login">ログイン</a>してください。</p>
+      </section>
+      <section id="password-reset-panel" aria-labelledby="password-reset-heading" hidden>
+        <h1 id="password-reset-heading">パスワードのリセット</h1><p class="subtitle">LRCPlus ユーザーマニュアルより</p>
+        <div class="account-error"><strong>アクセス禁止</strong><p>LRCPlus.wiki でパスワードをリセットする権限がありません。</p></div>
+        <p class="account-notice">Ayami：「存在しないアカウントのパスワードを忘れることはできません。」</p>
+        <p class="account-alternative"><a href="#login">ログインに戻る</a></p>
+      </section>
+      <noscript><p class="note">このイースターエッグには JavaScript が必要です。フォームは無効になっています。上のリンクからマニュアルに戻れます。</p></noscript>
+    </main>
+    <footer>ローカル版 LRCPlus マニュアル · 架空のアカウント窓口</footer>
+  </div>
+</body>
+</html>

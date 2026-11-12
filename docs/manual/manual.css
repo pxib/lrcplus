@@ -37,7 +37,7 @@ main{background:var(--surface);border:1px solid var(--frame);border-right:0;marg
 .toc{display:table;padding:7px;margin:14px 0;border:1px solid var(--border);background:var(--panel);font-size:13.3px}.toc summary{display:block;text-align:center;cursor:pointer;font-weight:bold;list-style:none}.toc summary::-webkit-details-marker{display:none}.toc summary::after{content:' [show]';color:var(--link);font-weight:normal;font-size:12px}.toc[open] summary::after{content:' [hide]'}.toc ol{margin:4px 0 0;padding-left:25px}.toc li{margin:0;padding-right:7px}.note{background:var(--panel);border:1px solid var(--border);padding:10px 14px;margin:14px 0}table{border-collapse:collapse;max-width:100%;margin:14px 0;background:var(--panel)}th,td{border:1px solid var(--border);padding:5px 7px;text-align:left}th{background:var(--raised)}pre{background:var(--panel);border:1px solid var(--raised);padding:14px;overflow:auto;line-height:1.3}code{font:.95em Consolas,'Courier New',monospace;background:var(--panel);overflow-wrap:anywhere}kbd{font:12px Consolas,monospace;background:var(--panel);border:1px solid var(--border-soft);border-radius:2px;padding:1px 4px;white-space:nowrap}.category{border:1px solid var(--border);background:var(--panel);padding:5px;margin-top:16px;font-size:14px}footer{padding:20px;font-size:12px;line-height:1.4;color:var(--text)}.result{border-bottom:1px solid var(--raised);padding:14px 0}.result h2{font:normal 20px Arial,sans-serif;border:0;margin:0}.result p{margin:5px 0}
 @media(min-width:761px) and (max-width:981px){.page{margin-left:160px}.sidebar{padding-left:0}main{padding:16px}.toolbar{gap:4px;padding-right:8px}}
 /* Retain a narrow-screen adaptation for local reading. */
-@media(max-width:760px){.sidebar{position:static;width:auto;padding:12px 16px}.brand{flex-direction:row;height:auto;gap:10px}.brand-logo{width:38px;height:38px}.brand-wordmark{width:140px;height:auto;margin:0}.brand-symbol{width:38px;height:38px;font-size:30px;margin:0}.brand-symbol span{font-size:16px}.brand strong{font-size:23px}.brand>span:last-child{margin-left:auto}.sidebar nav{display:flex;flex-wrap:wrap;gap:4px 14px;margin:14px 0 0}.sidebar nav h2,.offline-note,.utility{display:none}.sidebar nav a{font-size:12px}.page{margin:0}.page-header{height:auto}.toolbar{height:auto;padding:0 12px;flex-wrap:wrap;gap:8px}.tools{width:100%;order:-1}.view-tabs{flex-shrink:0}.view-tabs>a{display:none}form{width:auto;max-width:none;min-width:0;flex:1}main{border-left:0;padding:16px 18px}.portal-grid{grid-template-columns:1fr}.welcome{padding:10px}.welcome h2{font-size:22px}h1{font-size:27px}table{font-size:12px}th,td{padding:5px 7px}}
+@media(max-width:760px){.sidebar{position:static;width:auto;padding:12px 16px}.brand{flex-direction:row;height:auto;gap:10px}.brand-logo{width:38px;height:38px}.brand-wordmark{width:140px;height:auto;margin:0}.brand-symbol{width:38px;height:38px;font-size:30px;margin:0}.brand-symbol span{font-size:16px}.brand strong{font-size:23px}.brand>span:last-child{margin-left:auto}.sidebar nav{display:flex;flex-wrap:wrap;gap:4px 14px;margin:14px 0 0}.sidebar nav h2,.offline-note,.utility{display:none}.sidebar nav a{font-size:12px}.page{margin:0}.page-header{height:auto}.toolbar{height:auto;padding:0 12px;flex-wrap:wrap;gap:8px}.tools{width:100%;order:-1;flex-wrap:wrap}.view-tabs{flex-shrink:0}form{width:auto;max-width:none;min-width:0;flex:1 1 140px}main{border-left:0;padding:16px 18px}.portal-grid{grid-template-columns:1fr}.welcome{padding:10px}.welcome h2{font-size:22px}h1{font-size:27px}table{font-size:12px}th,td{padding:5px 7px}}
 @media print{body,:root{background:white;color:black}.sidebar,.page-header,footer,.skip-link,.category,.toc{display:none!important}.page{margin:0}main{border:0;padding:0;min-height:0}a,a:visited{color:inherit}h2{break-after:avoid}table,pre,.note{break-inside:avoid}.portal-grid{display:block}.portal-grid section{margin:10px 0}}
 /* Article tools and illustrated user documentation. */
 #breadcrumbs{font-size:12px;color:var(--muted);margin:0 0 9px}
@@ -66,3 +66,68 @@ figcaption{padding:7px 5px 3px;font-size:12px;color:var(--muted);line-height:1.5
 
 #theme-toggle[aria-pressed="true"]{background:var(--surface);color:var(--text);border-bottom-color:var(--surface)}
 #theme-toggle::before{content:'\25d0';margin-right:5px}
+
+.article-source{white-space:pre-wrap;overflow-wrap:anywhere;tab-size:2}
+.article-source:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* Secret zero-gravity playground; original text nodes are restored on exit. */
+.zero-gravity-original{visibility:hidden}
+.zero-gravity{position:fixed;inset:0;z-index:1000;overflow:hidden;touch-action:pan-y pinch-zoom;user-select:none}
+.zero-gravity-word{position:absolute;top:0;left:0;display:block;white-space:pre;cursor:grab;touch-action:none;transform-origin:center;line-height:normal}
+.zero-gravity-word.is-dragging{cursor:grabbing;z-index:1}
+.zero-gravity-controls{position:absolute;z-index:2;bottom:18px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:12px;max-width:calc(100% - 24px);width:max-content;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);box-shadow:0 3px 18px #0003;font-size:13px}
+.zero-gravity-controls button{flex-shrink:0;border:1px solid var(--border);border-radius:4px;padding:5px 9px;background:var(--panel);color:var(--link)}
+@media(max-width:760px){.zero-gravity-controls{flex-direction:column;gap:6px;text-align:center}}
+@media print{.zero-gravity{display:none}.zero-gravity-original{visibility:visible}}
+/* Legacy-style language navigation sits at the bottom of the sidebar. */
+.sidebar .language-switch{display:block;margin:14px 10px 0 24px}
+.sidebar nav.language-switch h2:first-child{display:block}
+.language-switch a[aria-current]{font-weight:bold;color:var(--text)}
+.page-header{height:auto;min-height:80px}
+.page-header .utility{position:static;align-self:flex-end;margin:6px 16px 12px}
+.toolbar{height:auto;min-height:40px;flex-wrap:wrap}
+.toolbar .tools{max-width:100%;flex-wrap:wrap}
+html[lang="ja"]{font-family:Arial,'Yu Gothic',Meiryo,sans-serif;line-break:strict}
+html[lang="ja"] h1,html[lang="ja"] h2{font-family:Georgia,'Yu Mincho','Hiragino Mincho ProN',serif}
+html[lang="ja"] .toc summary::after{content:' [表示]'}
+html[lang="ja"] .toc[open] summary::after{content:' [非表示]'}
+.settings-table th[scope="row"]>span[lang="en"]{font-size:12px;color:var(--muted)}
+@media(max-width:760px){.sidebar .language-switch{margin:14px 0 0}.page-header{min-height:0}}
+/* Legacy article layout: lead and contents wrap beside a right-hand infobox. */
+.character-article{display:flow-root}
+.character-profile{float:right;clear:right;width:22em;max-width:45%;margin:.5em 0 1em 1em;padding:.2em;border:1px solid var(--border);border-collapse:separate;border-spacing:3px;background:var(--panel);font-size:88%;line-height:1.5}
+.character-profile th,.character-profile td{border:0;padding:2px 3px;vertical-align:top;background:transparent}
+.character-profile .infobox-above{text-align:center;font-size:125%;line-height:1.4;padding:5px 3px 8px;color:var(--heading)}
+.character-profile .infobox-subtitle{font-size:85%;font-weight:normal}
+.character-profile .infobox-label{width:35%;font-weight:bold}
+.ayami-name{padding:0;border:0;background:transparent;color:inherit;font:inherit}
+.character-profile .ayami-editorial-note{padding:8px;background:var(--purple-panel);border:1px solid var(--purple-border);text-align:left;font-weight:normal}
+.ayami-editorial-note p{margin:0 0 7px}
+.ayami-editorial-note button{padding:3px 8px;border:1px solid var(--border);border-radius:2px;background:var(--surface);color:var(--link);font:inherit}
+.character-article h2{overflow:hidden}
+.character-article .related-articles{clear:both}
+@media(max-width:760px){.character-profile{float:none;width:100%;max-width:500px;margin:14px 0}.character-article h2{overflow:visible}}
+@media print{.character-profile{float:none;width:100%;max-width:500px;margin:14px 0;break-inside:avoid}}
+@media print{#ayami-editorial-note{display:none!important}}
+/* Fictional personal tools and locally handled account pages. */
+.page-header .utility{display:flex;align-items:center;flex-wrap:wrap;gap:12px;justify-content:flex-end}
+.utility .account-state{padding:0;color:var(--muted)}
+.account-links{display:inline-flex;gap:12px}
+.account-links a[aria-current="page"]{font-weight:bold;color:var(--text)}
+.account-notice{max-width:520px;color:var(--muted);font-size:13px;margin:12px 0 20px}
+.account-page .account-form{display:block;width:290px;max-width:100%;min-width:0;height:auto;margin:0 0 16px;padding:0;border:0;box-shadow:none;background:transparent}
+.account-field{margin:0 0 14px}
+.account-field label{display:block;font-weight:bold;margin-bottom:4px}
+.account-form input{display:block;width:100%;min-height:36px;padding:6px 8px;border:1px solid var(--border);border-radius:2px;background:var(--surface);color:var(--text);font-size:14px}
+.account-form .account-remember{display:flex;align-items:flex-start;gap:8px;margin:0 0 16px;font-size:13px;cursor:pointer}
+.account-form .account-remember input{flex:0 0 16px;width:16px;height:16px;min-height:0;margin:2px 0 0;padding:0;accent-color:#36c}
+.account-form .account-submit{width:100%;min-height:36px;padding:6px 12px;border:1px solid #36c;border-radius:2px;background:#36c;color:white;font-size:14px;font-weight:bold}
+.account-form .account-submit:hover{background:#2a4b8d;border-color:#2a4b8d}
+.account-form[aria-busy="true"] .account-submit{cursor:wait;background:#36c;border-color:#36c;opacity:1}
+.account-form[aria-busy="true"] .account-submit::before{content:'';display:inline-block;width:12px;height:12px;margin-right:8px;border:2px solid #ffffff66;border-top-color:white;border-radius:50%;vertical-align:-2px;animation:account-spin .7s linear infinite}
+@keyframes account-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.account-form[aria-busy="true"] .account-submit::before{display:none;animation:none}}
+.account-form :disabled{opacity:.6;cursor:default}
+.account-alternative{max-width:350px;font-size:13px}
+.account-error{max-width:520px;margin:0 0 18px;padding:12px 16px;border:1px solid #b32424;border-left-width:4px;background:var(--panel);color:var(--text)}
+.account-error:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media(max-width:760px){.page-header .utility{margin:4px 12px 10px}.account-page .tools{width:auto;order:0}.account-state{display:none}}
