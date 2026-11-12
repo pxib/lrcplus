@@ -2,24 +2,26 @@
 'use strict';
 (() => {
   const japanese = document.documentElement.lang === 'ja';
-  const manual = japanese ? 'ja.html' : 'index.html';
+  const korean = document.documentElement.lang === 'ko';
+  const cantonese = document.documentElement.lang.startsWith('yue');
+  const manual = cantonese ? 'yue.html' : korean ? 'ko.html' : japanese ? 'ja.html' : 'index.html';
   const requestedReturn = new URLSearchParams(location.search).get('return');
   const returnHash = requestedReturn && requestedReturn.startsWith('#') ? requestedReturn : '#main';
   const forms = [...document.querySelectorAll('.account-form')];
   const errors = {
-    credentials: japanese
+    credentials: cantonese ? '無法驗證輸入嘅登入資料。' : korean ? '입력한 인증 정보를 확인할 수 없습니다.' : japanese
       ? '入力された認証情報を認証できませんでした。'
       : 'The supplied credentials could not be authenticated.',
-    login: japanese
+    login: cantonese ? '登入失敗。成個帳戶部門得 Ayami 一個，而佢仲未整好帳戶功能。' : korean ? '로그인에 실패했습니다. 계정 담당자는 Ayami 한 명뿐인데 아직 계정 기능을 구현하지 않았습니다.' : japanese
       ? 'ログインできませんでした。アカウント窓口は Ayami 一人です。しかも、まだアカウント機能を実装していません。'
       : 'Log in failed. Ayami is the entire account department. She has not implemented accounts yet.',
-    'create-account': japanese
+    'create-account': cantonese ? '建立帳戶失敗。Ayami 將帳戶資料庫歸類為「將來嘅我先處理」。' : korean ? '계정을 만들지 못했습니다. Ayami가 계정 데이터베이스를 “미래의 내가 할 일”로 분류했습니다.' : japanese
       ? 'アカウントを作成できませんでした。Ayami がアカウントデータベースを「未来の私の仕事」に分類しました。'
       : 'Account creation failed. Ayami filed the account database under “a future me problem”.'
   };
   const loadingMessages = {
-    login: japanese ? 'ログイン中…' : 'Logging in…',
-    'create-account': japanese ? 'アカウントを作成中…' : 'Creating account…'
+    login: cantonese ? '登入緊…' : korean ? '로그인 중…' : japanese ? 'ログイン中…' : 'Logging in…',
+    'create-account': cantonese ? '建立緊帳戶…' : korean ? '계정 만드는 중…' : japanese ? 'アカウントを作成中…' : 'Creating account…'
   };
   const states = new Map();
 
@@ -82,7 +84,7 @@
       if (name !== 'password-reset') document.getElementById(`${name}-error`).hidden = true;
     }
     const title = document.getElementById(`${mode}-heading`).textContent;
-    document.title = `${title} — ${japanese ? 'LRCPlus マニュアル' : 'LRCPlus manual'}`;
+    document.title = `${title} — ${cantonese ? 'LRCPlus 使用手冊' : korean ? 'LRCPlus 설명서' : japanese ? 'LRCPlus マニュアル' : 'LRCPlus manual'}`;
     document.getElementById('special-tab').href = `#${mode}`;
     document.getElementById('manual-return').href = manual + returnHash;
     document.querySelectorAll('.account-links a, .language-switch a').forEach(link => {

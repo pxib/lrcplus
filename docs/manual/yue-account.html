@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+
+<html lang="yue-Hant">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<meta content="noindex" name="robots"/>
+<meta content="form-action 'none'; connect-src 'none'" http-equiv="Content-Security-Policy"/>
+<title>登入 — LRCPlus 手冊</title>
+<script src="theme.js"></script>
+<link href="manual.css" rel="stylesheet"/>
+<link href="../../assets/media/iconwiki.png" rel="icon" type="image/png"/>
+<script defer="" src="account.js"></script>
+</head>
+<body class="account-page">
+<a class="skip-link" href="#content">跳去內文</a>
+<aside aria-label="手冊導覽" class="sidebar">
+<a class="brand" href="yue.html#main"><img alt="LRCPlus 維基：有 L 同加號嘅多語言銀色地球" class="brand-logo" height="112" src="../../assets/media/iconwiki.png" width="112"/><img alt="LRCPlus wiki" class="brand-wordmark" height="43" src="../../assets/media/logowiki.png" width="144"/><span>使用手冊</span></a>
+<nav>
+<h2>導覽</h2>
+<a href="yue.html#main">首頁</a>
+<a href="yue.html#getting-started">入門</a>
+<a href="yue.html#interface">介面導覽</a>
+<a href="yue.html#playback">音樂同播放</a>
+<h2>歌詞</h2>
+<a href="yue.html#finding-lyrics">搵歌詞</a>
+<a href="yue.html#readings">振假名同讀音</a>
+<a href="yue.html#editor">編輯同校時</a>
+<a href="yue.html#lrcx">LRCX 參考</a>
+<h2>參考同幫助</h2>
+<a href="yue.html#settings-reference">設定參考</a>
+<a href="yue.html#translations">翻譯</a>
+<a href="yue.html#sharing">分享同圖片卡</a>
+<a href="yue.html#ayami">Ayami</a>
+<a href="yue.html#companion">夥伴指南</a>
+<a href="yue.html#plugin-directory">外掛目錄</a>
+<a href="yue.html#tutorials">實作教學</a>
+<a href="yue.html#glossary">詞彙表</a>
+<a href="yue.html#article-index">文章索引</a>
+<a href="yue.html#customization">自訂設定</a>
+<a href="yue.html#plugins">外掛程式</a>
+<a href="yue.html#troubleshooting">疑難排解</a>
+<a href="yue.html#shortcuts">鍵盤快捷鍵</a>
+</nav>
+<nav aria-label="語言" class="language-switch">
+<h2>語言</h2>
+<a href="account.html" hreflang="en" lang="en">English</a>
+<a href="ja-account.html" hreflang="ja" lang="ja">日本語</a>
+<a href="ko-account.html" hreflang="ko" lang="ko">한국어</a>
+
+<a aria-current="true" href="yue-account.html" hreflang="yue-Hant" lang="yue-Hant">粵語</a></nav>
+<div class="offline-note">使用手冊<br/>網上版本及程式附送版本</div>
+</aside>
+<div class="page">
+<header class="page-header">
+<div class="utility"><span class="account-state">未登入</span><nav aria-label="個人工具" class="account-links"><a href="yue-account.html#create-account">建立帳戶</a><a href="yue-account.html#login">登入</a></nav></div>
+<div class="toolbar"><div class="page-tabs"><a aria-current="page" href="#login" id="special-tab">特殊頁面</a><a href="yue.html#main" id="manual-return">返回手冊</a></div><div class="tools"><div class="view-tabs"><button aria-pressed="false" hidden="" id="theme-toggle" type="button">深色模式</button></div></div></div>
+</header>
+<main id="content" tabindex="-1">
+<section aria-labelledby="login-heading" id="login-panel">
+<h1 id="login-heading">登入</h1><p class="subtitle">來自 LRCPlus 使用手冊</p>
+<p class="account-notice">LRCPlus.wiki 登入畫面。呢個係虛構功能，唔會真正登入或者建立帳戶。</p>
+<div class="account-error" hidden="" id="login-error" role="alert" tabindex="-1"></div>
+<form autocomplete="off" class="account-form" id="login-form" method="dialog" novalidate="">
+<div class="account-field"><label for="login-username">使用者名稱</label><input autocapitalize="none" autocomplete="off" disabled="" id="login-username" placeholder="輸入使用者名稱" required="" spellcheck="false" type="text"/></div>
+<div class="account-field"><label for="login-password">密碼</label><input autocapitalize="none" autocomplete="off" disabled="" id="login-password" placeholder="輸入密碼" required="" spellcheck="false" type="password"/></div>
+<label class="account-remember" for="login-remember"><input disabled="" id="login-remember" type="checkbox"/><span>保持登入（最多一年）</span></label>
+<button class="account-submit" disabled="" type="submit">登入</button>
+</form>
+<p class="account-alternative"><a href="#password-reset">唔記得密碼？</a></p>
+<p class="account-alternative">未有帳戶？<a href="#create-account"> 加入 LRCPlus.wiki</a></p>
+</section>
+<section aria-labelledby="create-account-heading" hidden="" id="create-account-panel">
+<h1 id="create-account-heading">建立帳戶</h1><p class="subtitle">來自 LRCPlus 使用手冊</p>
+<p class="account-notice">今日就加入 LRCPlus.wiki！:3 呢個係虛構註冊畫面。</p>
+<div class="account-error" hidden="" id="create-account-error" role="alert" tabindex="-1"></div>
+<form autocomplete="off" class="account-form" id="create-account-form" method="dialog" novalidate="">
+<div class="account-field"><label for="create-account-username">使用者名稱</label><input autocapitalize="none" autocomplete="off" disabled="" id="create-account-username" placeholder="輸入使用者名稱" required="" spellcheck="false" type="text"/></div>
+<div class="account-field"><label for="create-account-password">密碼</label><input autocapitalize="none" autocomplete="off" disabled="" id="create-account-password" placeholder="輸入密碼" required="" spellcheck="false" type="password"/></div>
+<div class="account-field"><label for="create-account-confirm">確認密碼</label><input autocapitalize="none" autocomplete="off" disabled="" id="create-account-confirm" placeholder="再次輸入密碼" required="" spellcheck="false" type="password"/></div>
+<button class="account-submit" disabled="" type="submit">建立帳戶</button>
+</form>
+<p class="account-alternative">已經有帳戶？<a href="#login"> 登入。</a></p>
+</section>
+<section aria-labelledby="password-reset-heading" hidden="" id="password-reset-panel">
+<h1 id="password-reset-heading">重設密碼</h1><p class="subtitle">來自 LRCPlus 使用手冊</p>
+<div class="account-error"><strong>禁止存取</strong><p>你冇權限重設 LRCPlus.wiki 密碼。</p></div>
+<p class="account-notice">Ayami：「個帳戶都唔存在，點會唔記得佢個密碼呀？」</p>
+<p class="account-alternative"><a href="#login">返回登入</a></p>
+</section>
+<noscript><p class="note">呢個彩蛋需要 JavaScript。表單已停用；你可以用上面嘅連結返回手冊。</p></noscript>
+</main>
+<footer>LRCPlus 手冊 · 虛構帳戶部門</footer>
+</div>
+</body>
+</html>

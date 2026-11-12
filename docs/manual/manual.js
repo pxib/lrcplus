@@ -2,7 +2,17 @@
 'use strict';
 (() => {
   const japanese = document.documentElement.lang === 'ja';
-  const messages = japanese ? {
+  const korean = document.documentElement.lang === 'ko';
+  const cantonese = document.documentElement.lang.startsWith('yue');
+  const messages = cantonese ? {
+    contents: '目錄', related: '相關文章', home: '首頁', all: '所有文章',
+    search: '搜尋', article: '文章', manual: 'LRCPlus 使用手冊', source: '檢視原始碼',
+    permalink: '呢一節嘅固定連結', searchPrompt: '輸入字詞或者片語，搜尋所有文章。'
+  } : korean ? {
+    contents: '목차', related: '관련 문서', home: '메인 페이지', all: '모든 문서',
+    search: '검색', article: '문서', manual: 'LRCPlus 설명서', source: '원문 보기',
+    permalink: '이 절의 고유 링크', searchPrompt: '단어나 구절을 입력하여 모든 문서를 검색하세요.'
+  } : japanese ? {
     contents: '目次', related: '関連記事', home: 'メインページ', all: '記事一覧',
     search: '検索', article: '記事', manual: 'LRCPlus マニュアル', source: 'ソースを表示',
     permalink: 'この節への固定リンク', searchPrompt: '語句を入力して、すべての記事を検索できます。'
@@ -24,9 +34,9 @@
   const talkPanel = document.getElementById('talk-panel');
   const talkPages = new Map([...document.querySelectorAll('template[data-talk-for]')]
     .map(template => [template.dataset.talkFor, template]));
-  const talkLabel = japanese ? 'ノート' : 'Talk';
+  const talkLabel = cantonese ? '討論' : korean ? '토론' : japanese ? 'ノート' : 'Talk';
   function talkLoginLink(returnHash) {
-    const url = new URL(japanese ? 'ja-account.html' : 'account.html', location.href);
+    const url = new URL(cantonese ? 'yue-account.html' : korean ? 'ko-account.html' : japanese ? 'ja-account.html' : 'account.html', location.href);
     url.searchParams.set('return', returnHash);
     url.hash = 'login';
     return url.href;
@@ -40,8 +50,8 @@
     const signature = comment.querySelector('.talk-signature');
     const time = document.createElement('time');
     time.dateTime = date.toISOString();
-    time.textContent = window.ManualTalkTimestamps.format(date, japanese ? 'ja' : 'en');
-    time.title = japanese ? '架空の会話の日時' : 'Fictional discussion timestamp';
+    time.textContent = window.ManualTalkTimestamps.format(date, document.documentElement.lang);
+    time.title = cantonese ? '虛構討論時間' : korean ? '가상 토론의 날짜와 시간' : japanese ? '架空の会話の日時' : 'Fictional discussion timestamp';
     const timestamp = document.createElement('a');
     timestamp.href = permalink.href;
     timestamp.append(time);
@@ -51,17 +61,17 @@
     actions.className = 'talk-actions';
     const reply = document.createElement('a');
     reply.href = talkLoginLink(hash);
-    reply.textContent = japanese ? '返信' : 'Reply';
+    reply.textContent = cantonese ? '回覆' : korean ? '답글' : japanese ? '返信' : 'Reply';
     const menu = document.createElement('details');
     menu.className = 'talk-comment-menu';
     const summary = document.createElement('summary');
     summary.textContent = '•••';
-    summary.setAttribute('aria-label', japanese ? 'コメントのその他の操作' : 'More comment options');
+    summary.setAttribute('aria-label', cantonese ? '更多留言操作' : korean ? '댓글 추가 작업' : japanese ? 'コメントのその他の操作' : 'More comment options');
     const popup = document.createElement('div');
     popup.className = 'talk-comment-popup';
     const copy = document.createElement('button');
     copy.type = 'button';
-    copy.textContent = japanese ? 'リンクをコピー' : 'Copy link';
+    copy.textContent = cantonese ? '複製連結' : korean ? '링크 복사' : japanese ? 'リンクをコピー' : 'Copy link';
     const status = document.createElement('span');
     status.className = 'talk-copy-status';
     status.setAttribute('role', 'status');
@@ -82,14 +92,14 @@
         field.remove();
         copy.focus({preventScroll: true});
       }
-      status.textContent = copied ? (japanese ? 'コピーしました。' : 'Link copied.')
-        : (japanese ? 'リンクを選択してコピーしてください。' : 'Select the link below to copy it.');
+      status.textContent = copied ? (cantonese ? '已複製連結。' : korean ? '링크를 복사했습니다.' : japanese ? 'コピーしました。' : 'Link copied.')
+        : (cantonese ? '請選取下面嘅連結再複製。' : korean ? '아래 링크를 선택하여 복사하세요.' : japanese ? 'リンクを選択してコピーしてください。' : 'Select the link below to copy it.');
       if (!copied && !popup.querySelector('input')) {
         const field = document.createElement('input');
         field.type = 'text';
         field.readOnly = true;
         field.value = permalink.href;
-        field.setAttribute('aria-label', japanese ? 'コメントの固定リンク' : 'Comment permalink');
+        field.setAttribute('aria-label', cantonese ? '留言固定連結' : korean ? '댓글 고유 링크' : japanese ? 'コメントの固定リンク' : 'Comment permalink');
         popup.append(field);
         field.focus();
         field.select();
@@ -223,7 +233,11 @@
     ).sort((a, b) => Number(b.title.toLowerCase().includes(query.toLowerCase())) -
       Number(a.title.toLowerCase().includes(query.toLowerCase()))) : [];
     document.getElementById('search-summary').textContent = words.length
-      ? japanese
+      ? cantonese
+        ? `「${query}」搵到 ${matches.length} 篇文章。${matches.length ? '' : '試吓減少搜尋字詞，或者用導覽搵文章。'}`
+        : korean
+        ? `“${query}” 검색 결과: 문서 ${matches.length}개.${matches.length ? '' : ' 검색어를 줄이거나 탐색 메뉴에서 문서를 선택하세요.'}`
+        : japanese
         ? `「${query}」に一致する記事は ${matches.length} 件です。${matches.length ? '' : '検索語を減らすか、ナビゲーションから記事を選んでください。'}`
         : `${matches.length} article${matches.length === 1 ? '' : 's'} found for “${query}”.${matches.length ? '' : ' Try fewer words, or browse the navigation.'}`
       : messages.searchPrompt;
@@ -320,7 +334,7 @@
       } else {
         const empty = document.createElement('p');
         empty.className = 'note';
-        empty.textContent = japanese ? 'この記事には、まだ収録された議論がありません。' : 'No discussions have been included for this article yet.';
+        empty.textContent = cantonese ? '呢篇文章暫時未收錄粵語討論。' : korean ? '이 문서에는 아직 한국어 토론이 수록되어 있지 않습니다.' : japanese ? 'この記事には、まだ収録された議論がありません。' : 'No discussions have been included for this article yet.';
         body.append(empty);
       }
       const articleLink = document.getElementById('talk-article-link');
@@ -342,14 +356,14 @@
         const author = comment.querySelector('.talk-signature b').textContent;
         const commentLink = document.createElement('a');
         commentLink.href = `#${article.id}/talk/${comment.id}`;
-        commentLink.textContent = japanese ? '最後に収録されたコメント' : 'Latest included comment';
+        commentLink.textContent = cantonese ? '最後收錄嘅留言' : korean ? '마지막 수록 댓글' : japanese ? '最後に収録されたコメント' : 'Latest included comment';
         const topicLink = document.createElement('a');
         topicLink.href = `#${article.id}/talk/${heading.id}`;
         topicLink.textContent = heading.firstChild.textContent;
-        latest.append(commentLink, japanese ? `：${author}、議題「` : `: by ${author} in topic `,
-          topicLink, japanese ? '」' : '');
+        latest.append(commentLink, cantonese ? `：${author}，話題「` : korean ? `: ${author}, 주제 “` : japanese ? `：${author}、議題「` : `: by ${author} in topic `,
+          topicLink, cantonese ? '」' : korean ? '”' : japanese ? '」' : '');
       } else {
-        latest.textContent = japanese ? 'この記事には、まだコメントが収録されていません。' : 'No comments included for this article yet.';
+        latest.textContent = cantonese ? '呢篇文章暫時未收錄留言。' : korean ? '이 문서에는 아직 수록된 댓글이 없습니다.' : japanese ? 'この記事には、まだコメントが収録されていません。' : 'No comments included for this article yet.';
       }
     } else if (viewingSource) {
       document.title = `${messages.source}: ${article.dataset.title} — ${messages.manual}`;
@@ -397,7 +411,7 @@
     message.setAttribute('role', 'status');
     const dismiss = document.createElement('button');
     dismiss.type = 'button';
-    dismiss.textContent = japanese ? '閉じる' : 'Dismiss';
+    dismiss.textContent = cantonese ? '關閉' : korean ? '닫기' : japanese ? '閉じる' : 'Dismiss';
     cell.append(message, dismiss);
     row.append(cell);
     heading.parentElement.after(row);
@@ -414,7 +428,11 @@
       if (!row.hidden || ++clicks < 5) return;
       row.hidden = false;
       trigger.setAttribute('aria-expanded', 'true');
-      message.textContent = japanese
+      message.textContent = cantonese
+        ? '呢篇文係我自己寫嘅。開發者刪咗「才華橫溢」三次。'
+        : korean
+        ? '이 문서는 내가 직접 썼어. 개발자가 “뛰어난 재능”이라는 말을 세 번이나 지웠다니까.'
+        : japanese
         ? 'この記事は私が書きました。「類まれな才能」って書いたら、開発者に3回消されました。'
         : 'I wrote this article myself. The developer removed “exceptionally talented” three times.';
     });
@@ -441,14 +459,14 @@
       layer.className = 'zero-gravity';
       layer.setAttribute('role', 'dialog');
       layer.setAttribute('aria-modal', 'true');
-      layer.setAttribute('aria-label', japanese ? '無重力モード' : 'Zero gravity');
+      layer.setAttribute('aria-label', cantonese ? '無重力模式' : korean ? '무중력 모드' : japanese ? '無重力モード' : 'Zero gravity');
       const controls = document.createElement('div');
       controls.className = 'zero-gravity-controls';
       const hint = document.createElement('span');
-      hint.textContent = japanese ? '無重力！ 単語をドラッグして投げてみよう。' : 'Zero gravity! Drag and toss the words.';
+      hint.textContent = cantonese ? '無重力！試吓拖住啲字再掟出去。' : korean ? '무중력! 단어를 끌어서 던져 보세요.' : japanese ? '無重力！ 単語をドラッグして投げてみよう。' : 'Zero gravity! Drag and toss the words.';
       const restore = document.createElement('button');
       restore.type = 'button';
-      restore.textContent = japanese ? '重力を戻す (Esc)' : 'Restore gravity (Esc)';
+      restore.textContent = cantonese ? '恢復重力（Esc）' : korean ? '중력 복원 (Esc)' : japanese ? '重力を戻す (Esc)' : 'Restore gravity (Esc)';
       controls.append(hint, restore);
       const particles = [];
       const originals = [];

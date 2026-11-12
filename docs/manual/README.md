@@ -30,15 +30,25 @@ Check direct `file://` opening, article and section links, screenshot callouts, 
 
 ## Zero gravity Easter egg
 
-Outside text fields, enter **↑ ↑ ↓ ↓ ← → ← → B A** (no Enter required). Words throughout the current article lift off the page, drift gently, bounce off the document edges, and can be dragged and thrown with a mouse or touch. Thrown words gradually lose momentum and settle; untouched words keep their gentle drift. Scrolling stays enabled: words move with the document, and the restore button stays on screen. On touchscreens, swipe between words to scroll and drag a word to throw it. Reduced-motion preferences keep words still until thrown. **Escape** or **Restore gravity** restores the original text nodes and focus. Navigation, resizing, printing, and leaving the page also end the effect. It works offline in both languages and adds no dependencies or saved state.
+Outside text fields, enter **↑ ↑ ↓ ↓ ← → ← → B A** (no Enter required). Words throughout the current article lift off the page, drift gently, bounce off the document edges, and can be dragged and thrown with a mouse or touch. Thrown words gradually lose momentum and settle; untouched words keep their gentle drift. Scrolling stays enabled: words move with the document, and the restore button stays on screen. On touchscreens, swipe between words to scroll and drag a word to throw it. Reduced-motion preferences keep words still until thrown. **Escape** or **Restore gravity** restores the original text nodes and focus. Navigation, resizing, printing, and leaving the page also end the effect. It works offline in all four languages and adds no dependencies or saved state.
+
+## Korean quick start
+
+A Korean introduction is available in `ko-quick-start.md`. It links to the English manual for the full reference.
 
 ## Languages
 
-The manual has two complete offline editions: `index.html` (English) and `ja.html` (Japanese). Use the **Languages** section at the bottom of the sidebar to switch editions. With JavaScript enabled, the switch preserves the article, section, search query, or source view. Without JavaScript, both editions remain readable and the language links open the other edition's main page.
+The manual has four offline editions: `index.html` (English), `ja.html` (Japanese), `ko.html` (Korean), and `yue.html` (Cantonese in Traditional Chinese, `yue-Hant`). Use the **Languages** section at the bottom of the sidebar to switch editions. With JavaScript enabled, the switch preserves the article, section, search query, or source view. Without JavaScript, all editions remain readable and the language links open the other edition's main page.
 
-Keep article IDs, section IDs, screenshot callout IDs, related-page IDs, and asset paths identical between editions. Translate the article body, `data-title`, navigation, image descriptions, and accessibility labels. Japanese keeps the app's English control names and screenshots so readers can identify the corresponding controls; settings tables show both Japanese and English names. Format syntax, shortcuts, filenames, package requirements, and provider names retain their technical spelling.
+Keep article IDs, section IDs, screenshot callout IDs, related-page IDs, and asset paths identical between editions. Translate the article body, `data-title`, navigation, image descriptions, and accessibility labels. Japanese and Korean keep the app's English control names and screenshots so readers can identify the corresponding controls; Japanese settings tables also show translated option names. Format syntax, shortcuts, filenames, package requirements, and provider names retain their technical spelling.
 
-`manual.js` selects interface messages from the document's `lang` attribute. Add translated generated labels there, and localized contents-toggle labels in `manual.css`. Article search indexes only the currently open edition; changing the manual language does not change the app's language or lyric translation target. View source shows the current edition's article HTML. Review both editions when changing the manual.
+`manual.js` selects interface messages from the document's `lang` attribute. Add translated generated labels there, and localized contents-toggle labels in `manual.css`. Article search indexes only the currently open edition; changing the manual language does not change the app's language or lyric translation target. View source shows the current edition's article HTML. Review all editions when changing the manual.
+
+The Korean edition covers all 28 articles, including the settings reference, screenshot tour, and plugin guides. Its Talk view currently shows a Korean empty state; authored discussions and their generator/editor remain English/Japanese. `ko-account.html` localizes the fictional account pages and preserves return links to the Korean manual. Translate new shared interface strings in both `manual.js` and `account.js` when extending those views.
+
+The Cantonese edition also covers all 28 articles with matching section and screenshot IDs. It uses written Cantonese in Traditional Chinese and retains English app control names. Its Talk view has a localized empty state; `yue-account.html` provides the fictional account views and returns to the Cantonese manual. Authored Talk discussions and their generator/editor continue to target English/Japanese.
+
+Cantonese headings use **Cactus Classical Serif** and body/navigation text uses **Chocolate Classical Sans**. `manual.css` prefers installed copies and falls back to the full bundled WOFF fonts in `assets/fonts/`, with system fonts as further fallbacks. No network font requests are required. The fonts contain Regular only; browsers synthesize emphasis. See `assets/fonts/README.md` and `OFL.txt` for provenance and licensing. Keep the font files and license in the bundled manual when packaging the app.
 
 ## Read-only Talk pages
 

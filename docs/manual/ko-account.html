@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<meta content="noindex" name="robots"/>
+<meta content="form-action 'none'; connect-src 'none'" http-equiv="Content-Security-Policy"/>
+<title>로그인 — LRCPlus 설명서</title>
+<script src="theme.js"></script>
+<link href="manual.css" rel="stylesheet"/>
+<link href="../../assets/media/iconwiki.png" rel="icon" type="image/png"/>
+<script defer="" src="account.js"></script>
+</head>
+<body class="account-page">
+<a class="skip-link" href="#content">본문으로 이동</a>
+<aside aria-label="설명서 탐색" class="sidebar">
+<a class="brand" href="ko.html#main"><img alt="LRCPlus 위키: L과 더하기 기호가 있는 다국어 은색 지구" class="brand-logo" height="112" src="../../assets/media/iconwiki.png" width="112"/><img alt="LRCPlus wiki" class="brand-wordmark" height="43" src="../../assets/media/logowiki.png" width="144"/><span>사용자 설명서</span></a>
+<nav>
+<h2>탐색</h2>
+<a href="ko.html#main">메인 페이지</a>
+<a href="ko.html#getting-started">시작하기</a>
+<a href="ko.html#interface">화면 안내</a>
+<a href="ko.html#playback">음악과 재생</a>
+<h2>가사 (Lyrics)</h2>
+<a href="ko.html#finding-lyrics">가사 찾기</a>
+<a href="ko.html#readings">후리가나와 읽기</a>
+<a href="ko.html#editor">편집과 타이밍</a>
+<a href="ko.html#lrcx">LRCX 참조</a>
+<h2>참조와 도움말</h2>
+<a href="ko.html#settings-reference">설정 참조</a>
+<a href="ko.html#translations">번역</a>
+<a href="ko.html#sharing">공유와 이미지 카드</a>
+<a href="ko.html#ayami">Ayami</a>
+<a href="ko.html#companion">동반자 안내</a>
+<a href="ko.html#plugin-directory">플러그인 목록</a>
+<a href="ko.html#tutorials">실습 안내</a>
+<a href="ko.html#glossary">용어집</a>
+<a href="ko.html#article-index">문서 색인</a>
+<a href="ko.html#customization">사용자 설정</a>
+<a href="ko.html#plugins">플러그인 (Plugins)</a>
+<a href="ko.html#troubleshooting">문제 해결</a>
+<a href="ko.html#shortcuts">키보드 단축키</a>
+</nav>
+<nav aria-label="언어" class="language-switch">
+<h2>언어</h2>
+<a href="account.html" hreflang="en" lang="en">English</a>
+<a href="ja-account.html" hreflang="ja" lang="ja">日本語</a>
+
+<a aria-current="true" href="ko-account.html" hreflang="ko" lang="ko">한국어</a>  <a href="yue-account.html" lang="yue-Hant" hreflang="yue-Hant">粵語</a>
+    </nav>
+<div class="offline-note">사용자 설명서<br/>온라인 및 앱 포함 사본</div>
+</aside>
+<div class="page">
+<header class="page-header">
+<div class="utility"><span class="account-state">로그인하지 않음</span><nav aria-label="개인 도구" class="account-links"><a href="ko-account.html#create-account">계정 만들기</a><a href="ko-account.html#login">로그인</a></nav></div>
+<div class="toolbar"><div class="page-tabs"><a aria-current="page" href="#login" id="special-tab">특수 문서</a><a href="ko.html#main" id="manual-return">설명서로 돌아가기</a></div><div class="tools"><div class="view-tabs"><button aria-pressed="false" hidden="" id="theme-toggle" type="button">어두운 모드</button></div></div></div>
+</header>
+<main id="content" tabindex="-1">
+<section aria-labelledby="login-heading" id="login-panel">
+<h1 id="login-heading">로그인</h1><p class="subtitle">LRCPlus 사용자 설명서</p>
+<p class="account-notice">LRCPlus.wiki 계정 로그인 화면입니다. 실제 계정을 만들거나 로그인할 수 없는 가상의 기능입니다.</p>
+<div class="account-error" hidden="" id="login-error" role="alert" tabindex="-1"></div>
+<form autocomplete="off" class="account-form" id="login-form" method="dialog" novalidate="">
+<div class="account-field"><label for="login-username">사용자 이름</label><input autocapitalize="none" autocomplete="off" disabled="" id="login-username" placeholder="사용자 이름 입력" required="" spellcheck="false" type="text"/></div>
+<div class="account-field"><label for="login-password">비밀번호</label><input autocapitalize="none" autocomplete="off" disabled="" id="login-password" placeholder="비밀번호 입력" required="" spellcheck="false" type="password"/></div>
+<label class="account-remember" for="login-remember"><input disabled="" id="login-remember" type="checkbox"/><span>로그인 유지 (최대 1년)</span></label>
+<button class="account-submit" disabled="" type="submit">로그인</button>
+</form>
+<p class="account-alternative"><a href="#password-reset">비밀번호를 잊으셨나요?</a></p>
+<p class="account-alternative">계정이 없으신가요?<a href="#create-account"> LRCPlus.wiki 가입</a></p>
+</section>
+<section aria-labelledby="create-account-heading" hidden="" id="create-account-panel">
+<h1 id="create-account-heading">계정 만들기</h1><p class="subtitle">LRCPlus 사용자 설명서</p>
+<p class="account-notice">LRCPlus.wiki 가입 화면입니다! :3 실제 가입은 지원하지 않습니다.</p>
+<div class="account-error" hidden="" id="create-account-error" role="alert" tabindex="-1"></div>
+<form autocomplete="off" class="account-form" id="create-account-form" method="dialog" novalidate="">
+<div class="account-field"><label for="create-account-username">사용자 이름</label><input autocapitalize="none" autocomplete="off" disabled="" id="create-account-username" placeholder="사용자 이름 입력" required="" spellcheck="false" type="text"/></div>
+<div class="account-field"><label for="create-account-password">비밀번호</label><input autocapitalize="none" autocomplete="off" disabled="" id="create-account-password" placeholder="비밀번호 입력" required="" spellcheck="false" type="password"/></div>
+<div class="account-field"><label for="create-account-confirm">비밀번호 확인</label><input autocapitalize="none" autocomplete="off" disabled="" id="create-account-confirm" placeholder="비밀번호 다시 입력" required="" spellcheck="false" type="password"/></div>
+<button class="account-submit" disabled="" type="submit">계정 만들기</button>
+</form>
+<p class="account-alternative">이미 계정이 있으신가요?<a href="#login"> 로그인.</a></p>
+</section>
+<section aria-labelledby="password-reset-heading" hidden="" id="password-reset-panel">
+<h1 id="password-reset-heading">비밀번호 재설정</h1><p class="subtitle">LRCPlus 사용자 설명서</p>
+<div class="account-error"><strong>접근 금지</strong><p>LRCPlus.wiki 비밀번호를 재설정할 권한이 없습니다.</p></div>
+<p class="account-notice">Ayami: “존재하지도 않는 계정의 비밀번호를 잊을 수는 없잖아.”</p>
+<p class="account-alternative"><a href="#login">로그인으로 돌아가기</a></p>
+</section>
+<noscript><p class="note">이 숨겨진 기능에는 JavaScript가 필요합니다. 양식은 비활성화되어 있습니다. 위 링크로 설명서에 돌아갈 수 있습니다.</p></noscript>
+</main>
+<footer>LRCPlus 설명서 · 가상의 계정 담당 부서</footer>
+</div>
+</body>
+</html>

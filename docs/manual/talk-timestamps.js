@@ -42,7 +42,8 @@ window.ManualTalkTimestamps = (() => {
   }
 
   function format(date, language) {
-    return new Intl.DateTimeFormat(language === 'ja' ? 'ja-JP' : 'en-GB', {
+    const locale = {ja: 'ja-JP', ko: 'ko-KR', 'yue-Hant': 'zh-HK'}[language] || 'en-GB';
+    return new Intl.DateTimeFormat(locale, {
       day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
       hourCycle: 'h23', timeZone: 'UTC'
     }).format(date) + ' (UTC)';
