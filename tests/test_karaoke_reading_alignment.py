@@ -4,7 +4,7 @@ import pytest
 from PySide6.QtGui import QImage, QLinearGradient, QPainter
 
 from core.settings import KARAOKE_DEFAULTS, apply_karaoke_settings
-from lyrics.furigana import split_reading_by_text_ranges
+from lyrics.furigana import split_reading_by_text_ranges, token_to_furigana_segments
 from lyrics.furigana_widget import FuriganaWidget
 from lyrics.loader import load_lyrics
 from lyrics.models import LyricLine, LyricSegment
@@ -16,11 +16,37 @@ from lyrics.models import LyricLine, LyricSegment
     ("高く", "たかく", [(0, 1), (1, 2)], ["たか", "く"]),
     ("申し込む", "もうしこむ", [(0, 1), (1, 2), (2, 3), (3, 4)], ["もう", "し", "こ", "む"]),
     ("今日", "きょう", [(0, 1), (1, 2)], ["きょ", "う"]),
+    ("言い寄らない", "いいよらない", [(i, i + 1) for i in range(6)], list("いいよらない")),
 ])
 def test_reading_split_keeps_small_kana_and_visible_kana(text, reading, ranges, expected):
     assert split_reading_by_text_ranges(text, reading, ranges) == expected
     # Single-range callers (the separation editor) must agree with batch callers.
     assert [split_reading_by_text_ranges(text, reading, [part])[0] for part in ranges] == expected
+
+
+def test_iiyoranaide_readings_preserve_original_karaoke_timestamps(qapp, monkeypatch, tmp_path):
+    path = tmp_path / "lyrics.lrcx"
+    path.write_text(
+        "[01:19.760]言<01:19.780>い<01:19.810>寄<01:20.060>ら"
+        "<01:20.310>な<01:20.550>い<01:20.760>で<01:21.410>\n",
+        encoding="utf-8",
+    )
+    line = load_lyrics(path)[0]
+    clocks = [(segment.start, segment.end) for segment in line.segments]
+    monkeypatch.setattr("lyrics.furigana_widget.get_cached_furigana_segments",
+                        lambda text: token_to_furigana_segments(text, "イイヨラナイデ"))
+    row = FuriganaWidget()
+    try:
+        row.set_segments(line.text, line.segments, line_end=line.end)
+        assert [(part["text"], part["reading"]) for part in row.segments] == [
+            ("言", "い"), ("い", None), ("寄", "よ"),
+            ("ら", None), ("な", None), ("い", None), ("で", None),
+        ]
+        assert [(segment.start, segment.end) for segment in line.segments] == clocks
+        assert [segment.start for segment in line.segments] == pytest.approx(
+            [79.760, 79.780, 79.810, 80.060, 80.310, 80.550, 80.760])
+    finally:
+        row.deleteLater()
 
 
 def test_separation_readings_survive_save_and_undo(editor):

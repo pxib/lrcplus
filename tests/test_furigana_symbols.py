@@ -85,3 +85,17 @@ def test_small_kana_are_preserved(surface, reading):
     segments = readings.token_to_furigana_segments(surface, reading)
     assert "".join(s["text"] for s in segments) == surface
     assert all(not s.get("reading") for s in segments if not any(map(readings.is_kanji, s["text"])))
+
+
+@pytest.mark.parametrize("surface, reading, expected", [
+    ("言い寄らない", "イイヨラナイ", [
+        ("言", "い"), ("い", None), ("寄", "よ"), ("らない", None),
+    ]),
+    ("言い渡す", "イイワタス", [
+        ("言", "い"), ("い", None), ("渡", "わた"), ("す", None),
+    ]),
+    ("痛い", "イタイ", [("痛", "いた"), ("い", None)]),
+])
+def test_visible_kana_cannot_consume_the_preceding_kanji_reading(surface, reading, expected):
+    segments = readings.token_to_furigana_segments(surface, reading)
+    assert [(part["text"], part["reading"]) for part in segments] == expected

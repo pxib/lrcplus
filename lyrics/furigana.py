@@ -551,11 +551,14 @@ def token_to_furigana_segments(surface, reading):
             # kanji.  For the final kanji, use the trailing match so cases
             # like 痛い -> いたい do not mistake the initial い for the
             # visible okurigana.
+            # Reserve at least one reading character for the preceding kanji:
+            # 言い寄る -> いいよる must not match the first い and leave
+            # 言 unread while incorrectly assigning いよ to 寄.
             has_later_kanji = bool(re.search(r"[\u3400-\u9fff]", surface[match.end():]))
             finder = reading.find if has_later_kanji else reading.rfind
             suffix_position = finder(
                 hiragana_suffix,
-                reading_position,
+                reading_position + 1,
             )
             ruby = (
                 reading[reading_position:suffix_position]
