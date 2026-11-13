@@ -1,5 +1,34 @@
 from core.settings import get_appearance_settings
 from core.theme import build_theme_palette
+import pytest
+
+
+@pytest.mark.parametrize("mode", ["light", "dark"])
+def test_core_presets_recolor_surfaces_and_controls_in_both_modes(mode):
+    from ui.settings_dialog import apply_theme_preset
+
+    palettes = []
+    for accent in ("#3a9879", "#4477cc", "#895cc4", "#c45278", "#bd691f"):
+        appearance = apply_theme_preset({"theme_mode": mode}, accent)
+        assert appearance["theme_mode"] == mode
+        palettes.append(build_theme_palette(
+            mode, accent, overrides=appearance["theme_overrides"]))
+    for role in ("window", "header", "surface", "raised", "border", "dock", "selection"):
+        assert len({palette[role] for palette in palettes}) == 5
+
+
+def test_core_preset_replaces_previous_theme_colors_without_mutating_preferences():
+    from copy import deepcopy
+    from ui.settings_dialog import apply_theme_preset
+
+    previous = {"theme_mode": "dark", "theme_preset_name": "Sakura",
+                "theme_overrides": {"light": {"window": "#ff0000"},
+                                    "dark": {"surface": "#00ff00"}}}
+    original = deepcopy(previous)
+    selected = apply_theme_preset(previous, "#4477cc")
+    fresh = apply_theme_preset({"theme_mode": "dark"}, "#4477cc")
+    assert selected == fresh
+    assert previous == original
 
 
 def test_appearance_settings_normalize_theme_mode_and_accent():

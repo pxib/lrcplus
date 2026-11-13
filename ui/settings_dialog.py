@@ -137,7 +137,29 @@ def apply_theme_preset(appearance, preset):
     from copy import deepcopy
     result = deepcopy(appearance)
     if isinstance(preset, str):
-        result.update(theme_color=preset, theme_preset_name=None)
+        # Core color presets cover the whole UI and replace the previous theme.
+        # Start with neutral surfaces so every hue has its own coherent palette.
+        overrides = {}
+        foreground_roles = {
+            "text", "muted", "brand", "header_button_text", "dock_text",
+            "dock_muted", "slider_handle",
+        }
+        for mode in ("light", "dark"):
+            base = build_theme_palette(mode, preset, "neutral")
+            colors = {}
+            for role in THEME_COLOR_FIELDS:
+                if role in foreground_roles:
+                    amount = 0.08
+                elif role.startswith("dock") or role in {"selection", "item_hover"}:
+                    amount = 0.30
+                elif role in {"surface", "surface_alt"}:
+                    amount = 0.12 if mode == "light" else 0.20
+                else:
+                    amount = 0.20 if mode == "light" else 0.26
+                colors[role] = _blend_theme_colors(base[role], preset, amount)
+            overrides[mode] = colors
+        result.update(theme_color=preset, theme_preset_name=None,
+                      theme_overrides=overrides)
         return result
     mode = "dark" if QColor(preset["background"]).lightness() < 128 else "light"
     background, surface, accent, text, secondary = (QColor(preset[key]) for key in
