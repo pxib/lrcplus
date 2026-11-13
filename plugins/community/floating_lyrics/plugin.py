@@ -4,7 +4,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFormLayout,
     QSpinBox, QDoubleSpinBox, QCheckBox, QLineEdit, QColorDialog,
-    QGroupBox, QApplication
+    QGroupBox, QApplication, QLabel, QSizePolicy
 )
 from lyrics.widgets import FuriganaWidget
 
@@ -15,9 +15,9 @@ class BaseLyricRenderer:
     FIXED_BASE_Y = 75
 
     def paint(self, painter, owner, prepared):
-        painter.setFont(owner.base_font)
         painter.setPen(QColor(owner.text_color))
         for segment in prepared:
+            painter.setFont(owner._styled_font(owner.base_font, segment))
             width = segment["width"]
             base_y = segment.get("base_y", self.FIXED_BASE_Y)
             base_x = (
@@ -95,7 +95,11 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
         self._pan_timer = QTimer(self)
         self._pan_timer.setInterval(16)
         self._pan_timer.timeout.connect(self._advance_pan)
-        self.set_text_wrapping(True)
+        self._pan_pause = QTimer(self)
+        self._pan_pause.setSingleShot(True)
+        self._pan_pause.timeout.connect(self._resume_pan)
+        self._pan_geometry = None
+        self.set_text_wrapping(False)
 
     def set_lyric(self, lyric, **kwargs):
         super().set_lyric(lyric, **kwargs)
@@ -106,15 +110,7 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
         return super()._prepare_segments()
 
     def _configure_pan(self):
-        # Wrapped rows are already constrained to the viewport, so horizontal
-        # panning would make the row appear to shift away from its alignment.
-        if self.wrap_text:
-            self._pan_active = False
-            self._pan_timer.stop()
-            self._pan_offset = 0.0
-            self.update()
-            return
-
+        self._stop_pan()
         prepared = self._raw_segments()
         if not prepared or self.width() <= 0:
             return
@@ -137,11 +133,7 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
         self._pan_direction = 1
         self._pan_active = True
         self.update()
-        QTimer.singleShot(700, self._start_pan)
-
-    def _start_pan(self):
-        if self._pan_active and self._pan_start != self._pan_end:
-            self._pan_timer.start()
+        self._pan_pause.start(700)
 
     def _advance_pan(self):
         step = 1.25
@@ -151,37 +143,30 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
                 self._pan_offset = self._pan_end
                 self._pan_direction = -1
                 self._pan_timer.stop()
-                QTimer.singleShot(900, self._resume_pan)
+                self._pan_pause.start(900)
         else:
             self._pan_offset += step
             if self._pan_offset >= self._pan_start:
                 self._pan_offset = self._pan_start
                 self._pan_direction = 1
                 self._pan_timer.stop()
-                QTimer.singleShot(900, self._resume_pan)
+                self._pan_pause.start(900)
         self.update()
 
     def _resume_pan(self):
-        if self._pan_active:
+        if self._pan_active and self.isVisible():
             self._pan_timer.start()
 
     def _stop_pan(self):
         self._pan_active = False
         self._pan_timer.stop()
+        self._pan_pause.stop()
         self._pan_offset = 0.0
 
-    def _prepare_segments(self):
-        # Use the main renderer's geometry unchanged. It already reserves a
-        # constant ruby band, so base_y does not depend on whether ruby exists.
-        prepared = super()._prepare_segments()
-        if self._pan_offset:
-            for segment in prepared:
-                if not segment.get("_vertical"):
-                    segment["x"] = (
-                        float(segment.get("x", 0))
-                        + self._pan_offset
-                    )
-        return prepared
+    def hideEvent(self, event):
+        self._stop_pan()
+        self._pan_geometry = None
+        super().hideEvent(event)
 
     def paintEvent(self, event):
         if not self.lyric:
@@ -191,9 +176,27 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
         if not prepared:
             return
 
+        # Resizing, settings and asynchronous readings can change the overflow.
+        geometry = (self.width(), min(s["x"] for s in prepared),
+                    max(s["x"] + s["width"] for s in prepared))
+        if geometry != self._pan_geometry:
+            self._pan_geometry = geometry
+            self._configure_pan()
+
+        base = QFontMetrics(self.base_font)
+        reading = QFontMetrics(self.reading_font)
+        top = min(s["base_y"] - base.ascent() for s in prepared)
+        bottom = max(s["base_y"] + base.descent() for s in prepared)
+        if self.show_ruby:
+            for segment in prepared:
+                if segment.get("reading") and segment.get("reading_y") is not None:
+                    top = min(top, segment["reading_y"] - reading.ascent())
+                    bottom = max(bottom, segment["reading_y"] + reading.descent())
+
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+            painter.translate(self._pan_offset, (self.height() - (bottom - top)) / 2 - top)
             painter.save()
             try:
                 painter.setOpacity(self.display_opacity)
@@ -206,6 +209,28 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
         finally:
             if painter.isActive():
                 painter.end()
+
+
+class ContextLyricLabel(QLabel):
+    """A quiet context row that never widens the floating window."""
+
+    def __init__(self):
+        super().__init__()
+        self.text_color = "#FFFFFF"
+        self.display_opacity = 0.5
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setFont(self.font())
+        painter.setPen(QColor(self.text_color))
+        painter.setOpacity(self.display_opacity)
+        text = self.fontMetrics().elidedText(
+            " ".join(self.text().splitlines()), Qt.TextElideMode.ElideRight, self.width()
+        )
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, text)
+        painter.end()
 
 
 class FloatingLyricsBackground(QWidget):
@@ -317,11 +342,15 @@ class FloatingLyricsWindow(QWidget):
         self.close_button = close
         layout.addLayout(top)
 
+        self.previous_label = ContextLyricLabel()
+        layout.addWidget(self.previous_label)
         self.lyric_widget = SplitRenderFuriganaWidget()
-        self.lyric_widget.setMinimumHeight(190)
+        self.lyric_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self.lyric_widget.set_alignment("center")
         self.lyric_widget.set_ruby_visible(True)
         layout.addWidget(self.lyric_widget, 1)
+        self.next_label = ContextLyricLabel()
+        layout.addWidget(self.next_label)
 
     def _window_flags(self, settings):
         flags = Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
@@ -348,6 +377,15 @@ class FloatingLyricsWindow(QWidget):
         self.lyric_widget.reading_font = ruby_font
 
         self.lyric_widget.display_opacity = float(self.settings.get("text_opacity", 1.0))
+        context_font = QFont(base_font)
+        context_font.setPointSizeF(max(8, base_font.pointSizeF() * 0.65))
+        for label in (self.previous_label, self.next_label):
+            label.setFont(context_font)
+            label.setFixedHeight(QFontMetrics(context_font).height() + 8)
+            label.text_color = self.text_color
+            label.display_opacity = self.lyric_widget.display_opacity * 0.5
+            label.update()
+        self.lyric_widget._update_content_geometry()
         width = int(self.settings.get("window_width", 720))
         self.resize(width, self.height())
 
@@ -380,6 +418,10 @@ class FloatingLyricsWindow(QWidget):
         self._current_text = text
         self._translation_lines = translation_lines
         self.lyric_widget.set_lyric(text, translation_lines=translation_lines)
+
+    def set_context(self, previous="", following=""):
+        self.previous_label.setText(str(previous or ""))
+        self.next_label.setText(str(following or ""))
 
     def set_furigana_enabled(self, enabled):
         self.lyric_widget.set_ruby_visible(enabled)
@@ -690,20 +732,28 @@ class FloatingLyricsPlugin:
 
         index = getattr(self.window, "current_line", -1)
         lyric_lines = getattr(self.window, "lyric_lines", []) or []
-        if 0 <= index < len(lyric_lines):
-            line = lyric_lines[index]
-            self.floating.set_text(line.text, translation_lines=getattr(line, "translation_lines", []))
-            return
-        lyrics = getattr(self.window, "lyrics", []) or []
-        if 0 <= index < len(lyrics):
-            entry = lyrics[index]
+        lyrics = lyric_lines or getattr(self.window, "lyrics", []) or []
+
+        def text_at(row):
+            if not 0 <= row < len(lyrics):
+                return ""
+            entry = lyrics[row]
+            if hasattr(entry, "text"):
+                return entry.text
             if isinstance(entry, (tuple, list)) and len(entry) > 1:
-                self.floating.set_text(entry[1])
-            elif isinstance(entry, dict):
-                self.floating.set_text(entry.get("text", ""))
-            else:
-                self.floating.set_text(str(entry))
+                return entry[1]
+            if isinstance(entry, dict):
+                return entry.get("text", "")
+            return str(entry)
+
+        if 0 <= index < len(lyrics):
+            self.floating.set_context(text_at(index - 1), text_at(index + 1))
+            self.floating.set_text(
+                text_at(index),
+                translation_lines=getattr(lyrics[index], "translation_lines", []),
+            )
         else:
+            self.floating.set_context("", text_at(0) if index < 0 else "")
             self.floating.set_text("No lyrics")
 
     def on_unload(self, context):

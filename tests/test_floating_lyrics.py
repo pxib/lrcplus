@@ -206,3 +206,101 @@ def test_hidden_multiline_lyrics_defer_reading_and_layout_until_shown(
         plugin.on_unload(None)
         plugin.floating.deleteLater()
         qapp.processEvents()
+@pytest.mark.parametrize("format", ["objects", "tuples", "dicts", "strings"])
+def test_context_tracks_current_line_and_clears_at_song_boundaries(qapp, format):
+    texts = ["Previous", "Current", "Next"]
+    entries = {
+        "objects": [SimpleNamespace(text=text) for text in texts],
+        "tuples": list(enumerate(texts)),
+        "dicts": [{"text": text} for text in texts],
+        "strings": texts,
+    }[format]
+    plugin = FloatingLyricsPlugin()
+    plugin.floating = FloatingLyricsWindow(dict(plugin.DEFAULTS))
+    plugin.window = SimpleNamespace(current_line=1, show_ruby=False)
+    setattr(plugin.window, "lyric_lines" if format == "objects" else "lyrics", entries)
+    try:
+        plugin.floating.show()
+        plugin.refresh()
+        qapp.processEvents()
+        floating = plugin.floating
+        assert floating.previous_label.text() == "Previous"
+        assert floating.lyric_widget.lyric == "Current"
+        assert floating.next_label.text() == "Next"
+        assert floating.previous_label.geometry().bottom() < floating.lyric_widget.y()
+        assert floating.lyric_widget.geometry().bottom() < floating.next_label.y()
+
+        plugin.window.current_line = 0
+        plugin.refresh()
+        assert floating.previous_label.text() == ""
+        assert floating.next_label.text() == "Current"
+        plugin.window.current_line = 2
+        plugin.refresh()
+        assert floating.previous_label.text() == "Current"
+        assert floating.next_label.text() == ""
+        plugin.window.current_line = -1
+        plugin.refresh()
+        assert floating.previous_label.text() == ""
+        assert floating.next_label.text() == "Previous"
+        entries.clear()
+        plugin.refresh()
+        assert floating.previous_label.text() == floating.next_label.text() == ""
+    finally:
+        plugin.floating.close()
+        plugin.floating.deleteLater()
+        qapp.processEvents()
+
+
+def test_long_current_line_pans_both_ways_and_resets_for_resize_and_new_line(qapp):
+    floating = FloatingLyricsWindow(dict(FloatingLyricsPlugin.DEFAULTS, window_width=350))
+    try:
+        floating.set_furigana_enabled(False)
+        floating.set_text("A long lyric that needs to scroll from beginning to end " * 3)
+        floating.show()
+        qapp.processEvents()
+        widget = floating.lyric_widget
+        assert not widget.wrap_text
+        assert widget._pan_active
+        assert floating.width() == 350
+        prepared = widget._prepare_segments()
+        positions = [s["x"] for s in prepared]
+        assert len({s["base_y"] for s in prepared}) == 1
+        assert min(positions) + widget._pan_offset == pytest.approx(0)
+        widget._pan_pause.stop()
+        for _ in range(10000):
+            widget._advance_pan()
+            if widget._pan_direction == -1:
+                break
+        assert widget._pan_direction == -1
+        assert widget._pan_offset == widget._pan_end
+        assert max(s["x"] + s["width"] for s in prepared) + widget._pan_offset == pytest.approx(widget.width())
+        for _ in range(10000):
+            widget._advance_pan()
+            if widget._pan_direction == 1:
+                break
+        assert widget._pan_offset == widget._pan_start
+        assert [s["x"] for s in widget._prepare_segments()] == positions
+
+        floating.set_text("Hi")
+        qapp.processEvents()
+        assert not widget._pan_active
+        assert widget._pan_offset == 0
+        floating.resize(60, floating.height())
+        qapp.processEvents()
+        floating.grab()
+        assert widget._pan_active
+        floating.resize(1000, floating.height())
+        qapp.processEvents()
+        floating.grab()
+        assert not widget._pan_active
+        assert not widget._pan_timer.isActive()
+        floating.resize(60, floating.height())
+        qapp.processEvents()
+        floating.grab()
+        floating.hide()
+        assert not widget._pan_timer.isActive()
+        assert not widget._pan_pause.isActive()
+    finally:
+        floating.close()
+        floating.deleteLater()
+        qapp.processEvents()
