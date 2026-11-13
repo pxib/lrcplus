@@ -28,6 +28,7 @@ PROJECT_ROOT = Path(SPEC).resolve().parent
 datas = [
     (str(PROJECT_ROOT / "LICENSE.txt"), "."),
     (str(PROJECT_ROOT / "assets"), "assets"),
+    (str(PROJECT_ROOT / "themedata"), "themedata"),
     (str(PROJECT_ROOT / "docs" / "manual"), "docs/manual"),
     (str(PROJECT_ROOT / "PLUGIN_API.md"), "."),
     (str(PROJECT_ROOT / "plugins"), "plugins"),

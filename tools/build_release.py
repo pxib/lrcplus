@@ -122,6 +122,7 @@ def main(argv=None) -> int:
     app_folder = dist / "LRCPlus"
     required = (app_folder / "LRCPlus.exe", app_folder / "LRCPlusUpdater.exe",
                 app_folder / "lrcplus-update.json",
+                app_folder / "themedata" / "optionalthemes.json",
                 app_folder / "docs" / "manual" / "index.html",
                 app_folder / "docs" / "manual" / "ja.html",
                 app_folder / "docs" / "manual" / "manual.js",
