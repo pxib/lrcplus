@@ -3,6 +3,13 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ## [2026-11-13]
 
+### Changed
+
+- Give the basic Green, Blue, Purple, Rose, and Orange theme presets coordinated backgrounds, surfaces, controls, borders, and player colors in both light and dark mode. Selecting a basic preset replaces colors left over from the previous theme.
+- Bundle theme presets with PyInstaller releases and check that the preset file is present before creating the release archive.
+
+## [2026-11-13]
+
 ### Added
 
 #### Setup wizard and dialogue
