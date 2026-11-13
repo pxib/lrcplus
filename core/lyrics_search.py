@@ -39,8 +39,8 @@ class LyricsSearchMixin:
         # Remove leading track numbers: 01 - Song, 01. Song, 01) Song.
         value = re.sub(r"^\s*\d+\s*[-._)]\s*", "", value)
 
-        # Remove bracketed release labels such as [Lyrics] or (Official Audio).
-        value = re.sub(r"[\(\[\{].*?[\)\]\}]", " ", value)
+        # Keep bracketed title/version text, including named remixes. Only
+        # presentation labels such as [Lyrics] and (Official Audio) are noise.
 
         # Remove common filename noise.
         value = re.sub(
@@ -55,6 +55,23 @@ class LyricsSearchMixin:
         # Ignore remaining punctuation and collapse whitespace.
         value = re.sub(r"[^\w\s]", "", value)
         return " ".join(value.split())
+
+    @classmethod
+    def _lyrics_version(cls, value):
+        """Keep alternate recordings out of the substring fallback."""
+        pattern = (
+            r"\b(remix|mix|live|acoustic|instrumental|karaoke|cover|demo|"
+            r"remaster(?:ed)?|sped\s+up|slowed|radio\s+edit)\b"
+        )
+        value = str(value).casefold()
+        labels = [
+            cls._normalise_lyrics_name(match.group(1))
+            for match in re.finditer(r"[\(\[\{]([^\)\]\}]+)[\)\]\}]", value)
+            if re.search(pattern, match.group(1))
+        ]
+        if labels:
+            return tuple(sorted(labels))
+        return tuple(sorted(match.group(0) for match in re.finditer(pattern, value)))
 
     @staticmethod
     def _extract_lyrics_title(value):
@@ -78,10 +95,15 @@ class LyricsSearchMixin:
     @classmethod
     def _score_lyrics_candidate(cls, audio_path, lyrics_path):
         """Score how confidently a lyrics file belongs to an audio file."""
+        if cls._lyrics_version(audio_path.stem) != cls._lyrics_version(lyrics_path.stem):
+            return 0
         audio_stem = audio_path.stem.casefold()
         lyrics_stem = lyrics_path.stem.casefold()
         audio_name = cls._normalise_lyrics_name(audio_path.stem)
         lyrics_name = cls._normalise_lyrics_name(lyrics_path.stem)
+
+        if lyrics_stem == audio_stem:
+            return 1000 + (100 if lyrics_path.parent == audio_path.parent else 0)
 
         # Split Artist - Title / Title - Artist before doing any directional
         # matching. Comparing the normalized halves as an unordered set means:
@@ -115,9 +137,7 @@ class LyricsSearchMixin:
 
         score = 0
 
-        if lyrics_stem == audio_stem:
-            score += 1000
-        elif audio_name and lyrics_name and audio_name == lyrics_name:
+        if audio_name and lyrics_name and audio_name == lyrics_name:
             score += 800
         else:
             audio_title = cls._normalise_lyrics_name(
