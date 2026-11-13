@@ -142,7 +142,9 @@ def test_number_ruby_renders_over_original_digits(qapp, monkeypatch, source, kan
         assert row._has_visible_ruby()
         assert chunks == original
         if timed:
-            assert [(piece["start"], piece["end"]) for piece in pieces] == [(i, i + 1) for i in range(len(source))]
+            assert len(pieces) == 1
+            assert [(span["start"], span["end"]) for span in pieces[0]["_timing_spans"]] == [
+                (i, i + 1) for i in range(len(source))]
         row.set_all_romaji_visible(True)
         assert "".join(piece["text"] for piece in row._prepare_segments()) == romaji
     finally:

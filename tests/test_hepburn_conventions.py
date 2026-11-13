@@ -69,7 +69,9 @@ def test_romaji_annotations_share_the_rules_across_karaoke_boundaries(qapp, monk
         assert "".join(piece["_display_reading"] for piece in pieces) == expected
         assert "".join(piece.get("reading") or "" for piece in pieces) == reading
         if timed:
-            assert [(piece["start"], piece["end"]) for piece in pieces] == [(i, i + 1) for i in range(len(source))]
+            assert len(pieces) == 1  # Generated ruby ignores karaoke separation.
+            assert [(span["start"], span["end"]) for span in pieces[0]["_timing_spans"]] == [
+                (i, i + 1) for i in range(len(source))]
         row.set_ruby_visible(True)
         assert "".join(piece["_display_reading"] for piece in row._prepare_segments()) == reading
     finally:

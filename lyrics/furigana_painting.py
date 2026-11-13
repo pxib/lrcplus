@@ -122,6 +122,15 @@ class FuriganaPaintingMixin:
             else:
                 left = float(segment.get("karaoke_x", segment["x"]))
                 extent = float(segment.get("karaoke_width", segment["width"]))
+            if reading:
+                # Map the base glyphs' sweep onto their reading. Sharing the
+                # same screen X left short ruby waiting, or long ruby finishing
+                # late, even though both belong to the same timed syllable.
+                base_width = float(segment.get("base_width", segment["width"]))
+                base_left = float(segment["x"]) + (float(segment["width"]) - base_width) / 2
+                progress = (left + extent * progress - base_left) / max(1e-9, base_width)
+                extent = float(segment.get("_display_reading_width", segment.get("reading_width", 0)))
+                left = float(segment["x"]) + (float(segment["width"]) - extent) / 2
         return sweep_effect_pen(
             self.karaoke_sweep_style, normal, self.highlight_color,
             left, extent, progress, font_height=metrics.height(), vertical=bool(vertical),

@@ -415,11 +415,9 @@ def split_reading_by_text_ranges(text, reading, ranges):
     fixed-width character mappings (for example 何千回/なんぜんかい), this
     also gives the intuitive per-piece distribution.
 
-    The mapping is necessarily heuristic when a token contains a different
-    number of source characters and reading characters (e.g. 今日/きょう).
-    Those cases are uncommon for already-tokenized ruby segments; preserving
-    the full reading on the first piece would be less useful than a stable
-    proportional split for karaoke display.
+    Visible kana anchor the mapping where possible. Elsewhere the mapping is
+    heuristic, but small kana stay with their preceding kana: a timing boundary
+    must never turn じょ into separate じ and ょ readings.
     """
     text = str(text or "")
     reading = katakana_to_hiragana(str(reading or ""))
@@ -427,17 +425,40 @@ def split_reading_by_text_ranges(text, reading, ranges):
         return [None for _ in ranges]
 
     total_text = len(text)
-    total_reading = len(reading)
+    def reading_boundaries(value):
+        boundaries = [0]
+        for index, char in enumerate(value):
+            if index and (char in "ゃゅょぁぃぅぇぉゎゕゖ" or unicodedata.combining(char)):
+                boundaries[-1] = index + 1
+            else:
+                boundaries.append(index + 1)
+        return boundaries
+
+    def proportional_boundaries(base, ruby):
+        units = reading_boundaries(ruby)
+        return [units[math.floor((len(units) - 1) * i / len(base))]
+                for i in range(len(base) + 1)]
+
+    offsets = proportional_boundaries(text, reading)
+    if (any(map(is_kanji, text)) and any(is_kana(char) for char in text)
+            and not any(_is_decorative_symbol(char) for char in text)):
+        tokens = token_to_furigana_segments(text, reading)
+        token_readings = [token.get("reading") or katakana_to_hiragana(token["text"])
+                          for token in tokens]
+        if "".join(token_readings) == reading:
+            offsets = [0]
+            cursor = 0
+            for token, ruby in zip(tokens, token_readings):
+                offsets.extend(cursor + end for end in proportional_boundaries(token["text"], ruby)[1:])
+                cursor += len(ruby)
     result = []
     previous = 0
 
     for start, end in ranges:
         start = max(0, min(total_text, int(start)))
         end = max(start, min(total_text, int(end)))
-        r0 = math.floor(total_reading * start / total_text)
-        r1 = math.floor(total_reading * end / total_text)
-        r0 = max(previous, min(total_reading, r0))
-        r1 = max(r0, min(total_reading, r1))
+        r0 = max(previous, offsets[start])
+        r1 = max(r0, offsets[end])
         piece = reading[r0:r1]
         result.append(piece or None)
         previous = r1

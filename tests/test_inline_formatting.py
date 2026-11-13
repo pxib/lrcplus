@@ -115,7 +115,7 @@ def test_renderer_uses_styled_fonts_and_keeps_reading_and_timing(qapp, tmp_path,
         pieces = widget._prepare_segments()
         assert "".join(piece["text"] for piece in pieces) == "君の声"
         assert pieces[0]["reading"] == "きみ"
-        assert {piece["timing_group"] for piece in pieces} == {0}
+        assert {span["timing_group"] for piece in pieces for span in piece["_timing_spans"]} == {0}
         assert widget._styled_font(widget.base_font, pieces[0]).bold()
         assert widget._styled_font(widget.reading_font, pieces[0]).bold()
         assert widget._styled_font(widget.base_font, pieces[-1]).italic()

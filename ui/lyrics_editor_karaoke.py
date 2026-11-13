@@ -329,7 +329,7 @@ class LyricsEditorKaraokeMixin:
         exact_ruby = {}
         for a, b, segment in old_ranges:
             ruby = getattr(segment, "ruby", None)
-            if ruby:
+            if ruby and getattr(segment, "ruby_source", None) != "generated":
                 exact_ruby[(a, b)] = (
                     ruby,
                     getattr(segment, "ruby_source", None),
@@ -472,7 +472,7 @@ class LyricsEditorKaraokeMixin:
                 old_spans = list(getattr(old_segment, "ruby_spans", []) or [])
                 if not old_spans:
                     old_ruby = getattr(old_segment, "ruby", None)
-                    if old_ruby:
+                    if old_ruby and getattr(old_segment, "ruby_source", None) != "generated":
                         old_spans = [(0, old_b - old_a, old_ruby)]
                 for span_a, span_b, span_reading in old_spans:
                     global_a = old_a + span_a

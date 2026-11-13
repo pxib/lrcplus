@@ -13,6 +13,7 @@ from lyrics.furigana import (
 )
 from core.settings import KARAOKE_SWEEP_STYLES
 from lyrics.karaoke_effects import word_lift_amount
+from lyrics.karaoke_layout import annotate_next_timed_starts
 from lyrics.line_breaks import reading_source
 from lyrics.furigana_layout import (
     FuriganaLayoutMixin,
@@ -679,6 +680,18 @@ class FuriganaWidget(FuriganaLayoutMixin, FuriganaPaintingMixin, QWidget):
         if self.karaoke_position is None:
             return 0.0
 
+        if segment.get("_timing_spans"):
+            # An automatic reading stays one visual word, even when several
+            # authored karaoke chunks pass through it. Project their individual
+            # clocks onto the word without slicing its reading into guesses.
+            progress = 0.0
+            for span in segment["_timing_spans"]:
+                value = self._segment_progress(span, segment["_timing_spans"])
+                begin, end = span["_source_fraction"]
+                value = max(0.0, min(1.0, (value - begin) / max(1e-9, end - begin)))
+                progress += span["_weight"] * value
+            return progress
+
         start = segment.get("start")
         if start is None:
             return 0.0
@@ -802,8 +815,8 @@ class FuriganaWidget(FuriganaLayoutMixin, FuriganaPaintingMixin, QWidget):
         """Display lyric segments while generating readings from the full lyric.
 
         Karaoke boundaries are timing metadata only.  Automatic reading
-        generation always sees the complete unsplit lyric, then each generated
-        token is mapped back to the timing range that owns its character range.
+        generation always sees the complete unsplit lyric. Generated words keep
+        their reading intact and carry the timing ranges that pass through them.
         Explicit LRCX ruby remains authoritative.
         """
         source = str(text)
@@ -937,10 +950,10 @@ class FuriganaWidget(FuriganaLayoutMixin, FuriganaPaintingMixin, QWidget):
                 # making valid manual readings appear to be rejected.
                 whole_tokens = [{"text": text, "reading": None}]
 
-        # Readings already resolved on the lyric model override a fresh
-        # automatic parse.  This includes generated readings: generation and
-        # rendering must share one result instead of producing two independent
-        # segmentations.
+        # Authored readings override automatic parsing. Cached whole-word
+        # readings replace generated values previously attached to timed chunks.
+        # Until that cache is ready, keep the model's generated readings visible.
+        has_automatic_readings = any(token.get("reading") for token in whole_tokens)
         explicit_ranges = [
             (
                 item["start_offset"],
@@ -949,8 +962,34 @@ class FuriganaWidget(FuriganaLayoutMixin, FuriganaPaintingMixin, QWidget):
                 item["reading_source"],
             )
             for item in raw_segments
-            if item["reading"]
+            if item["reading"] and not (
+                has_automatic_readings and item["reading_source"] == "generated"
+            )
         ]
+
+        timing_owners = {}
+        for item in raw_segments:
+            group = item["karaoke_group"]
+            if group not in timing_owners:
+                timing_owners[group] = dict(item, timing_group=group)
+            else:
+                timing_owners[group]["end_offset"] = item["end_offset"]
+        timing_owners = list(timing_owners.values())
+        annotate_next_timed_starts(timing_owners)
+
+        def timing_for_range(begin, end):
+            spans = []
+            for owner in timing_owners:
+                a = max(begin, owner["start_offset"])
+                b = min(end, owner["end_offset"])
+                if a >= b:
+                    continue
+                width = owner["end_offset"] - owner["start_offset"]
+                spans.append(dict(owner, line_end=line_end,
+                    _source_fraction=((a - owner["start_offset"]) / width,
+                                      (b - owner["start_offset"]) / width),
+                    _weight=(b - a) / (end - begin)))
+            return spans
 
         prepared = []
         rendered_explicit_ranges = set()
@@ -971,6 +1010,7 @@ class FuriganaWidget(FuriganaLayoutMixin, FuriganaPaintingMixin, QWidget):
             token_start = token_offset
             token_end = token_start + len(token_text)
             token_offset = token_end
+            token_reading = token.get("reading") or None
 
             # Explicit ruby wins when the token exactly corresponds to an
             # explicit range.  Automatic tokens overlapping explicit ranges are
@@ -981,17 +1021,19 @@ class FuriganaWidget(FuriganaLayoutMixin, FuriganaPaintingMixin, QWidget):
                     boundaries.add(a)
                 if token_start < b < token_end:
                     boundaries.add(b)
-            for item in raw_segments:
-                a = item["start_offset"]
-                b = item["end_offset"]
-                if token_start < a < token_end:
-                    boundaries.add(a)
-                if token_start < b < token_end:
-                    boundaries.add(b)
+            # Automatic ruby follows tokenizer words, independently of karaoke
+            # separation. Bare text still uses the original timing boundaries.
+            if not token_reading:
+                for item in raw_segments:
+                    a = item["start_offset"]
+                    b = item["end_offset"]
+                    if token_start < a < token_end:
+                        boundaries.add(a)
+                    if token_start < b < token_end:
+                        boundaries.add(b)
 
             ordered = sorted(boundaries)
             pieces = list(zip(ordered, ordered[1:]))
-            token_reading = token.get("reading") or None
             reading_slices = (
                 split_reading_by_text_ranges(
                     token_text,
@@ -1078,6 +1120,21 @@ class FuriganaWidget(FuriganaLayoutMixin, FuriganaPaintingMixin, QWidget):
                     "_romaji_particle": bool(token.get("_romaji_particle", False)),
                     "_reading_group": (token_start, token_end),
                 })
+                if has_automatic_readings:
+                    spans = timing_for_range(a, b)
+                    if spans:
+                        last = spans[-1]
+                        final_end = last["end"]
+                        if final_end is None or (last["start"] is not None and final_end <= last["start"]):
+                            final_end = last["_next_timed_start"] or line_end
+                        if final_end is None and last["start"] is not None:
+                            final_end = float(last["start"]) + 1.0
+                        prepared[-1].update(
+                            _timing_spans=spans,
+                            timing_group=("token", a, b),
+                            end=final_end,
+                            instant=all(span["instant"] for span in spans),
+                        )
 
         if not prepared and raw_segments:
             for item in raw_segments:
