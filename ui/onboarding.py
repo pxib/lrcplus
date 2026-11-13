@@ -304,6 +304,11 @@ class OnboardingDialog(QDialog):
         self.reading_layout = QVBoxLayout(self.reading_container)
         self.reading_layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.reading_container)
+        self.ai_features_check = QCheckBox("AI features")
+        self.ai_features_check.setToolTip("Enable optional AI chat and memories. Turn off to use the scripted setup wizard.")
+        self.ai_features_check.setVisible(companion)
+        self.ai_features_check.setChecked(settings.load_all_settings().get("companion_ai_enabled", True) is not False)
+        self.ai_features_check.installEventFilter(self)
         if companion:
             from ui.onboarding_chat import CompanionChat
             self.companion_chat = CompanionChat(self)
@@ -326,6 +331,7 @@ class OnboardingDialog(QDialog):
         pacing_row.addWidget(speed_label)
         pacing_row.addWidget(self.text_speed_combo)
         pacing_row.addStretch()
+        pacing_row.addWidget(self.ai_features_check)
         self.sound_check = QCheckBox("Sound")
         self.sound_check.setToolTip("Play the guide's reaction sounds without changing music playback.")
         self.sound_check.setChecked(self.pacing["sound_enabled"])
@@ -382,9 +388,51 @@ class OnboardingDialog(QDialog):
             self.select_route("companion_welcome")
         else:
             self.show_dialogue()
+        self.ai_features_check.toggled.connect(self.change_ai_features)
+        if companion and not self.ai_features_check.isChecked():
+            self.change_ai_features(False, persist=False)
+        self._fit_content()
+
+    def change_ai_features(self, enabled, *, persist=True):
+        if self.companion_chat is None:
+            return
+        chat = self.companion_chat
+        chat.ai_enabled = enabled
+        if not enabled:
+            chat.cancel_memory_check()
+            chat.stop_request()
+        chat.setVisible(enabled)
+        self.companion_mode = enabled
+        self.restart_setup.setVisible(enabled)
+        self.skip.setVisible(not enabled)
+        self.back.setVisible(not enabled)
+        self.debug_button.setVisible(not enabled)
+        self.outside_click_enabled = enabled
+        self.set_page(FINISH_PAGE if enabled else 0)
+        if enabled:
+            self.setWindowTitle("Ayami · LRCPlus")
+            self.title.setText("Ayami")
+            self.next.setText("Close")
+            if chat.exchanges:
+                chat.show_page(chat.current_page)
+            else:
+                self.select_route("companion_welcome")
+        else:
+            self.show_dialogue()
+        if persist:
+            payload = settings.load_all_settings()
+            payload["companion_ai_enabled"] = enabled
+            try:
+                settings.save_all_settings(payload)
+            except OSError:
+                QMessageBox.warning(self, "AI preference not saved",
+                                    "The mode changed for this window, but could not be saved for next time.")
         self._fit_content()
 
     def start_setup_again(self):
+        if self.companion_chat is not None and self.ai_features_check.isChecked():
+            self.ai_features_check.setChecked(False)
+            return
         self.companion_mode = False
         if self.companion_chat is not None:
             self.companion_chat.close_chat()
@@ -586,7 +634,7 @@ class OnboardingDialog(QDialog):
         if watched is self._content_widget and event.type() == QEvent.Type.LayoutRequest:
             self._fit_content()
         if (event.type() == QEvent.Type.ShortcutOverride
-                and watched in (self.text_speed_combo, self.reduced_motion_check, self.auto_read_check, self.sound_check, self.skip_reading)
+                and watched in (self.text_speed_combo, self.reduced_motion_check, self.auto_read_check, self.sound_check, self.skip_reading, self.ai_features_check)
                 and event.key() == Qt.Key.Key_Space):
             event.accept()
             return True

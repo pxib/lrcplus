@@ -59,6 +59,61 @@ def test_returning_user_can_restart_original_setup(qapp):
     assert dialog.skip.isVisible()
 
 
+def test_ai_toggle_stops_requests_and_returns_to_vn_without_losing_chat(qapp, monkeypatch):
+    player, dialog = make_dialog()
+    dialog.show()
+    chat = dialog.companion_chat
+    chat.config = {"endpoint": "https://example.com/v1", "model": "model"}
+    chat.key = "session-key"
+    calls = []
+    monkeypatch.setattr(chat.job, "start", lambda *args: calls.append(args))
+    cancellations = []
+    monkeypatch.setattr(chat.job, "cancel", lambda: cancellations.append("chat"))
+    monkeypatch.setattr(chat.memory_job, "cancel", lambda: cancellations.append("memory"))
+    chat.input.setText("Hello")
+    chat.send()
+    chat.memory_context = {"chat_id": chat.conversation_id, "messages": []}
+
+    dialog.ai_features_check.setChecked(False)
+    assert not dialog.companion_mode
+    assert dialog.page == 0 and dialog.dialogue_lines
+    assert chat.isHidden() and dialog.ai_features_check.isVisible()
+    assert chat.pending is None and chat.memory_context is None
+    assert set(cancellations) == {"chat", "memory"}
+    assert chat.exchanges[0]["stopped"]
+    assert chat.key == "session-key"
+    assert settings.load_all_settings()["companion_ai_enabled"] is False
+    chat.receive_reply(companion_chat.ChatReply("Late reply"))
+    chat.send()
+    chat.regenerate()
+    chat.check_memories(force=True)
+    assert len(calls) == 1
+    assert chat.exchanges[0]["reply"] is None
+
+    dialog.ai_features_check.setChecked(True)
+    assert dialog.companion_mode and chat.isVisible()
+    assert chat.pages.isVisible()
+    assert "Hello" in chat.page_text.toPlainText()
+    assert not dialog.dialogue_lines
+    assert settings.load_all_settings()["companion_ai_enabled"] is True
+    chat.send()
+    assert len(calls) == 2
+
+
+def test_disabled_ai_reopens_in_scripted_mode_and_can_be_enabled(qapp):
+    settings.save_all_settings({"companion_ai_enabled": False})
+    player, dialog = make_dialog()
+    dialog.show()
+    assert not dialog.ai_features_check.isChecked()
+    assert dialog.companion_chat.isHidden()
+    assert not dialog.companion_chat.ai_enabled
+    assert dialog.page == 0 and dialog.dialogue_lines
+    dialog.ai_features_check.setChecked(True)
+    assert dialog.companion_mode
+    assert dialog.companion_chat.isVisible()
+    assert dialog.dialogue_lines  # The scripted companion greeting still works.
+
+
 def test_failed_message_can_be_retried_without_polluting_history(qapp, monkeypatch):
     player, dialog = make_dialog()
     chat = dialog.companion_chat

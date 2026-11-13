@@ -64,6 +64,33 @@ def test_native_layouts_reload_original_image_dimensions(qapp):
         widget.deleteLater()
 
 
+def test_encoded_background_tracks_viewport_and_display_density(qapp, monkeypatch):
+    artwork = QPixmap(800, 400)
+    artwork.fill(Qt.GlobalColor.red)
+    encoded = QByteArray()
+    buffer = QBuffer(encoded)
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    assert artwork.save(buffer, "PNG")
+    widget = ArtworkBackgroundWidget()
+    monkeypatch.setattr(widget, "devicePixelRatioF", lambda: 1.0)
+    try:
+        widget.set_blur_radius(0)
+        widget.resize(80, 80)
+        assert widget.set_artwork_bytes(bytes(encoded))
+        assert widget._source_pixmap.width() == 80
+        widget.show()
+        qapp.processEvents()
+        widget.resize(160, 160)
+        qapp.processEvents()
+        assert widget._source_pixmap.width() == 160
+        monkeypatch.setattr(widget, "devicePixelRatioF", lambda: 2.0)
+        widget._rebuild_background()
+        assert widget._source_pixmap.width() == 320
+    finally:
+        widget.close()
+        widget.deleteLater()
+
+
 @pytest.mark.parametrize("mode", ["center", "fill", "fit", "stretch", "tile"])
 @pytest.mark.parametrize("blur_mode, bleed", [
     ("quality", False), ("quality", True), ("low_quality", False),

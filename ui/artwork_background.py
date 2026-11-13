@@ -58,6 +58,41 @@ def extract_embedded_cover(path):
     return data
 
 
+def compact_background_artwork(data):
+    """Keep a bounded display copy; never change the original audio/artwork file."""
+    if not data:
+        return data
+    image_data = QByteArray(data)
+    buffer = QBuffer(image_data)
+    if not buffer.open(QIODevice.OpenModeFlag.ReadOnly):
+        return data
+    reader = QImageReader(buffer)
+    reader.setAutoTransform(True)
+    original = reader.size()
+    if not original.isValid():
+        return data
+    limit = QSize(1024, 1024)
+    oversized = original.width() > limit.width() or original.height() > limit.height()
+    if not oversized and len(data) <= 512 * 1024:
+        return data
+    if oversized:
+        reader.setScaledSize(original.scaled(limit, Qt.AspectRatioMode.KeepAspectRatio))
+    image = reader.read()
+    if image.isNull():
+        return data
+    # Enforce the cap even for image plugins that ignore scaled decoding.
+    if image.width() > limit.width() or image.height() > limit.height():
+        image = image.scaled(limit, Qt.AspectRatioMode.KeepAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation)
+    encoded = QByteArray()
+    output = QBuffer(encoded)
+    output.open(QIODevice.OpenModeFlag.WriteOnly)
+    # Preserve transparency; opaque playback backgrounds use a compact JPEG.
+    if not image.save(output, "PNG" if image.hasAlphaChannel() else "JPEG", 85):
+        return data
+    return bytes(encoded)
+
+
 def load_embedded_cover_thumbnail(path, size=QSize(52, 52)):
     """Decode embedded artwork directly near thumbnail size.
 
@@ -97,6 +132,7 @@ class ArtworkBackgroundWidget(QWidget):
         self._defer_hidden_rendering = defer_hidden_rendering
         self._background_cache_key = None
         self._source_pixmap = QPixmap()
+        self._source_decode_key = None
         self._artwork_bytes = None
         self._cached_background = QPixmap()
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -117,16 +153,39 @@ class ArtworkBackgroundWidget(QWidget):
         content.raise_()
 
     def set_artwork_bytes(self, data):
+        data = compact_background_artwork(data)
+        if self._rendering_deferred():
+            # Inspect the header without expanding the image into pixels.
+            image_data = QByteArray(data or b"")
+            buffer = QBuffer(image_data)
+            if buffer.open(QIODevice.OpenModeFlag.ReadOnly) and QImageReader(buffer).canRead():
+                self._artwork_bytes = data
+                self._source_pixmap = QPixmap()
+                self._source_decode_key = None
+                self._rebuild_background()
+                self.update()
+                return True
+            self.clear_artwork()
+            return False
         pixmap = self._decode_artwork_bytes(data)
         if not pixmap.isNull():
             self._artwork_bytes = data
             self._source_pixmap = pixmap
+            self._source_decode_key = self._decode_key()
             self._rebuild_background()
             self.update()
             return True
 
         self.clear_artwork()
         return False
+
+    def _rendering_deferred(self):
+        return self._defer_hidden_rendering and (not self.isVisible() or not self._background_enabled)
+
+    def _decode_key(self):
+        if self._background_layout in ("center", "tile"):
+            return (self._background_layout,)
+        return (self._background_layout, self.width(), self.height(), self.devicePixelRatioF())
 
     def _decode_artwork_bytes(self, data):
         pixmap = QPixmap()
@@ -138,9 +197,12 @@ class ArtworkBackgroundWidget(QWidget):
                 reader = QImageReader(buffer)
                 reader.setAutoTransform(True)
                 original_size = reader.size()
+                # Decode for the actual display density, rather than always
+                # retaining twice the viewport resolution on ordinary screens.
+                density = max(1.0, self.devicePixelRatioF())
                 max_size = QSize(
-                    max(1, self.width() * 2),
-                    max(1, self.height() * 2),
+                    max(1, round(self.width() * density)),
+                    max(1, round(self.height() * density)),
                 )
                 if (
                     original_size.isValid()
@@ -177,12 +239,14 @@ class ArtworkBackgroundWidget(QWidget):
 
     def set_artwork_pixmap(self, pixmap):
         self._artwork_bytes = None
+        self._source_decode_key = None
         self._source_pixmap = QPixmap(pixmap)
         self._rebuild_background()
         self.update()
 
     def clear_artwork(self):
         self._artwork_bytes = None
+        self._source_decode_key = None
         self._source_pixmap = QPixmap()
         self._cached_background = QPixmap()
         self._background_cache_key = None
@@ -202,8 +266,6 @@ class ArtworkBackgroundWidget(QWidget):
             self._background_layout = mode
             # Center and Tile need the image's original dimensions, even if
             # it was previously decoded smaller for a scaled layout.
-            if self._artwork_bytes:
-                self._source_pixmap = self._decode_artwork_bytes(self._artwork_bytes)
             self._rebuild_background()
             self.update()
 
@@ -254,10 +316,16 @@ class ArtworkBackgroundWidget(QWidget):
         removed here because its alpha compositing could produce a nearly
         black result on some Qt paint backends.
         """
-        if self._defer_hidden_rendering and (not self.isVisible() or not self._background_enabled):
+        if self._rendering_deferred():
             self._cached_background = QPixmap()
             self._background_cache_key = None
+            if self._artwork_bytes:
+                self._source_pixmap = QPixmap()
+                self._source_decode_key = None
             return
+        if self._artwork_bytes and self._source_decode_key != self._decode_key():
+            self._source_pixmap = self._decode_artwork_bytes(self._artwork_bytes)
+            self._source_decode_key = self._decode_key()
         if self.size().isEmpty() or self._source_pixmap.isNull():
             self._cached_background = QPixmap()
             self._background_cache_key = None
@@ -434,6 +502,9 @@ class ArtworkBackgroundWidget(QWidget):
         if self._defer_hidden_rendering:
             self._cached_background = QPixmap()
             self._background_cache_key = None
+            if self._artwork_bytes:
+                self._source_pixmap = QPixmap()
+                self._source_decode_key = None
         super().hideEvent(event)
 
     def paintEvent(self, event):

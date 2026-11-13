@@ -1259,7 +1259,7 @@ class SettingsDialog(QDialog):
             "relative track levels and falls back to track tags. Untagged files are unchanged."
         )
         self._add_labeled(layout, "ReplayGain:", self.replaygain_combo)
-        self.replaygain_preamp = QSpinBox()
+        self.replaygain_preamp = ThemedSpinBox()
         self.replaygain_preamp.setRange(-24, 24)
         self.replaygain_preamp.setSuffix(" dB")
         self.replaygain_preamp.setValue(int(self.playback_settings.get("replaygain_preamp", 0)))

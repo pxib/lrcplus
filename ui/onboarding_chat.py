@@ -19,6 +19,7 @@ class CompanionChat(QWidget, CompanionLibrary):
     def __init__(self, wizard):
         super().__init__(wizard)
         self.wizard = wizard
+        self.ai_enabled = True
         self.history = []
         self.exchanges = []
         self.current_page = -1
@@ -304,7 +305,7 @@ class CompanionChat(QWidget, CompanionLibrary):
 
     def send(self):
         text = self.input.text().strip()
-        if not text or self.pending is not None:
+        if not self.ai_enabled or not text or self.pending is not None:
             return
         if not self.config.get("endpoint") or not self.config.get("model"):
             self.configure()
@@ -330,6 +331,8 @@ class CompanionChat(QWidget, CompanionLibrary):
         self.start_request(self.history)
 
     def start_request(self, context):
+        if not self.ai_enabled:
+            return
         self.set_busy(True)
         self.status.setText("Ayami is thinking…")
         self.save_conversation()
@@ -361,7 +364,7 @@ class CompanionChat(QWidget, CompanionLibrary):
         self.save_conversation()
 
     def regenerate(self):
-        if self.pending is not None or not self.exchanges or self.exchanges[-1].get("reply") is None:
+        if not self.ai_enabled or self.pending is not None or not self.exchanges or self.exchanges[-1].get("reply") is None:
             return
         if not self.config.get("endpoint") or not self.config.get("model"):
             self.configure()
@@ -385,7 +388,7 @@ class CompanionChat(QWidget, CompanionLibrary):
         self.wizard.restart_setup.setEnabled(not busy)
 
     def receive_reply(self, reply):
-        if self.pending is None or self.wizard._dialogue_closed:
+        if not self.ai_enabled or self.pending is None or self.wizard._dialogue_closed:
             return
         text = reply.text
         exchange = self.pending_exchange()

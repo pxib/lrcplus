@@ -50,7 +50,7 @@ class AutomaticMemories:
         self.update_memory_notice()
 
     def check_memories(self, force=False):
-        if (self.memory_context is not None or self.pending is not None or self.wizard._dialogue_closed
+        if (not self.ai_enabled or self.memory_context is not None or self.pending is not None or self.wizard._dialogue_closed
                 or self.store.error or not self.store.data.get("memories_enabled", True)
                 or self.store.data.get("auto_memory_mode", "suggest") == "off"
                 or not self.config.get("endpoint") or not self.config.get("model")

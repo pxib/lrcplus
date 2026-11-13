@@ -10,6 +10,14 @@ window. Its scripted `companion_welcome` greeting introduces the optional chat
 input above the pacing separator. **Run setup again** returns to the original
 wizard; first-run setup has no AI controls or network requests.
 
+The returning-user window has a remembered **AI features** toggle (enabled by
+default). Turning it off stops pending chat and memory checks, hides the AI
+controls, and returns to the original scripted setup VN. The toggle stays
+available throughout that setup so AI can be enabled again. Saved conversations,
+memories, provider settings, and session credentials are retained; turning AI
+back on restores the current chat without sending a request. **Run setup again**
+also switches AI off. This preference does not add AI controls to first-run setup.
+
 **AI settings** accepts an OpenAI-compatible Chat Completions API base URL,
 model ID, and optional API key (local servers may not need one). HTTPS is
 required except for localhost. No provider or model is selected automatically.

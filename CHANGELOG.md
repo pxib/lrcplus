@@ -5,7 +5,67 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Added
 
-- Add Help → User manual and the F1 shortcut to open the offline manual in a browser. Include both manual languages and their assets in packaged builds.
+#### Setup wizard and dialogue
+
+- Add a first-run setup wizard with Ayami guiding users through Welcome, Music library, Appearance, Reading preferences, Lyrics, and Ready. Show it before the dependency notice on fresh installations, and preserve the normal startup flow for users with an existing configuration.
+- Add **Settings > General > Relaunch Wizard** for returning users. Open Ayami's companion view from this control, with **Run setup again** available to return to the original setup steps.
+- Add a live Reading preferences preview for lyric font size, furigana, romaji readings, and replacing lyrics with romaji. Use supplied sample readings without loading a song, pronunciation dictionary, or network provider. **Apply and Next** saves edited global preferences and refreshes the player; **Do this later** discards the draft while preserving saved preferences and per-song overrides.
+- Add remembered text-speed, **Auto-read**, **Reduce motion**, and **Sound** controls. Allow manual dialogue advancement by clicking the text, pressing Space, or using the advance arrow; keep explicit pauses, choices, and application-event waits independent of text speed and Auto-read.
+- Add bundled reaction sounds and expression labels, using a separate audio player so guide reactions do not change music playback or its volume. Muting stops the current cue immediately while retaining expression labels, and missing clips do not block dialogue.
+- Add interactive lyric-search guidance that responds to searches starting, finding results, returning no results, failing, or closing. Keep Search Lyrics nonmodal during the tutorial so the guide can remain usable alongside it.
+- Add branching conversations, optional farewell scenes, and a DDLC-inspired detour with early exits, a developer confrontation, recorded dialogue, and a closing poem. Scene cleanup stops audio, closes auxiliary windows, and restores the guide's position when returning to setup.
+- Add a documented Ren'Py-inspired dialogue engine in `assets/onboarding/onboarding.rpy`, with labels, inline actions, reusable calls and returns, session variables, scalar conditions, conditional menu choices, event waits, fractional pauses, and randomized dialogue bags that exhaust their variants before repeating. Include a Debug panel for navigating steps and inspecting dialogue state; scripts do not execute Python.
+- Add interrupt-and-resume reactions to moving the guide and choosing appearance presets. Restore the interrupted line, typing position, actions, and remaining timers after a reaction; defer reactions during menus and scripted motion, and retain only the newest queued theme reaction during rapid preset browsing.
+
+#### Optional AI companion prototype
+
+- Add a remembered **AI features** toggle to the returning-user window. Turning it off stops pending chat and memory requests and returns to the original scripted setup VN; turning it back on restores the chat without sending a request. Preserve saved conversations, memories, and provider settings across mode changes.
+- Add optional AI chat to Ayami's returning-user companion view using a user-configured OpenAI-compatible Chat Completions endpoint, model ID, and API key where required. Support HTTPS endpoints and local HTTP servers without choosing a provider or model automatically. First-run setup remains scripted and makes no AI requests.
+- Add **AI settings** with session-only credentials by default and optional Windows account-bound encrypted storage for the API key and custom headers. Explain when encryption is unavailable, keep credentials session-only in that case, and remove stored credentials when their fields are cleared and saved.
+- Add advanced JSON settings for extra request-body parameters, excluded parameter names, and custom request headers. Validate their types, finite numeric values, and header contents before saving or sending, while protecting the model, messages, streaming mode, and managed authentication/transport headers.
+- Add an API-key setup guide with provider links, navigation, and usage/cost guidance. Opening the guide makes no AI requests, and closing it returns to the settings form with unsaved fields intact.
+- Add locally saved conversations with a conversation picker, **New conversation**, **Rename**, and **Delete**. Autosave sent messages and replies, restore unfinished requests as stopped, and browse exchanges with **Previous**, **Next**, and a page indicator. Reopening history does not resend requests or replay reaction sounds.
+- Add **Stop** for pending replies and **Regenerate** for the latest answer. Preserve the original answer until regeneration succeeds, replace it on the same history page, and ignore stale completions after cancellation or closing. Requests are asynchronous and do not automatically retry; stopping local waiting cannot guarantee cancellation at the provider.
+- Add user-edited memories, with up to 20 facts of 200 characters each and a toggle to exclude them from future requests without deleting them. Include enabled facts and up to ten recent completed exchanges in chat context; do not automatically attach songs, lyrics, paths, player state, or application settings.
+- Add memory extraction modes for **Off**, **Suggest for approval** (default), and **Automatically save ordinary preferences**. With inclusion enabled, check new user messages every three completed exchanges or through **Check now**, using a separate provider request. Review suggestions with supporting quotes and source pages, edit or dismiss candidates, and require approval for conflicts and facts outside ordinary preferences. Retain suggestions, dismissals, provenance, and extraction checkpoints locally.
+- Add provider-reported input, output, and total token counts, cumulative usage for the current window, and cached/reasoning details when supplied. Count memory checks separately in the display while including their usage in the window total; mark missing usage as unreported rather than presenting an incomplete total as complete.
+- Add optional bundled expression reactions to AI replies, respecting the Sound toggle. Display replies as plain text, accept only known reaction names, and keep model output unable to execute dialogue commands or application actions. This prototype displays completed replies without streaming.
+- Save conversations and memories atomically in the app-data directory's `companion.json`, separately from provider credentials. Preserve invalid existing data and disable saving instead of overwriting it; report save failures in the companion window.
+
+#### Audio import
+
+- Add title/artist search to **Plugins > Search and import audio…** in the yt-dlp Audio Import plugin. Return up to ten YouTube results with titles, channels, durations, and thumbnails when available, excluding live and upcoming broadcasts. Search runs in the cancellable worker and needs no additional dependency or API key.
+- Preview a search result by clicking it or using the arrow keys and Enter, then use the existing audio download workflow. Keep results available for choosing another track, clear them when the query changes, and retain direct-URL preview/import support.
+
+#### Offline manual and wiki
+
+- Add **Help > User manual** and the F1 shortcut to open the bundled offline manual in the default browser after confirmation. Report missing manual files or browser-launch failures, and include the manual directory and its assets in packaged builds.
+- Add an offline wiki-style manual with 28 articles covering setup, playback, lyrics, settings, editing, sharing, plugins, and reference material. Include real UI screenshots with numbered callouts, local article search, generated contents, section permalinks, breadcrumbs, related articles, an A–Z index, print styling, and layouts for narrow screens.
+- Add English, Japanese, Korean, and Cantonese (Traditional Chinese) manual editions. Preserve article, section, search, or source-view routes when switching languages with JavaScript enabled. Bundle Cantonese serif and sans-serif fonts and their license so those pages do not require online font downloads.
+- Add a remembered dark-mode toggle and read-only **View source** tabs for article HTML. Keep articles readable when JavaScript is disabled, with interactive search and navigation enhancements available when it is enabled.
+- Add read-only **Talk** pages with explicitly fictional discussions, nested replies, topic navigation, comment permalinks, copy-link controls, and deterministic fictional timestamps capped at the current time. Add localized fictional login, registration, and password-reset pages; these do not create accounts, post comments, or transmit credentials.
+- Add an offline zero-gravity Easter egg activated by **↑ ↑ ↓ ↓ ← → ← → B A** outside text fields. Let readers drag and throw article words, respect reduced motion, and restore the article with Escape, **Restore gravity**, navigation, resizing, or printing.
+- Add a GitHub Pages deployment workflow for the manual from the `release` branch, including its referenced assets and Markdown specifications. Rewrite repository-relative links in the staged website while retaining the manual's direct-from-disk layout in the source tree.
+
+### Changed
+
+- Share theme-preset application between Settings and onboarding so both apply the same mode, accent, palette, and advanced color overrides.
+- Style the main player's horizontal volume slider with the active theme's track, accent, and handle colors.
+- Reduce Lyrics Editor document-state overhead by recording immutable field snapshots instead of deep-copying lyric model objects for dirty-state comparisons. Capture the initial saved-state baseline once after opening while retaining separate mutable copies for undo history.
+- Checkboxes are no longer invisible.
+
+### Fixed
+
+- Reduce the risk of Qt crashes caused by Python cycle collection destroying GUI objects on a worker thread. Schedule young-generation and periodic full cycle collection on the GUI thread between Qt events. The previously reported rare playback crashes still require reproduction to confirm whether they are resolved.
+- Refresh the local lyric index when an existing lyric file changes in place, including edits to attachment tags. Check file timestamps and size as well as directory changes so changing an attachment does not leave an obsolete cached audio-to-lyrics match.
+- Keep saved-state comparisons sensitive to all lyric-line and segment fields, including nested formatting, readings, translation-row indices, and timing. Undoing back to the opened document restores the clean state, and redoing an edit marks it dirty again.
+- Keep automatically generated furigana attached to whole tokenizer words even when authored karaoke timing divides those words into multiple chunks. Project each chunk's timing onto the displayed word, including timing gaps and chunks spanning several words, without modifying the source timings. Preserve authored ruby priority and replace old generated chunk readings when whole-word cached readings become available.
+- Align the furigana and romaji highlight sweep with the highlighted fraction of the base text. Short readings no longer wait for the base-text sweep to reach their screen position, and long readings no longer finish late merely because their displayed width differs.
+- Preserve small-kana combinations and combining marks when splitting readings in the karaoke separation editor. Use visible kana as alignment anchors where possible, keep authored readings through save and undo, and avoid turning automatically generated readings into manual ruby when changing visual separation.
+- Ask before leaving setup through Close, Escape, or **Skip setup**, defaulting to **Keep setting up**. Pause dialogue timers, motion, and queued actions during confirmation and buffer application events; resume the scene when staying, or discard unapplied reading drafts while retaining saved preferences when leaving.
+- Keep Instant text and manual advancement from bypassing scripted pauses or replaying inline actions. Prevent Space on pacing controls from also advancing dialogue, and continue past conditional menus with no enabled choices instead of leaving setup stuck.
+- Fall back to Uguu when Discord Rich Presence cannot upload embedded album artwork to Litterbox. Validate upload responses, retain existing cached cover URLs, and track each host's expiry separately: 12 hours for Litterbox and 3 hours for Uguu.
+- Fixed ReplayGain preamp using a regular QSpinBox.
 
 ## [2026-11-06]
 
@@ -23,6 +83,8 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 - Reduce startup allocations by deferring networking and DSP imports, creating lyric renderers on demand, and generating Mandarin readings in a disposable worker instead of keeping pronunciation dictionaries in the player.
 - Derive library cells from shared track metadata instead of retaining duplicate formatted values.
 - Defer hidden waveform decoding and background blur processing. Create image-card controls only when their editor page is opened, and reduce redundant preview and image-buffer copies.
+- Downscale large playback background images to a maximum of 1024 pixels per side and retain a compact encoded copy, preserving aspect ratio and transparency without modifying source files. In a controlled cover-art check, the retained encoded image shrank from 8.2 MiB to 252 KiB, and its full decoded size fell from 29.8 to 4 MiB.
+- Defer background pixel decoding until visible and release decoded artwork when hidden or disabled. Decode scaled layouts at the screen's actual pixel density and refresh the source resolution when the viewport changes.
 - Use glyph-checked font runs in Recents, Queue, Settings folder lists, and Flashcards to avoid loading large legacy fallback fonts while preserving mixed scripts and emoji.
 - Populate Flashcards' All Lyrics list on demand. In controlled Windows checks, Recents' first-open working-set growth fell from about 70 to 10 MiB, and Flashcards' UI growth after word analysis fell from about 74 to 6 MiB.
 

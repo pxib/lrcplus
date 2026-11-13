@@ -33,7 +33,7 @@ class _SpinStepButton(QToolButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#53665e"))
+        painter.setBrush(self.palette().color(QPalette.ColorRole.WindowText))
         painter.drawPolygon(points)
 
 
@@ -128,6 +128,24 @@ SETTINGS_DIALOG_STYLE = """
     QDialog QWidget {
         color: @TEXT@;
         background-color: @WINDOW@;
+    }
+        QDialog QCheckBox::indicator {
+        width: 13px;
+        height: 13px;
+        background: @SURFACE@;
+        border: 1px solid @FIELD_BORDER@;
+        border-radius: 3px;
+    }
+    QDialog QCheckBox::indicator:hover {
+        border-color: @ACCENT_BORDER@;
+    }
+    QDialog QCheckBox::indicator:checked {
+        background: @ACCENT@;
+        border-color: @ACCENT@;
+    }
+    QDialog QCheckBox::indicator:checked:hover {
+        background: @ACCENT_HOVER@;
+        border-color: @ACCENT_HOVER@;
     }
     QDialog QLabel,
     QDialog QCheckBox {
