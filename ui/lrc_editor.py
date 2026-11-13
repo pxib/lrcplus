@@ -210,7 +210,6 @@ class LrcEditorDialog(
         self._waveform_lyric_preview_handle = None
         self._waveform_lyric_preview_ms = None
         self._populate_lines()
-        self._reset_history_baseline()
         self._autosave_timer.start()
         if self.lines:
             self.line_list.setCurrentRow(0)
@@ -222,9 +221,7 @@ class LrcEditorDialog(
             self.karaoke_dirty = any(
                 getattr(line, "has_karaoke", False) for line in self.lines
             )
-            self._reset_history_baseline()
-
-        self._saved_document_state = None if self.document_dirty else self._document_state()
+        self._reset_history_baseline()
         self._refresh_lyrics_waveform()
 
         if self.player is not None and hasattr(self.player, "media_player"):

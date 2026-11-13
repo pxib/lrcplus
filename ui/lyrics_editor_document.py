@@ -5,6 +5,7 @@ import copy
 import json
 import os
 import re
+from dataclasses import fields
 from PySide6.QtCore import QSignalBlocker, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QApplication
@@ -15,12 +16,35 @@ from core.debug import debug_print
 from core.file_io import atomic_write_text
 from lyrics.ass_parser import parse_ass
 from core.settings import get_lyrics_attachment, set_lyrics_attachment
+from lyrics.models import LyricLine, LyricSegment
+
+
+_LINE_STATE_FIELDS = tuple(field.name for field in fields(LyricLine))
+_SEGMENT_STATE_FIELDS = tuple(field.name for field in fields(LyricSegment))
+
+
+def _lyric_state(lyric, field_names):
+    """Freeze model values for equality checks without copying model objects.
+
+    Model lists contain immutable spans/row indices, except for segments,
+    whose fields need their own snapshot. Undo keeps separate mutable copies.
+    """
+    values = []
+    for name in field_names:
+        value = getattr(lyric, name)
+        if name == "segments":
+            value = tuple(_lyric_state(segment, _SEGMENT_STATE_FIELDS) for segment in value)
+        elif isinstance(value, list):
+            value = tuple(value)
+        values.append(value)
+    return tuple(values)
 
 
 class LyricsEditorDocumentMixin:
     def _document_state(self):
         return {
-            "lines": copy.deepcopy(self.lines), "offset": self.lyrics_offset_ms,
+            "lines": tuple(_lyric_state(line, _LINE_STATE_FIELDS) for line in self.lines),
+            "offset": self.lyrics_offset_ms,
             "mode": self._current_generation_mode(), "attachment": self.attached_song_path,
             "metadata": list(self._document_metadata),
         }
