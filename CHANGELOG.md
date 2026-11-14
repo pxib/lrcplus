@@ -3,6 +3,10 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ## [2026-11-14]
 
+### Added
+
+- Add persistent yt-dlp download queues with one to four concurrent tracks, batch URL input, multiple search selections, and paged playlist selection. Downloads continue when the import window closes; unfinished tracks can restart after an app restart. Include per-track cancellation, retries, existing-file reuse, and ordered playback imports.
+- Remember recent lyrics searches (15), library searches (20), and yt-dlp searches/URLs (50), with autocomplete and clearable history menus.
 
 ## [2026-11-13]
 

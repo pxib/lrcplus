@@ -47,7 +47,7 @@ def identity(info):
 
 def single_track(info):
     if not isinstance(info, dict) or "entries" in info or info.get("_type") in {"playlist", "multi_video"}:
-        raise ValueError("Paste a single-track URL. Playlist and channel imports are not supported yet.")
+        raise ValueError("This operation requires one track. Use Load playlist to choose playlist entries.")
     if info.get("is_live") or info.get("live_status") == "is_upcoming":
         raise ValueError("Live and upcoming broadcasts are not supported. Choose a finished recording.")
     if not info.get("id"):
@@ -252,6 +252,45 @@ def search(query, config):
             results.append(result)
             emit("search_result", result=result)
     return {"results": results}
+
+
+def playlist(url, config, *, start=1, count=100):
+    """Read one bounded page without downloading or resolving every track."""
+    from yt_dlp import YoutubeDL
+
+    start, count = max(1, int(start)), max(1, min(100, int(count)))
+    values = options(config)
+    values.update(noplaylist=False, extract_flat=True, skip_download=True,
+                  ignoreerrors=True, lazy_playlist=True, playliststart=start,
+                  playlistend=start + count)
+    results = []
+    with YoutubeDL(values) as ydl:
+        info = ydl.extract_info(validate_url(url), download=False)
+        if not isinstance(info, dict) or "entries" not in info:
+            raise ValueError("This URL did not resolve to a playlist.")
+        entries = list(islice(info.get("entries") or [], count + 1))
+        for offset, entry in enumerate(entries[:count]):
+            index = start + offset
+            if not isinstance(entry, dict):
+                results.append({"title": f"Unavailable track {index}", "available": False, "index": index})
+                continue
+            entry_url = entry.get("webpage_url") or entry.get("url")
+            if entry.get("ie_key") == "Youtube" or str(info.get("extractor_key", "")).startswith("Youtube"):
+                video = str(entry.get("id") or "")
+                if re.fullmatch(r"[A-Za-z0-9_-]{11}", video):
+                    entry_url = "https://www.youtube.com/watch?v=" + video
+            try:
+                entry_url = validate_url(entry_url or "")
+                available = not (entry.get("is_live") or entry.get("live_status") in {"is_live", "is_upcoming"}
+                                 or entry.get("availability") in {"private", "premium_only", "subscriber_only", "needs_auth"}
+                                 or entry.get("_type") in {"playlist", "multi_video"})
+            except ValueError:
+                entry_url, available = "", False
+            results.append({"url": entry_url, "title": str(entry.get("title") or f"Track {index}"),
+                            "artist": str(entry.get("uploader") or entry.get("channel") or ""),
+                            "duration": entry.get("duration"), "available": available, "index": index})
+    return {"title": str(info.get("title") or "Playlist"), "results": results,
+            "next_start": start + count if len(entries) > count else None}
 
 
 def publish_bundle(stem, files, destination):
@@ -543,6 +582,8 @@ def main():
         action = request["action"]
         if action == "search":
             result = search(request["query"], request["config"])
+        elif action == "playlist":
+            result = playlist(request["url"], request["config"], start=request.get("start", 1))
         elif action == "preview":
             result = preview(request["url"], request["config"],
                              musicbrainz_not_before=request.get("musicbrainz_not_before", 0))

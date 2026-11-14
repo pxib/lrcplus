@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 )
 
 from plugins.community.ytdlp_import.dialog import ImportDialog
+from plugins.community.ytdlp_import.queue import DownloadQueue
 
 
 DEFAULTS = {
@@ -17,21 +18,24 @@ DEFAULTS = {
     "subtitle_language": "", "subtitle_kind": "manual", "subtitles_as_lyrics": True,
     "use_musicbrainz_cover": False,
     "automatically_find_lyrics": False,
+    "concurrent_downloads": 2,
 }
 
 
 class YtdlpImportPlugin:
     name = "yt-dlp Audio Import"
-    version = "1.2.0"
-    description = "Search YouTube or import URL audio and subtitles, with optional synced lyrics."
+    version = "1.3.0"
+    description = "Search YouTube and queue tracks, batches, and playlists with optional synced lyrics."
 
     def __init__(self):
         self.context = None
         self.window = None
         self.dialog = None
+        self.download_queue = None
 
     def on_load(self, context):
         self.context = context
+        self.download_queue = DownloadQueue(context.api)
         context.api.on("app_ready", self.on_app_ready)
         context.api.add_menu_action("Plugins", "Search and import audio…", self.open_import)
         context.api.register_settings_widget(
@@ -51,12 +55,15 @@ class YtdlpImportPlugin:
 
     def open_import(self):
         if self.dialog is None:
-            self.dialog = ImportDialog(self.context.api, self.settings(), self.window)
+            self.dialog = ImportDialog(self.context.api, self.settings(), self.window,
+                                       download_queue=self.download_queue)
         self.dialog.show()
         self.dialog.raise_()
         self.dialog.activateWindow()
 
     def shutdown(self):
+        if self.download_queue is not None:
+            self.download_queue.shutdown()
         if self.dialog is not None:
             self.dialog.shutdown()
             self.dialog.close()

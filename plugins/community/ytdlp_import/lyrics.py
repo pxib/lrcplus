@@ -7,8 +7,10 @@ from urllib.request import Request, urlopen
 
 if __package__:
     from .artwork import normalized, search_terms, USER_AGENT
+    from .provider_pacing import wait_for_provider
 else:
     from artwork import normalized, search_terms, USER_AGENT
+    from provider_pacing import wait_for_provider
 
 
 MAX_RESPONSE_BYTES = 2_000_000
@@ -16,6 +18,7 @@ MAX_LYRIC_LINES = 5000
 
 
 def _fetch(title, artist):
+    wait_for_provider("lrclib")
     url = "https://lrclib.net/api/search?" + urlencode({"track_name": title, "artist_name": artist})
     request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
     with urlopen(request, timeout=10) as response:

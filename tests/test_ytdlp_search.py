@@ -84,7 +84,9 @@ def test_search_rejects_empty_or_excessive_queries(youtube, query):
 
 @pytest.fixture
 def dialog(qapp):
-    api = SimpleNamespace(get_setting=lambda key, default=None: default)
+    settings = {}
+    api = SimpleNamespace(get_setting=lambda key, default=None: settings.get(key, default),
+                          set_setting=lambda key, value: settings.__setitem__(key, value))
     window = ImportDialog(api, DEFAULTS)
     yield window
     window.close()

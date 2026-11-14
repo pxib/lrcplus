@@ -93,6 +93,8 @@ def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
         loading = dialog.findChild(QLabel, "lyricsSearchLoading")
         result = dialog.findChild(QLabel, "lyricsSearchResult")
         button.click()
+        from core.search_history import load_search_history
+        assert load_search_history("lyrics") == ["Song"]
         assert entered.wait(2)
         assert not loading.isHidden()
         assert loading.movie().state() == loading.movie().MovieState.Running

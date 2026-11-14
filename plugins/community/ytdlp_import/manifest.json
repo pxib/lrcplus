@@ -1,7 +1,7 @@
 {
   "name": "yt-dlp Audio Import",
-  "version": "1.2.0",
-  "description": "Search YouTube or import URL audio and subtitles, with optional synced lyrics and MusicBrainz album covers.",
+  "version": "1.3.0",
+  "description": "Search YouTube and queue tracks, batches, and playlists, with optional synced lyrics and MusicBrainz album covers.",
   "api_version": 4,
   "dependencies": [
     {"requirement": "yt-dlp[default]>=2026.3.3", "import_name": "yt_dlp"},

@@ -11,8 +11,13 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from uuid import UUID
 
+if __package__:
+    from .provider_pacing import wait_for_provider
+else:
+    from provider_pacing import wait_for_provider
 
-USER_AGENT = "LRCPlus-ytdlp/1.2.0 (https://github.com/pxib/lrcplus)"
+
+USER_AGENT = "LRCPlus-ytdlp/1.3.0 (https://github.com/pxib/lrcplus)"
 MAX_IMAGE_BYTES = 2_000_000
 _last_request = 0.0
 
@@ -48,6 +53,7 @@ def _fetch(url, *, image=False):
     # One worker makes requests sequentially; include failed attempts in pacing.
     time.sleep(max(0, 1.1 - (time.monotonic() - _last_request)))
     _last_request = time.monotonic()
+    wait_for_provider("musicbrainz")
     headers = {"User-Agent": USER_AGENT, "Accept": "image/*" if image else "application/json"}
     with urlopen(Request(url, headers=headers), timeout=10) as response:
         data = response.read(MAX_IMAGE_BYTES + 1)

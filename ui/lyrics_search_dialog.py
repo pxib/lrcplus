@@ -44,6 +44,7 @@ from core.chinese_lyrics import (
 from core.synclrc import SyncLRCError, search as search_synclrc, fetch_lyrics as fetch_synclrc_lyrics
 from core.music_library import read_track
 from ui.lyrics_preview import LyricsPreview
+from ui.search_history import SearchHistoryLineEdit
 from core.file_io import atomic_write_text
 from core.fonts import content_font, library_font
 from lyrics.writer import serialize_lrcx
@@ -84,7 +85,7 @@ class LyricsSearchDialogMixin:
         layout.addLayout(provider_row)
 
         search_row = QHBoxLayout()
-        query_input = QLineEdit(dialog)
+        query_input = SearchHistoryLineEdit("lyrics", dialog)
         query_input.setPlaceholderText("Song title, artist, or keywords")
         query_input.setFont(content_font(query_input.font(), ""))
         query_input.textChanged.connect(
@@ -527,6 +528,7 @@ class LyricsSearchDialogMixin:
                 return
             if source == "Musixmatch":
                 setattr(self, credential_attribute(), key)
+            query_input.remember_search()
             search_cancel.set()
             preview_queue.cancel()
             search_cancel = Event()

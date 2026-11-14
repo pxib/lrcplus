@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QInputDialog,
-    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -17,6 +16,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
 )
 from core.settings import save_music_library
+from ui.search_history import SearchHistoryLineEdit
 from ui.library_lyrics_search import LyricMatchDelegate
 from ui.library_sorting import LIBRARY_SORT_ROLE, LibraryTreeItem
 from ui.library_rows import LibraryGroupRows, LibraryRowData, LibraryTrackItem
@@ -33,7 +33,7 @@ class PlayerLibraryMixin:
         root.setSpacing(6)
 
         toolbar = QHBoxLayout()
-        self.library_search = QLineEdit()
+        self.library_search = SearchHistoryLineEdit("library", remember_idle=True)
         self.library_search.setObjectName("librarySearch")
         self.library_search.setPlaceholderText("Search library...")
         self._library_search_timer = QTimer(self)

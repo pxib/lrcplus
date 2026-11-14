@@ -1,7 +1,7 @@
 # yt-dlp Audio Import
 
-An optional LRCPlus plugin for importing one online video/audio track at a
-time. Downloaded files become regular local library tracks. The downloader UI,
+An optional LRCPlus plugin for importing online video/audio tracks, batches,
+and playlists. Downloaded files become regular local library tracks. The downloader UI,
 worker, settings, and download history all live in this plugin.
 
 ## Setup
@@ -34,14 +34,53 @@ and `"mutagen>=1,<2"` in their Python environment.
 Open **Plugins > Search and import audio…**. Use **Check setup** to inspect the
 downloader, FFmpeg, and runtime. Enter a title or artist and select **Search**
 to find up to ten YouTube results with titles, channels, durations, and thumbnails
-when available. Live and upcoming broadcasts are excluded. Click a result (or
+when available. Live and upcoming broadcasts are excluded. Double-click a result (or
 use the arrow keys and Enter) to preview it. Results remain available to choose
 another track; editing the input clears them. Search runs in the cancellable
 worker and requires no additional dependency or API key.
 
+The input remembers the 50 most recent searches and previewed URLs across
+sessions. Use its history icon to recall an entry or clear history; typing
+also offers matching recent entries.
+
 You can also paste a URL and select **Preview** to see the
 title, creator, duration, and artwork when supplied by the source. Choose a
 download folder and M4A or MP3, then select **Download**.
+
+### Download queue, batches, and playlists
+
+Single-track downloads, **Paste batch** (one track URL per line, up to 1000),
+and **Add selected to downloads** all use the same persistent queue. Use Ctrl
+or Shift to select multiple search results. Batch settings are captured when
+you add tracks; changing the format, destination, artwork, lyrics, or playback
+option later affects future additions.
+
+For a playlist URL, choose **Load playlist**, select the tracks you want, and
+choose **Add selected to downloads**. Playlists load 100 entries at a time;
+**Load more playlist tracks** fetches the next page. Private, unavailable,
+live, and upcoming entries are disabled when the listing identifies them.
+Other extraction failures are reported per track and do not stop the batch.
+Playlist order is preserved when adding completed tracks to playback.
+
+The **Downloads** tab defaults to two concurrent tracks, adjustable from one
+to four. Each slot includes metadata, downloading, conversion, artwork, and
+lyrics processing. Select rows to cancel, retry, or remove them. **Stop starting
+new downloads** lets active tracks finish; **Start / Resume** starts waiting
+tracks. Removing a queue row does not delete downloaded files. Completed rows
+waiting for an earlier track to enter playback are retained until imported.
+
+Closing the import window leaves downloads running. Exiting LRCPlus or
+disabling the plugin stops workers and saves unfinished items. Reopen
+**Downloads** and select **Start / Resume** after restarting; interrupted tracks
+restart rather than resuming partial files. Enqueuing new tracks also starts
+waiting items. Existing audio is reused when possible; **Download again**
+explicitly creates another copy. Duplicate queued tracks are skipped.
+
+A selected subtitle language is applied to each track when available; missing
+subtitles are reported without failing the audio download. Artwork and lyric
+provider requests are paced across workers. Finished tracks enter the library
+and playback queue in selection order, so a later track may wait for an earlier
+track to finish or fail before import.
 
 The preview also shows the album and full release date when available, falling
 back to a clearly labeled upload date. Dates follow the operating system's
@@ -131,14 +170,16 @@ The current player renders one widget per scrolling row, so conversions and
 player imports have a 5,000-row limit. Oversized conversions retain the native
 subtitles and report an error instead of loading thousands of redraws into the UI.
 
-Downloads and conversion run in a separate process. **Cancel**, closing the
-window, unloading the plugin, and quitting the app stop its process
-tree and clean the plugin's staging directory. Existing destination files are
+Each active track runs in a separate process. Cancelling a track, unloading
+the plugin, or quitting the app stops its process tree and cleans its staging
+directory. Closing the import window leaves queued downloads running.
+Existing destination files are
 kept: repeated filenames receive a numeric suffix. Failed downloads can be
-retried; details are available under **Details**. A completed file is retained
-if adding it to the library fails, so **Add existing** can retry that step.
+retried; select a row in **Downloads** to inspect its details. A completed file
+is retained if adding it to the library fails, so **Retry selected** can reuse
+the file and retry the import.
 
-This version handles single finished tracks. Playlist/channel imports, live
+This version handles finished tracks and playlist selections. Live
 broadcasts, streaming playback, and browser-cookie authentication are outside
 its current scope. Site availability and authentication requirements still
 depend on yt-dlp and the source site.
