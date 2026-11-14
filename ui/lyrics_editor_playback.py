@@ -3,12 +3,15 @@
 from pathlib import Path
 import time
 from PySide6.QtCore import Qt, QSignalBlocker, QEvent
+from PySide6.QtGui import QKeySequence
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QLineEdit,
     QMessageBox,
     QDoubleSpinBox,
     QTextEdit,
+    QPlainTextEdit,
     QWidget,
     QTableWidget,
     QComboBox,
@@ -19,6 +22,84 @@ from lyrics.karaoke_timing import next_lyric_start, segment_end
 
 
 class LyricsEditorPlaybackMixin:
+    # Letters are timing controls only outside text inputs. Modified shortcuts
+    # remain available while editing, and all are confined to the Lyrics tab.
+    _LYRICS_SHORTCUTS = (
+        ("Space", "Play / pause", "toggle_preview", ()),
+        ("Q", "Seek -100 ms", "_seek_preview_relative", (-100,)),
+        ("E", "Seek +100 ms", "_seek_preview_relative", (100,)),
+        ("A", "Seek -1 second", "_seek_preview_relative", (-1000,)),
+        ("D", "Seek +1 second", "_seek_preview_relative", (1000,)),
+        ("F", "Mark Playback Time and advance", "mark_current_line_playback_time", ()),
+        ("Ctrl+Return", "Mark Playback Time and advance", "mark_current_line_playback_time", ()),
+        ("Ctrl+Shift+Return", "Commit timestamp / waveform boundary", "commit_line_timestamp", ()),
+        ("Alt+Up", "Select previous lyric in sidebar order", "_select_relative_lyric", (-1,)),
+        ("Alt+Down", "Select next lyric in sidebar order", "_select_relative_lyric", (1,)),
+        ("Ctrl+N", "Add line", "add_line", ()),
+        ("Alt+Shift+Up", "Move line up in source order", "move_line", (-1,)),
+        ("Alt+Shift+Down", "Move line down in source order", "move_line", (1,)),
+    )
+
+    def _setup_lyrics_shortcuts(self):
+        self._lyrics_shortcut_bindings = {}
+        for sequence, _label, handler, args in self._LYRICS_SHORTCUTS:
+            combination = QKeySequence(sequence)[0].toCombined()
+            self._lyrics_shortcut_bindings[combination] = (handler, args)
+            # Treat the main Enter key and the numeric keypad Enter alike.
+            if "Return" in sequence:
+                combination = QKeySequence(sequence.replace("Return", "Enter"))[0].toCombined()
+                self._lyrics_shortcut_bindings[combination] = (handler, args)
+
+    def _select_relative_lyric(self, direction):
+        row = self.line_list.currentRow()
+        target = row + direction
+        if 0 <= target < self.line_list.count():
+            self.line_list.setCurrentRow(target)
+            self.line_list.scrollToItem(self.line_list.currentItem())
+
+    def show_lyrics_shortcuts(self):
+        shortcuts = "\n".join(
+            f"{sequence.replace('Return', 'Enter')}    {label}"
+            for sequence, label, _handler, _args in self._LYRICS_SHORTCUTS
+        )
+        QMessageBox.information(
+            self,
+            "Lyrics Editor Shortcuts",
+            shortcuts
+            + "\nShift+click waveform    Play from the clicked position"
+            + "\nDelete    Delete line (lyric list only)"
+            + "\n\nCtrl+S    Save\nCtrl+Z / Ctrl+Y    Undo / redo"
+            + "\nCtrl+F    Find lyrics\nF3 / Shift+F3    Next / previous match"
+            + "\n\nCtrl+B / Ctrl+I / Ctrl+U    Bold / italic / underline"
+            + "\nCtrl+Shift+X    Strikethrough (lyric text only)"
+            + "\n\nTiming and line shortcuts above apply only in the Lyrics tab."
+            + "\nSpace and Q/E/A/D/F are disabled while typing in text, reading, search, or timestamp fields."
+            + "\nHold a seek key to keep seeking; marking, adding, and moving lines require separate presses.",
+        )
+
+    def _handle_lyrics_shortcut(self, watched, event):
+        if (
+            not isinstance(watched, QWidget)
+            or watched.window() is not self
+            or self.tabs.currentWidget() is not self.lyrics_page
+        ):
+            return False
+        binding = getattr(self, "_lyrics_shortcut_bindings", {}).get(
+            event.keyCombination().toCombined() & ~Qt.KeyboardModifier.KeypadModifier.value
+        )
+        if binding is None:
+            return False
+        if (
+            event.modifiers() == Qt.KeyboardModifier.NoModifier
+            and (self._focus_is_text_input(watched) or self._focus_is_text_input())
+        ):
+            return False
+        handler, args = binding
+        if not event.isAutoRepeat() or handler in {"_seek_preview_relative", "_select_relative_lyric"}:
+            getattr(self, handler)(*args)
+        event.accept()
+        return True
+
     def preview_position_changed(self, position_ms):
         if self._segment_preview_range is not None:
             start_ms, end_ms = self._segment_preview_range
@@ -526,11 +607,11 @@ class LyricsEditorPlaybackMixin:
         else:
             media.pause()
 
-    def _focus_is_text_input(self):
+    def _focus_is_text_input(self, widget=None):
         """Do not hijack normal typing while an editor widget has focus."""
-        widget = QApplication.focusWidget()
+        widget = widget if widget is not None else QApplication.focusWidget()
         while widget is not None:
-            if isinstance(widget, (QLineEdit, QTextEdit, QDoubleSpinBox, QComboBox)):
+            if isinstance(widget, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox)):
                 return True
             widget = widget.parentWidget()
         return False
@@ -559,7 +640,11 @@ class LyricsEditorPlaybackMixin:
         )
 
     def eventFilter(self, watched, event):
-        if event.type() != QEvent.Type.KeyPress or event.modifiers() != Qt.KeyboardModifier.NoModifier:
+        if event.type() != QEvent.Type.KeyPress:
+            return super().eventFilter(watched, event)
+        if hasattr(self, "lyrics_page") and self._handle_lyrics_shortcut(watched, event):
+            return True
+        if event.modifiers() != Qt.KeyboardModifier.NoModifier:
             return super().eventFilter(watched, event)
         key = event.key()
         line_list = getattr(self, "line_list", None)
@@ -687,6 +772,13 @@ class LyricsEditorPlaybackMixin:
         self._segment_preview_range = None
         if self.player is not None and hasattr(self.player, "media_player"):
             self.player.media_player.setPosition(int(position_ms))
+
+    def play_preview_from(self, position_ms):
+        """Start continuous playback at an audio position without editing timing."""
+        if self.player is None or not hasattr(self.player, "media_player"):
+            return
+        self.seek_preview(position_ms)
+        self.player.media_player.play()
 
     def skip_preview(self, seconds):
         if self.player is None or not hasattr(self.player, "media_player"):

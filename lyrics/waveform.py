@@ -149,15 +149,18 @@ class WaveformWidget(QWidget):
     """Interactive audio waveform with playback position and lyric markers."""
 
     seekRequested = Signal(int)
+    playFromRequested = Signal(int)
 
     segmentPlayRequested = Signal(int, int)
     karaokeTimingRequested = Signal(str, int)
     karaokeTimingFinished = Signal()
     lyricTimingRequested = Signal(str, int)
 
-    def __init__(self, parent=None, *, defer_hidden_load=False):
+    def __init__(self, parent=None, *, defer_hidden_load=False, shift_click_playback=False):
         super().__init__(parent)
         self._defer_hidden_load = defer_hidden_load
+        self._shift_click_playback = shift_click_playback
+        self._playback_click_active = False
         self._audio_path = None
         self._audio_load_pending = False
         self.setMinimumHeight(74)
@@ -810,6 +813,10 @@ class WaveformWidget(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._playback_click_active and event.button() == Qt.MouseButton.LeftButton:
+            self._playback_click_active = False
+            event.accept()
+            return
         self._karaoke_snap_target_ms = None
         if self._pan_dragging and event.button() == Qt.MouseButton.MiddleButton:
             self._pan_dragging = False
@@ -898,6 +905,19 @@ class WaveformWidget(QWidget):
         event.accept()
 
     def mousePressEvent(self, event):
+        # Playback must take precedence over A/B editing, including clicks on
+        # a timing marker or beyond the selected lyric's boundaries.
+        if (
+            self._shift_click_playback
+            and event.button() == Qt.MouseButton.LeftButton
+            and event.modifiers() == Qt.KeyboardModifier.ShiftModifier
+            and self._duration_ms > 0
+        ):
+            self._playback_click_active = True
+            self.playFromRequested.emit(self._ms_for_x(event.position().x()))
+            event.accept()
+            return
+
         # Ctrl + RMB: play the clicked karaoke segment.
         # This must ALWAYS consume the event so RMB editing cannot move
         # the red/end marker underneath it.

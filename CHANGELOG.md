@@ -1,6 +1,17 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [2026-11-14.4]
+
+### Added
+
+- Add shortcuts to the lyrics editor's **Lyrics** tab: Q/E seek by 100 ms, A/D seek by one second, F or Ctrl+Enter marks playback time and advances, Ctrl+Shift+Enter commits timing, Alt+Up/Down selects lines, Alt+Shift+Up/Down moves lines, and Ctrl+N adds a line. Include a **Shortcuts** reference and button tooltips. Preserve normal typing in text, reading, search, and timestamp fields.
+- Add **Shift + left-click** on the Lyrics waveform to start continuous playback from the clicked position without moving timing markers. Respect waveform zoom and pan, and clear any previous segment-preview playback limit.
+
+### Fixed
+
+- Preserve normal text proportions and alignment for wrapped lyrics in **All romaji** mode by skipping extra horizontal compression after wrapping.
+
 ## [2026-11-14.3]
 
 ### Changed

@@ -188,7 +188,7 @@ class LrcEditorDialog(
         self._load_document()
         self._restore_autosave_if_available()
         # Catch key events from transient QTableWidget/QSpinBox editors too.
-        # The filter itself is tightly scoped to this dialog's Karaoke controls.
+        # The filter itself is tightly scoped to this dialog's editor controls.
         QApplication.instance().installEventFilter(self)
 
         self._build_ui()
@@ -250,6 +250,7 @@ class LrcEditorDialog(
         self.shortcut_redo.activated.connect(self.redo)
         self.shortcut_save = QShortcut(QKeySequence.StandardKey.Save, self)
         self.shortcut_save.activated.connect(self.save_document)
+        self._setup_lyrics_shortcuts()
 
 
     # ------------------------------------------------------------------
@@ -371,6 +372,9 @@ class LrcEditorDialog(
             self._update_share_selection_status()
 
     def _update_tab_specific_controls(self):
+        self.lyrics_shortcuts_button.setVisible(
+            self.tabs.currentWidget() is self.lyrics_page
+        )
         if not self.karaoke_enabled:
             return
         karaoke_index = self.tabs.indexOf(self.karaoke_scroll)

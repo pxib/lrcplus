@@ -905,10 +905,11 @@ class FuriganaLayoutMixin:
             previous_text = text
         total_width = max(total_width, row_width)
 
-        # All-Romaji is much wider than Japanese. Fit only overflowing lines by
-        # compressing their X axis; the configured font size and vertical rhythm
-        # stay unchanged.
-        if self.all_romaji and self.direction != "vertical" and total_width > 0:
+        # Unwrapped All-Romaji lines may need to fit the panel. Wrapped lyrics
+        # already fit at their natural font size; scaling their original source
+        # width again would squeeze every visual row and shift its alignment.
+        if (self.all_romaji and not self.wrap_text
+                and self.direction != "vertical" and total_width > 0):
             available_width = max(1.0, float(self.width() - 12 - self._quote_indent()))
             self._all_romaji_x_scale = min(1.0, available_width / total_width)
         else:

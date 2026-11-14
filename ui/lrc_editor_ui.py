@@ -96,6 +96,7 @@ class LrcEditorUiMixin:
 
         # ---------------------------- Lyrics ---------------------------
         lyrics_page = QWidget()
+        self.lyrics_page = lyrics_page
         lyrics_layout = QVBoxLayout(lyrics_page)
         hint = QLabel("Select a lyric line, edit it here, or use the shared seekbar to align its timestamp.")
         hint.setWordWrap(True)
@@ -136,7 +137,8 @@ class LrcEditorUiMixin:
         self.lyrics_transport_toggle.setCheckable(True)
         self.lyrics_transport_toggle.setChecked(False)
         self.lyrics_transport_toggle.setToolTip(
-            "Toggle between the normal seekbar and the audio waveform."
+            "Toggle between the normal seekbar and the audio waveform. "
+            "Shift-click the waveform to play from the clicked position."
         )
         ffmpeg_available = find_ffmpeg() is not None
         self.lyrics_transport_toggle.setEnabled(ffmpeg_available)
@@ -160,8 +162,9 @@ class LrcEditorUiMixin:
         self.lyrics_seek.sliderMoved.connect(self.seek_preview)
         self.lyrics_transport_stack.addWidget(self.lyrics_seek)
 
-        self.lyrics_waveform = WaveformWidget(defer_hidden_load=True)
+        self.lyrics_waveform = WaveformWidget(defer_hidden_load=True, shift_click_playback=True)
         self.lyrics_waveform.seekRequested.connect(self.seek_preview)
+        self.lyrics_waveform.playFromRequested.connect(self.play_preview_from)
         self.lyrics_waveform.segmentPlayRequested.connect(self.play_waveform_segment)
         self.lyrics_waveform.karaokeTimingRequested.connect(self._waveform_karaoke_timing_changed)
         self.lyrics_waveform.karaokeTimingFinished.connect(self._waveform_karaoke_timing_finished)
@@ -178,6 +181,9 @@ class LrcEditorUiMixin:
         self.lyrics_back_button = QPushButton("<< 5s")
         self.lyrics_play_button = QPushButton("Play")
         self.lyrics_forward_button = QPushButton("5s >>")
+        self.lyrics_play_button.setToolTip("Play or pause (Space, outside text fields).")
+        self.lyrics_back_button.setToolTip("Seek back 5 seconds. Use A for 1 second or Q for 100 ms.")
+        self.lyrics_forward_button.setToolTip("Seek forward 5 seconds. Use D for 1 second or E for 100 ms.")
         self.lyrics_back_button.clicked.connect(lambda: self.skip_preview(-5.0))
         self.lyrics_play_button.clicked.connect(self.toggle_preview)
         self.lyrics_forward_button.clicked.connect(lambda: self.skip_preview(5.0))
@@ -202,13 +208,14 @@ class LrcEditorUiMixin:
         timestamp_row.addWidget(self.line_time)
         self.mark_line_playback_button = QPushButton("Mark Playback Time")
         self.mark_line_playback_button.setToolTip(
-            "Use the current playback position for this lyric, then advance to the next line."
+            "Use the current playback position for this lyric, then advance to the next line "
+            "(F outside text fields, or Ctrl+Enter)."
         )
         self.mark_line_playback_button.clicked.connect(self.mark_current_line_playback_time)
         timestamp_row.addWidget(self.mark_line_playback_button)
         self.commit_line_timestamp_button = QPushButton("Commit")
         self.commit_line_timestamp_button.setToolTip(
-            "Commit the selected lyric's timestamp, like Aegisub's Commit button."
+            "Commit the selected lyric's timestamp, like Aegisub's Commit button (Ctrl+Shift+Enter)."
         )
         self.commit_line_timestamp_button.clicked.connect(self.commit_line_timestamp)
         timestamp_row.addWidget(self.commit_line_timestamp_button)
@@ -324,12 +331,16 @@ class LrcEditorUiMixin:
 
         line_buttons = QHBoxLayout()
         add_button = QPushButton("+ Add Line")
+        add_button.setToolTip("Add a lyric after the selected line (Ctrl+N).")
         add_button.clicked.connect(self.add_line)
         delete_button = QPushButton("Delete Line")
+        delete_button.setToolTip("Delete the selected lyric (Delete while the lyric list has focus).")
         delete_button.clicked.connect(self.delete_line)
         up_button = QPushButton("Move Up")
+        up_button.setToolTip("Move the selected lyric up in source order (Alt+Shift+Up).")
         up_button.clicked.connect(lambda: self.move_line(-1))
         down_button = QPushButton("Move Down")
+        down_button.setToolTip("Move the selected lyric down in source order (Alt+Shift+Down).")
         down_button.clicked.connect(lambda: self.move_line(1))
         for button in (add_button, delete_button, up_button, down_button):
             line_buttons.addWidget(button)
@@ -791,6 +802,9 @@ class LrcEditorUiMixin:
 
         # Document-wide cleanup actions live in Advanced > Danger.
         self.reset_karaoke_button = None
+        self.lyrics_shortcuts_button = QPushButton("Shortcuts")
+        self.lyrics_shortcuts_button.setToolTip("Show lyrics editor keyboard shortcuts.")
+        self.lyrics_shortcuts_button.clicked.connect(self.show_lyrics_shortcuts)
         self.karaoke_shortcuts_button = None
         if self.karaoke_enabled:
             self.karaoke_shortcuts_button = QPushButton("Shortcuts")
@@ -822,6 +836,7 @@ class LrcEditorUiMixin:
         self.quota_button.clicked.connect(self.show_translation_quota)
         self.quota_button.hide()
         buttons.addWidget(self.quota_button)
+        buttons.addWidget(self.lyrics_shortcuts_button)
         if self.karaoke_shortcuts_button is not None:
             buttons.addWidget(self.karaoke_shortcuts_button)
         if self.reset_karaoke_button is not None:

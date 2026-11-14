@@ -1,7 +1,9 @@
 import pytest
 from PySide6.QtCore import QRectF
+from PySide6.QtGui import QFontMetrics, QImage, QPainter
 from PySide6.QtWidgets import QGroupBox
 
+from core.fonts import library_font
 from core.settings import (
     get_effective_lyrics_settings, get_global_lyrics_settings, get_karaoke_settings,
     save_global_lyrics_settings, save_local_lyrics_overrides,
@@ -10,6 +12,64 @@ from lyrics.furigana_widget import FuriganaWidget
 from lyrics.models import LyricLine, LyricSegment
 from lyrics.scrolling_widget import ScrollingLyricsWidget
 from ui.settings_dialog import SettingsDialog
+
+
+@pytest.mark.parametrize("all_romaji", [False, True])
+@pytest.mark.parametrize("alignment", ["left", "center", "right"])
+@pytest.mark.parametrize("quoted", [False, True])
+def test_wrapped_lyrics_keep_natural_proportions_and_row_alignment(
+        qapp, monkeypatch, all_romaji, alignment, quoted):
+    row = FuriganaWidget()
+    try:
+        row.base_font = library_font(row.base_font)
+        row.base_font.setPixelSize(32)
+        row.resize(760, 400)
+        row.set_ruby_visible(False)
+        row.set_all_romaji_visible(all_romaji)
+        row.set_alignment(alignment)
+        text = "I won't spark it, I'll put it in my pocket and save it like rocket fuel"
+        row.set_segments(text, [{"text": text, "start": 1, "end": 4}],
+                         is_blockquote=quoted)
+        # Exercise switching from a previously prepared unwrapped layout, too.
+        row._prepare_segments()
+        row.set_text_wrapping(True, -1)
+        draws = []
+        original = QPainter.drawText
+
+        def draw(painter, x, y, text):
+            metrics = QFontMetrics(painter.font())
+            transform = painter.worldTransform()
+            bounds = QRectF(x, y - metrics.ascent(),
+                            metrics.horizontalAdvance(text), metrics.height())
+            draws.append((text, transform.mapRect(bounds), transform))
+            return original(painter, x, y, text)
+
+        monkeypatch.setattr(QPainter, "drawText", draw)
+        image = QImage(row.size(), QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(0)
+        row.render(image)
+
+        assert "".join(text for text, _, _ in draws) == row.lyric
+        baselines = {bounds.top() for _, bounds, _ in draws}
+        assert len(baselines) > 1
+        for _, _, transform in draws:
+            assert transform.m11() == pytest.approx(1)
+            assert transform.m22() == pytest.approx(1)
+        for baseline in baselines:
+            bounds = [rect for _, rect, _ in draws if rect.top() == baseline]
+            left = min(rect.left() for rect in bounds)
+            right = max(rect.right() for rect in bounds)
+            assert left >= row._quote_indent() - 1
+            assert right <= row.width() + 1
+            if alignment == "left":
+                assert left == pytest.approx(row._quote_indent(), abs=1)
+            elif alignment == "right":
+                assert right == pytest.approx(row.width(), abs=1)
+            else:
+                assert (left + right) / 2 == pytest.approx(
+                    (row._quote_indent() + row.width()) / 2, abs=1)
+    finally:
+        row.deleteLater()
 
 
 @pytest.mark.parametrize("old_choice", [False, True])
