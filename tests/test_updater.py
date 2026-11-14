@@ -49,7 +49,19 @@ def test_date_versions_are_normalized_and_ordered():
     assert updater.parse_version("1.2.0") > updater.parse_version("1.2.0rc1")
 
 
-@pytest.mark.parametrize("value", ["", "development", "2026-13-42.1", "vnot-a-version"])
+@pytest.mark.parametrize("prefix", ["", "v"])
+@pytest.mark.parametrize("suffix", ["", "a1", "b1", "rc1", ".post1", ".dev1", "-exp"])
+def test_date_only_versions_default_to_revision_zero(prefix, suffix):
+    version = updater.parse_version(f"{prefix}2026-11-14{suffix}")
+    assert version == updater.parse_version(f"2026-11-14.0{suffix}")
+    assert updater.parse_version("2026-11-13.9") < version
+    assert version < updater.parse_version("2026-11-14.1")
+
+
+@pytest.mark.parametrize("value", [
+    "", "development", "2026-13-42.1", "vnot-a-version",
+    "2026-13-14", "2026-11-31", "2026-02-29", "2026-11-14.",
+])
 def test_malformed_versions_are_rejected(value):
     with pytest.raises(updater.UpdateError):
         updater.parse_version(value)
@@ -183,6 +195,18 @@ def test_exp_tag_compares_as_prerelease_and_matches_unsuffixed_asset(monkeypatch
     )
     assert request["version"] == "2026-11-02.5"
     assert request["asset_name"] == "LRCPlus-v2026-11-02.5-Windows-x64.zip"
+
+
+def test_update_lookup_supports_date_only_installed_and_release_versions(monkeypatch):
+    monkeypatch.setattr(updater, "_github_json", lambda _url: _release("v2026-11-14"))
+
+    release = updater.find_update("2026-11-13", "stable", "x64")
+    assert release is not None
+    assert release.package_version == "2026-11-14"
+    assert release.asset.name == "LRCPlus-v2026-11-14-Windows-x64.zip"
+    assert updater.find_update("2026-11-14", "stable", "x64") is None
+    assert updater.find_update("2026-11-14.0", "stable", "x64") is None
+    assert updater.find_update("2026-11-14.1", "stable", "x64") is None
 
 
 def test_update_lookup_never_offers_same_or_older_version(monkeypatch):

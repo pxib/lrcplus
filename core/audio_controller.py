@@ -566,17 +566,17 @@ class AudioController:
                     playing=self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState,
                 )
             if not gain_active and not pitch_active and not rate_active:
-                output = self._pcm_buffer_output
-                self.media_player.setAudioBufferOutput(None)
-                self._pcm_buffer_output = None
+                # Keep the decoder's buffer output attached when returning to
+                # native playback, so Qt does not reconfigure the renderer
+                # during the handoff from processed audio.
+                # The disabled worker (or _write_pcm_buffer's bypass guard)
+                # ignores buffers until processing is needed again.
                 self._stop_pcm_sink()
                 worker = getattr(self, "_pcm_worker", None)
                 if worker is not None:
                     worker.reset()
                 else:
                     reset_pcm_pitch_state()
-                if output is not None:
-                    output.deleteLater()
                 self.audio_output.setVolume(self._current_pcm_gain)
                 return
 

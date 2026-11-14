@@ -177,10 +177,12 @@ def playback(monkeypatch):
             self._pcm_pending = bytearray()
             self._pcm_drain_timer = Timer()
             self._current_pcm_gain = 1.0
-            self._pcm_buffer_output = object()
+            self._pcm_buffer_output = SimpleNamespace(deleteLater=lambda: None)
+            self._attached_pcm_output = self._pcm_buffer_output
             self.media_player = SimpleNamespace(
                 playbackState=lambda: self.state,
-                audioBufferOutput=lambda: self._pcm_buffer_output,
+                audioBufferOutput=lambda: self._attached_pcm_output,
+                setAudioBufferOutput=lambda output: setattr(self, "_attached_pcm_output", output),
                 setPlaybackRate=lambda rate: None,
             )
             self.audio_format = QAudioFormat()
@@ -195,6 +197,74 @@ def playback(monkeypatch):
             ))
 
     return Playback()
+
+
+@pytest.mark.parametrize("mode,value", [("Semitones", 0), ("Octaves", 0), ("Percent", 100)])
+@pytest.mark.parametrize("threaded", [False, True])
+def test_pitch_reset_restores_native_audio_without_rebuilding_decoder(
+    qapp, playback, mode, value, threaded,
+):
+    from core.pcm_playback import PcmPlayback
+
+    worker = PcmPlayback(sink_factory=Sink) if threaded else None
+    if worker is not None:
+        playback._pcm_worker = worker
+        worker.route_started.connect(playback._activate_pcm_route)
+        worker.configure(None, 1, 5, 0.5, enabled=True, playing=True)
+        # A route notification already queued before Reset must not mute the
+        # native output after the processed sink has been stopped.
+        worker._route.emit(worker._generation)
+    playback.volume = 50
+    playback._current_pcm_gain = 0.5
+    playback._activate_pcm_route()
+    output = playback.media_player.audioBufferOutput()
+    try:
+        playback.handle_pitch_change(mode, value)
+        qapp.processEvents()
+        assert playback.pitch_semitones == 0
+        assert playback.native_volume == 0.5
+        assert not playback._pcm_route_active
+        assert playback.media_player.audioBufferOutput() is output
+        assert playback._pcm_buffer_output is output
+        assert playback.state == QMediaPlayer.PlaybackState.PlayingState
+        if worker is not None:
+            assert not worker._controls.enabled
+        playback.write()
+        assert playback._pcm_sink is None
+        assert playback.native_volume == 0.5
+        # Re-enabling pitch reuses the same decoder attachment.
+        playback.handle_pitch_change("Semitones", -5)
+        assert playback.media_player.audioBufferOutput() is output
+        if worker is not None:
+            assert worker._controls.enabled
+    finally:
+        if worker is not None:
+            thread = worker._thread
+            worker.close()
+            assert thread.wait(3000)
+
+
+def test_pitch_reset_keeps_boosted_audio_playing(playback):
+    playback.volume = 150
+    playback._current_pcm_gain = 1.5
+    for _ in range(10):
+        playback.write()
+    old_sink = playback._pcm_sink
+    old_sink.free = 100000
+    playback._drain_pcm_pending()
+    assert playback.native_volume == 0
+    output = playback.media_player.audioBufferOutput()
+
+    playback.handle_pitch_change("Semitones", 0)
+    assert old_sink.deleted
+    assert playback.native_volume == 1
+    assert playback.media_player.audioBufferOutput() is output
+    playback.write()
+    sink = playback._pcm_sink
+    sink.free = 100000
+    playback._drain_pcm_pending()
+    assert np.allclose(np.frombuffer(sink.written, np.float32), 0.375)
+    assert playback.native_volume == 0
 
 
 def test_native_audio_stays_audible_until_processed_audio_is_written(playback):

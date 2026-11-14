@@ -30,7 +30,7 @@ GITHUB_REPOSITORY = "pxib/lrcplus"
 API_ROOT = f"https://api.github.com/repos/{GITHUB_REPOSITORY}"
 MAX_ASSET_SIZE = 2 * 1024**3
 _DATE_VERSION = re.compile(
-    r"^v?(\d{4})-(\d{2})-(\d{2})\.(\d+)((?:a|b|rc)\d+|\.post\d+|\.dev\d+|-exp)?$",
+    r"^v?(\d{4})-(\d{2})-(\d{2})(?:\.(\d+))?((?:a|b|rc)\d+|\.post\d+|\.dev\d+|-exp)?$",
     re.IGNORECASE,
 )
 _SHA256 = re.compile(r"^sha256:([0-9a-f]{64})$", re.IGNORECASE)
@@ -161,7 +161,7 @@ def should_check_automatically(update_settings: dict, now: datetime | None = Non
 
 
 def parse_version(value: str) -> Version:
-    """Parse PEP 440 tags and LRCPlus's YYYY-MM-DD.N release format."""
+    """Parse PEP 440 and YYYY-MM-DD[.N] tags, defaulting the revision to zero."""
     if not isinstance(value, str):
         raise UpdateError("The release version is not text.")
     raw = value.strip()
@@ -173,7 +173,7 @@ def parse_version(value: str) -> Version:
         except ValueError as error:
             raise UpdateError(f"Unsupported release version: {value!r}.") from error
         version_suffix = ".dev0" if suffix and suffix.casefold() == "-exp" else suffix or ""
-        raw = f"{year}.{int(month)}.{int(day)}.{int(revision)}{version_suffix}"
+        raw = f"{year}.{int(month)}.{int(day)}.{int(revision or '0')}{version_suffix}"
     elif raw[:1].lower() == "v":
         raw = raw[1:]
     try:
