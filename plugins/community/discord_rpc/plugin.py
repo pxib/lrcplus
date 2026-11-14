@@ -149,6 +149,13 @@ class DiscordRpcPlugin:
         self._metadata_cache = {}
         self._cover_cache = {}
         self._cover_jobs = set()
+        self._cover_lock = threading.Lock()
+        self._cover_pending = None
+        self._cover_active_key = None
+        self._cover_latest_key = None
+        self._cover_thread = None
+        self._cover_closed = False
+        self._cover_stop = threading.Event()
         self._persistent_cover_cache = self._load_persistent_cover_cache()
 
         # MusicBrainz asks clients to stay within its request rate limit.
@@ -198,6 +205,12 @@ class DiscordRpcPlugin:
         return max(LYRIC_LINES_MIN, min(LYRIC_LINES_MAX, value))
 
     def on_unload(self, context):
+        with self._cover_lock:
+            self._cover_closed = True
+            self._cover_stop.set()
+            if self._cover_pending is not None:
+                self._cover_jobs.discard(self._cover_pending[2])
+                self._cover_pending = None
         self.disconnect()
 
     def on_app_ready(self, window):
@@ -551,7 +564,8 @@ class DiscordRpcPlugin:
     def _musicbrainz_get(self, endpoint, params=None):
         elapsed = time.monotonic() - self._last_musicbrainz_request
         if elapsed < 1.0:
-            time.sleep(1.0 - elapsed)
+            if self._cover_stop.wait(1.0 - elapsed):
+                return None
 
         try:
             response = requests.get(
@@ -920,12 +934,15 @@ class DiscordRpcPlugin:
     def _resolve_cover(self, path: Path, metadata):
         # Album covers only: MusicBrainz/Cover Art Archive first, then the
         # embedded cover inside this local audio file. Never use UI/Booru art.
+        if self._cover_request_cancelled(path):
+            return None
         if self.settings.get("lookup_online_artwork", True):
             cover_url = self._musicbrainz_cover(path, metadata)
             if cover_url:
                 return cover_url
 
-        if self.settings.get("upload_embedded_artwork", True):
+        if (not self._cover_request_cancelled(path)
+                and self.settings.get("upload_embedded_artwork", True)):
             return self._upload_embedded_cover(path)
 
         return None
@@ -937,6 +954,12 @@ class DiscordRpcPlugin:
     def _cover_cache_key(self, path):
         return self._file_key(path)
 
+    def _cover_request_cancelled(self, path):
+        key = self._cover_cache_key(path)
+        with self._cover_lock:
+            return (self._cover_closed or (self._cover_latest_key is not None
+                                          and key != self._cover_latest_key))
+
     def _start_cover_resolution(self, path, metadata):
         """Resolve network artwork without blocking the Qt/UI thread."""
         key = self._cover_cache_key(path)
@@ -944,9 +967,6 @@ class DiscordRpcPlugin:
         lookup_online = self.settings.get("lookup_online_artwork", True)
         upload_embedded = self.settings.get("upload_embedded_artwork", True)
         if not lookup_online and not upload_embedded:
-            return
-
-        if key in self._cover_jobs:
             return
 
         needs_online_lookup = (
@@ -958,19 +978,36 @@ class DiscordRpcPlugin:
         if not needs_online_lookup and not needs_embedded_upload:
             return
 
-        # Copy the small metadata dict so the worker owns its input.
-        metadata_copy = dict(metadata)
-        path_copy = Path(path)
+        # One running request and one replaceable pending track bound both
+        # threads and retained input while the user browses a large library.
+        worker = None
+        with self._cover_lock:
+            if self._cover_closed:
+                return
+            self._cover_latest_key = key
+            if self._cover_pending is not None:
+                self._cover_jobs.discard(self._cover_pending[2])
+                self._cover_pending = None
+            if key == self._cover_active_key:
+                return
+            self._cover_pending = (Path(path), dict(metadata), key)
+            self._cover_jobs.add(key)
+            if self._cover_thread is None:
+                worker = self._cover_thread = threading.Thread(
+                    target=self._run_cover_tasks, daemon=True, name="DiscordCover",
+                )
+        if worker is not None:
+            worker.start()
 
-        self._cover_jobs.add(key)
-
-        worker = threading.Thread(
-            target=self._cover_worker,
-            args=(path_copy, metadata_copy, key),
-            daemon=True,
-            name=f"DiscordCover-{path_copy.name}",
-        )
-        worker.start()
+    def _run_cover_tasks(self):
+        while True:
+            with self._cover_lock:
+                if self._cover_closed or self._cover_pending is None:
+                    self._cover_thread = None
+                    return
+                job, self._cover_pending = self._cover_pending, None
+                self._cover_active_key = job[2]
+            self._cover_worker(*job)
 
     def _cover_worker(self, path, metadata, key):
         try:
@@ -983,7 +1020,9 @@ class DiscordRpcPlugin:
                 f"{path.name}: {error!r}"
             )
         finally:
-            self._cover_jobs.discard(key)
+            with self._cover_lock:
+                self._cover_jobs.discard(key)
+                self._cover_active_key = None
 
     def _cached_cover(self, path):
         key = self._cover_cache_key(path)
@@ -1000,8 +1039,9 @@ class DiscordRpcPlugin:
         path = Path(path)
         if not path.is_file():
             return {"url": None, "pending": False}
-        return {"url": self._cached_cover(path),
-                "pending": self._cover_cache_key(path) in self._cover_jobs}
+        with self._cover_lock:
+            pending = self._cover_cache_key(path) in self._cover_jobs
+        return {"url": self._cached_cover(path), "pending": pending}
 
     # ------------------------------------------------------------------
     # Presence

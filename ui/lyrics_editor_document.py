@@ -5,6 +5,8 @@ import copy
 import json
 import os
 import re
+import subprocess
+import sys
 from dataclasses import fields
 from PySide6.QtCore import QSignalBlocker, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -400,6 +402,29 @@ class LyricsEditorDocumentMixin:
             )
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(target).resolve())))
+
+    def open_lyrics_folder(self):
+        target = getattr(self, "result_path", None) or self.lrc_path
+        folder = Path(target).resolve().parent
+        if not folder.exists():
+            QMessageBox.information(
+                self,
+                "Open Lyrics Folder",
+                "The folder for this lyrics document does not exist yet.",
+            )
+            return
+        file_path = Path(target).resolve()
+        if file_path.exists():
+            try:
+                if sys.platform == "win32":
+                    subprocess.Popen(["explorer.exe", "/select,", str(file_path)])
+                    return
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", "-R", str(file_path)])
+                    return
+            except OSError:
+                pass
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def choose_lyrics_file_for_current_song(self):
         """Choose any lyrics file and force it for the currently loaded song."""

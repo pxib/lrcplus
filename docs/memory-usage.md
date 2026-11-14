@@ -27,6 +27,21 @@ by 200–500 KB every three seconds.
 - Shadow rendering shares its source pixel buffer with Pillow and avoids an
   extra copy of the resulting shadow image. Export dimensions are unchanged.
 
+## Library and artwork follow-up
+
+Library rescans now support cancellation, coalesce newer requests, and delete
+completed worker objects. Closing the player waits asynchronously for an active
+scanner to finish. Temporary library and queue context menus are also deleted
+after dismissal.
+
+Column resizing debounces layout writes for 300 ms and saves only the layout
+to `<settings stem>.library-columns.json` beside the active settings file.
+Existing embedded column preferences remain the fallback until the first save;
+copy the layout file too when moving preferences between installations.
+These writes do not reserialize the track cache. Discord artwork resolution
+uses one worker with one replaceable pending request instead of a thread per
+track.
+
 ## Measurements and limits
 
 In a controlled offscreen editor check on Windows/Python 3.14, opening the editor

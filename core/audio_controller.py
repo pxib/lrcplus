@@ -24,6 +24,7 @@ from core.audio_dsp import (
     PcmRateProcessor,
     apply_pcm_pitch_to_bytes,
     reset_pcm_pitch_state,
+    flush_pcm_pitch_state,
 )
 
 
@@ -98,6 +99,7 @@ class AudioController:
 
             handoff = getattr(self.media_player, "_gapless_handoff", False)
             if not handoff:
+                self._flush_pcm_output()
                 self.media_player.stop()
 
             self.current_audio_path = audio_path
@@ -233,6 +235,7 @@ class AudioController:
 
 
         def stop_playback(self):
+            self._flush_pcm_output()
             self.media_player.stop()
             self.current_line = -1
             self.last_lyric_text = None
@@ -492,6 +495,7 @@ class AudioController:
 
 
         def _flush_pcm_output(self):
+            self._pcm_end_pending = False
             self._stop_pcm_sink()
             rate_processor = getattr(self, "_pcm_rate_processor", None)
             if rate_processor is not None:
@@ -654,6 +658,8 @@ class AudioController:
                     audio_format.sampleRate(),
                     self._pcm_pitch_shift(),
                 )
+                if not data:
+                    pcm += flush_pcm_pitch_state()
                 if self._current_pcm_gain > 1.0:
                     pcm = apply_pcm_gain_to_bytes(
                         pcm, audio_format.sampleFormat(), self._current_pcm_gain,
@@ -737,6 +743,8 @@ class AudioController:
 
 
         def _pcm_output_failed(self, error):
+            end_pending = getattr(self, "_pcm_end_pending", False)
+            self._pcm_end_pending = False
             recover = getattr(self, "_recover_disconnected_output", None)
             if recover is not None and recover():
                 return
@@ -752,9 +760,16 @@ class AudioController:
                 "Audio processing unavailable",
                 f"Could not process decoded audio:\n{error}",
             )
+            if end_pending:
+                self.handle_media_status(QMediaPlayer.MediaStatus.EndOfMedia)
 
 
         def _sync_pcm_sink_state(self, state):
+            if getattr(self, "_closing", False):
+                return
+            if (state == QMediaPlayer.PlaybackState.PlayingState
+                    and getattr(self, "_pcm_end_pending", False)):
+                self._flush_pcm_output()
             if (
                 state == QMediaPlayer.PlaybackState.PlayingState
                 and (getattr(self, "_current_pcm_gain", 1.0) > 1.0
@@ -768,6 +783,12 @@ class AudioController:
 
             worker = getattr(self, "_pcm_worker", None)
             if getattr(worker, "owns_output", False):
+                # Qt reports StoppedState before EndOfMedia. The direct decoder
+                # EOF notification lets us retain the processed tail meanwhile.
+                if (state == QMediaPlayer.PlaybackState.StoppedState
+                        and worker.finish()):
+                    self._pcm_end_pending = True
+                    return
                 worker.set_playing(state == QMediaPlayer.PlaybackState.PlayingState)
             sink = getattr(self, "_pcm_sink", None)
             if state == QMediaPlayer.PlaybackState.StoppedState:
@@ -781,6 +802,12 @@ class AudioController:
             elif state == QMediaPlayer.PlaybackState.PausedState:
                 sink.suspend()
                 self._pcm_drain_timer.stop()
+
+        def _pcm_output_drained(self):
+            if not getattr(self, "_pcm_end_pending", False):
+                return
+            self._flush_pcm_output()
+            self.handle_media_status(QMediaPlayer.MediaStatus.EndOfMedia)
 
 
         def _warn_if_high_volume(self, value):
@@ -965,11 +992,20 @@ class AudioController:
 
 
         def handle_media_status(self, status):
+            if getattr(self, "_closing", False):
+                return
             if (
                 status != QMediaPlayer.MediaStatus.EndOfMedia
                 or self.media_player.mediaStatus()
                 != QMediaPlayer.MediaStatus.EndOfMedia
             ):
+                return
+
+            if getattr(self, "_pcm_end_pending", False):
+                return
+            worker = getattr(self, "_pcm_worker", None)
+            if getattr(worker, "owns_output", False) and worker.finish(decoder_finished=True):
+                self._pcm_end_pending = True
                 return
 
             paths = self._playback_paths()

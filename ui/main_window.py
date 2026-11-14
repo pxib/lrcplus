@@ -136,6 +136,7 @@ class Player(
             self._pcm_worker = PcmPlayback(self)
             self._pcm_worker.route_started.connect(self._activate_pcm_route)
             self._pcm_worker.failed.connect(self._pcm_output_failed)
+            self._pcm_worker.drained.connect(self._pcm_output_drained)
             self._playback_save_timer = QTimer(self)
             self._playback_save_timer.setSingleShot(True)
             self._playback_save_timer.setInterval(300)
@@ -188,6 +189,8 @@ class Player(
                 except (TypeError, ValueError):
                     continue
             self._library_scan_worker = None
+            self._library_scan_pending = False
+            self._close_after_library_scan = False
             # Artwork stays in memory only. Covers are always read from the song
             # files themselves and are not written into the library settings.
             self._library_cover_cache = OrderedDict()
@@ -1842,6 +1845,16 @@ class Player(
             self._queue_visible_library_covers()
 
         def closeEvent(self, event):
+            if not getattr(self, "_closing", False):
+                self._closing = True
+                self._close_audio_device_dialog()
+                self.audio_output.setMuted(True)
+                # Stop accepting decoded audio before stop() can report EOF
+                # and resume the processed tail of a paused track.
+                self._pcm_worker.close()
+                self.media_player.stop()
+                self.media_player.setAudioBufferOutput(None)
+                self._stop_pcm_sink()
             check_worker = self._update_check_worker
             download_worker = self._update_download_worker
             if ((check_worker is not None and check_worker.isRunning())
@@ -1854,6 +1867,14 @@ class Player(
                     ):
                         download_worker.cancel()
                 return
+            if self._library_scan_worker is not None:
+                self._close_after_library_scan = True
+                self._library_scan_pending = False
+                self._library_scan_worker.requestInterruption()
+                event.ignore()
+                return
+            if self._library_column_save_timer.isActive():
+                self._save_library_column_state()
             self._library_search_timer.stop()
             self._library_lyrics_cancel.set()
             self._library_lyrics_job.close()
@@ -1870,13 +1891,8 @@ class Player(
                 self._lyric_widget.stop_workers()
             self.waveform_widget._stop_worker()
 
-            self._close_audio_device_dialog()
-            self.media_player.stop()
             self.playback_settings["volume"] = self.volume_slider.value()
             save_playback_settings(self.playback_settings)
-            self.media_player.setAudioBufferOutput(None)
-            self._stop_pcm_sink()
-            self._pcm_worker.close()
             if getattr(self, "_replaygain_job", None) is not None:
                 self._replaygain_job.close()
             self._playback_save_timer.stop()

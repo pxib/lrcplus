@@ -500,8 +500,10 @@ class LibraryScanWorker(QThread):
 
     def run(self):
         try:
-            tracks = scan_folders(self.folders)
+            tracks = scan_folders(self.folders, cancelled=self.isInterruptionRequested)
         except Exception as error:
-            self.failed.emit(str(error))
+            if not self.isInterruptionRequested():
+                self.failed.emit(str(error))
         else:
-            self.completed.emit(tracks)
+            if not self.isInterruptionRequested():
+                self.completed.emit(tracks)

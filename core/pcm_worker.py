@@ -76,6 +76,8 @@ class PcmWorker(QObject):
         pcm = self._processor.process(
             pcm, fmt.sampleFormat(), fmt.channelCount(), fmt.sampleRate(), shift,
         )
+        if not data:
+            pcm += self._processor.flush()
         if gain > 1:
             pcm = apply_pcm_gain_to_bytes(pcm, fmt.sampleFormat(), gain)
         started = abs(shift) < 0.001 or getattr(self._processor, "_started", False)

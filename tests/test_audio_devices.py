@@ -63,7 +63,10 @@ def playback(qapp, monkeypatch):
                 pause=lambda: self.set_state(PAUSED),
                 play=self.play,
             )
-            self.audio_output = SimpleNamespace(setDevice=self.set_device)
+            self.audio_output = SimpleNamespace(
+                setDevice=self.set_device,
+                device=lambda: getattr(self, "device", Device("")),
+            )
             self._apply_output_device(self.playback_settings)
             self._watch_audio_devices()
 
@@ -123,6 +126,17 @@ def test_active_device_disconnect_pauses_and_clears_processed_audio(playback):
     assert dialog.device_combo.itemText(1) == "Speakers"
     assert dialog.continue_button.text() == "Continue"
     assert dialog.ok_button.text() == "OK"
+
+
+def test_reapplying_same_device_preserves_processed_audio(playback):
+    flushes = playback.flushes
+    configurations = list(playback.configurations)
+    playback.pending.extend(b"current audio")
+    expected = bytes(playback.pending)
+    playback._apply_output_device(playback.playback_settings)
+    assert playback.flushes == flushes
+    assert playback.configurations == configurations
+    assert playback.pending == expected
 
 
 @pytest.mark.parametrize("action", ["continue", "ok", "close"])

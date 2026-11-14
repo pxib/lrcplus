@@ -1,4 +1,5 @@
 from io import BytesIO
+import threading
 import random
 import struct
 from types import SimpleNamespace
@@ -15,6 +16,42 @@ def cover_bytes(size=(128, 64), *, mode="RGB", format="PNG", **kwargs):
     output = BytesIO()
     Image.new(mode, size, "red").save(output, format=format, **kwargs)
     return output.getvalue()
+
+
+@pytest.mark.parametrize("unload", [False, True])
+def test_cover_work_has_one_worker_and_only_the_latest_pending_track(tmp_path, monkeypatch, unload):
+    monkeypatch.setattr(DiscordRpcPlugin, "_load_persistent_cover_cache", lambda self: {})
+    plugin = DiscordRpcPlugin()
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def resolve(path, metadata):
+        calls.append(path.name)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(3)
+
+    monkeypatch.setattr(plugin, "_resolve_cover", resolve)
+    monkeypatch.setattr(plugin, "log", lambda message: None)
+    monkeypatch.setattr(plugin, "disconnect", lambda: None)
+    plugin._start_cover_resolution(tmp_path / "first.mp3", {})
+    assert entered.wait(2)
+    worker = plugin._cover_thread
+    try:
+        for index in range(30):
+            plugin._start_cover_resolution(tmp_path / f"track-{index}.mp3", {})
+        assert plugin._cover_thread is worker
+        assert len(plugin._cover_jobs) == 2
+        if unload:
+            plugin.on_unload(None)
+            plugin._start_cover_resolution(tmp_path / "after-unload.mp3", {})
+    finally:
+        release.set()
+        worker.join(3)
+    assert not worker.is_alive()
+    assert calls == (["first.mp3"] if unload else ["first.mp3", "track-29.mp3"])
+    assert not plugin._cover_jobs
+    assert plugin._cover_thread is None
 
 
 def test_shared_album_artwork_reads_only_resolved_cache(tmp_path, monkeypatch):

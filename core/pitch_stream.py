@@ -133,12 +133,30 @@ class RubberBandPitchStream:
         self._handle = None
 
 
+@lru_cache(maxsize=4)
+def _pedalboard_streaming_supported(effect_type):
+    # Some builds re-prepare the priming delay on every process(reset=False)
+    # call, silently losing all input supplied in short callbacks. Check the
+    # installed implementation once instead of selecting a silent fallback.
+    # Upstream: https://github.com/spotify/pedalboard/pull/486
+    effect = effect_type(semitones=5)
+    tone = (.25 * np.sin(2 * np.pi * 440 * np.arange(BLOCK_FRAMES) / 48000)).astype(np.float32)
+    for _ in range(150):
+        output = effect(tone, 48000, buffer_size=BLOCK_FRAMES, reset=False)
+        if np.any(np.abs(output) > .001):
+            return True
+    return False
+
+
 class PedalboardPitchStream:
     """Continuous fallback for installations without a Rubber Band shared library."""
 
     def __init__(self, channels, sample_rate, semitones):
         from pedalboard import PitchShift
 
+        if not _pedalboard_streaming_supported(PitchShift):
+            raise OSError("This Pedalboard build cannot stream pitch-shifted audio. "
+                          "Install a Rubber Band 3 library to enable pitch processing.")
         self._effect = PitchShift(semitones=semitones)
         self._sample_rate = sample_rate
         # Pedalboard's wrapper primes a full second of silence internally.

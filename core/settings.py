@@ -675,7 +675,26 @@ def load_music_library():
     if not isinstance(tracks, list):
         tracks = []
 
-    return {"folders": folders, "tracks": tracks, "columns": values.get("columns", {}) if isinstance(values.get("columns", {}), dict) else {}}
+    columns = values.get("columns", {})
+    # Keep frequent layout writes independent of the potentially large library.
+    # Older installations continue to use their embedded columns until saved.
+    try:
+        stored = json.loads(_library_columns_path().read_text(encoding="utf-8"))
+        if isinstance(stored, dict):
+            columns = stored
+    except (OSError, ValueError, TypeError):
+        pass
+    return {"folders": folders, "tracks": tracks,
+            "columns": columns if isinstance(columns, dict) else {}}
+
+
+def _library_columns_path():
+    return SETTINGS_PATH.with_name(SETTINGS_PATH.stem + ".library-columns.json")
+
+
+def save_music_library_columns(columns):
+    from core.file_io import atomic_write_text
+    atomic_write_text(_library_columns_path(), json.dumps(columns, ensure_ascii=False))
 
 
 def save_music_library(folders, tracks, columns=None):
@@ -686,6 +705,8 @@ def save_music_library(folders, tracks, columns=None):
         "columns": columns or {},
     }
     save_all_settings(payload)
+    if columns is not None:
+        save_music_library_columns(columns)
 
 
 def _normalise_association_path(path):

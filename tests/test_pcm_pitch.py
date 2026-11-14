@@ -16,6 +16,66 @@ def clean_pitch_state():
     reset_pcm_pitch_state()
 
 
+@pytest.mark.parametrize("dtype,sample_format", [
+    (np.float32, QAudioFormat.SampleFormat.Float),
+    (np.int16, QAudioFormat.SampleFormat.Int16),
+    (np.int32, QAudioFormat.SampleFormat.Int32),
+])
+def test_pitch_flush_preserves_every_final_frame_and_is_idempotent(monkeypatch, dtype, sample_format):
+    class IdentityPitch:
+        latency_frames = 8000
+
+        def process(self, block):
+            return block
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(audio_dsp, "create_pitch_stream", lambda *args: IdentityPitch())
+    processor = audio_dsp.PcmPitchProcessor()
+    frames = np.random.default_rng(17).uniform(-.5, .5, (10231, 2))
+    scale = 1 if dtype == np.float32 else -np.iinfo(dtype).min
+    source = (frames * scale).astype(dtype)
+    blocks = [processor.process(source[start:start + 127].tobytes(), sample_format, 2, 48000, 5)
+              for start in range(0, len(source), 127)]
+    blocks.append(processor.flush())
+    output = np.frombuffer(b"".join(blocks), dtype).reshape(-1, 2)
+    np.testing.assert_allclose(output[8000:], source, rtol=1e-7, atol=0)
+    assert processor.flush() == b""
+    # A new stream starts cleanly even if the caller reuses the processor.
+    assert not any(processor.process(bytes(12000 * 2 * np.dtype(dtype).itemsize),
+                                     sample_format, 2, 48000, 5))
+    processor.reset()
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("frames", [127, 48001])
+def test_real_pitch_backend_releases_final_tone(fallback, frames, monkeypatch):
+    if fallback:
+        from core.pitch_stream import PedalboardPitchStream, _pedalboard_streaming_supported
+        from pedalboard import PitchShift
+        if not _pedalboard_streaming_supported(PitchShift):
+            with pytest.raises(OSError, match="cannot stream"):
+                PedalboardPitchStream(2, 48000, 5)
+            return
+        monkeypatch.setattr(audio_dsp, "create_pitch_stream", PedalboardPitchStream)
+    processor = audio_dsp.PcmPitchProcessor()
+    source = np.zeros((frames, 2), np.float32)
+    count = min(frames, 2400)
+    tone = .5 * np.sin(2 * np.pi * 440 * np.arange(count) / 48000)
+    source[-count:] = np.column_stack((tone, -tone))
+    try:
+        blocks = [processor.process(source[start:start + 480].tobytes(),
+                                    QAudioFormat.SampleFormat.Float, 2, 48000, 5)
+                  for start in range(0, frames, 480)]
+        assert not np.any(np.frombuffer(b"".join(blocks), np.float32))
+        tail = processor.flush()
+        assert np.max(np.abs(np.frombuffer(tail, np.float32))) > .01
+        assert processor.flush() == b""
+    finally:
+        processor.reset()
+
+
 @pytest.mark.parametrize("sample_rate", [44100, 48000])
 @pytest.mark.parametrize("dtype,sample_format", [
     (np.float32, QAudioFormat.SampleFormat.Float),
@@ -197,6 +257,16 @@ def playback(monkeypatch):
             ))
 
     return Playback()
+
+
+def test_processing_failure_during_tail_does_not_leave_track_advance_pending(playback, monkeypatch):
+    ended = []
+    playback._pcm_end_pending = True
+    monkeypatch.setattr(audio_controller.QMessageBox, "warning", lambda *args: None)
+    monkeypatch.setattr(playback, "handle_media_status", ended.append)
+    playback._pcm_output_failed(OSError("Output disappeared"))
+    assert not playback._pcm_end_pending
+    assert ended == [QMediaPlayer.MediaStatus.EndOfMedia]
 
 
 @pytest.mark.parametrize("mode,value", [("Semitones", 0), ("Octaves", 0), ("Percent", 100)])

@@ -91,8 +91,14 @@ class AudioDeviceControllerMixin:
                         _default_output(devices))
         # Track the actual device independently: Qt may update a default output
         # before delivering the notification that the old device disappeared.
-        self._active_output_device_id = _device_id(selected)
+        selected_id = _device_id(selected)
+        self._active_output_device_id = selected_id
         self._audio_output_unavailable = selected.isNull()
+        # Settings are applied as a group, so an appearance-only change also
+        # reaches this method. Replacing the same device flushes the processed
+        # PCM route and loses its pitch-shifted output state.
+        if selected_id == _device_id(self.audio_output.device()):
+            return
         if hasattr(self, "volume_slider"):
             self._flush_pcm_output()
         self.audio_output.setDevice(selected)

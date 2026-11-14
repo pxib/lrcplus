@@ -35,8 +35,12 @@ def isolated_settings(tmp_path, monkeypatch):
 @pytest.fixture(scope="session")
 def qapp():
     from PySide6.QtWidgets import QApplication
+    from core.gui_garbage_collector import install_gui_garbage_collector
 
     app = QApplication.instance() or QApplication([])
+    # Match main.main(): worker allocations must not collect GUI objects left
+    # in Python cycles by earlier tests on a decoder/audio thread.
+    install_gui_garbage_collector(app)
     yield app
 
 

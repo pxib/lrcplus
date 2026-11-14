@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QTreeWidget,
     QAbstractItemView,
 )
-from core.settings import save_music_library
+from core.settings import save_music_library, save_music_library_columns
 from ui.search_history import SearchHistoryLineEdit
 from ui.library_lyrics_search import LyricMatchDelegate
 from ui.library_sorting import LIBRARY_SORT_ROLE, LibraryTreeItem
@@ -140,8 +140,12 @@ class PlayerLibraryMixin:
         self.library_table.setColumnWidth(self.library_lyrics_column, 340)
         self._apply_library_column_state()
         self.library_table.setSortingEnabled(True)
+        self._library_column_save_timer = QTimer(self)
+        self._library_column_save_timer.setSingleShot(True)
+        self._library_column_save_timer.setInterval(300)
+        self._library_column_save_timer.timeout.connect(self._save_library_column_state)
         header.sortIndicatorChanged.connect(lambda *_: self._save_library_column_state())
-        header.sectionResized.connect(lambda *_: self._save_library_column_state())
+        header.sectionResized.connect(lambda *_: self._library_column_save_timer.start())
         header.sectionMoved.connect(lambda *_: self._save_library_column_state())
         root.addWidget(self.library_table, 1)
         return page
@@ -167,7 +171,10 @@ class PlayerLibraryMixin:
         menu.addSeparator()
         reset = menu.addAction("Reset columns")
         reset.triggered.connect(self._reset_library_columns)
-        menu.exec(header.mapToGlobal(pos))
+        try:
+            menu.exec(header.mapToGlobal(pos))
+        finally:
+            menu.deleteLater()
 
     def _set_library_column_visible(self, logical, visible):
         if visible:
@@ -224,6 +231,7 @@ class PlayerLibraryMixin:
     def _save_library_column_state(self):
         if not hasattr(self, "library_table") or not hasattr(self, "library_columns"):
             return
+        self._library_column_save_timer.stop()
         header = self.library_table.header()
         state = {
             "hidden": [i for i in range(len(self.library_columns)) if header.isSectionHidden(i)],
@@ -233,7 +241,7 @@ class PlayerLibraryMixin:
             "sort_descending": header.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder,
         }
         self.library_column_state = state
-        save_music_library(self.library_folders, [t.to_dict() for t in self.library_tracks], state)
+        save_music_library_columns(state)
 
     def _reset_library_columns(self):
         header = self.library_table.header()
@@ -477,7 +485,13 @@ class PlayerLibraryMixin:
         self.rescan_music_library()
 
     def rescan_music_library(self):
-        if self._library_scan_worker is not None and self._library_scan_worker.isRunning():
+        if self._close_after_library_scan:
+            return
+        if self._library_scan_worker is not None:
+            # A finished worker may still have results queued on the GUI thread.
+            # Coalesce all new requests into one scan of the latest folders.
+            self._library_scan_pending = True
+            self._library_scan_worker.requestInterruption()
             return
         self._set_library_scan_indicator("loading")
         self.library_folder_label.setText("Scanning music library...")
@@ -486,8 +500,27 @@ class PlayerLibraryMixin:
         self._library_scan_worker = worker
         worker.completed.connect(self._library_scan_finished)
         worker.failed.connect(self._library_scan_failed)
-        worker.finished.connect(lambda: self.library_table.setEnabled(True))
+        worker.finished.connect(self._library_scan_stopped)
+        worker.finished.connect(worker.deleteLater)
         worker.start()
+
+    def _library_scan_stopped(self):
+        if self.sender() is not self._library_scan_worker:
+            return
+        self._library_scan_worker = None
+        if self._close_after_library_scan:
+            QTimer.singleShot(0, self.close)
+        elif self._library_scan_pending:
+            self._library_scan_pending = False
+            self.rescan_music_library()
+        else:
+            self.library_table.setEnabled(True)
+
+    def _discard_library_scan_result(self):
+        worker = self.sender()
+        return (self._close_after_library_scan or self._library_scan_pending
+                or (worker is not None and (worker is not self._library_scan_worker
+                    or worker.folders != self.library_folders)))
 
     def _set_library_scan_indicator(self, state):
         self.library_scan_movie.stop()
@@ -512,6 +545,8 @@ class PlayerLibraryMixin:
             self.library_scan_indicator.show()
 
     def _library_scan_finished(self, tracks):
+        if self._discard_library_scan_result():
+            return
         self._library_cover_cache.clear()
         self.library_tracks = list(tracks)
         save_music_library(self.library_folders, [track.to_dict() for track in self.library_tracks], self.library_column_state)
@@ -520,5 +555,7 @@ class PlayerLibraryMixin:
         self.update_transport_buttons()
 
     def _library_scan_failed(self, error):
+        if self._discard_library_scan_result():
+            return
         self._set_library_scan_indicator("error")
         self.library_folder_label.setText(f"Could not scan music library: {error}")

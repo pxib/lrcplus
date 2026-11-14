@@ -74,6 +74,8 @@ class PcmPitchProcessor:
 
     def process(self, data, sample_format, channels, sample_rate, semitones):
         """Shift decoded PCM pitch while preserving its playback duration."""
+        if getattr(self, "_flushed", False):
+            self.reset()
         shift = float(semitones)
         if abs(shift) < 0.001:
             self.reset()
@@ -146,6 +148,27 @@ class PcmPitchProcessor:
             ).astype(dtype)
         return result.tobytes()
 
+    def flush(self):
+        """Drain the stream's lookahead once, including a partial input block.
+
+        Both pitch backends retain audio internally. Feed one latency reserve
+        of silence through the same history to release the last real samples.
+        No new track samples or processor recreation are needed.
+        """
+        effect = getattr(self, "_effect", None)
+        if effect is None or getattr(self, "_flushed", False):
+            return b""
+        import numpy as np
+
+        channels, sample_rate, sample_format = self._state
+        dtype = {QAudioFormat.SampleFormat.Float: np.float32,
+                 QAudioFormat.SampleFormat.Int16: np.int16,
+                 QAudioFormat.SampleFormat.Int32: np.int32}[sample_format]
+        tail = self.process(np.zeros((effect.latency_frames, channels), dtype).tobytes(),
+                            sample_format, channels, sample_rate, self._shift)
+        self._flushed = True
+        return tail
+
 
     def reset(self):
         """Drop buffered samples so seeks and format changes cannot replay stale audio."""
@@ -160,6 +183,7 @@ class PcmPitchProcessor:
         self._started = False
         self._effect = None
         self._startup_remaining = 0
+        self._flushed = False
 
 
 _default_pitch_processor = PcmPitchProcessor()
@@ -174,3 +198,9 @@ def apply_pcm_pitch_to_bytes(data, sample_format, channels, sample_rate, semiton
 def reset_pcm_pitch_state():
     _default_pitch_processor.reset()
     apply_pcm_pitch_to_bytes.__dict__.update(_default_pitch_processor.__dict__)
+
+
+def flush_pcm_pitch_state():
+    result = _default_pitch_processor.flush()
+    apply_pcm_pitch_to_bytes.__dict__.update(_default_pitch_processor.__dict__)
+    return result

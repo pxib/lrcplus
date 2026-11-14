@@ -83,7 +83,10 @@ class QueueActionsMixin:
         menu.addAction("Add to queue", lambda: self._enqueue_from_ui(paths))
         menu.addSeparator()
         menu.addAction("Queue and saved playlists…", self.show_playlist)
-        menu.exec(self.library_table.viewport().mapToGlobal(pos))
+        try:
+            menu.exec(self.library_table.viewport().mapToGlobal(pos))
+        finally:
+            menu.deleteLater()
 
     def show_playlist(self):
         dialog = PlaylistDialog(self.playlist, self.current_index, self)

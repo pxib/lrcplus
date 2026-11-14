@@ -221,7 +221,10 @@ class PlaylistDialog(QDialog):
         menu.addAction("Play", self._request_selected_track)
         menu.addAction("Play next", lambda: self.play_next_requested.emit(self._selected_indices()))
         menu.addAction("Remove from queue", self._request_remove_selected)
-        menu.exec(self.list_widget.viewport().mapToGlobal(pos))
+        try:
+            menu.exec(self.list_widget.viewport().mapToGlobal(pos))
+        finally:
+            menu.deleteLater()
 
     def _reload_saved(self, selected=None):
         selected = selected or self.saved_combo.currentText()

@@ -93,6 +93,7 @@ class _WaveformWorker(QThread):
                     cmd,
                     stdout=decoded_audio,
                     stderr=subprocess.PIPE,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
                 with self._process_lock:
                     self._process = process

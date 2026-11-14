@@ -115,16 +115,20 @@ def read_track(path: str | Path) -> LibraryTrack:
     return track
 
 
-def scan_folders(folders: Iterable[str | Path]):
+def scan_folders(folders: Iterable[str | Path], *, cancelled=lambda: False):
     tracks = []
     seen = set()
     for folder in folders:
+        if cancelled():
+            return []
         root = Path(folder).expanduser()
         if not root.is_dir():
             continue
         try:
             iterator = root.rglob('*')
             for path in iterator:
+                if cancelled():
+                    return []
                 if not path.is_file() or path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                     continue
                 try:

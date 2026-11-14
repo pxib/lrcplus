@@ -133,6 +133,146 @@ def test_short_stream_drains_even_when_smaller_than_startup_reserve(qapp):
         close(worker)
 
 
+def test_pitch_tail_waits_for_device_playback_and_discards_stale_completion(qapp):
+    from core.audio_dsp import PcmPitchProcessor
+
+    class ClockedSink(Sink):
+        played_us = 0
+
+        def processedUSecs(self):
+            self.check_thread()
+            return self.played_us
+
+    source = np.zeros((6007, 2), np.float32)
+    tone = .5 * np.sin(2 * np.pi * 440 * np.arange(2400) / 48000)
+    source[-2400:] = np.column_stack((tone, tone))
+    fmt = audio_format()
+    reference = PcmPitchProcessor()
+    try:
+        expected = reference.process(source.tobytes(), fmt.sampleFormat(), 2, 48000, 5)
+        expected += reference.flush()
+    finally:
+        reference.reset()
+    sinks = []
+    worker = PcmPlayback(sink_factory=lambda *args: sinks.append(ClockedSink(*args)) or sinks[-1])
+    finished = []
+    worker.drained.connect(lambda: finished.append(True))
+    try:
+        worker.configure(None, 1, 5, 1, enabled=True, playing=True)
+        worker.receive_buffer(QAudioBuffer(source.tobytes(), fmt))
+        worker.receive_buffer(QAudioBuffer())
+        assert worker.finish()
+        wait_without_gui(lambda: bool(sinks) and sinks[0].total_written == len(expected))
+        assert bytes(sinks[0].written) == expected
+        qapp.processEvents()
+        assert not finished  # A successful write does not mean it was heard.
+        sinks[0].played_us = fmt.durationForBytes(len(expected))
+        wait_without_gui(lambda: not worker._has_input)
+        qapp.processEvents()
+        assert finished == [True]
+        assert not worker.finish(decoder_finished=True)
+        # Further EOF polls cannot write or announce the same tail again.
+        time.sleep(.03)
+        qapp.processEvents()
+        assert finished == [True]
+        assert sinks[0].total_written == len(expected)
+    finally:
+        close(worker)
+
+
+def test_reset_invalidates_queued_drain_notification(qapp):
+    class ClockedSink(Sink):
+        def processedUSecs(self):
+            return 10_000_000
+
+    worker = PcmPlayback(sink_factory=ClockedSink)
+    finished = []
+    worker.drained.connect(lambda: finished.append(True))
+    try:
+        worker.configure(None, 1, 0, 1.5, enabled=True, playing=True)
+        worker.receive_buffer(buffer(frames=1024))
+        worker.receive_buffer(QAudioBuffer())
+        assert worker.finish()
+        wait_without_gui(lambda: not worker._has_input)
+        worker.reset()
+        qapp.processEvents()
+        assert not finished
+    finally:
+        close(worker)
+
+
+@pytest.mark.parametrize("stop_early", [False, True])
+def test_player_waits_for_audible_processed_tail_before_advancing(qapp, tmp_path, monkeypatch, stop_early):
+    from PySide6.QtMultimedia import QMediaDevices
+    from core.settings import save_playback_settings
+    from ui import main_window
+
+    if not QMediaDevices.audioOutputs():
+        pytest.skip("No audio output for the muted decoder integration check")
+
+    class ClockedSink(Sink):
+        played_us = 0
+
+        def processedUSecs(self):
+            return self.played_us
+
+    first, second = [tmp_path / name for name in ("first.wav", "second.wav")]
+    for path in (first, second):
+        with wave.open(str(path), "wb") as audio:
+            audio.setnchannels(2)
+            audio.setsampwidth(2)
+            audio.setframerate(48000)
+            samples = np.zeros((16000, 2), np.int16)
+            tone = (10000 * np.sin(2 * np.pi * 440 * np.arange(2400) / 48000)).astype(np.int16)
+            samples[-2400:] = tone[:, None]
+            audio.writeframes(samples.tobytes())
+    sinks = []
+    monkeypatch.setattr(main_window, "PcmPlayback", lambda parent: PcmPlayback(
+        parent, sink_factory=lambda *args: sinks.append(ClockedSink(*args)) or sinks[-1],
+    ))
+    monkeypatch.setattr(main_window.Player, "_automatic_update_check", lambda self: None)
+    save_playback_settings({"play_mode": "playlist", "volume": 0})
+    window = main_window.Player()
+    for method in ("update_background_for_audio", "_start_lyrics_search", "_notify_queue_changed"):
+        monkeypatch.setattr(window, method, lambda *args: None)
+    monkeypatch.setattr(window.waveform_widget, "load_audio", lambda *args: None)
+    errors = []
+    window._pcm_worker.failed.connect(errors.append)
+    try:
+        window.handle_pitch_change("Semitones", 5)
+        window.playlist = [first, second]
+        window.current_index = 0
+        window.load_audio(first)
+        window.media_player.play()
+        deadline = time.monotonic() + 5
+        while not getattr(window, "_pcm_end_pending", False) and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(.002)
+        assert window._pcm_end_pending, errors
+        assert window.current_audio_path == first
+        wait_without_gui(lambda: bool(sinks) and window._pcm_worker._engine._stream_flushed
+                         and not window._pcm_worker._engine._pending)
+        assert np.max(np.abs(np.frombuffer(sinks[0].written, np.int16))) > 100
+        if stop_early:
+            window.stop_playback()
+        sinks[0].played_us = 10_000_000
+        if stop_early:
+            from PySide6.QtTest import QTest
+            QTest.qWait(50)
+            assert window.current_audio_path == first
+            assert not window._pcm_end_pending
+        else:
+            deadline = time.monotonic() + 3
+            while window.current_audio_path != second and time.monotonic() < deadline:
+                qapp.processEvents()
+                time.sleep(.002)
+            assert window.current_audio_path == second
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
 def test_renderer_callback_never_emits_qt_wakeup_signals(qapp, monkeypatch):
     worker = PcmPlayback(sink_factory=Sink)
     notifications = []

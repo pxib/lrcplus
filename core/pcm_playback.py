@@ -30,10 +30,12 @@ class _Controls:
 class PcmPlayback(QObject):
     owns_output = True
     route_started = Signal()
+    drained = Signal()
     failed = Signal(str)
     _wake = Signal()
     _route = Signal(int)
     _error = Signal(int, str)
+    _drained = Signal(int)
 
     def __init__(self, parent=None, *, sink_factory=QAudioSink):
         super().__init__(parent)
@@ -43,6 +45,8 @@ class PcmPlayback(QObject):
         self._pending = deque()
         self._queued_bytes = 0
         self._end_of_stream = False
+        self._has_input = False
+        self._drain_requested = False
         self._closed = False
         self._wake_pending = False
         self._thread = QThread()
@@ -53,6 +57,7 @@ class PcmPlayback(QObject):
         self._wake.connect(self._engine.pump, Qt.ConnectionType.QueuedConnection)
         self._route.connect(self._deliver_route, Qt.ConnectionType.QueuedConnection)
         self._error.connect(self._deliver_error, Qt.ConnectionType.QueuedConnection)
+        self._drained.connect(self._deliver_drained, Qt.ConnectionType.QueuedConnection)
         self._thread.finished.connect(self._engine.deleteLater)
         self._thread.finished.connect(self._thread.deleteLater)
         thread = self._thread
@@ -72,6 +77,8 @@ class PcmPlayback(QObject):
         self._pending.clear()
         self._queued_bytes = 0
         self._end_of_stream = False
+        self._has_input = False
+        self._drain_requested = False
 
     def reset(self):
         with self._lock:
@@ -101,6 +108,19 @@ class PcmPlayback(QObject):
             self._controls = _Controls(old.device, old.speed, old.shift, old.gain,
                                        old.enabled, playing)
         self._notify()
+
+    def finish(self, *, decoder_finished=False):
+        """Keep processed output playing after the native decoder reaches EOF."""
+        with self._lock:
+            if (self._closed or not self._controls.enabled or not self._has_input
+                    or not (decoder_finished or self._end_of_stream)):
+                return False
+            self._end_of_stream = self._drain_requested = True
+            old = self._controls
+            self._controls = _Controls(old.device, old.speed, old.shift, old.gain,
+                                       old.enabled, True)
+        self._notify()
+        return True
 
     def receive_buffer(self, buffer):
         """Direct decoder callback: copy and enqueue, without touching GUI objects."""
@@ -132,6 +152,7 @@ class PcmPlayback(QObject):
             self._pending.append((data, fmt, controls))
             self._queued_bytes += len(data)
             self._end_of_stream = False
+            self._has_input = True
         # Do not emit Qt signals from the renderer's direct callback: stopping
         # or reconfiguring QMediaPlayer can hold its connection locks while
         # waiting for that callback to return. The audio thread polls this inbox.
@@ -150,6 +171,13 @@ class PcmPlayback(QObject):
         if current:
             self.failed.emit(error)
 
+    @Slot(int)
+    def _deliver_drained(self, generation):
+        with self._lock:
+            current = not self._closed and generation == self._generation
+        if current:
+            self.drained.emit()
+
     def close(self):
         with self._lock:
             if self._closed:
@@ -167,6 +195,8 @@ class _PlaybackEngine(QObject):
         self._processor = PcmPitchProcessor()
         self._rate_processor = PcmRateProcessor()
         self._last_input = None
+        self._stream_flushed = False
+        self._written_bytes = 0
         self._generation = -1
         self._sink = None
         self._io = None
@@ -189,6 +219,7 @@ class _PlaybackEngine(QObject):
         self._pending.clear()
         self._active = False
         self._primed = False
+        self._written_bytes = 0
         sink, self._sink = self._sink, None
         self._io = None
         if sink is not None:
@@ -199,6 +230,7 @@ class _PlaybackEngine(QObject):
         self._processor.reset()
         self._rate_processor.reset()
         self._last_input = None
+        self._stream_flushed = False
 
     def _current(self):
         with self._mailbox._lock:
@@ -245,6 +277,7 @@ class _PlaybackEngine(QObject):
                     data, fmt, settings = mailbox._pending.popleft()
                     mailbox._queued_bytes -= len(data)
                 self._last_input = (fmt, settings)
+                self._stream_flushed = False
                 pcm = self._rate_processor.process(
                     data, fmt.sampleFormat(), fmt.channelCount(), settings.speed,
                     sample_rate=fmt.sampleRate(),
@@ -253,10 +286,26 @@ class _PlaybackEngine(QObject):
                 self._drain()
             with mailbox._lock:
                 end_of_stream = mailbox._end_of_stream and not mailbox._pending
-            if end_of_stream and self._last_input is not None and self._current():
+                drain_requested = mailbox._drain_requested
+            if (end_of_stream and not self._stream_flushed
+                    and self._last_input is not None and self._current()):
                 fmt, settings = self._last_input
-                self._process_resampled(self._rate_processor.flush(), fmt, settings)
+                self._process_resampled(self._rate_processor.flush(), fmt, settings, tail=True)
+                self._accept_processed(self._processor.flush(), fmt, settings, tail=True)
+                self._stream_flushed = True
             self._drain(force=end_of_stream)
+            if drain_requested and end_of_stream and self._stream_flushed and not self._pending:
+                # Written data still belongs to the device. Advancing on write
+                # completion would cut off the tail already in its buffer.
+                played = (self._sink is None or self._sink.processedUSecs() >=
+                          self._sink.format().durationForBytes(self._written_bytes))
+                with mailbox._lock:
+                    drained = (played and mailbox._drain_requested and not mailbox._closed
+                               and generation == mailbox._generation and not mailbox._pending)
+                    if drained:
+                        mailbox._drain_requested = mailbox._has_input = False
+                if drained:
+                    mailbox._drained.emit(generation)
         except (ImportError, ValueError, RuntimeError, OSError) as error:
             self._reset()
             with mailbox._lock:
@@ -276,21 +325,26 @@ class _PlaybackEngine(QObject):
         if more:
             mailbox._notify()
 
-    def _process_resampled(self, pcm, fmt, settings):
+    def _process_resampled(self, pcm, fmt, settings, *, tail=False):
         if not pcm:
             return
         pcm = self._processor.process(
             pcm, fmt.sampleFormat(), fmt.channelCount(), fmt.sampleRate(), settings.shift,
         )
+        self._accept_processed(pcm, fmt, settings, tail=tail)
+
+    def _accept_processed(self, pcm, fmt, settings, *, tail=False):
+        if not pcm:
+            return
         if settings.gain > 1:
             pcm = apply_pcm_gain_to_bytes(pcm, fmt.sampleFormat(), settings.gain)
         if not self._current():
             return
         if abs(settings.shift) >= 0.001 and not self._processor._started:
             return
-        self._accept(pcm, fmt)
+        self._accept(pcm, fmt, tail=tail)
 
-    def _accept(self, pcm, fmt):
+    def _accept(self, pcm, fmt, *, tail=False):
         if self._sink is None or self._sink.format() != fmt:
             if self._sink is not None:
                 self._stop_sink()
@@ -305,6 +359,10 @@ class _PlaybackEngine(QObject):
             if not self._playing:
                 self._sink.suspend()
         self._pending.extend(pcm)
+        if tail:
+            # The final reserve is bounded by processor latency. Preserve the
+            # audio waiting for the device instead of applying the burst limit.
+            return
         frame_size = fmt.bytesPerFrame()
         limit = max(fmt.bytesForDuration(120_000), len(pcm))
         limit -= limit % frame_size
@@ -330,6 +388,7 @@ class _PlaybackEngine(QObject):
             if written < 0:
                 raise RuntimeError("The PCM audio sink rejected audio data.")
             del self._pending[:written]
+            self._written_bytes += written
             if written and not self._active:
                 self._active = True
                 self._mailbox._route.emit(self._generation)

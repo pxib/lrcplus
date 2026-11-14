@@ -1,6 +1,28 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [2026-11-14.2]
+
+### Changed
+
+- Debounce library column resizing saves and write only the column layout to a small preferences file, avoiding repeated serialization of the full track library. Preserve existing column preferences and save pending changes when closing.
+- Limit Discord Rich Presence artwork resolution to one worker and one replaceable pending track. Discard outdated queued requests during rapid track changes and stop queued work when the plugin unloads.
+
+### Added
+
+- Add **Open Folder** to the lyrics editor's Source tab. Reveal and select the lyrics file in Windows Explorer or macOS Finder when possible; otherwise open its containing folder.
+
+### Fixed
+
+- Prevent paused audio from briefly resuming when closing the app on Windows by discarding buffered sound before stopping the audio output.
+- Preserve pitch-shifted playback when changing the visual theme by skipping redundant audio device reconfiguration.
+- Prevent FFmpeg command windows from popping up while generating audio waveforms in the Windows EXE.
+- Prevent crashes when closing during a library scan by requesting cancellation and waiting asynchronously for the scanner to finish before destroying the player.
+- Use the latest folder selection after repeated library scan requests, preventing outdated scan results from being saved under a newer folder configuration.
+- Preserve the final samples during pitch processing and wait for the audio device to finish playing them before advancing tracks. Manual stops, seeks, and track changes discard pending audio and completion notifications.
+- Restore normal audio playback when the installed Pedalboard fallback cannot stream pitch-shifted audio, instead of producing silence.
+- Release completed library scan workers and temporary library and queue context menus, preventing repeated scans and menu openings from accumulating these objects in memory.
+
 ## [2026-11-14]
 
 ### Added
@@ -12,6 +34,7 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Fixed
 
+- Prevent FFmpeg command windows from popping up while generating audio waveforms in the Windows EXE.
 - Prevent Korean library metadata from falling back to Gulim or Batang when Malgun Gothic is available.
 - Keep audio playing when resetting pitch shift to its default value, including when volume boost is active. Reuse the decoder's audio buffer when switching back to native playback or enabling pitch shift again.
 - Recognize date-only release versions such as `2026-11-14` in the updater, treating them as revision zero when comparing available updates.

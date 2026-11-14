@@ -46,6 +46,13 @@ supported 0.25–2x range (under 1.6 ms at 44.1 kHz). Unity rate is byte-preserv
 End-of-stream flushes the remaining rate-converted frames once. Seeks, track
 changes, format changes, and control changes requiring a restart discard history.
 
+Pitch processing also drains its lookahead and partial input block once at EOF.
+Automatic track changes wait until the processed sink's sample clock reaches
+the end of the written audio. Manual stops, seeks and track changes cancel that
+wait and invalidate queued completion notifications. Pedalboard fallback builds
+are checked once for working short-block streaming; unsupported builds report
+an audio-processing error and retain native playback instead of silent output.
+
 Automated checks cover callback-independent samples and duration, passband
 accuracy, stereo phase, integer saturation, alias rejection, bounded history,
 and end-of-stream delivery. Threaded playback checks cover rapid setting changes,
@@ -75,6 +82,11 @@ around any audible problem.
 5. Test short clips and natural track endings at each speed, then repeat with
    a USB or Bluetooth output if available. Note truncated endings or silence
    after a route or device switch.
+6. With boosted volume, pitch processing, and gapless playback, pause a track
+   and close the app. Confirm that buffered audio does not resume during exit.
+   Repeat while playing and while a library scan is running. On Windows, run
+   the optional native reset check by setting `LRCPLUS_TEST_AUDIO_DEVICE` to
+   the output device description and running `pytest tests/test_audio_sink.py`.
 
 If a handoff remains audible, capture the output around the switch and measure
 the native and processed delays before adding a crossfade. A fade alone cannot
