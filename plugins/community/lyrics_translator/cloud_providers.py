@@ -14,7 +14,13 @@ PROVIDERS = {
 LANGUAGES = {"ja": "Japanese", "en": "English", "zh": "Chinese (Simplified)",
              "zh-Hant": "Chinese (Traditional)", "ko": "Korean", "de": "German",
              "fr": "French", "es": "Spanish", "it": "Italian", "pt": "Portuguese",
-             "ru": "Russian", "nl": "Dutch", "pl": "Polish", "vi": "Vietnamese", "th": "Thai"}
+             "ru": "Russian", "nl": "Dutch", "pl": "Polish", "vi": "Vietnamese",
+             "th": "Thai", "id": "Indonesian", "tr": "Turkish", "ar": "Arabic",
+             "hi": "Hindi","he": "Hebrew", "sv": "Swedish", "no": "Norwegian",
+             "fi": "Finnish", "da": "Danish", "cs": "Czech", "el": "Greek",
+             "hu": "Hungarian", "ro": "Romanian", "sk": "Slovak", "uk": "Ukrainian",
+             "bg": "Bulgarian", "sr": "Serbian", "hr": "Croatian", "lt": "Lithuanian",
+             "lv": "Latvian"}
 
 
 def catalog():
