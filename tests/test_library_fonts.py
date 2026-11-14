@@ -1,8 +1,8 @@
 import unicodedata
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent
-from PySide6.QtGui import QFont, QRawFont, QTextLayout
+from PySide6.QtCore import QCoreApplication, QEvent, Qt
+from PySide6.QtGui import QFont, QFontDatabase, QRawFont, QTextLayout
 
 from core import fonts
 
@@ -63,11 +63,28 @@ def test_missing_font_preserves_system_font(qapp, monkeypatch, tmp_path):
 
 def test_player_library_uses_bundled_font(qapp):
     from ui.main_window import Player
+    from ui.content_list import ContentListDelegate
+    from ui.library_lyrics_search import LyricMatchDelegate
+    from ui.player_dialogs import AlbumCoverDelegate
 
     window = Player()
     qapp.processEvents()
     try:
         assert window.library_table.font().family() == "Noto Sans JP"
+        delegate = window.library_table.itemDelegate()
+        assert isinstance(delegate, ContentListDelegate)
+        assert isinstance(window.library_table.itemDelegateForColumn(0), AlbumCoverDelegate)
+        assert isinstance(window.library_table.itemDelegateForColumn(
+            window.library_lyrics_column), LyricMatchDelegate)
+        if QFontDatabase.hasFamily("Malgun Gothic"):
+            font = QFont(window.library_table.font())
+            font.setStyleStrategy(font.styleStrategy() | QFont.StyleStrategy.NoFontMerging)
+            layout, _ = delegate._layout("\uc0ac\ub791\ud574", font,
+                                         300, Qt.TextElideMode.ElideNone,
+                                         Qt.LayoutDirection.LeftToRight)
+            runs = layout.glyphRuns()
+            assert runs and all(glyph for run in runs for glyph in run.glyphIndexes())
+            assert not {run.rawFont().familyName() for run in runs} & {"Gulim", "Batang"}
     finally:
         window.close()
         window.deleteLater()

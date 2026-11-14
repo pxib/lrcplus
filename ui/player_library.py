@@ -23,6 +23,7 @@ from ui.library_rows import LibraryGroupRows, LibraryRowData, LibraryTrackItem
 from ui.artwork_background import extract_embedded_cover, load_embedded_cover_thumbnail
 from ui.player_dialogs import AlbumCoverDelegate, CoverPreviewDialog, LibraryScanWorker
 from core.fonts import library_font
+from ui.content_list import ContentListDelegate
 
 
 class PlayerLibraryMixin:
@@ -96,6 +97,9 @@ class PlayerLibraryMixin:
         self.library_table = QTreeWidget()
         self.library_table.setObjectName("libraryTable")
         self.library_table.setFont(library_font(self.library_table.font()))
+        # Resolve script runs explicitly for song metadata. Qt's automatic
+        # fallback otherwise loads Gulim for Hangul even when Malgun is present.
+        self.library_table.setItemDelegate(ContentListDelegate(self.library_table))
         self.library_table.setColumnCount(len(self.library_columns))
         self.library_table.setHeaderLabels([label for _, label in self.library_columns])
         self.library_table.setRootIsDecorated(True)
