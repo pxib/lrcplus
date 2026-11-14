@@ -184,3 +184,7 @@ class CardAlbumArt(QObject):
         self._retry_timer.stop()
         self._worker_active = False
         self.loading = False
+        self.image = QImage()
+        self._key = None
+        self._path = None
+        self._provider = None

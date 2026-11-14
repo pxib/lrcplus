@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QPoint, Qt
@@ -6,6 +7,106 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QDialog, QPushButton
 
 from plugins.community.floating_lyrics.plugin import FloatingLyricsPlugin, FloatingLyricsWindow
+
+
+@pytest.fixture
+def load_floating_plugin(qapp):
+    from core.plugin_manager import PluginManager
+
+    managers, windows = [], []
+
+    def load(**settings):
+        manager = PluginManager()
+        managers.append(manager)
+        api = manager.get_api("floating_lyrics")
+        for key, value in settings.items():
+            api.set_setting(key, value)
+        manager.load_from_file("floating_lyrics", Path(__file__).resolve().parents[1]
+                               / "plugins/community/floating_lyrics/plugin.py")
+        plugin = manager.plugins["floating_lyrics"].instance
+        host = QPushButton("Main player")
+        host.current_line = 0
+        host.lyric_lines = [SimpleNamespace(text="Current lyric", translation_lines=[])]
+        host.show_ruby = False
+        windows.append(host)
+        return plugin, host
+
+    yield load
+    for manager in managers:
+        manager.unload_all()
+    for window in windows:
+        window.close()
+        window.deleteLater()
+    qapp.processEvents()
+
+
+def test_disabled_plugin_defers_window_through_events_and_settings(
+    load_floating_plugin, qapp,
+):
+    plugin, host = load_floating_plugin(hide_on_pause=True)
+    assert plugin.floating is None
+    plugin.on_app_ready(host)
+    qapp.processEvents()
+    plugin.on_position_changed(1000)
+    plugin.on_track_changed("song.mp3")
+    plugin.on_playback_state_changed("paused")
+    plugin.on_playback_state_changed("playing")
+    plugin.toggle_window(False)
+    plugin.apply_settings_widget(SimpleNamespace(values=lambda: {"base_font_size": 37}))
+    assert plugin.floating is None
+
+    plugin.toggle_window(True)
+    qapp.processEvents()
+    assert plugin.floating.isVisible()
+    assert plugin.floating.lyric_widget.base_font.pointSize() == 37
+    assert plugin.floating.lyric_widget.lyric == "Current lyric"
+    assert not plugin.floating.lyric_widget.show_ruby
+    floating = plugin.floating
+    plugin.toggle_window(False)
+    plugin.toggle_window(True)
+    assert plugin.floating is floating
+
+
+def test_saved_enabled_plugin_restores_position_and_resumes_after_pause(
+    load_floating_plugin, qapp,
+):
+    plugin, host = load_floating_plugin(enabled=True, window_x=123, window_y=234,
+                                       hide_on_pause=True)
+    assert plugin.floating is None
+    plugin.on_app_ready(host)
+    qapp.processEvents()
+    assert plugin.floating.isVisible()
+    assert plugin.floating.pos() == QPoint(123, 234)
+    plugin.on_playback_state_changed("paused")
+    assert not plugin.floating.isVisible()
+    host.lyric_lines[0].text = "Latest lyric"
+    plugin.on_playback_state_changed("playing")
+    assert plugin.floating.isVisible()
+    assert plugin.floating.lyric_widget.lyric == "Latest lyric"
+
+
+def test_unloading_before_startup_callback_does_not_create_a_window(
+    load_floating_plugin, qapp,
+):
+    plugin, host = load_floating_plugin(enabled=True)
+    plugin.on_app_ready(host)
+    plugin.on_unload(None)
+    qapp.processEvents()
+    assert plugin.floating is None
+
+
+def test_unloading_destroys_created_floating_window(load_floating_plugin):
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from shiboken6 import isValid
+
+    plugin, host = load_floating_plugin()
+    plugin.window = host
+    plugin.toggle_window(True)
+    floating = plugin.floating
+    plugin.on_unload(None)
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert plugin.floating is None
+    assert not isValid(floating)
 
 
 @pytest.mark.parametrize("nested", [False, True])
@@ -204,7 +305,6 @@ def test_hidden_multiline_lyrics_defer_reading_and_layout_until_shown(
         assert plugin.floating.lyric_widget.lyric == first.text
     finally:
         plugin.on_unload(None)
-        plugin.floating.deleteLater()
         qapp.processEvents()
 @pytest.mark.parametrize("format", ["objects", "tuples", "dicts", "strings"])
 def test_context_tracks_current_line_and_clears_at_song_boundaries(qapp, format):

@@ -28,6 +28,10 @@ try:
     window.show()
     QTest.qWait(100)
     assert 'requests' not in sys.modules
+    for name in ('ui.settings_dialog', 'ui.lrc_editor', 'ui.translation_panel',
+                 'plugins.community.lyrics_translator.dialog'):
+        assert name not in sys.modules, name
+    assert manager.plugins['floating_lyrics'].instance.floating is None
     assert not window._lyrics_renderers_ready
     assert window._lyric_widget is None and window._scrolling_lyrics_widget is None
     window.close()

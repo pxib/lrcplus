@@ -651,7 +651,7 @@ def test_player_decoder_keeps_feeding_audio_during_gui_stall(qapp, tmp_path, mon
                 lyrics_path = tmp_path / "silence.lrc"
                 lyrics_path.write_text("\n".join(f"[00:{i:02d}.00]Hello world" for i in range(20)), encoding="utf-8")
                 window.current_lyrics_path = lyrics_path
-                monkeypatch.setattr(main_window.LrcEditorDialog, "_confirm_close", lambda self: True)
+                monkeypatch.setattr("ui.lrc_editor.LrcEditorDialog._confirm_close", lambda self: True)
                 window.edit_current_lyrics()
             QTest.qWait(200)
         assert sinks[-1].total_written > written + 8192

@@ -53,6 +53,45 @@ def test_card_shutdown_releases_render_and_preview(editor):
     assert not card._refresh_timer.isActive()
 
 
+def test_closing_editor_releases_cached_backgrounds_and_preserves_other_previews(
+    make_lyrics_editor, tmp_path,
+):
+    import weakref
+    from PySide6.QtGui import QColor, QImage
+    from ui import lyrics_card_renderer as renderer
+
+    first, second = make_lyrics_editor(), make_lyrics_editor()
+    first_card, second_card = first.share_card, second.share_card
+    background = QImage(80, 60, QImage.Format.Format_RGB32)
+    background.fill(QColor("#234567"))
+    path = tmp_path / "background.png"
+    assert background.save(str(path))
+    for editor, card in ((first, first_card), (second, second_card)):
+        editor.select_all_share_lines()
+        card.image_path_edit.setText(str(path))
+        card.background_mode.setCurrentText("Image")
+        card.watermark_enabled.setChecked(True)
+        card.refresh()
+    # Keep only weak references to the cached native images. Closing either
+    # workspace should release them even while another preview remains alive.
+    stat = path.stat()
+    cached_background = weakref.ref(renderer._image_background(
+        str(path), stat.st_mtime_ns, stat.st_size, 1080, 1080, 100, 50, 50, 0))
+    logo_stat = renderer.LOGO_PATH.stat()
+    cached_logo = weakref.ref(renderer._watermark_logo(
+        str(renderer.LOGO_PATH), logo_stat.st_mtime_ns, logo_stat.st_size))
+    assert cached_background() is not None and cached_logo() is not None
+    surviving_preview = QImage(second_card.preview.image)
+
+    first.document_dirty = False
+    first.close()
+    assert cached_background() is None and cached_logo() is None
+    assert second_card.preview.image == surviving_preview
+    second_card._render_key = None
+    second_card.refresh()
+    assert second_card.preview.image == surviving_preview
+
+
 def test_editor_starts_only_the_waveform_decoder_being_shown(editor, qapp, monkeypatch):
     from lyrics.waveform import WaveformWidget
 

@@ -370,6 +370,43 @@ All 48 focused floating-window, profiler, playback-memory, karaoke-visibility,
 deferred-renderer, and newline-layout checks passed. The two new hidden-window
 cases also passed separately with the native Windows Qt backend.
 
+## Idle startup and closed image cards
+
+Settings, the lyrics editor, and translation panels now import on first use.
+The Floating Lyrics plugin registers its actions and settings without creating
+a hidden window or renderer. Its first display applies the latest settings,
+restores the saved position, and immediately shows the current lyric. Unloading
+the plugin deletes its window and cancels its owned layout timer.
+
+The image-card renderer's global caches previously retained two full-resolution
+backgrounds and the watermark after the editor closed. Card shutdown now clears
+those caches, the rendered preview, and the album-art loader's image/provider
+references. Other open previews retain their own images and rebuild the shared
+caches on their next render.
+
+Fresh Windows/Python 3.14 processes using the native Windows Qt platform and
+isolated settings measured the following working sets:
+
+| Workload | Before | After |
+| --- | ---: | ---: |
+| Empty-library player shown, available default plugins | 127.18 MiB | 125.18 MiB |
+| Standalone editor disposed after two image-background renders | 153.84 MiB | 90.69 MiB |
+
+The second probe rendered a 1920 × 1080 card at 2× quality twice, changing image
+zoom to populate both cached 3840 × 2160 backgrounds. After editor disposal,
+private committed memory also fell from 123.98 to 60.79 MiB. A repeat measured
+90.73 MiB of working set after disposal. The approximately 63 MiB saving applies
+to this card workflow; it is separate from the approximately 2 MiB startup
+saving. Card size, quality, prior font use, plugins, and library content affect
+the totals. These are development-process measurements, not packaged-app totals.
+
+Regression checks cover fresh-process import isolation, disabled/saved-enabled
+floating-window startup, first-use settings and lyrics, pause/resume, disposal
+before queued callbacks, releasing cached images, and preserving another open
+card's pixels after shared-cache eviction.
+The two focused suites passed 1,358 tests; the four new floating-window lifecycle
+checks also passed separately with the native Windows Qt backend.
+
 ## Capture the actual workload
 
 From the repository root, launch the development app with:

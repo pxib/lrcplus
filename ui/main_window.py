@@ -61,9 +61,7 @@ from core.music_library import LibraryTrack
 from lyrics.widgets import FuriganaWidget, ScrollingLyricsWidget
 from lyrics.waveform import WaveformWidget, find_ffmpeg
 from lyrics.writer import convert_lyrics
-from ui.settings_dialog import SettingsDialog
 from ui.user_manual import open_community_wiki, open_user_manual
-from ui.lrc_editor import LrcEditorDialog
 from ui.queue_actions import QueueActionsMixin
 from ui.library_lyrics_search import LibraryLyricsSearchMixin
 from ui.audio_devices import AudioDeviceControllerMixin
@@ -1553,6 +1551,8 @@ class Player(
 
 
         def open_settings(self):
+            from ui.settings_dialog import SettingsDialog
+
             local_overrides = get_local_lyrics_overrides(
                 self.current_audio_path
             )
@@ -1691,6 +1691,8 @@ class Player(
 
 
         def edit_current_lyrics(self):
+            from ui.lrc_editor import LrcEditorDialog
+
             lyrics_path = self.get_current_lyrics_path()
 
             # Opening the editor without an existing lyrics file creates an

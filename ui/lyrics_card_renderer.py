@@ -374,6 +374,16 @@ def _watermark_logo(path, modified, file_size):
     return image
 
 
+def clear_card_image_caches():
+    """Release full-resolution buffers when a card workspace is closed.
+
+    Existing previews own their rendered images. Other open workspaces can
+    rebuild these shared acceleration caches on their next render.
+    """
+    _image_background.cache_clear()
+    _watermark_logo.cache_clear()
+
+
 def _watermark(style):
     if not style.watermark_enabled or not style.watermark_opacity:
         return None

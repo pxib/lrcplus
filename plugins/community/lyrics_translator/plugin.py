@@ -1,6 +1,5 @@
 """Local and cloud lyric translations in one optional plugin."""
 from functools import partial
-from plugins.community.lyrics_translator.dialog import TranslationDialog, TranslationPanel
 from PySide6.QtCore import QCoreApplication
 from plugins.community.lyrics_translator.cloud_providers import PROVIDERS
 
@@ -54,6 +53,8 @@ class LyricsTranslatorPlugin:
         save_all_settings(payload)
 
     def open_dialog(self):
+        from plugins.community.lyrics_translator.dialog import TranslationDialog
+
         if self.dialog is None:
             self.dialog = TranslationDialog(self.api, self.window)
         else:
@@ -74,6 +75,8 @@ class LyricsTranslatorPlugin:
             self.dialog = None
 
     def create_editor_panel(self, editor, document_loader, apply_translations):
+        from plugins.community.lyrics_translator.dialog import TranslationPanel
+
         panel = TranslationPanel(self.api, editor, document_loader=document_loader,
                                  apply_translations=apply_translations)
         self.editor_panels.append(panel)
@@ -82,6 +85,8 @@ class LyricsTranslatorPlugin:
         return panel
 
     def create_cloud_panel(self, provider_id, editor, document_loader, apply_translations):
+        from plugins.community.lyrics_translator.dialog import TranslationPanel
+
         panel = TranslationPanel(self.api, editor, cloud_provider=provider_id,
                                  document_loader=document_loader, apply_translations=apply_translations)
         self.editor_panels.append(panel)

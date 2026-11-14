@@ -19,6 +19,7 @@ from ui.lyrics_card_controls import LyricsCardControlsMixin
 # Re-export the renderer API used by the editor and share integrations.
 from ui.lyrics_card_renderer import (
     CARD_SIZES, CARD_THEMES, CARD_TEMPLATES, WATERMARK_POSITIONS, CardStyle, render_lyric_card, theme_colors,
+    clear_card_image_caches,
 )
 from ui.lyrics_card_presets import (
     STYLE_RANGES, delete_card_preset, load_card_presets, save_card_preset, style_from_preset,
@@ -219,6 +220,7 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         self._image = QImage()
         self.preview.image = self._image
         self._render_key = None
+        clear_card_image_caches()
 
     def _spin(self, name, value, suffix=""):
         widget = QSpinBox()

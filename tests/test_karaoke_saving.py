@@ -251,7 +251,7 @@ def test_save_and_close_does_not_reload_previous_song(editor, player_for_editor,
         assert dialog.save_and_close()
         return dialog.result()
 
-    monkeypatch.setattr(main_window, "LrcEditorDialog", type(editor))
+    monkeypatch.setattr("ui.lrc_editor.LrcEditorDialog", type(editor))
     monkeypatch.setattr(type(editor), "exec", save_and_close)
     main_window.Player.edit_current_lyrics(player)
     qapp.processEvents()

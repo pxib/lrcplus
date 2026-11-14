@@ -98,13 +98,16 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
         self._pan_pause = QTimer(self)
         self._pan_pause.setSingleShot(True)
         self._pan_pause.timeout.connect(self._resume_pan)
+        self._pan_configure_timer = QTimer(self)
+        self._pan_configure_timer.setSingleShot(True)
+        self._pan_configure_timer.timeout.connect(self._configure_pan)
         self._pan_geometry = None
         self.set_text_wrapping(False)
 
     def set_lyric(self, lyric, **kwargs):
         super().set_lyric(lyric, **kwargs)
         self._stop_pan()
-        QTimer.singleShot(0, self._configure_pan)
+        self._pan_configure_timer.start(0)
 
     def _raw_segments(self):
         return super()._prepare_segments()
@@ -158,6 +161,7 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
             self._pan_timer.start()
 
     def _stop_pan(self):
+        self._pan_configure_timer.stop()
         self._pan_active = False
         self._pan_timer.stop()
         self._pan_pause.stop()
@@ -587,8 +591,7 @@ class FloatingLyricsPlugin:
         self.context = context
         self.window = None
         self.settings = self._load_settings()
-        self.floating = FloatingLyricsWindow(self.settings)
-        self.floating.visibility_changed = self._set_menu_checked
+        self.floating = None
 
         context.api.on("app_ready", self.on_app_ready)
         context.api.on("position_changed", self.on_position_changed)
@@ -621,7 +624,7 @@ class FloatingLyricsPlugin:
             self.context.api.set_setting(key, value)
 
     def _remember_position(self):
-        if not self.settings.get("remember_position", True):
+        if self.floating is None or not self.settings.get("remember_position", True):
             return
         self.settings["window_x"] = self.floating.x()
         self.settings["window_y"] = self.floating.y()
@@ -632,18 +635,17 @@ class FloatingLyricsPlugin:
         self.window = window
         QTimer.singleShot(0, self._show_after_main_window)
 
-    def _show_after_main_window(self):
-        if self.window is None:
-            return
-        if not self.settings.get("enabled", False):
-            self._set_menu_checked(False)
-            return
+    def _ensure_floating_window(self):
+        if self.floating is not None:
+            return self.floating
+        self.floating = FloatingLyricsWindow(self.settings)
+        self.floating.visibility_changed = self._set_menu_checked
 
         x = self.settings.get("window_x")
         y = self.settings.get("window_y")
         if self.settings.get("remember_position", True) and x is not None and y is not None:
             self.floating.move(int(x), int(y))
-        else:
+        elif self.window is not None:
             geometry = self.window.frameGeometry()
             if geometry.width() > 0 and geometry.height() > 0:
                 center = geometry.center()
@@ -653,7 +655,16 @@ class FloatingLyricsPlugin:
                 ))
             else:
                 self.floating.move(100, 100)
+        return self.floating
 
+    def _show_after_main_window(self):
+        if self.window is None:
+            return
+        if not self.settings.get("enabled", False):
+            self._set_menu_checked(False)
+            return
+
+        self._ensure_floating_window()
         self.floating.show()
         self.floating.raise_()
         self.refresh()
@@ -667,10 +678,11 @@ class FloatingLyricsPlugin:
         self.settings["enabled"] = bool(checked)
         self._save_settings()
         if checked:
+            self._ensure_floating_window()
             self.floating.show()
             self.floating.raise_()
             self.refresh()
-        else:
+        elif self.floating is not None:
             self._remember_position()
             self.floating.hide()
 
@@ -678,20 +690,20 @@ class FloatingLyricsPlugin:
         return FloatingLyricsSettingsWidget(self.settings, parent)
 
     def apply_settings_widget(self, widget):
-        old_click_through = self.settings.get("click_through", False)
         self.settings.update(widget.values())
         self._save_settings()
 
-        was_visible = self.floating.isVisible()
-        old_pos = self.floating.pos()
-        self.floating.apply_settings(self.settings)
+        if self.floating is not None:
+            was_visible = self.floating.isVisible()
+            old_pos = self.floating.pos()
+            self.floating.apply_settings(self.settings)
 
-        # apply_settings() recreates window flags, so restore visibility and
-        # position if the floating window was already open.
-        if was_visible:
-            self.floating.move(old_pos)
-            self.floating.show()
-            self.floating.raise_()
+            # apply_settings() recreates window flags, so restore visibility and
+            # position if the floating window was already open.
+            if was_visible:
+                self.floating.move(old_pos)
+                self.floating.show()
+                self.floating.raise_()
 
         self.context.api.log("Floating Lyrics settings updated via Settings > Plugins.")
 
@@ -714,10 +726,12 @@ class FloatingLyricsPlugin:
 
         if paused:
             self._remember_position()
-            self.floating.hide()
+            if self.floating is not None:
+                self.floating.hide()
         elif "playing" in state or "play" == state:
             if not self.settings.get("enabled", False):
                 return
+            self._ensure_floating_window()
             self.floating.show()
             self.floating.raise_()
             self.refresh()
@@ -725,7 +739,7 @@ class FloatingLyricsPlugin:
     def refresh(self):
         # Hidden multiline rows still perform layout and load native fallback
         # fonts. Read the current lyric when shown instead of warming that cache.
-        if self.window is None or not self.floating.isVisible():
+        if self.window is None or self.floating is None or not self.floating.isVisible():
             return
 
         self.floating.set_furigana_enabled(getattr(self.window, "show_ruby", True))
@@ -758,7 +772,12 @@ class FloatingLyricsPlugin:
 
     def on_unload(self, context):
         self._remember_position()
-        self.floating.close()
+        self.window = None  # A queued startup callback must not reopen the window.
+        if self.floating is not None:
+            floating, self.floating = self.floating, None
+            floating.visibility_changed = None
+            floating.close()
+            floating.deleteLater()
 
 
 PLUGIN_CLASS = FloatingLyricsPlugin

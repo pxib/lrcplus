@@ -138,6 +138,32 @@ def test_shutdown_discards_late_cover_results(qapp, tmp_path, monkeypatch):
     assert not loader.loading
 
 
+def test_shutdown_releases_loaded_cover_and_allows_the_same_track_to_reload(qapp, tmp_path, monkeypatch):
+    path = tmp_path / "song.mp3"
+    path.touch()
+    calls = []
+
+    def load(*_):
+        calls.append(True)
+        return AlbumCoverResult(cover_image(), "Ready")
+
+    monkeypatch.setattr(artwork, "load_album_cover", load)
+    loader = CardAlbumArt()
+    try:
+        loader.configure(path, None, True)
+        wait_until(lambda: not loader.image.isNull())
+        loader.shutdown()
+        assert loader.image.isNull()
+        loader.retry()
+        assert len(calls) == 1
+        loader.configure(path, None, True)
+        wait_until(lambda: not loader.image.isNull())
+        assert len(calls) == 2
+    finally:
+        loader.shutdown()
+        loader.deleteLater()
+
+
 @pytest.mark.parametrize("template", CARD_TEMPLATES)
 @pytest.mark.parametrize("size", CARD_SIZES.values())
 def test_cover_preserves_aspect_ratio_and_stays_separate_from_lyrics(qapp, template, size):

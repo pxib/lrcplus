@@ -769,7 +769,7 @@ def test_saving_and_closing_editor_preserves_changed_association(
     window.load_lrc_file(original)
     editor = make_lyrics_editor(path=original, populate=False)
     editor.player = window
-    monkeypatch.setattr("ui.main_window.LrcEditorDialog", lambda *args: editor)
+    monkeypatch.setattr("ui.lrc_editor.LrcEditorDialog", lambda *args: editor)
 
     def finish():
         if action == "choose":
