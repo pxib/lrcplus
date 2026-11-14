@@ -16,12 +16,14 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 - Keep audio playing when resetting pitch shift to its default value, including when volume boost is active. Reuse the decoder's audio buffer when switching back to native playback or enabling pitch shift again.
 - Recognize date-only release versions such as `2026-11-14` in the updater, treating them as revision zero when comparing available updates.
 
-## [2026-11-13]
+## [2026-11-13.2]
 
 ### Changed
 
 - Give the basic Green, Blue, Purple, Rose, and Orange theme presets coordinated backgrounds, surfaces, controls, borders, and player colors in both light and dark mode. Selecting a basic preset replaces colors left over from the previous theme.
 - Bundle theme presets with PyInstaller releases and check that the preset file is present before creating the release archive.
+
+thank you to my sweet bff tutel on discord for finding bugs!! <333
 
 ## [2026-11-13]
 
