@@ -3,7 +3,15 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ## [2026-11-14.3]
 
-###
+### Changed
+
+- Reduce idle startup memory by loading Settings, the lyrics editor, and translation panels on first use.
+- Create the Floating Lyrics window only when shown, while preserving saved position, current lyrics, and settings on first display.
+
+### Fixed
+
+- Release cached full-resolution card backgrounds, watermark images, and album artwork when the lyrics editor closes, reducing memory retained after creating image cards.
+- Delete the Floating Lyrics window when its plugin unloads and cancel pending layout updates, preventing callbacks from accessing deleted controls.
 
 ## [2026-11-14.2]
 
