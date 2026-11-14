@@ -6,7 +6,7 @@ idk
 
 ## User manual
 
-Choose **Help → User manual** in the app, or press **F1**, to open the bundled manual in your browser. You can also open [docs/manual/index.html](docs/manual/index.html) directly. It includes offline search and needs no server or installation. Switch to Japanese using **Languages** in the manual's sidebar.
+Choose **Help → Community wiki** in the app, or press **F1**, to open the [official community wiki](https://pxib.github.io/lrcpluswiki/). For offline help, choose **Help → Offline manual** or open [docs/manual/index.html](docs/manual/index.html) directly. The bundled manual includes offline search and needs no server or installation.
 
 ## LRCLIB
 

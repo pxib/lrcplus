@@ -62,7 +62,7 @@ from lyrics.widgets import FuriganaWidget, ScrollingLyricsWidget
 from lyrics.waveform import WaveformWidget, find_ffmpeg
 from lyrics.writer import convert_lyrics
 from ui.settings_dialog import SettingsDialog
-from ui.user_manual import open_user_manual
+from ui.user_manual import open_community_wiki, open_user_manual
 from ui.lrc_editor import LrcEditorDialog
 from ui.queue_actions import QueueActionsMixin
 from ui.library_lyrics_search import LibraryLyricsSearchMixin
@@ -443,11 +443,14 @@ class Player(
                 QToolButton.ToolButtonPopupMode.InstantPopup
             )
             self.help_menu = QMenu(self.help_button)
-            self.user_manual_action = QAction("User manual", self)
+            self.user_manual_action = QAction("Community wiki", self)
             self.user_manual_action.setShortcut(QKeySequence("F1"))
-            self.user_manual_action.triggered.connect(lambda: open_user_manual(self))
+            self.user_manual_action.triggered.connect(lambda: open_community_wiki(self))
             self.addAction(self.user_manual_action)
             self.help_menu.addAction(self.user_manual_action)
+            self.offline_manual_action = QAction("Offline manual", self)
+            self.offline_manual_action.triggered.connect(lambda: open_user_manual(self))
+            self.help_menu.addAction(self.offline_manual_action)
             self.help_button.setMenu(self.help_menu)
 
             # --------------------------------------------------

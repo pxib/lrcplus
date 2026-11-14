@@ -1,4 +1,4 @@
-"""Open the bundled offline manual in the user's browser."""
+"""Open the community wiki or bundled offline manual in a browser."""
 
 from pathlib import Path
 
@@ -8,6 +8,23 @@ from PySide6.QtWidgets import QMessageBox
 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
+COMMUNITY_WIKI_URL = "https://pxib.github.io/lrcpluswiki/"
+
+
+def open_community_wiki(parent=None):
+    answer = QMessageBox.question(
+        parent, "Open community wiki?",
+        "Open the community wiki in your default web browser?",
+        QMessageBox.StandardButton.Open | QMessageBox.StandardButton.Cancel,
+        QMessageBox.StandardButton.Cancel,
+    )
+    if answer != QMessageBox.StandardButton.Open:
+        return
+    if not QDesktopServices.openUrl(QUrl(COMMUNITY_WIKI_URL)):
+        QMessageBox.warning(
+            parent, "Could not open community wiki",
+            f"Open this address in your web browser:\n{COMMUNITY_WIKI_URL}",
+        )
 
 
 def open_user_manual(parent=None):
