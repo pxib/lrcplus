@@ -75,11 +75,13 @@ from core.theme import build_theme_palette
 from ui.easter_eggs import BudgetBrandLabel, CatSeekTrack, EasterEggs
 from ui.player_library import PlayerLibraryMixin
 from ui.player_updates import PlayerUpdatesMixin
+from ui.player_sleep_timer import PlayerSleepTimerMixin
 from ui.lyrics_search_dialog import LyricsSearchDialogMixin, _lyrics_search_query
 
 
 class Player(
     FavoritesMixin,
+    PlayerSleepTimerMixin,
     PlayerLibraryMixin,
     PlayerUpdatesMixin,
     LyricsSearchDialogMixin,
@@ -156,6 +158,7 @@ class Player(
             )
 
             self.current_audio_path = None
+            self._init_sleep_timer()
             self.playlist = []
             self.current_index = -1
             self._priority_queue_indices = []
@@ -597,6 +600,12 @@ class Player(
             )
             self.pitch_status_label.setMinimumWidth(48)
 
+            self.sleep_timer_button = QPushButton("Sleep")
+            self.sleep_timer_button.setObjectName("sleepTimerButton")
+            self.sleep_timer_button.setCheckable(True)
+            self.sleep_timer_button.clicked.connect(self.open_sleep_timer)
+            self._refresh_sleep_timer()
+
             # --------------------------------------------------
             # LAYOUT
             # --------------------------------------------------
@@ -636,6 +645,7 @@ class Player(
             volume_layout.addWidget(self.pitch_options_button)
             volume_layout.addWidget(self.pitch_status_label)
             volume_layout.addWidget(self.favorite_button)
+            volume_layout.addWidget(self.sleep_timer_button)
             volume_layout.addStretch(1)
             volume_layout.addWidget(self.mute_button)
             volume_layout.addWidget(QLabel("Volume"))
@@ -1029,13 +1039,19 @@ class Player(
                     color: @DOCK_TEXT@;
                     background: transparent;
                 }
-                QPushButton#dockAction {
+                QPushButton#dockAction,
+                QPushButton#sleepTimerButton {
                     color: @DOCK_TEXT@;
                     background: @DOCK_CONTROL@;
                     border: 1px solid @DOCK_CONTROL_BORDER@;
                     border-radius: 6px;
                     padding: 5px 9px;
                     min-height: 28px;
+                }
+                QPushButton#sleepTimerButton:checked {
+                    color: @ACCENT_TEXT@;
+                    background: @ACCENT@;
+                    border-color: @ACCENT_BORDER@;
                 }
                 QComboBox#playbackSourceCombo {
                     color: @DOCK_TEXT@;
@@ -1870,6 +1886,7 @@ class Player(
         def closeEvent(self, event):
             if not getattr(self, "_closing", False):
                 self._closing = True
+                self.sleep_timer.cancel()
                 self._close_audio_device_dialog()
                 self.audio_output.setMuted(True)
                 # Stop accepting decoded audio before stop() can report EOF

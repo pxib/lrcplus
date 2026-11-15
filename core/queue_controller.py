@@ -69,8 +69,8 @@ class QueueControllerMixin:
         self._clear_shuffle_history()
         self.current_index = index
         self._priority_queue_indices = [i for i in getattr(self, "_priority_queue_indices", []) if i != index]
-        self.load_audio(str(self.playlist[index]))
-        self.media_player.play()
+        if self.load_audio(str(self.playlist[index])) is not False:
+            self.media_player.play()
 
     def remove_queue_tracks(self, indices):
         removed = {i for i in indices if 0 <= i < len(self.playlist)}
@@ -87,8 +87,8 @@ class QueueControllerMixin:
         if current in removed and self.playback_settings.get("play_mode", "library") == "playlist":
             was_playing = self.media_player.isPlaying()
             self.current_index = min(sum(i < current for i in remaining), len(self.playlist) - 1)
-            self.load_audio(str(self.playlist[self.current_index]))
-            if was_playing:
+            allow_autoplay = self.load_audio(str(self.playlist[self.current_index]))
+            if was_playing and allow_autoplay is not False:
                 self.media_player.play()
         else:
             self.current_index = inverse.get(current, -1)

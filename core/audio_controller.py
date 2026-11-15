@@ -71,6 +71,11 @@ class AudioController:
                 invalidate()
 
         def _gapless_next_path(self):
+            timer = getattr(self, "sleep_timer", None)
+            if timer is not None:
+                timer.check()
+                if timer.finishing or getattr(self, "_sleep_expired", False):
+                    return None
             paths = self._playback_paths()
             if not paths:
                 return None
@@ -95,7 +100,9 @@ class AudioController:
             return str(paths[0]) if after == "repeat_all" else None
 
         def load_audio(self, path):
+            """Load a track; False means a sleep timer suppressed its autoplay."""
             audio_path = Path(path).expanduser().resolve()
+            allow_autoplay = self._sleep_before_track_load() if hasattr(self, "sleep_timer") else True
 
             handoff = getattr(self.media_player, "_gapless_handoff", False)
             if not handoff:
@@ -191,6 +198,7 @@ class AudioController:
                 self._notify_queue_changed()
             else:
                 self.update_transport_buttons()
+            return allow_autoplay
 
 
         def _cancel_lyrics_search(self):
@@ -235,6 +243,9 @@ class AudioController:
 
 
         def stop_playback(self):
+            timer = getattr(self, "sleep_timer", None)
+            if timer is not None:
+                timer.cancel()
             self._flush_pcm_output()
             self.media_player.stop()
             self.current_line = -1
@@ -342,8 +353,8 @@ class AudioController:
             if getattr(self, "playback_settings", {}).get("play_mode", "library") == "playlist":
                 self.current_index = index
                 self._priority_queue_indices = [i for i in getattr(self, "_priority_queue_indices", []) if i != index]
-            self.load_audio(str(paths[index]))
-            self.media_player.play()
+            if self.load_audio(str(paths[index])) is not False:
+                self.media_player.play()
             return True
 
 
@@ -990,7 +1001,7 @@ class AudioController:
 
 
         def handle_media_status(self, status):
-            if getattr(self, "_closing", False):
+            if getattr(self, "_closing", False) or getattr(self, "_sleep_expired", False):
                 return
             if (
                 status != QMediaPlayer.MediaStatus.EndOfMedia
@@ -999,11 +1010,20 @@ class AudioController:
             ):
                 return
 
+            timer = getattr(self, "sleep_timer", None)
+            if timer is not None:
+                timer.check()
+                if getattr(self, "_sleep_expired", False):
+                    return
+
             if getattr(self, "_pcm_end_pending", False):
                 return
             worker = getattr(self, "_pcm_worker", None)
             if getattr(worker, "owns_output", False) and worker.finish(decoder_finished=True):
                 self._pcm_end_pending = True
+                return
+
+            if timer is not None and self._sleep_before_advance():
                 return
 
             paths = self._playback_paths()
@@ -1054,6 +1074,9 @@ class AudioController:
                 self.stop_playback()
 
         def position_changed(self, position_ms):
+            timer = getattr(self, "sleep_timer", None)
+            if timer is not None:
+                timer.check()
             # Recover after a missed duration notification or transient zero.
             duration = self.media_player.duration()
             if duration > 0 and self.seek_slider.maximum() != duration:

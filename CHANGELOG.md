@@ -5,6 +5,9 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Added
 
+- Add timing-preserving text corrections to the lyrics editor. Keep existing karaoke timestamps and readings on unchanged text, preserve the correct timestamps when editing repeated words, and highlight changed chunks for timing review.
+- Add Shift/Ctrl multi-line selection and a **Selected Lines…** menu for batch timing shifts, formatting, movement, and deletion. Preview affected lines before shifting timing, applying formatting, or deleting, and restore selections with Undo/Redo.
+- Add **Split at Cursor…**, **Merge with Next…**, and **Merge Selected…** to the lyrics editor, with previews and Undo/Redo. Preserve word timing, readings, formatting, and translation rows; offer space, newline, or no separator when merging. Estimate new timing boundaries when splitting inside a chunk and flag those chunks for review.
 - Add a live karaoke reference beneath the pitch readout, showing the vocal shift when singing one octave lower (for example, +4 semitones gives −8 semitones from the original).
 - Add persistent Favorites with a heart control for the playing song, clickable library hearts, multi-track actions in library and queue context menus, and a Favorites filter that combines with metadata or lyric searches.
 - Add a personal reading-dictionary manager under Settings > Lyrics > Global > Readings, with named, enabled dictionaries and editable Reading, Word, Reading type, and Comment columns. Support Japanese, Mandarin, Korean, and Cantonese entries, longest-word matching, dictionary priority, and JSON/TSV import/export including Google Japanese Input exports. Apply saved entries over generated readings while preserving song-specific ruby, translations, and karaoke timing.
@@ -12,6 +15,11 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Fixed
 
+- Size the reading-dictionary table's dropdown columns immediately after adding entries or switching dictionaries, so Reading type and Match labels display fully without resizing the window.
+- Enable Save and show unsaved changes immediately after committing lyric waveform edits. Refresh playback timing and previews after each commit.
+- Move the next line's karaoke starts, ends, and line end together when committing the Lyrics waveform's B boundary, preserving word synchronization and annotations.
+- Keep Source-tab Undo/Redo consistent between toolbar buttons and keyboard shortcuts, including after reloading, saving, or applying source edits. Update button availability while typing and discard obsolete redo history after new edits.
+- Include positive and negative lyric offsets in timing validation, reporting lyrics that play before the audio starts or beyond its duration without rejecting timestamps that the offset moves into range.
 - Improve Japanese readings and word boundaries in lyrics that use katakana for grammatical endings, such as `夜ニ紛レ` and `見下ロシテ`. Analyze recognized rows with hiragana grammar while preserving the original lyric text, decorative symbols, and karaoke timing.
 - Default personal reading entries to whole-word matching using tokenizer boundaries, keeping `私 → わたし` from changing the reading of `私立`. Preserve boundaries across ruby splitting, number readings and batch generation, and offer an explicit **Inside words** match option for intentional partial replacements. Keep matching conservative when word boundaries are unavailable.
 - Prevent player freezes during rapid song and pitch changes by queuing decoded audio on the audio thread instead of calling Python from Qt's renderer. Discard outdated queued buffers and preserve final samples at track endings.

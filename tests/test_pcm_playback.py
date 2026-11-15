@@ -200,7 +200,7 @@ def test_reset_invalidates_queued_drain_notification(qapp):
         close(worker)
 
 
-@pytest.mark.parametrize("stop_early", [False, True])
+@pytest.mark.parametrize("stop_early", [False, True, "sleep_pause", "sleep_finish"])
 def test_player_waits_for_audible_processed_tail_before_advancing(qapp, tmp_path, monkeypatch, stop_early):
     from PySide6.QtMultimedia import QMediaDevices
     from core.settings import save_playback_settings
@@ -252,14 +252,28 @@ def test_player_waits_for_audible_processed_tail_before_advancing(qapp, tmp_path
         wait_without_gui(lambda: bool(sinks) and window._pcm_worker._engine._stream_flushed
                          and not window._pcm_worker._engine._pending)
         assert np.max(np.abs(np.frombuffer(sinks[0].written, np.int16))) > 100
-        if stop_early:
+        if stop_early is True:
             window.stop_playback()
+        elif stop_early == "sleep_pause":
+            now = [0.0]
+            window.sleep_timer._clock = lambda: now[0]
+            window.sleep_timer.start(1)
+            now[0] = 60
+            window.sleep_timer.check()
+        elif stop_early == "sleep_finish":
+            window.sleep_timer.finish_current_track()
         sinks[0].played_us = 10_000_000
         if stop_early:
+            if stop_early == "sleep_finish":
+                deadline = time.monotonic() + 3
+                while window._pcm_end_pending and time.monotonic() < deadline:
+                    qapp.processEvents()
+                    time.sleep(.002)
             from PySide6.QtTest import QTest
             QTest.qWait(50)
             assert window.current_audio_path == first
             assert not window._pcm_end_pending
+            assert not window.sleep_timer.active
         else:
             deadline = time.monotonic() + 3
             while window.current_audio_path != second and time.monotonic() < deadline:

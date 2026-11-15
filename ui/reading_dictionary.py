@@ -140,6 +140,13 @@ class ReadingDictionaryDialog(QDialog):
                 matching.currentIndexChanged.connect(
                     lambda _index, entry=entry, matching=matching: entry.update(match=matching.currentData()))
                 self.table.setCellWidget(row, 4, matching)
+                kind.ensurePolished()
+                matching.ensurePolished()
+            # Installing index widgets does not invalidate the header's cached
+            # content widths. Refresh them after rows change, including when
+            # the first entry is added to an already-visible empty dictionary.
+            for column in (2, 4):
+                self.table.resizeColumnToContents(column)
         finally:
             del blocker
             self._loading = False

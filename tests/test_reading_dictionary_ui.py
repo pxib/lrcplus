@@ -1,5 +1,6 @@
 from copy import deepcopy
 
+import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, Qt
 from PySide6.QtWidgets import QDialog, QFileDialog, QLineEdit, QMessageBox
 
@@ -16,6 +17,40 @@ def sample_data():
         {"word": "重慶", "reading": "chóng qìng", "type": "pinyin", "comment": "Place name", "match": "word"},
     ]
     return {"version": 1, "dictionaries": [first, new_dictionary("Other")]}
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_first_entry_and_dictionary_switch_size_dropdowns_without_resizing(qapp, theme):
+    settings = SettingsDialog([], {}, appearance_settings={"theme_mode": theme})
+    data = sample_data()
+    data["dictionaries"].reverse()
+    dialog = ReadingDictionaryDialog(data, settings)
+    try:
+        dialog.show()
+        qapp.processEvents()
+        original_size = dialog.size()
+        assert dialog.table.rowCount() == 0
+        dialog._add_entry()
+        qapp.processEvents()
+        for column in (2, 4):
+            combo = dialog.table.cellWidget(0, column)
+            assert combo.width() >= combo.minimumSizeHint().width()
+        assert dialog.size() == original_size
+        assert dialog.table.findChild(QLineEdit) is not None
+
+        dialog.dictionary_list.setCurrentRow(1)
+        qapp.processEvents()
+        assert dialog.table.rowCount() == 2
+        for row in range(dialog.table.rowCount()):
+            for column in (2, 4):
+                combo = dialog.table.cellWidget(row, column)
+                assert combo.width() >= combo.minimumSizeHint().width()
+        assert dialog.size() == original_size
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+        settings.deleteLater()
+        qapp.processEvents()
 
 
 def test_dictionary_manager_edits_filters_and_cancel_preserves_input(qapp):

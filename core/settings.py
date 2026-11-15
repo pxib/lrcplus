@@ -236,6 +236,26 @@ def save_playback_settings(values):
     save_all_settings(payload)
 
 
+def get_sleep_timer_settings(payload=None):
+    payload = load_all_settings() if payload is None else payload
+    values = payload.get("sleep_timer", {})
+    if not isinstance(values, dict):
+        values = {}
+    minutes = values.get("minutes", 30)
+    if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 720:
+        minutes = 30
+    action = values.get("action", "pause")
+    if action not in ("pause", "finish_track"):
+        action = "pause"
+    return {"minutes": minutes, "action": action}
+
+
+def save_sleep_timer_settings(values):
+    payload = load_all_settings()
+    payload["sleep_timer"] = get_sleep_timer_settings({"sleep_timer": values})
+    save_all_settings(payload)
+
+
 def get_karaoke_settings(payload=None):
     payload = load_all_settings() if payload is None else payload
     values = payload.get("karaoke", {})

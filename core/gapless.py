@@ -147,6 +147,7 @@ class GaplessMediaPlayer(QMediaPlayer):
         self._preload_resolved = False
         self._boundary_us = None
         self.next_path = lambda: None
+        self.before_pump = lambda: None
         self._rg_settings = ("off", 0, True)
         self._volume = 1.0
         self._timer = QTimer(self)
@@ -332,6 +333,7 @@ class GaplessMediaPlayer(QMediaPlayer):
             super().play()
 
     def _pump(self):
+        self.before_pump()
         if not self._gapless_active or not self.isPlaying() or self._decoder is None:
             return
         try:
@@ -348,7 +350,7 @@ class GaplessMediaPlayer(QMediaPlayer):
                 self.mediaStatusChanged.emit(self._status)
             finally:
                 self._gapless_handoff = False
-            if self._decoder is previous:
+            if self._decoder is previous or self._decoder is None or not self.isPlaying():
                 return
         decoder = self._next_decoder if self._boundary_us is not None else self._decoder
         if decoder.error:

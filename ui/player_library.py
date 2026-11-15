@@ -469,8 +469,8 @@ class PlayerLibraryMixin:
         if not path:
             return
         self._clear_shuffle_history()
-        self.load_audio(path)
-        self.media_player.play()
+        if self.load_audio(path) is not False:
+            self.media_player.play()
 
     def _open_library_cover_preview(self, item, column):
         if column != 0:

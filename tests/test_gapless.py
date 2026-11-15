@@ -288,6 +288,130 @@ def test_player_handoff_preserves_queue_rules_and_sink(qapp, monkeypatch, tmp_pa
         qapp.processEvents()
 
 
+@pytest.fixture
+def sleep_window(transport, qapp, monkeypatch):
+    from ui.main_window import Player
+
+    monkeypatch.setattr(Player, "_automatic_update_check", lambda self: None)
+    window = Player()
+    original = window.media_player
+    window.media_player = transport
+    window._audio_output_unavailable = False
+    window.current_audio_path = Path("first.wav").resolve()
+    window.playlist = [window.current_audio_path, Path("second.wav").resolve()]
+    window.current_index = 0
+    window.playback_settings["play_mode"] = "playlist"
+    now = [0.0]
+    window.sleep_timer._clock = lambda: now[0]
+    transport.before_pump = window.sleep_timer.check
+    transport.next_path = window._gapless_next_path
+    transport.mediaStatusChanged.connect(window.handle_media_status)
+    transport.playbackStateChanged.connect(window._sleep_playback_state_changed)
+    qapp.processEvents()
+    try:
+        yield window, transport, now
+    finally:
+        transport.before_pump = lambda: None
+        transport.next_path = lambda: None
+        transport.mediaStatusChanged.disconnect(window.handle_media_status)
+        transport.playbackStateChanged.disconnect(window._sleep_playback_state_changed)
+        window.media_player = original
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("late", [False, True])
+@pytest.mark.parametrize("after", ["repeat_track", "repeat_all", "next_track"])
+def test_sleep_finish_blocks_gapless_successor_including_already_buffered_audio(sleep_window, late, after):
+    window, player, now = sleep_window
+    window.playback_settings["after_playback"] = after
+    window.shuffle_enabled = True
+    window._priority_queue_indices = [1]
+    if late:
+        player._pump()
+        old_sink = player._sink
+        assert player._boundary_us is not None
+        assert len(old_sink.written) > 4800 * 4
+    window.sleep_timer.finish_current_track()
+    if late:
+        assert old_sink.stopped
+        assert player._next_decoder is None
+    player._pump()
+    sink = player._sink
+    assert bytes(sink.written) == struct.pack("<4800f", *([0.25] * 4800))
+    sink.time = 100000
+    player._pump()
+    assert not player.isPlaying()
+    assert window.current_audio_path.name == "first.wav"
+    assert not window.sleep_timer.active
+    assert window._sleep_expired
+    assert window.playback_settings["after_playback"] == after
+    assert window.shuffle_enabled
+    assert window._priority_queue_indices == [1]
+
+
+def test_immediate_sleep_expiry_wins_over_a_buffered_gapless_handoff(sleep_window):
+    window, player, now = sleep_window
+    window.sleep_timer.start(1)
+    player._pump()
+    sink = player._sink
+    assert player._boundary_us is not None
+    now[0] = 59.9
+    window.sleep_timer.check()
+    now[0] = 60
+    sink.time = 100000
+    player._pump()
+    assert sink.suspended
+    assert not player.isPlaying()
+    assert window.current_audio_path.name == "first.wav"
+    assert not window.sleep_timer.active
+
+
+def test_finish_action_invalidates_buffered_successor_at_countdown_expiry(sleep_window):
+    window, player, now = sleep_window
+    window.sleep_timer.start(1, "finish_track")
+    player._pump()
+    old_sink = player._sink
+    now[0] = 59.9
+    window.sleep_timer.check()
+    now[0] = 60
+    player._pump()
+    assert old_sink.stopped
+    assert window.sleep_timer.finishing
+    sink = player._sink
+    assert bytes(sink.written) == struct.pack("<4800f", *([0.25] * 4800))
+    sink.time = 100000
+    player._pump()
+    assert not player.isPlaying()
+    assert window.current_audio_path.name == "first.wav"
+    assert not window.sleep_timer.active
+
+
+@pytest.mark.parametrize("countdown", [True, False])
+def test_finish_timer_at_exact_gapless_boundary_pauses_without_seeking_past_eof(sleep_window, countdown):
+    window, player, now = sleep_window
+    if countdown:
+        window.sleep_timer.start(1, "finish_track")
+    player._pump()
+    sink = player._sink
+    decoder = player._decoder
+    sink.time = 100000
+    if countdown:
+        now[0] = 59.9
+        window.sleep_timer.check()
+        now[0] = 60
+        player._pump()
+    else:
+        window._sleep_at_end_of_song()
+    assert sink.suspended
+    assert not sink.stopped
+    assert player._decoder is decoder
+    assert window.current_audio_path.name == "first.wav"
+    assert not window.sleep_timer.active
+    assert window._sleep_expired
+
+
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="FFmpeg not installed")
 def test_real_decoder_bounds_memory_preserves_samples_and_cancels(tmp_path):
     path = tmp_path / "tone.wav"
