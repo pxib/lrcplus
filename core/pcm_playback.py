@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from threading import Lock
 
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
-from PySide6.QtMultimedia import QAudioSink
+from PySide6.QtMultimedia import QAudioBuffer, QAudioSink
 
 from core.audio_dsp import (
     PcmPitchProcessor, PcmRateProcessor, apply_pcm_gain_to_bytes,
@@ -46,9 +46,13 @@ class PcmPlayback(QObject):
         self._queued_bytes = 0
         self._end_of_stream = False
         self._has_input = False
+        self._input_expected = False
         self._drain_requested = False
         self._closed = False
         self._wake_pending = False
+        self._buffer_output = None
+        self._buffer_receiver = None
+        self._buffer_receivers = set()
         self._thread = QThread()
         self._thread.setObjectName("processed-audio")
         self._engine = _PlaybackEngine(self, sink_factory)
@@ -78,6 +82,7 @@ class PcmPlayback(QObject):
         self._queued_bytes = 0
         self._end_of_stream = False
         self._has_input = False
+        self._input_expected = False
         self._drain_requested = False
 
     def reset(self):
@@ -85,6 +90,7 @@ class PcmPlayback(QObject):
             if self._closed:
                 return
             self._reset_locked()
+        self._refresh_buffer_receiver()
         self._notify()
 
     def configure(self, device, speed, shift, gain, *, enabled, playing):
@@ -98,6 +104,9 @@ class PcmPlayback(QObject):
             if (previous.device != device or previous.enabled != enabled
                     or abs(previous.speed - speed) >= 0.001 or pitch_restart):
                 self._reset_locked()
+            if enabled and playing:
+                self._input_expected = True
+        self._refresh_buffer_receiver()
         self._notify()
 
     def set_playing(self, playing):
@@ -107,24 +116,77 @@ class PcmPlayback(QObject):
             old = self._controls
             self._controls = _Controls(old.device, old.speed, old.shift, old.gain,
                                        old.enabled, playing)
+            if old.enabled and playing:
+                self._input_expected = True
         self._notify()
 
     def finish(self, *, decoder_finished=False):
         """Keep processed output playing after the native decoder reaches EOF."""
         with self._lock:
-            if (self._closed or not self._controls.enabled or not self._has_input
+            queued_input = self._buffer_receiver is not None
+            if (self._closed or not self._controls.enabled
+                    or not (self._has_input or (queued_input and decoder_finished
+                                               and self._input_expected))
                     or not (decoder_finished or self._end_of_stream)):
                 return False
-            self._end_of_stream = self._drain_requested = True
+            # EndOfMedia can reach the GUI before the audio thread receives its
+            # final buffers. Only the queued EOF buffer may end that stream.
+            if not queued_input:
+                self._end_of_stream = True
+            self._drain_requested = True
             old = self._controls
             self._controls = _Controls(old.device, old.speed, old.shift, old.gain,
                                        old.enabled, True)
         self._notify()
         return True
 
-    def receive_buffer(self, buffer):
-        """Direct decoder callback: copy and enqueue, without touching GUI objects."""
+    def connect_buffer_output(self, output):
+        # A queued native connection lets Qt stop its renderer without waiting
+        # for a Python callback to acquire the GIL. The receiver lives on the
+        # audio thread, so decoded audio still never waits for GUI events.
         with self._lock:
+            if self._buffer_output is not None and self._buffer_output is not output:
+                self._reset_locked()
+            if self._controls.enabled and self._controls.playing:
+                self._input_expected = True
+        self._refresh_buffer_receiver(output)
+        self._notify()
+
+    def _refresh_buffer_receiver(self, output=None):
+        previous_output = self._buffer_output
+        if output is None:
+            output = previous_output
+        with self._lock:
+            generation, closed = self._generation, self._closed
+        receiver = self._buffer_receiver
+        if (receiver is not None and receiver.generation == generation
+                and output is previous_output and not closed):
+            return
+        if receiver is not None:
+            try:
+                previous_output.audioBufferReceived.disconnect(receiver.receive_buffer)
+            except RuntimeError:
+                pass  # The output may already have been deleted after a device change.
+            receiver.deleteLater()
+        self._buffer_receiver = None
+        self._buffer_output = None if closed else output
+        if closed or output is None:
+            return
+        receiver = _BufferReceiver(self, generation)
+        receiver.moveToThread(self._thread)
+        self._buffer_receiver = receiver
+        self._buffer_receivers.add(receiver)
+        self._thread.finished.connect(receiver.deleteLater)
+        receiver.destroyed.connect(lambda: self._buffer_receivers.discard(receiver))
+        output.audioBufferReceived.connect(
+            receiver.receive_buffer, Qt.ConnectionType.QueuedConnection,
+        )
+
+    def receive_buffer(self, buffer, *, generation=None):
+        """Copy decoded PCM into the bounded mailbox without touching GUI objects."""
+        with self._lock:
+            if generation is not None and generation != self._generation:
+                return
             generation = self._generation
             controls = self._controls
             if self._closed or not controls.enabled:
@@ -153,9 +215,7 @@ class PcmPlayback(QObject):
             self._queued_bytes += len(data)
             self._end_of_stream = False
             self._has_input = True
-        # Do not emit Qt signals from the renderer's direct callback: stopping
-        # or reconfiguring QMediaPlayer can hold its connection locks while
-        # waiting for that callback to return. The audio thread polls this inbox.
+        # The audio thread polls this inbox; delivery never needs a GUI event.
 
     @Slot(int)
     def _deliver_route(self, generation):
@@ -184,7 +244,25 @@ class PcmPlayback(QObject):
                 return
             self._closed = True
             self._reset_locked()
+        self._refresh_buffer_receiver()
         self._notify()
+
+
+class _BufferReceiver(QObject):
+    """Give queued Qt buffers an immutable playback generation.
+
+    Disconnecting a signal does not remove events it has already posted.
+    Retired receivers reject those events after a track, seek, or route reset.
+    """
+
+    def __init__(self, mailbox, generation):
+        super().__init__()
+        self._mailbox = mailbox
+        self.generation = generation
+
+    @Slot(QAudioBuffer)
+    def receive_buffer(self, buffer):
+        self._mailbox.receive_buffer(buffer, generation=self.generation)
 
 
 class _PlaybackEngine(QObject):
@@ -287,6 +365,8 @@ class _PlaybackEngine(QObject):
             with mailbox._lock:
                 end_of_stream = mailbox._end_of_stream and not mailbox._pending
                 drain_requested = mailbox._drain_requested
+            if end_of_stream and self._last_input is None:
+                self._stream_flushed = True
             if (end_of_stream and not self._stream_flushed
                     and self._last_input is not None and self._current()):
                 fmt, settings = self._last_input
@@ -304,6 +384,7 @@ class _PlaybackEngine(QObject):
                                and generation == mailbox._generation and not mailbox._pending)
                     if drained:
                         mailbox._drain_requested = mailbox._has_input = False
+                        mailbox._input_expected = False
                 if drained:
                     mailbox._drained.emit(generation)
         except (ImportError, ValueError, RuntimeError, OSError) as error:

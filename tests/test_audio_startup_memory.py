@@ -141,3 +141,68 @@ finally:
     worker.close()
     assert thread.wait(3000)
 """)
+
+
+def test_cold_player_can_switch_tracks_and_pitch_with_waveform_enabled(tmp_path, qapp):
+    import shutil
+    import pytest
+    from PySide6.QtMultimedia import QMediaDevices
+
+    if not QMediaDevices.audioOutputs() or not shutil.which("ffmpeg"):
+        pytest.skip("Requires audio output and FFmpeg for the muted waveform integration check")
+    # Keep this in a fresh process: NumPy/Rubber Band imports on the audio
+    # thread exposed a renderer/GIL deadlock hidden by the warmed-up suite.
+    run_fresh(f"""
+import faulthandler, time, wave
+from pathlib import Path
+from PySide6.QtMultimedia import QMediaPlayer
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
+from core.gui_garbage_collector import install_gui_garbage_collector
+from ui.main_window import Player
+
+faulthandler.dump_traceback_later(15, exit=True)
+app = QApplication([])
+install_gui_garbage_collector(app)
+directory = Path({str(tmp_path)!r})
+paths = [directory / name for name in ('first.wav', 'second.wav')]
+for path in paths:
+    with wave.open(str(path), 'wb') as audio:
+        audio.setnchannels(2)
+        audio.setsampwidth(2)
+        audio.setframerate(48000)
+        audio.writeframes(bytes(48000 * 4 * 30))
+window = Player()
+for name in ('update_background_for_audio', '_start_lyrics_search', '_notify_queue_changed'):
+    setattr(window, name, lambda *args: None)
+errors = []
+window._pcm_worker.failed.disconnect()
+window._pcm_worker.failed.connect(errors.append)
+window.volume_slider.setValue(0)
+window.show()
+window.waveform_widget.show()
+app.processEvents()
+thread = window._pcm_worker._thread
+try:
+    assert window.waveform_widget.isVisible()
+    for index in range(24):
+        window.load_audio(paths[index % 2])
+        window.media_player.play()
+        QTest.qWait(15 + (index % 5) * 20)
+        window.handle_pitch_change('Semitones', (0, 5, -5, 12, -12)[index % 5])
+    deadline = time.monotonic() + 3
+    while window.waveform_widget._loading and time.monotonic() < deadline:
+        QTest.qWait(20)
+    assert not errors, errors
+    assert window.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+    assert window.media_player.position() > 0
+    assert not window.waveform_widget._loading
+    assert window.waveform_widget._peaks
+    assert window.waveform_widget._error is None
+finally:
+    window.close()
+    assert thread.wait(3000)
+    window.deleteLater()
+    app.processEvents()
+faulthandler.cancel_dump_traceback_later()
+""")

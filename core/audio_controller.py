@@ -593,11 +593,7 @@ class AudioController:
                     self.audio_output.device().preferredFormat(), self
                 )
                 if owns_output:
-                    # Qt emits from its audio renderer. Enqueue directly there;
-                    # the callback only copies data into the audio mailbox.
-                    output.audioBufferReceived.connect(
-                        worker.receive_buffer, Qt.ConnectionType.DirectConnection,
-                    )
+                    worker.connect_buffer_output(output)
                 else:
                     output.audioBufferReceived.connect(self._write_pcm_buffer)
                 self._pcm_buffer_output = output
@@ -783,13 +779,15 @@ class AudioController:
 
             worker = getattr(self, "_pcm_worker", None)
             if getattr(worker, "owns_output", False):
-                # Qt reports StoppedState before EndOfMedia. The direct decoder
-                # EOF notification lets us retain the processed tail meanwhile.
+                # Qt reports StoppedState before EndOfMedia; queued decoder
+                # buffers may still be in flight. Manual stops already flush
+                # before stopping Qt, while EndOfMedia requests the final drain.
                 if (state == QMediaPlayer.PlaybackState.StoppedState
                         and worker.finish()):
                     self._pcm_end_pending = True
                     return
                 worker.set_playing(state == QMediaPlayer.PlaybackState.PlayingState)
+                return
             sink = getattr(self, "_pcm_sink", None)
             if state == QMediaPlayer.PlaybackState.StoppedState:
                 self._flush_pcm_output()

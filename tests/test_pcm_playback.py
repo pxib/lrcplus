@@ -4,7 +4,6 @@ import wave
 
 import numpy as np
 import pytest
-from PySide6.QtCore import Qt
 from PySide6.QtMultimedia import QAudioBuffer, QAudioBufferOutput, QAudioFormat
 
 from core.pcm_playback import PcmPlayback
@@ -273,32 +272,131 @@ def test_player_waits_for_audible_processed_tail_before_advancing(qapp, tmp_path
         qapp.processEvents()
 
 
-def test_renderer_callback_never_emits_qt_wakeup_signals(qapp, monkeypatch):
+def test_renderer_delivery_returns_while_audio_receiver_is_busy(qapp, monkeypatch):
     worker = PcmPlayback(sink_factory=Sink)
-    notifications = []
-    renderer = []
-    notify = worker._notify
+    source = QAudioBufferOutput()
+    entered, release, emitted = threading.Event(), threading.Event(), threading.Event()
+    receiver_threads = []
+    receive = worker.receive_buffer
 
-    def record_notification():
-        notifications.append(threading.get_ident())
-        notify()
+    def blocked(buffer, **kwargs):
+        receiver_threads.append(threading.get_ident())
+        entered.set()
+        assert release.wait(3)
+        receive(buffer, **kwargs)
 
-    monkeypatch.setattr(worker, "_notify", record_notification)
+    monkeypatch.setattr(worker, "receive_buffer", blocked)
+    producer = threading.Thread(target=lambda: (
+        source.audioBufferReceived.emit(buffer()), emitted.set(),
+    ))
     try:
         worker.configure(None, 1, 0, 1.5, enabled=True, playing=True)
-
-        def receive():
-            renderer.append(threading.get_ident())
-            worker.receive_buffer(buffer())
-            worker.receive_buffer(QAudioBuffer())
-
-        producer = threading.Thread(target=receive)
+        worker.connect_buffer_output(source)
         producer.start()
+        assert entered.wait(2)
+        # The renderer must return even when Python on the audio thread is
+        # blocked. Qt's stop/setSource cannot wait for that Python callback.
+        assert emitted.wait(1)
         producer.join(2)
         assert not producer.is_alive()
-        assert renderer[0] not in notifications
+        assert len(receiver_threads) == 1
+        assert receiver_threads[0] not in (threading.get_ident(), producer.ident)
+        release.set()
         wait_without_gui(lambda: worker._engine._active)
     finally:
+        release.set()
+        producer.join(3)
+        close(worker)
+
+
+@pytest.mark.parametrize("change", ["reset", "device", "output"])
+def test_queued_decoder_buffers_are_discarded_when_route_changes(qapp, monkeypatch, change):
+    sinks = []
+    worker = PcmPlayback(sink_factory=lambda *args: sinks.append(Sink(*args)) or sinks[-1])
+    source = QAudioBufferOutput()
+    entered, release = threading.Event(), threading.Event()
+    process = worker._engine._processor.process
+
+    def blocked(*args):
+        entered.set()
+        assert release.wait(3)
+        return process(*args)
+
+    monkeypatch.setattr(worker._engine._processor, "process", blocked)
+    try:
+        worker.configure(None, 1, 0, 1.5, enabled=True, playing=True)
+        worker.connect_buffer_output(source)
+        worker.receive_buffer(buffer())
+        assert entered.wait(2)
+        # These Qt events are queued behind the blocked DSP call. Disconnecting
+        # the old receiver alone does not cancel their eventual delivery.
+        source.audioBufferReceived.emit(buffer(0.75))
+        source.audioBufferReceived.emit(QAudioBuffer())
+        generation = worker._generation
+        if change == "reset":
+            worker.reset()
+        elif change == "device":
+            worker.configure("new-device", 1, 0, 1.5, enabled=True, playing=True)
+        else:
+            source = QAudioBufferOutput()
+            worker.connect_buffer_output(source)
+        assert worker._generation != generation
+        # Reconnecting to the same output must not duplicate audio delivery.
+        worker.connect_buffer_output(source)
+        source.audioBufferReceived.emit(buffer(0))
+        source.audioBufferReceived.emit(QAudioBuffer())
+        release.set()
+        wait_without_gui(lambda: bool(sinks) and sinks[0].total_written == 32768)
+        np.testing.assert_array_equal(np.frombuffer(sinks[0].written, np.float32), 0)
+        assert len(sinks) == 1
+        qapp.processEvents()
+        assert len(worker._buffer_receivers) == 1
+    finally:
+        release.set()
+        close(worker)
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_decoder_completion_waits_for_queued_buffers_and_eof(qapp, monkeypatch, empty):
+    class ClockedSink(Sink):
+        def processedUSecs(self):
+            return 1_000_000
+
+    sinks = []
+    worker = PcmPlayback(sink_factory=lambda *args: sinks.append(ClockedSink(*args)) or sinks[-1])
+    source = QAudioBufferOutput()
+    entered, release = threading.Event(), threading.Event()
+    receive = worker.receive_buffer
+    finished = []
+    worker.drained.connect(lambda: finished.append(True))
+
+    def blocked(buffer, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        receive(buffer, **kwargs)
+
+    monkeypatch.setattr(worker, "receive_buffer", blocked)
+    try:
+        worker.configure(None, 1, 0, 1.5, enabled=True, playing=True)
+        worker.connect_buffer_output(source)
+        if not empty:
+            source.audioBufferReceived.emit(buffer())
+        source.audioBufferReceived.emit(QAudioBuffer())
+        assert entered.wait(2)
+        assert not worker._has_input
+        assert worker.finish(decoder_finished=True)
+        assert not worker._end_of_stream
+        release.set()
+        wait_without_gui(lambda: worker._engine._stream_flushed and not worker._drain_requested)
+        if empty:
+            assert not sinks
+        else:
+            assert sinks[0].total_written == 32768
+            np.testing.assert_array_equal(np.frombuffer(sinks[0].written, np.float32), 0.375)
+        qapp.processEvents()
+        assert finished == [True]
+    finally:
+        release.set()
         close(worker)
 
 
@@ -345,7 +443,7 @@ def test_decoder_processing_and_device_writes_continue_while_gui_is_stalled(qapp
 
     worker = PcmPlayback(sink_factory=factory)
     source = QAudioBufferOutput()
-    source.audioBufferReceived.connect(worker.receive_buffer, Qt.ConnectionType.DirectConnection)
+    worker.connect_buffer_output(source)
     worker.configure(None, 1, 0, 1.5, enabled=True, playing=True)
     routes = []
     errors = []
@@ -633,9 +731,16 @@ def test_player_decoder_keeps_feeding_audio_during_gui_stall(qapp, tmp_path, mon
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QDialog
         QTest.qWait(300)
+        # Wait for steady device playback before testing a GUI stall. Decoder
+        # startup on a busy runner can outlast a fixed 300 ms wait.
+        deadline = time.monotonic() + 3
+        while (sinks[-1].total_written < sinks[-1].native.format().bytesForDuration(200_000)
+               or sinks[-1].writes[-1][1] != "ActiveState") and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert sinks[-1].writes[-1][1] == "ActiveState"
         written = sinks[-1].total_written
         before = len(sinks[-1].writes)
-        # The actual Qt decoder emits directly into the audio mailbox. Neither
+        # The actual Qt decoder queues buffers on the audio thread. Neither
         # decoded-buffer delivery nor device writes may need GUI event handling.
         if operation == "gui_stall":
             time.sleep(0.3)

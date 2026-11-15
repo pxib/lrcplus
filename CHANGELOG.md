@@ -1,6 +1,12 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [Unreleased]
+
+### Fixed
+
+- Prevent player freezes during rapid song and pitch changes by queuing decoded audio on the audio thread instead of calling Python from Qt's renderer. Discard outdated queued buffers and preserve final samples at track endings.
+
 ## [2026-11-14.4]
 
 ### Added

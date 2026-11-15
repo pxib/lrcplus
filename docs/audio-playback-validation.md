@@ -61,6 +61,16 @@ and continued writes during GUI stalls. These checks cannot establish whether
 a native/processed handoff sounds seamless: the two devices' latency and the
 pitch processor's startup reserve still affect that handoff.
 
+Decoded buffers reach a registered Qt slot on the processed-audio thread through
+a queued connection. The renderer never calls Python directly: a rapid stop or
+source change must not wait for the GIL while another audio thread initializes
+NumPy or the pitch backend. Each receiver belongs to one playback generation;
+buffers already queued before a track, seek, device, or route change are ignored.
+EndOfMedia requests a drain, but processing waits for the queued EOF buffer before
+flushing so that late final samples are retained. Manual stops invalidate that work.
+Checks include blocked input delivery, stale queued PCM/EOF, and a fresh-process
+sequence of rapid track and pitch changes with the waveform enabled.
+
 ## Listening checks on real hardware
 
 Use a comfortable listening level with speakers or headphones. Repeat with
