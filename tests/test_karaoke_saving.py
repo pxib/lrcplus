@@ -166,6 +166,67 @@ def test_lyric_waveform_commits_offset_coordinates(editor, offset):
     assert editor.lines[1].start == 5.5
 
 
+@pytest.mark.parametrize("karaoke", [False, True])
+@pytest.mark.parametrize("handle,line_index,value_ms", [("start", 0, 2500), ("end", 0, 5500), ("end", 1, 7000)])
+def test_waveform_commit_enables_save_and_survives_undo_redo(
+    make_lyrics_editor, karaoke, handle, line_index, value_ms,
+):
+    editor = make_lyrics_editor(karaoke=karaoke)
+    editor._select_line_index(line_index)
+    before = deepcopy(editor.lines)
+
+    editor._waveform_lyric_timing_changed(handle, value_ms)
+    editor.commit_line_timestamp()
+
+    assert editor.document_dirty and editor.save_button.isEnabled()
+    assert "Unsaved" in editor.windowTitle()
+    assert editor._playback_line_starts == sorted(line.start for line in editor.lines)
+    committed = deepcopy(editor.lines)
+    editor.save_button.click()
+    assert not editor.document_dirty
+    assert [(line.start, line.text) for line in load_lyrics(editor.lrc_path)] == [
+        (line.start, line.text) for line in committed
+    ]
+    editor.undo()
+    assert editor.lines == before
+    editor.redo()
+    assert editor.lines == committed
+    assert not editor.document_dirty
+
+
+@pytest.mark.parametrize("value_ms", [4000, 6500])
+def test_waveform_end_commit_moves_next_lines_karaoke_and_preserves_annotations(editor, value_ms):
+    editor.lines[1] = LyricLine(
+        5, "World", [
+            LyricSegment(5.2, "Wo", end=5.6, ruby="reading", ruby_source="manual"),
+            LyricSegment(5.6, "rld", end=6.2, instant=True),
+        ], end=6.5, has_karaoke=True,
+    )
+    editor._populate_lines(preserve_line_index=0)
+    before = deepcopy(editor.lines)
+    editor._waveform_lyric_timing_changed("end", value_ms)
+    editor.commit_line_timestamp()
+
+    delta = value_ms / 1000 - 5
+    line = editor.lines[1]
+    assert line.start == value_ms / 1000
+    assert line.end == 6.5 + delta
+    assert [(s.start, s.end) for s in line.segments] == [
+        (5.2 + delta, 5.6 + delta), (5.6 + delta, 6.2 + delta),
+    ]
+    assert line.segments[0].ruby == "reading"
+    assert line.segments[0].ruby_source == "manual"
+    assert line.segments[1].instant and line.has_karaoke
+    assert editor.save_document()
+    reopened = load_lyrics(editor.lrc_path, infer_ends=False)[1]
+    assert reopened.start == line.start and reopened.end == line.end
+    assert [(s.start, segment_end(reopened, row)) for row, s in enumerate(reopened.segments)] == [
+        (s.start, segment_end(line, row)) for row, s in enumerate(line.segments)
+    ]
+    editor.undo()
+    assert editor.lines == before
+
+
 @pytest.mark.parametrize("choice", ["Cancel", "Save as LRCX", "Save as LRC anyway"])
 def test_txt_to_lrc_checks_feature_loss(tmp_path, make_lyrics_editor, monkeypatch, choice):
     path = tmp_path / "plain.txt"

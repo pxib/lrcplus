@@ -54,7 +54,7 @@ class LyricsEditorPlaybackMixin:
         row = self.line_list.currentRow()
         target = row + direction
         if 0 <= target < self.line_list.count():
-            self.line_list.setCurrentRow(target)
+            self._select_line_index(self._view_line_indices[target])
             self.line_list.scrollToItem(self.line_list.currentItem())
 
     def show_lyrics_shortcuts(self):
@@ -642,6 +642,21 @@ class LyricsEditorPlaybackMixin:
     def eventFilter(self, watched, event):
         if event.type() != QEvent.Type.KeyPress:
             return super().eventFilter(watched, event)
+        source = getattr(self, "source_editor", None)
+        if source is not None and (
+            watched is source or (isinstance(watched, QWidget) and source.isAncestorOf(watched))
+        ):
+            # QTextEdit consumes its own Undo/Redo keys even when native text
+            # history is empty. Route them like the toolbar so a committed
+            # source edit can still be undone through document history.
+            if event.matches(QKeySequence.StandardKey.Undo):
+                self.undo()
+                event.accept()
+                return True
+            if event.matches(QKeySequence.StandardKey.Redo):
+                self.redo()
+                event.accept()
+                return True
         if hasattr(self, "lyrics_page") and self._handle_lyrics_shortcut(watched, event):
             return True
         if event.modifiers() != Qt.KeyboardModifier.NoModifier:

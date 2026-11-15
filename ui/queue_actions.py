@@ -9,6 +9,7 @@ from core.music_library import read_track
 from core.playlists import available_tracks
 from core.settings import save_music_library
 from ui.playlist_dialog import PlaylistDialog
+from ui.track_actions import add_saved_playlist_menu, add_track_file_actions, add_favorite_action
 
 
 class QueueActionsMixin:
@@ -79,14 +80,36 @@ class QueueActionsMixin:
         if not paths:
             return
         menu = QMenu(self)
+        play = menu.addAction("Play now", lambda: self._play_library_selection(paths))
+        play.setToolTip("Insert the selected tracks after the current song and start playing them.")
         menu.addAction("Play next", lambda: self._enqueue_from_ui(paths, True))
         menu.addAction("Add to queue", lambda: self._enqueue_from_ui(paths))
+        add_saved_playlist_menu(menu, paths, self)
+        if hasattr(self, "favorite_paths"):
+            add_favorite_action(menu, paths, self.favorite_paths, self._set_tracks_favorite)
+        menu.addSeparator()
+        add_track_file_actions(menu, paths, self)
         menu.addSeparator()
         menu.addAction("Queue and saved playlists…", self.show_playlist)
         try:
             menu.exec(self.library_table.viewport().mapToGlobal(pos))
         finally:
             menu.deleteLater()
+
+    def _play_library_selection(self, paths):
+        result = available_tracks(paths)
+        if result.paths:
+            # Insert after the current occurrence, preserving the rest of the
+            # queue and the selected library order, then start that selection.
+            index = max(0, min(self.current_index + 1, len(self.playlist)))
+            try:
+                self.enqueue_tracks(result.paths, play_next=True)
+                self._register_queue_paths(result.paths)
+                self.play_queue_index(index)
+            except OSError as error:
+                QMessageBox.warning(self, "Queue", str(error))
+        if result.unavailable:
+            QMessageBox.warning(self, "Unavailable Tracks", f"Skipped {len(result.unavailable)} missing or unsupported file(s).")
 
     def show_playlist(self):
         dialog = PlaylistDialog(self.playlist, self.current_index, self)
@@ -112,9 +135,14 @@ class QueueActionsMixin:
         dialog.order_requested.connect(self.reorder_queue)
         dialog.add_requested.connect(self._enqueue_from_ui)
         dialog.replace_requested.connect(self._replace_queue_from_ui)
+        dialog.favorite_tracks_requested.connect(self._set_tracks_favorite)
+        def refresh_favorites():
+            dialog.favorite_paths = self.favorite_paths
+        self.favorites_changed.connect(refresh_favorites)
         self.queue_changed.connect(refresh_dialog)
         try:
             dialog.exec()
         finally:
             self.queue_changed.disconnect(refresh_dialog)
+            self.favorites_changed.disconnect(refresh_favorites)
             dialog.deleteLater()

@@ -252,7 +252,9 @@ def test_existing_column_layouts_keep_their_indexes_and_new_column_is_near_title
     window._apply_library_column_state()
     column = window.library_lyrics_column
     assert header.visualIndex(column) == header.visualIndex(2) + 1
-    assert [header.logicalIndex(i) for i in range(13) if header.logicalIndex(i) != column] == old_order
+    assert [header.logicalIndex(i) for i in range(header.count())
+            if header.logicalIndex(i) not in {column, window.library_favorite_column}] == old_order
+    assert header.visualIndex(window.library_favorite_column) == header.visualIndex(2) - 1
     assert window.library_table.columnWidth(2) == 275
     assert window.library_table.isColumnHidden(6)
     window.library_search_filter.setCurrentIndex(1)

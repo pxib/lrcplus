@@ -77,9 +77,11 @@ class LrcEditorUiMixin:
         # The line list is intentionally outside the tabs. Selecting a lyric
         # must work the same way in Lyrics, Karaoke and Source modes.
         self.line_list = QListWidget()
+        self.line_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.line_list.setMinimumWidth(250)
         self.line_list.currentRowChanged.connect(self.load_selected_line)
         self.line_list.itemChanged.connect(self._share_line_checks_changed)
+        self.line_list.itemSelectionChanged.connect(self._update_line_selection_controls)
         # Delete removes the selected lyric/timestamp from the document.
         # Install this on the list rather than using a dialog-wide shortcut so
         # Delete keeps its normal meaning while editing lyric/timestamp fields.
@@ -229,7 +231,12 @@ class LrcEditorUiMixin:
         self.line_text.setToolTip(
             r"Use **bold**, *italic*, ~~strikethrough~~, <u>underline</u>, > at the start for a quote, {\n} for a line break, and {\nt} for a translation row."
         )
+        self.line_text.document().contentsChange.connect(self._record_line_text_change)
         self.line_text.textChanged.connect(self.line_details_changed)
+        self.text_timing_notice = QLabel()
+        self.text_timing_notice.setWordWrap(True)
+        self.text_timing_notice.setStyleSheet("color: #d89b35;")
+        self.text_timing_notice.hide()
         self.insert_newline_button = QPushButton(r"Insert Newline {\n}")
         self.insert_newline_button.setAutoDefault(False)
         self.insert_newline_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -334,6 +341,7 @@ class LrcEditorUiMixin:
         add_button.setToolTip("Add a lyric after the selected line (Ctrl+N).")
         add_button.clicked.connect(self.add_line)
         delete_button = QPushButton("Delete Line")
+        self.delete_line_button = delete_button
         delete_button.setToolTip("Delete the selected lyric (Delete while the lyric list has focus).")
         delete_button.clicked.connect(self.delete_line)
         up_button = QPushButton("Move Up")
@@ -346,6 +354,19 @@ class LrcEditorUiMixin:
             line_buttons.addWidget(button)
         line_buttons.addStretch()
         detail_layout.addLayout(line_buttons)
+        surgery_buttons = QHBoxLayout()
+        self.split_line_button = QPushButton("Split at Cursor…")
+        self.split_line_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.split_line_button.setToolTip("Split the current lyric at the text cursor, keeping word timing and readings.")
+        self.split_line_button.clicked.connect(self.split_current_line)
+        self.merge_lines_button = QPushButton("Merge Lines…")
+        self.merge_lines_button.setToolTip("Merge selected adjacent lines, or the current line with its next source line.")
+        self.merge_lines_button.clicked.connect(self.merge_selected_lines)
+        surgery_buttons.addWidget(self.split_line_button)
+        surgery_buttons.addWidget(self.merge_lines_button)
+        surgery_buttons.addStretch()
+        detail_layout.addLayout(surgery_buttons)
+        detail_layout.addWidget(self.text_timing_notice)
         lyrics_layout.addWidget(detail, 1)
         self.tabs.addTab(lyrics_page, "Lyrics")
 
@@ -548,6 +569,11 @@ class LrcEditorUiMixin:
             self.overlap_warning.setStyleSheet("color: #ff9b73;")
             self.overlap_warning.setVisible(False)
             karaoke_layout.addWidget(self.overlap_warning)
+            self.karaoke_text_timing_notice = QLabel()
+            self.karaoke_text_timing_notice.setWordWrap(True)
+            self.karaoke_text_timing_notice.setStyleSheet("color: #d89b35;")
+            self.karaoke_text_timing_notice.hide()
+            karaoke_layout.addWidget(self.karaoke_text_timing_notice)
 
             timing = QHBoxLayout()
             timing.addWidget(QLabel("Current:"))
@@ -584,6 +610,8 @@ class LrcEditorUiMixin:
         self.source_editor = QTextEdit()
         self.source_editor.setAcceptRichText(False)
         self.source_editor.textChanged.connect(self._source_text_changed)
+        self.source_editor.undoAvailable.connect(self._update_history_actions)
+        self.source_editor.redoAvailable.connect(self._update_history_actions)
         source_layout.addWidget(self.source_editor, 1)
         source_buttons = QHBoxLayout()
         sync_source = QPushButton("Refresh Source")
@@ -739,6 +767,7 @@ class LrcEditorUiMixin:
         line_list_layout = QVBoxLayout(line_list_panel)
         line_list_layout.setContentsMargins(0, 0, 0, 0)
         self._build_lyric_search(line_list_layout)
+        self._build_line_selection_controls(line_list_layout)
         line_list_layout.addWidget(self.sidebar_sort_combo)
 
         self.share_selection_controls = QWidget()

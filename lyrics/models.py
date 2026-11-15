@@ -19,6 +19,8 @@ class LyricSegment:
     ruby_spans: list[tuple[int, int, str]] = field(default_factory=list)
     # Zero-based visual line within a multiline LRCX lyric.
     visual_line: int = 0
+    # Session-only editor hint. It is copied by Undo but is not lyric content.
+    needs_timing_review: bool = field(default=False, compare=False, metadata={"editor_only": True})
 
 
 @dataclass

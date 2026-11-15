@@ -6,15 +6,18 @@ from pathlib import Path
 from PySide6.QtCore import QSize, Qt
 
 from ui.library_sorting import LIBRARY_SORT_ROLE, LibraryTreeItem
+from core.favorites import favorite_key
 
 
 class LibraryRowData:
-    def __init__(self, duration, size, number, lyric_column):
+    def __init__(self, duration, size, number, lyric_column, favorite_column=None, favorite_paths=None):
         self.duration = duration
         self.size = size
         self.number = number
         self.lyric_column = lyric_column
         self.matches = None
+        self.favorite_column = favorite_column
+        self.favorite_paths = favorite_paths or set()
 
 
 class LibraryTrackItem(LibraryTreeItem):
@@ -25,6 +28,7 @@ class LibraryTrackItem(LibraryTreeItem):
         self.track = track
         self.artist = artist
         self.context = context
+        self.favorite_key = favorite_key(track.path)
 
     def search_text(self):
         track = self.track
@@ -33,6 +37,16 @@ class LibraryTrackItem(LibraryTreeItem):
 
     def data(self, column, role):
         track = self.track
+        if column == self.context.favorite_column:
+            favorite = self.favorite_key in self.context.favorite_paths
+            if role == Qt.ItemDataRole.DisplayRole:
+                return "♥" if favorite else "♡"
+            if role == Qt.ItemDataRole.ToolTipRole:
+                return "Remove from favorites" if favorite else "Add to favorites"
+            if role == Qt.ItemDataRole.TextAlignmentRole:
+                return Qt.AlignmentFlag.AlignCenter
+            if role == LIBRARY_SORT_ROLE:
+                return int(favorite)
         if column == self.context.lyric_column:
             match = (self.context.matches or {}).get(track.path)
             if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole):

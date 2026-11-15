@@ -98,3 +98,23 @@ def test_validation_detects_segment_bounds_and_mismatched_karaoke_text():
     assert any("before the lyric line" in message for message in messages)
     assert any("after the lyric line" in message for message in messages)
     assert any("does not match" in message for message in messages)
+
+
+@pytest.mark.parametrize("offset_ms,start,end,expected_issue", [
+    (500, 9.8, 9.9, "audio duration"),
+    (-500, 10.2, 10.4, None),
+    (-500, 0.2, 0.4, "before the audio"),
+    (500, 0, 9.5, None),
+    (-500, 0.5, 10.5, None),
+])
+def test_validation_checks_playback_bounds_with_offset_without_changing_lyrics(
+    offset_ms, start, end, expected_issue,
+):
+    lines = [LyricLine(start, "Timed", [LyricSegment(start, "Timed", end=end)], end=end)]
+    before = deepcopy(lines)
+    issues = validate_timing(lines, duration_ms=10000, offset_ms=offset_ms)
+    if expected_issue:
+        assert any(expected_issue in issue.message for issue in issues)
+    else:
+        assert issues == []
+    assert lines == before

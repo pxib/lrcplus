@@ -1,7 +1,7 @@
 """Karaoke separation, segment timing and preview synchronization."""
 
 import re
-from PySide6.QtCore import QSignalBlocker
+from PySide6.QtCore import Qt, QSignalBlocker
 from PySide6.QtWidgets import QMessageBox
 from lyrics.models import LyricSegment
 from lyrics.writer import format_timestamp
@@ -579,6 +579,15 @@ class LyricsEditorKaraokeMixin:
         replacement.ruby_spans = list(getattr(old, "ruby_spans", []) or [])
         replacement.visual_line = old.visual_line
         line.segments[row] = replacement
+        if old.needs_timing_review:
+            blocker = QSignalBlocker(self.segment_table)
+            for column in range(4):
+                item = self.segment_table.item(row, column)
+                if item is not None:
+                    item.setData(Qt.ItemDataRole.BackgroundRole, None)
+                    item.setToolTip("")
+            del blocker
+        self._update_text_timing_notice(line)
 
         # Segment 0 is independent from line.start. Moving its left edge can
         # create or adjust a leading pause without moving the lyric timestamp.

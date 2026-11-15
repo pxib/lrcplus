@@ -6,8 +6,8 @@ import copy
 import re
 import threading
 
-from PySide6.QtCore import Qt, QSignalBlocker, Signal, QTimer
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import Qt, QSignalBlocker, Signal, QTimer, QItemSelectionModel
+from PySide6.QtGui import QKeySequence, QShortcut, QColor, QBrush
 from PySide6.QtWidgets import (
     QDialog,
     QListWidget,
@@ -30,6 +30,7 @@ from lyrics.formatting import format_emphasis, parse_emphasis, parse_quote_prefi
 from lyrics.writer import format_timestamp
 from lyrics.timing import parse_timestamp
 from lyrics.karaoke_timing import next_lyric_start, segment_end
+from lyrics.editor_operations import correct_line_text
 from lyrics.furigana import get_cached_furigana_segments
 from core.debug import debug_print
 from lyrics.lrcx_parser import get_lrcx_offset
@@ -60,12 +61,14 @@ from ui.karaoke_editor_tools import KaraokeEditorToolsMixin
 from ui.lyrics_editor_document import LyricsEditorDocumentMixin
 from ui.lyrics_editor_playback import LyricsEditorPlaybackMixin
 from ui.lyrics_editor_karaoke import LyricsEditorKaraokeMixin
+from ui.lyrics_editor_operations import LyricsEditorOperationsMixin
 
 
 class LrcEditorDialog(
     LyricsEditorDocumentMixin,
     LyricsEditorPlaybackMixin,
     LyricsEditorKaraokeMixin,
+    LyricsEditorOperationsMixin,
     KaraokeEditorToolsMixin,
     LyricsEditorSearchMixin,
     LyricsTimingToolsMixin,
@@ -332,6 +335,7 @@ class LrcEditorDialog(
         if on_translations:
             self._ensure_translation_panel()
         self._update_tab_specific_controls()
+        self._update_history_actions()
 
     def _set_share_selection_active(self, active):
         active = bool(active)
@@ -372,6 +376,7 @@ class LrcEditorDialog(
             self._update_share_selection_status()
 
     def _update_tab_specific_controls(self):
+        self._update_line_selection_controls()
         self.lyrics_shortcuts_button.setVisible(
             self.tabs.currentWidget() is self.lyrics_page
         )
@@ -392,11 +397,13 @@ class LrcEditorDialog(
             if on_karaoke_tab:
                 self._refresh_karaoke_preview()
 
-    def _populate_lines(self, preserve_line_index=None):
+    def _populate_lines(self, preserve_line_index=None, selected_line_indices=None):
         """Refresh the sidebar as a view of canonical document order.
 
         Sorting changes only the list presentation. self.lines is never sorted.
         """
+        if selected_line_indices is None:
+            selected_line_indices = self._selected_line_indices()
         # Every editable Karaoke row must refer to a canonical model segment,
         # including plain LRC/TXT lines that arrive without any segments.
         if self.karaoke_enabled:
@@ -438,8 +445,10 @@ class LrcEditorDialog(
             self.line_list.addItem(item)
         del blocker
 
-        if preserve_line_index is not None:
-            self._select_line_index(preserve_line_index)
+        if preserve_line_index is not None and len(selected_line_indices) <= 1:
+            selected_line_indices = [preserve_line_index]
+        self._set_line_selection(selected_line_indices or (
+            [preserve_line_index] if preserve_line_index is not None else []), preserve_line_index)
 
         self._update_share_selection_status()
         self._refresh_lyrics_waveform_markers()
@@ -509,12 +518,15 @@ class LrcEditorDialog(
             return None
         return index if 0 <= index < len(self.lines) else None
 
-    def _select_line_index(self, line_index):
+    def _select_line_index(self, line_index, preserve_selection=False):
         try:
             view_row = self._view_line_indices.index(int(line_index))
         except (ValueError, TypeError):
             return
-        self.line_list.setCurrentRow(view_row)
+        if preserve_selection:
+            self.line_list.setCurrentRow(view_row, QItemSelectionModel.SelectionFlag.NoUpdate)
+        else:
+            self.line_list.setCurrentRow(view_row, QItemSelectionModel.SelectionFlag.ClearAndSelect)
 
     def _update_playback_line_style(self, position_ms):
         """Bold only the playback row that actually changed."""
@@ -740,11 +752,14 @@ class LrcEditorDialog(
             self.quote_button.setChecked(False)
             self.line_time.setValue(0)
             self.line_text.clear()
+            self._update_text_timing_notice(None)
             if hasattr(self, "lyrics_waveform"):
                 self.lyrics_waveform.clear_selected_lyric_timing()
             self.loading = False
             return
         line = self.lines[row]
+        self._update_text_timing_notice(line)
+        self._update_line_selection_controls()
         self._update_detected_language()
         self.line_time.setValue(line.start)
         markup = encode_line_breaks(format_emphasis(line.text, line.style_spans), line.translation_lines)
@@ -800,6 +815,11 @@ class LrcEditorDialog(
                 else:
                     ruby_text = segment.ruby or ""
                 self.segment_table.setItem(row, 3, QTableWidgetItem(ruby_text))
+                if segment.needs_timing_review:
+                    for column in range(4):
+                        item = self.segment_table.item(row, column)
+                        item.setBackground(QBrush(QColor(160, 110, 20, 80)))
+                        item.setToolTip("Text changed or this chunk was split. Review its timing.")
                 instant = QCheckBox()
                 instant.setChecked(bool(segment.instant))
                 instant.toggled.connect(lambda checked, r=row: self.instant_changed(r, checked))
@@ -821,6 +841,7 @@ class LrcEditorDialog(
         finally:
             del blocker
             self.loading = previous_loading
+        self._update_text_timing_notice(line)
     def _update_detected_language(self):
         """Update language display, caching expensive provider detection."""
         if not hasattr(self, "detected_language_label"):
@@ -1562,7 +1583,6 @@ class LrcEditorDialog(
                 self._push_undo_state()
                 self._shift_line_timing(line, position - line.start)
                 line.start = position
-                self.document_dirty = True
                 self.loading = True
                 self.line_time.setValue(position)
                 self.loading = False
@@ -1573,8 +1593,8 @@ class LrcEditorDialog(
                 if next_index < len(self.lines):
                     next_line = self.lines[next_index]
                     value = max(float(line.start), position)
+                    self._shift_line_timing(next_line, value - next_line.start)
                     next_line.start = value
-                    self.document_dirty = True
                     self._populate_lines(preserve_line_index=index)
                     self._select_line_index(index)
                     self.load_selected_line(self.line_list.currentRow())
@@ -1588,32 +1608,28 @@ class LrcEditorDialog(
                         segments=[LyricSegment(value, "")],
                     )
                     self.lines.insert(index + 1, new_line)
-                    self.document_dirty = True
                     self._populate_lines(preserve_line_index=index + 1)
                     self._select_line_index(index + 1)
                     self.load_selected_line(self.line_list.currentRow())
             self._waveform_lyric_preview_handle = None
             self._waveform_lyric_preview_ms = None
-            self._refresh_lyrics_waveform_markers()
-            return
-
-        position = float(self.line_time.value())
-        changed = abs(float(line.start) - position) > 1e-9
-        if changed:
-            self._push_undo_state()
-            line.start = position
-            self.document_dirty = True
+            self._mark_document_dirty()
         else:
-            # A second Commit is still a valid synchronization action. Keep
-            # the editor state, marker positions, and playback-line cache
-            # authoritative even when the timestamp is already equal.
-            line.start = position
+            position = float(self.line_time.value())
+            if abs(float(line.start) - position) > 1e-9:
+                self._push_undo_state()
+                self._shift_line_timing(line, position - line.start)
+                line.start = position
+                self._mark_document_dirty()
+        # Every commit refreshes the same views, including repeated commits
+        # and provisional waveform edits that bypass line_details_changed().
         timeline = sorted(enumerate(self.lines), key=lambda item: (item[1].start, item[0]))
         self._playback_line_starts = [line.start for _, line in timeline]
         self._playback_line_rows = [row for row, _ in timeline]
         self.refresh_line_label(index)
         self._refresh_lyrics_waveform_markers()
         self._refresh_karaoke_waveform_editor()
+        self._refresh_karaoke_preview()
         self._update_save_button_state()
 
     def mark_current_line_playback_time(self):
@@ -1751,21 +1767,20 @@ class LrcEditorDialog(
         line.start = self.line_time.value()
         markup, line.is_blockquote = parse_quote_prefix(self.line_text.toPlainText())
         markup, line.translation_lines = decode_line_breaks(markup)
-        line.text, line.style_spans, _offsets = parse_emphasis(markup)
+        text, line.style_spans, _offsets = parse_emphasis(markup)
         self.quote_button.setChecked(line.is_blockquote)
-        # Text edits invalidate old segment boundaries rather than silently
-        # leaving mismatched karaoke text behind.
-        if line.segments and "".join(s.text for s in line.segments) != line.text:
-            line.segments = [LyricSegment(line.start, line.text)]
+        if text != line.text:
+            line.segments = correct_line_text(line, text, getattr(self, "_line_text_change", None))
+            line.text = text
             self._preview_segments_line_index = None
-            line.has_karaoke = False
+            if not text:
+                line.has_karaoke = False
             self.loading = True
             if self.karaoke_enabled:
                 self._populate_segments(line)
             self.loading = False
-        elif line.segments:
-            # Keep line.start independent from segment 0 so a leading pause is valid.
-            pass
+        self._update_text_timing_notice(line)
+        self._line_text_change = None
         self._mark_document_dirty()
         self.refresh_line_label(index)
         if self.karaoke_enabled:
@@ -1804,32 +1819,34 @@ class LrcEditorDialog(
     def delete_line(self):
         if not self._commit_pending_source():
             return
-        index, _ = self._current_line()
-        if index is None:
+        indices = self._selected_line_indices()
+        if not indices:
             return
-        self._push_undo_state()
-        del self.lines[index]
-        self._populate_lines()
-        if self.lines:
-            self._select_line_index(min(index, len(self.lines) - 1))
+        if len(indices) > 1:
+            self._confirm_bulk_delete(indices)
         else:
-            self.load_selected_line(-1)
-        self._mark_document_dirty()
+            self._delete_selected_lines(indices)
 
     def move_line(self, direction):
         if not self._commit_pending_source():
             return
-        index, _ = self._current_line()
-        if index is None:
+        indices = self._selected_line_indices()
+        if not indices:
             return
-        target = index + direction
-        if not (0 <= target < len(self.lines)):
+        selected = set(indices)
+        order = list(range(len(self.lines)))
+        for index in (indices if direction < 0 else reversed(indices)):
+            target = index + direction
+            if 0 <= target < len(self.lines) and target not in selected:
+                order[index], order[target] = order[target], order[index]
+                selected.remove(index)
+                selected.add(target)
+        if order == list(range(len(self.lines))):
             return
+        current = self._current_line_index()
         self._push_undo_state()
-        self.lines[index], self.lines[target] = self.lines[target], self.lines[index]
-        self._populate_lines()
-        self._select_line_index(target)
-        self._mark_document_dirty()
+        self.lines = [self.lines[index] for index in order]
+        self._finish_line_operation(sorted(selected), order.index(current) if current is not None else None)
 
     # ------------------------------------------------------------------
     # Dialog lifecycle

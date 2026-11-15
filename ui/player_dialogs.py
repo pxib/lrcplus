@@ -264,6 +264,10 @@ class PitchChangerDialog(QDialog):
         self.interval.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.interval.setStyleSheet("color: #9aaab5; font-size: 13px;")
 
+        self.karaoke_hint = QLabel()
+        self.karaoke_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.karaoke_hint.setStyleSheet("color: #9aaab5; font-size: 12px;")
+
         self.value_spin = QDoubleSpinBox()
         self._configure_value_spin()
         self.value_spin.setKeyboardTracking(False)
@@ -316,6 +320,7 @@ class PitchChangerDialog(QDialog):
         layout.addSpacing(4)
         layout.addWidget(self.readout)
         layout.addWidget(self.interval)
+        layout.addWidget(self.karaoke_hint)
         layout.addWidget(self.slider)
         layout.addLayout(extremes)
         layout.addLayout(quick_layout)
@@ -338,6 +343,7 @@ class PitchChangerDialog(QDialog):
 
         self._pitch_controls = [
             self.units_label, self.unit_combo, self.readout, self.interval,
+            self.karaoke_hint,
             self.slider, low, high, self.fine_tune_label, self.value_spin,
             *self.quick_pitch_buttons,
         ]
@@ -488,6 +494,7 @@ class PitchChangerDialog(QDialog):
         if cents:
             detail += f" ({cents:+d} cents)"
         self.interval.setText(f"{detail} ({value:+.2f} st) | {ratio:.3f}x frequency")
+        self.karaoke_hint.setText(f"Sing one octave lower: {value - 12:+g} st from original")
 
 
 class LibraryScanWorker(QThread):

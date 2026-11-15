@@ -1,10 +1,19 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
-## [Unreleased]
+## [2026-11-15]
+
+### Added
+
+- Add a live karaoke reference beneath the pitch readout, showing the vocal shift when singing one octave lower (for example, +4 semitones gives −8 semitones from the original).
+- Add persistent Favorites with a heart control for the playing song, clickable library hearts, multi-track actions in library and queue context menus, and a Favorites filter that combines with metadata or lyric searches.
+- Add a personal reading-dictionary manager under Settings > Lyrics > Global > Readings, with named, enabled dictionaries and editable Reading, Word, Reading type, and Comment columns. Support Japanese, Mandarin, Korean, and Cantonese entries, longest-word matching, dictionary priority, and JSON/TSV import/export including Google Japanese Input exports. Apply saved entries over generated readings while preserving song-specific ruby, translations, and karaoke timing.
+- Expand library and queue track context menus with saving selections to new or existing playlists, opening file locations, copying file paths or names, and viewing track properties. Add immediate playback of library selections and queue movement controls, preserving multi-selection and repeated tracks.
 
 ### Fixed
 
+- Improve Japanese readings and word boundaries in lyrics that use katakana for grammatical endings, such as `夜ニ紛レ` and `見下ロシテ`. Analyze recognized rows with hiragana grammar while preserving the original lyric text, decorative symbols, and karaoke timing.
+- Default personal reading entries to whole-word matching using tokenizer boundaries, keeping `私 → わたし` from changing the reading of `私立`. Preserve boundaries across ruby splitting, number readings and batch generation, and offer an explicit **Inside words** match option for intentional partial replacements. Keep matching conservative when word boundaries are unavailable.
 - Prevent player freezes during rapid song and pitch changes by queuing decoded audio on the audio thread instead of calling Python from Qt's renderer. Discard outdated queued buffers and preserve final samples at track endings.
 
 ## [2026-11-14.4]

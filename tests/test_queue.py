@@ -471,6 +471,19 @@ def test_library_multi_selection_expands_albums_once(queue_player, tracks):
     assert window._selected_library_paths() == []
 
 
+def test_library_play_now_keeps_existing_queue_and_starts_selection(queue_player, tracks):
+    window = queue_player
+    window.replace_queue([tracks[0], tracks[3]])
+    window.library_tracks = [LibraryTrack(str(path), path.stem) for path in tracks]
+    window.media_player.setPosition(1234)
+    window._play_library_selection([tracks[2], tracks[1]])
+    assert window.playlist == [tracks[0], tracks[2], tracks[1], tracks[3]]
+    assert window.current_index == 1
+    assert window.current_audio_path == tracks[2]
+    assert window.media_player.isPlaying()
+    assert window._priority_queue_indices == [2]
+
+
 def test_dialog_reorders_qt_model_and_keeps_play_target(qapp, queue_player, tracks):
     window = queue_player
     window.replace_queue(tracks)

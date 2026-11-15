@@ -22,7 +22,7 @@ from lyrics.models import LyricLine, LyricSegment
 
 
 _LINE_STATE_FIELDS = tuple(field.name for field in fields(LyricLine))
-_SEGMENT_STATE_FIELDS = tuple(field.name for field in fields(LyricSegment))
+_SEGMENT_STATE_FIELDS = tuple(field.name for field in fields(LyricSegment) if not field.metadata.get("editor_only"))
 
 
 def _lyric_state(lyric, field_names):
@@ -61,6 +61,7 @@ class LyricsEditorDocumentMixin:
             "dirty": bool(self.document_dirty),
             "karaoke_dirty": bool(self.karaoke_dirty),
             "selected_line": self._current_line_index(),
+            "selected_lines": self._selected_line_indices(),
             "source": self.source_editor.toPlainText() if hasattr(self, "source_editor") else "",
             "source_dirty": bool(self._source_dirty),
             "attached_song_path": self.attached_song_path,
@@ -94,13 +95,14 @@ class LyricsEditorDocumentMixin:
                 del blocker
             if hasattr(self, "lyrics_offset"):
                 self.lyrics_offset.setValue(self.lyrics_offset_ms)
-            self._populate_lines()
+            self._populate_lines(selected_line_indices=state.get("selected_lines", []),
+                                 preserve_line_index=state.get("selected_line"))
             row = min(
                 max(0, int(state.get("selected_line") or 0)),
                 max(0, len(self.lines) - 1),
             )
             if self.lines:
-                self._select_line_index(row)
+                self._select_line_index(row, preserve_selection=True)
                 self.load_selected_line(self.line_list.currentRow())
             else:
                 self._clear_editor_views()
@@ -144,8 +146,21 @@ class LyricsEditorDocumentMixin:
         self._redo_stack.clear()
         self._update_history_actions()
 
+    def _using_source_history(self):
+        if (
+            not self._source_dirty
+            or not hasattr(self, "source_editor")
+            or self.tabs.currentWidget() is not self.source_editor.parentWidget()
+        ):
+            return False
+        # Clicking a toolbar button moves focus away from the source editor.
+        # Restored document checkpoints have no native text history, so they
+        # continue to use document Undo/Redo even when they contain raw edits.
+        document = self.source_editor.document()
+        return document.isUndoAvailable() or document.isRedoAvailable()
+
     def undo(self):
-        if self._source_dirty and self.source_editor.hasFocus():
+        if self._using_source_history():
             self.source_editor.undo()
             return
         if not self._undo_stack:
@@ -155,7 +170,7 @@ class LyricsEditorDocumentMixin:
         self._restore_state(self._undo_stack.pop())
 
     def redo(self):
-        if self._source_dirty and self.source_editor.hasFocus():
+        if self._using_source_history():
             self.source_editor.redo()
             return
         if not self._redo_stack:
@@ -165,10 +180,19 @@ class LyricsEditorDocumentMixin:
         self._restore_state(state)
 
     def _update_history_actions(self):
+        source_history = self._using_source_history()
+        undo_available = (
+            self.source_editor.document().isUndoAvailable()
+            if source_history else bool(self._undo_stack)
+        )
+        redo_available = (
+            self.source_editor.document().isRedoAvailable()
+            if source_history else bool(self._redo_stack)
+        )
         if hasattr(self, "undo_button"):
-            self.undo_button.setEnabled(bool(self._undo_stack))
+            self.undo_button.setEnabled(undo_available)
         if hasattr(self, "redo_button"):
-            self.redo_button.setEnabled(bool(self._redo_stack))
+            self.redo_button.setEnabled(redo_available)
 
     def _autosave_payload(self):
         structured = self._serialise_with_attachment(serialize_lrcx(
@@ -497,7 +521,9 @@ class LyricsEditorDocumentMixin:
         if self.loading or getattr(self, "_syncing_source", False):
             return
         self._source_dirty = True
+        self._redo_stack.clear()
         self._mark_document_dirty()
+        self._update_history_actions()
 
     def _update_save_button_state(self):
         if hasattr(self, "save_button"):
@@ -640,6 +666,7 @@ class LyricsEditorDocumentMixin:
             self.source_format_label.setText(f"{self._source_suffix[1:].upper()} source")
         finally:
             self._syncing_source = False
+        self._update_history_actions()
 
     def _commit_pending_source(self):
         if self._source_dirty:
@@ -668,6 +695,7 @@ class LyricsEditorDocumentMixin:
         self._apply_generation_mode(parsed.generation_mode or "auto")
         self._source_suffix = suffix
         self._source_dirty = False
+        self.source_editor.document().clearUndoRedoStacks()
         blocker = QSignalBlocker(self.lyrics_offset)
         self.lyrics_offset.setValue(self.lyrics_offset_ms)
         del blocker
@@ -676,6 +704,7 @@ class LyricsEditorDocumentMixin:
         self.karaoke_dirty = any(line.has_karaoke for line in self.lines)
         self._update_song_association_ui()
         self._mark_document_dirty()
+        self._update_history_actions()
         return True
 
     def _lrcx_only_features(self):

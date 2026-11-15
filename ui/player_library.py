@@ -54,6 +54,15 @@ class PlayerLibraryMixin:
         rescan.clicked.connect(self.rescan_music_library)
         toolbar.addWidget(self.library_search, 1)
         self._build_library_search_filter(toolbar)
+        self.library_favorites_filter = QPushButton("♡ Favorites")
+        self.library_favorites_filter.setObjectName("headerAction")
+        self.library_favorites_filter.setCheckable(True)
+        self.library_favorites_filter.setToolTip("Show only favorite songs, combined with your search")
+        self.library_favorites_filter.toggled.connect(
+            lambda checked: self.library_favorites_filter.setText("♥ Favorites" if checked else "♡ Favorites")
+        )
+        self.library_favorites_filter.toggled.connect(self._filter_library_view)
+        toolbar.addWidget(self.library_favorites_filter)
         toolbar.addWidget(add_folder)
         toolbar.addWidget(remove_folder)
         toolbar.addWidget(rescan)
@@ -91,9 +100,11 @@ class PlayerLibraryMixin:
             ("file_name", "File name"), ("file_path", "File path"),
             ("modified", "File last modified"),
             ("lyric_match", "Matching lyrics"),
+            ("favorite", "Favorite"),
         ]
         # Append the logical column to preserve existing saved indexes.
-        self.library_lyrics_column = len(self.library_columns) - 1
+        self.library_lyrics_column = next(i for i, (key, _) in enumerate(self.library_columns) if key == "lyric_match")
+        self.library_favorite_column = len(self.library_columns) - 1
         self.library_table = QTreeWidget()
         self.library_table.setObjectName("libraryTable")
         self.library_table.setFont(library_font(self.library_table.font()))
@@ -110,6 +121,7 @@ class PlayerLibraryMixin:
         self.library_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.library_table.itemDoubleClicked.connect(self._play_library_item)
         self.library_table.itemClicked.connect(self._open_library_cover_preview)
+        self.library_table.itemClicked.connect(self._toggle_library_favorite)
         header = self.library_table.header()
         header.setStretchLastSection(False)
         header.setSectionsMovable(True)
@@ -138,6 +150,7 @@ class PlayerLibraryMixin:
         self.library_table.setColumnWidth(10, 360)
         self.library_table.setColumnWidth(11, 150)
         self.library_table.setColumnWidth(self.library_lyrics_column, 340)
+        self.library_table.setColumnWidth(self.library_favorite_column, 70)
         self._apply_library_column_state()
         self.library_table.setSortingEnabled(True)
         self._library_column_save_timer = QTimer(self)
@@ -189,6 +202,7 @@ class PlayerLibraryMixin:
             0: 62, 1: 42, 2: 330, 3: 260, 4: 85, 5: 75,
             6: 90, 7: 85, 8: 90, 9: 180, 10: 360, 11: 150,
             self.library_lyrics_column: 340,
+            self.library_favorite_column: 70,
         }
         self.library_table.setColumnWidth(logical, default_widths[logical])
 
@@ -196,7 +210,7 @@ class PlayerLibraryMixin:
         state = self.library_column_state or {}
         header = self.library_table.header()
         hidden = set(state.get("hidden", [])) if "hidden" in state else set(
-            range(6, len(self.library_columns))
+            i for i in range(6, len(self.library_columns)) if i != self.library_favorite_column
         )
         widths = state.get("widths", {})
         order = state.get("order", [])
@@ -218,6 +232,8 @@ class PlayerLibraryMixin:
         lyric_column = self.library_lyrics_column
         if not isinstance(order, list) or lyric_column not in order:
             header.moveSection(header.visualIndex(lyric_column), header.visualIndex(2) + 1)
+        if not isinstance(order, list) or self.library_favorite_column not in order:
+            header.moveSection(header.visualIndex(self.library_favorite_column), header.visualIndex(2))
         header.setSectionHidden(lyric_column, self.library_search_filter.currentData() != "lyrics")
         for logical in range(len(self.library_columns)):
             if not header.isSectionHidden(logical):
@@ -247,10 +263,11 @@ class PlayerLibraryMixin:
         header = self.library_table.header()
         header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
         for logical in range(len(self.library_columns)):
-            header.setSectionHidden(logical, logical >= 6)
+            header.setSectionHidden(logical, logical >= 6 and logical != self.library_favorite_column)
             current = header.visualIndex(logical)
             if current != logical: header.moveSection(current, logical)
         header.moveSection(header.visualIndex(self.library_lyrics_column), header.visualIndex(2) + 1)
+        header.moveSection(header.visualIndex(self.library_favorite_column), header.visualIndex(2))
         header.setSectionHidden(self.library_lyrics_column, self.library_search_filter.currentData() != "lyrics")
         self.library_column_state = {}
         self._save_library_column_state()
@@ -291,6 +308,7 @@ class PlayerLibraryMixin:
         self._library_row_data = LibraryRowData(
             self._format_library_duration, self._format_library_size,
             self._library_track_number, getattr(self, "library_lyrics_column", 12),
+            getattr(self, "library_favorite_column", None), getattr(self, "favorite_paths", set()),
         )
         grouped = {}
         for track in self.library_tracks:
@@ -333,6 +351,8 @@ class PlayerLibraryMixin:
     def _filter_library_view(self):
         self._library_search_timer.stop()
         query = self.library_search.text().casefold().strip()
+        favorites_only = self.library_favorites_filter.isChecked()
+        filtering = bool(query or favorites_only)
         lyrics_matches = None
         lyric_column = getattr(self, "library_lyrics_column", None)
         search_filter = getattr(self, "library_search_filter", None)
@@ -342,7 +362,7 @@ class PlayerLibraryMixin:
             else:
                 self._reset_library_lyrics_search()
         expansion = self._library_expansion_before_search
-        if query and expansion is None:
+        if filtering and expansion is None:
             # Keep one snapshot for the whole search, including query
             # changes. Album keys survive scans that replace tree items.
             expansion = {}
@@ -353,7 +373,7 @@ class PlayerLibraryMixin:
             self._library_row_data.matches = lyrics_matches
             for parent, rows in self._library_filter_groups:
                 group = tuple(parent.data(0, Qt.ItemDataRole.UserRole + 1))
-                if query:
+                if filtering:
                     expansion.setdefault(group, parent.isExpanded())
                 any_visible = False
                 for item, haystack in rows:
@@ -361,14 +381,16 @@ class PlayerLibraryMixin:
                         haystack = item.search_text()
                     visible = (item.data(0, Qt.ItemDataRole.UserRole) in lyrics_matches
                                if lyrics_matches is not None else not query or query in haystack)
+                    if favorites_only:
+                        visible = visible and item.favorite_key in self.favorite_paths
                     if item.isHidden() == visible:
                         item.setHidden(not visible)
                     any_visible |= visible
                 if parent.isHidden() == any_visible:
                     parent.setHidden(not any_visible)
-                if query and any_visible:
+                if filtering and any_visible:
                     parent.setExpanded(True)
-                elif not query and expansion is not None:
+                elif not filtering and expansion is not None:
                     parent.setExpanded(expansion.get(group, parent.isExpanded()))
                 if matches_changed and lyric_column is not None and parent.childCount():
                     model = self.library_table.model()
@@ -381,7 +403,7 @@ class PlayerLibraryMixin:
             if matches_changed and self.library_table.sortColumn() == lyric_column:
                 header = self.library_table.header()
                 self.library_table.sortItems(lyric_column, header.sortIndicatorOrder())
-            if not query:
+            if not filtering:
                 self._library_expansion_before_search = None
         finally:
             self.library_table.setUpdatesEnabled(True)
@@ -441,6 +463,8 @@ class PlayerLibraryMixin:
             return 10**9
 
     def _play_library_item(self, item, column=0):
+        if column == self.library_favorite_column:
+            return
         path = item.data(0, Qt.ItemDataRole.UserRole)
         if not path:
             return

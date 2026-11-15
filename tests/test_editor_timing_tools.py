@@ -1,4 +1,5 @@
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QListWidget, QSpinBox
@@ -6,6 +7,7 @@ from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QListWidget, QS
 import ui.lrc_editor as editor_module
 import ui.lyrics_editor_document as document_module
 from lyrics.loader import load_lyrics
+from lyrics.models import LyricLine
 
 def test_consecutive_shifts_undo_and_redo_one_operation_at_a_time(editor):
     original = deepcopy(editor.lines)
@@ -140,3 +142,24 @@ def test_validation_dialog_can_navigate_to_affected_line(editor, monkeypatch):
     monkeypatch.setattr(QDialog, "exec", interact)
     editor.show_timing_validation()
     assert editor._current_line_index() == 1
+
+
+def test_validation_dialog_reports_audio_overrun_from_lyrics_offset(editor, monkeypatch):
+    editor.lines = [LyricLine(9.8, "Late lyric")]
+    editor._populate_lines(preserve_line_index=0)
+    editor.lyrics_offset.setValue(500)
+    editor.player = SimpleNamespace(media_player=SimpleNamespace(duration=lambda: 10000))
+    messages = []
+
+    def interact(dialog):
+        results = dialog.findChild(QListWidget)
+        messages.extend(results.item(row).text() for row in range(results.count()))
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(QDialog, "exec", interact)
+    monkeypatch.setattr(editor_module.QMessageBox, "information", lambda *args: None)
+    try:
+        editor.show_timing_validation()
+    finally:
+        editor.player = None
+    assert any("Line 1:" in message and "audio duration" in message for message in messages)

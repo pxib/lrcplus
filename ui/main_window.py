@@ -58,6 +58,8 @@ from core.settings import (
 )
 from core.recent import get_recent_songs
 from core.music_library import LibraryTrack
+from core.favorites import load_favorites
+from ui.favorites import FavoritesMixin
 from lyrics.widgets import FuriganaWidget, ScrollingLyricsWidget
 from lyrics.waveform import WaveformWidget, find_ffmpeg
 from lyrics.writer import convert_lyrics
@@ -77,6 +79,7 @@ from ui.lyrics_search_dialog import LyricsSearchDialogMixin, _lyrics_search_quer
 
 
 class Player(
+    FavoritesMixin,
     PlayerLibraryMixin,
     PlayerUpdatesMixin,
     LyricsSearchDialogMixin,
@@ -90,6 +93,7 @@ class Player(
 ):
         queue_changed = Signal()
         lyrics_renderers_created = Signal()
+        favorites_changed = Signal()
 
         def __init__(self, plugin_manager=None):
             super().__init__()
@@ -163,6 +167,7 @@ class Player(
             music_library = load_music_library()
             self.library_folders = music_library["folders"]
             self.library_tracks = []
+            self.favorite_paths = load_favorites()
             self.library_column_state = music_library.get("columns", {}) or {}
             # Older library builds stored column positions without the new
             # embedded Album cover column. Shift that saved layout once so a
@@ -573,6 +578,15 @@ class Player(
                 self.toggle_mute
             )
 
+            self.favorite_button = QPushButton("♡")
+            self.favorite_button.setObjectName("dockAction")
+            self.favorite_button.setCheckable(True)
+            self.favorite_button.setMinimumWidth(36)
+            self.favorite_button.clicked.connect(self._toggle_current_favorite)
+            self.favorites_changed.connect(self._refresh_favorites)
+            self.queue_changed.connect(self._refresh_favorite_button)
+            self._refresh_favorite_button()
+
             self.pitch_options_button = QPushButton()
             self.pitch_options_button.setText("Pitch")
             self.pitch_options_button.setObjectName("dockAction")
@@ -621,6 +635,7 @@ class Player(
             volume_layout.addSpacing(8)
             volume_layout.addWidget(self.pitch_options_button)
             volume_layout.addWidget(self.pitch_status_label)
+            volume_layout.addWidget(self.favorite_button)
             volume_layout.addStretch(1)
             volume_layout.addWidget(self.mute_button)
             volume_layout.addWidget(QLabel("Volume"))
@@ -1673,6 +1688,12 @@ class Player(
                         save_disabled_plugins(disabled_plugins)
 
                     self.refresh_lyrics_settings_for_current_file()
+                    if getattr(dialog, "_reading_dictionary_draft", None) is not None and self._lyrics_renderers_ready:
+                        self.scrolling_lyrics_widget.set_lyrics(self.lyric_lines)
+                        self.scrolling_lyrics_widget.set_current_line(self.current_line, animate=False)
+                        self._refresh_current_lyric_furigana()
+                        if self.plugin_manager is not None:
+                            self.plugin_manager.emit("lyrics_settings_changed")
             finally:
                 # Modal dialogs are hidden on close; their parent otherwise
                 # retains the complete settings widget tree on every opening.

@@ -11,6 +11,8 @@ from core.playlists import (
     available_tracks, delete_playlist, load_saved_playlists, read_m3u,
     rename_playlist, save_playlist, write_m3u,
 )
+from ui.track_actions import add_saved_playlist_menu, add_track_file_actions, add_favorite_action
+from core.favorites import load_favorites
 
 
 class PlaylistDialog(QDialog):
@@ -21,6 +23,7 @@ class PlaylistDialog(QDialog):
     order_requested = Signal(object)
     add_requested = Signal(object, bool)
     replace_requested = Signal(object)
+    favorite_tracks_requested = Signal(object, bool)
 
     def __init__(self, playlist, current_index, parent=None):
         super().__init__(parent)
@@ -28,6 +31,7 @@ class PlaylistDialog(QDialog):
         self.resize(820, 540)
         self.playlist = []
         self.current_index = -1
+        self.favorite_paths = load_favorites()
         self._reorder_pending = False
 
         self.saved_combo = QComboBox()
@@ -56,7 +60,7 @@ class PlaylistDialog(QDialog):
         saved_row.addWidget(manage_button)
 
         self.title_label = QLabel()
-        hint = QLabel("Drag tracks to reorder. Right-click a track for Play next. Repeated tracks are kept.")
+        hint = QLabel("Drag tracks to reorder. Right-click for playback, playlists and file actions. Repeated tracks are kept.")
         hint.setWordWrap(True)
         self.list_widget = QListWidget()
         from ui.content_list import configure_content_list
@@ -162,10 +166,11 @@ class PlaylistDialog(QDialog):
         if not hasattr(self, "export_button"):
             return
         selected = self._selected_indices()
+        selected_set = set(selected)
         for button in (self.load_button, self.remove_button):
             button.setEnabled(bool(selected))
-        self.up_button.setEnabled(bool(selected) and selected[0] > 0)
-        self.down_button.setEnabled(bool(selected) and selected[-1] < len(self.playlist) - 1)
+        self.up_button.setEnabled(any(i > 0 and i - 1 not in selected_set for i in selected))
+        self.down_button.setEnabled(any(i < len(self.playlist) - 1 and i + 1 not in selected_set for i in selected))
         for widget in (self.clear_button, self.export_button, self.save_action):
             widget.setEnabled(bool(self.playlist))
         has_saved = self.saved_combo.currentIndex() >= 0
@@ -211,15 +216,41 @@ class PlaylistDialog(QDialog):
                 order[row], order[other] = order[other], order[row]
         self._request_order(order)
 
+    def _move_selected_to_edge(self, top):
+        selected = self._selected_indices()
+        selected_set = set(selected)
+        remaining = [i for i in range(len(self.playlist)) if i not in selected_set]
+        order = selected + remaining if top else remaining + selected
+        self._request_order(order)
+
     def _show_track_menu(self, pos):
         item = self.list_widget.itemAt(pos)
         if item is None:
             return
         if not item.isSelected():
-            self.list_widget.setCurrentItem(item)
+            self.list_widget.clearSelection()
+            item.setSelected(True)
+        self.list_widget.setCurrentItem(item, QItemSelectionModel.SelectionFlag.NoUpdate)
+        selected = self._selected_indices()
+        paths = [self.playlist[index] for index in selected]
         menu = QMenu(self)
         menu.addAction("Play", self._request_selected_track)
         menu.addAction("Play next", lambda: self.play_next_requested.emit(self._selected_indices()))
+        add_saved_playlist_menu(menu, paths, self, self._reload_saved)
+        add_favorite_action(menu, paths, self.favorite_paths, self.favorite_tracks_requested.emit)
+        menu.addSeparator()
+        move_menu = menu.addMenu("Move")
+        up = move_menu.addAction("Up", lambda: self._move_selected(-1))
+        down = move_menu.addAction("Down", lambda: self._move_selected(1))
+        top = move_menu.addAction("To top", lambda: self._move_selected_to_edge(True))
+        bottom = move_menu.addAction("To bottom", lambda: self._move_selected_to_edge(False))
+        up.setEnabled(self.up_button.isEnabled())
+        top.setEnabled(up.isEnabled())
+        down.setEnabled(self.down_button.isEnabled())
+        bottom.setEnabled(down.isEnabled())
+        menu.addSeparator()
+        add_track_file_actions(menu, paths, self)
+        menu.addSeparator()
         menu.addAction("Remove from queue", self._request_remove_selected)
         try:
             menu.exec(self.list_widget.viewport().mapToGlobal(pos))

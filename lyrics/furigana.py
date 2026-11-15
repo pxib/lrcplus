@@ -15,6 +15,7 @@ from core.http_client import requests
 from lyrics.pinyin_client import read_pinyin_runs
 from lyrics.japanese_numbers import number_spans
 from lyrics.line_breaks import decode_line_breaks, original_reading_text
+from core.reading_dictionary import dictionary_matches, has_dictionary_entries, word_boundary_positions
 from lyrics.reading_providers import (
     available_reading_providers,
     generate_reading_segments,
@@ -646,7 +647,7 @@ def clear_reading_segment_cache():
     with _SEGMENT_CACHE_LOCK:
         _SEGMENT_CACHE.clear()
 
-def get_cached_furigana_segments(text):
+def _get_raw_cached_furigana_segments(text):
     text = str(text or "")
     with _SEGMENT_CACHE_LOCK:
         key = _segment_cache_key(text)
@@ -654,6 +655,87 @@ def get_cached_furigana_segments(text):
         if cached is not None:
             _SEGMENT_CACHE.move_to_end(key)
     return None if cached is None else [dict(segment) for segment in cached]
+
+def get_cached_furigana_segments(text):
+    cached = _get_raw_cached_furigana_segments(text)
+    if cached is None:
+        if not automatic_readings_enabled():
+            source = str(text or "")
+            if r"{\nt}" in source:
+                source, _translations = decode_line_breaks(source)
+            fallback = _fallback(source)
+            corrected = _with_dictionary_readings(text, fallback)
+            return corrected if corrected != fallback else None
+        return None
+    return _with_dictionary_readings(text, cached)
+
+
+def _with_dictionary_readings(text, segments):
+    """Overlay user entries on automatic tokens, preserving text and source ruby."""
+    if not segments or not has_dictionary_entries():
+        return segments
+    mode = get_reading_mode()
+    source = "".join(str(part.get("text", "")) for part in segments)
+    translations = set()
+    if r"{\nt}" in str(text):
+        _visible, translations = decode_line_breaks(text)
+        translations = set(translations)
+    if mode == "auto":
+        original = original_reading_text(str(text))
+        language = detect_lyrics_language(original)
+        provider = find_reading_provider(original, language=language)
+        mode = provider or {"japanese": "furigana", "chinese": "pinyin", "korean": "korean"}.get(language)
+    if not mode:
+        return segments
+    starts = word_boundary_positions(source)
+    ends = set(starts)
+    cursor = 0
+    for part in segments:
+        if part.get("_dictionary_word_start"):
+            starts.add(cursor)
+        cursor += len(str(part.get("text", "")))
+        if part.get("_dictionary_word_end"):
+            ends.add(cursor)
+    matches, offset = [], 0
+    for row, value in enumerate(source.split("\n")):
+        if row not in translations:
+            row_starts = {position - offset for position in starts if offset <= position <= offset + len(value)}
+            row_ends = {position - offset for position in ends if offset <= position <= offset + len(value)}
+            matches.extend((offset + a, offset + b, reading) for a, b, reading in dictionary_matches(
+                value, mode, word_starts=row_starts, word_ends=row_ends))
+        offset += len(value) + 1
+    if not matches:
+        return segments
+    spans, cursor = [], 0
+    for part in segments:
+        end = cursor + len(str(part.get("text", "")))
+        spans.append((cursor, end, part))
+        cursor = end
+    result = []
+
+    def original_range(start, end):
+        for a, b, part in spans:
+            left, right = max(start, a), min(end, b)
+            if left >= right:
+                continue
+            piece = dict(part)
+            if left != a or right != b:
+                piece["text"] = source[left:right]
+                piece["reading"] = split_reading_by_text_ranges(source[a:b], part.get("reading"), [(left - a, right - a)])[0]
+                piece["_romaji_word_start"] = left == a and bool(part.get("_romaji_word_start"))
+            result.append(piece)
+
+    cursor = 0
+    for start, end, reading in matches:
+        owners = [part for a, b, part in spans if a < end and start < b]
+        if any(part.get("reading_source") == "manual" or part.get("ruby_source") == "manual" for part in owners):
+            continue
+        original_range(cursor, start)
+        result.append({"text": source[start:end], "reading": reading, "reading_source": "dictionary",
+                       "_romaji_word_start": True, "_romaji_particle": False})
+        cursor = end
+    original_range(cursor, len(source))
+    return result
 
 def _cache_furigana_segments(text, segments):
     text = str(text or "")
@@ -794,12 +876,33 @@ def mecab_analyze(text):
         print(f"[MeCab] FAILED {text!r}: {error}")
         return None
 
+
+def _analysis_kana(text):
+    """Recognize lyric rows using katakana in place of grammatical hiragana.
+
+    Require multiple kanji/kana transitions and no existing hiragana. Skip
+    rows containing common loanword markers (long vowels and small vowel/y kana).
+    Conversion is length preserving so tokenizer surfaces can be mapped back
+    to the exact source, including karaoke boundaries and decorative symbols.
+    """
+    rows = text.split("\n")
+    for index, row in enumerate(rows):
+        if re.search(r"[\u3041-\u3096]", row):
+            continue
+        if re.search(r"[ァィゥェォャュョヮー]", row):
+            continue
+        if len(re.findall(r"[\u3400-\u9fff][\u30a1-\u30f6]", row)) < 2:
+            continue
+        rows[index] = katakana_to_hiragana(row)
+    return "\n".join(rows)
+
+
 def _analyze(text):
     # Tokenize through decorative symbols so 日～々 is read as 日々. Restore
     # original surfaces afterwards for alignment, editing and karaoke timing.
     source = str(text or "")
     positions = [i for i, char in enumerate(source) if not _is_decorative_symbol(char)]
-    text = "".join(source[i] for i in positions)
+    text = _analysis_kana("".join(source[i] for i in positions))
     if not text:
         return []
     parser = get_active_parser()
@@ -978,18 +1081,23 @@ def _with_number_readings(text, segments):
                     text[a:b], segment.get("reading"), [(left - a, right - a)]
                 )[0]
                 piece["_romaji_word_start"] = bool(segment.get("_romaji_word_start", False)) and left == a
+                piece["_dictionary_word_start"] = bool(segment.get("_dictionary_word_start")) and left == a
+                piece["_dictionary_word_end"] = bool(segment.get("_dictionary_word_end")) and right == b
             result.append(piece)
 
     cursor = 0
     for start, end, reading in numbers:
         append_original(cursor, start)
         owner_start, _, owner = next(item for item in offsets if item[0] <= start < item[1])
+        _, owner_end, last_owner = next(item for item in offsets if item[0] < end <= item[1])
         result.append({
             **owner,
             "text": text[start:end],
             "reading": reading,
             "_romaji_word_start": bool(owner.get("_romaji_word_start", False)) if start == owner_start else True,
             "_romaji_particle": False,
+            "_dictionary_word_start": bool(owner.get("_dictionary_word_start")) and start == owner_start,
+            "_dictionary_word_end": bool(last_owner.get("_dictionary_word_end")) and end == owner_end,
         })
         cursor = end
     append_original(cursor, len(text))
@@ -1027,6 +1135,9 @@ def _build_segments_from_words(text, words, should_continue=None):
         # often have no spaces between words.  The marker is display metadata
         # only and never changes the source lyric.
         if parts:
+            for index, part in enumerate(parts):
+                part["_dictionary_word_start"] = index == 0
+                part["_dictionary_word_end"] = index == len(parts) - 1
             parts[0]["_romaji_word_start"] = not _romaji_joins_previous(word, previous_word)
             pos = _word_pos(word)
             particle = surface in {"は", "へ", "を"} and (not pos or "助詞" in pos)
@@ -1055,6 +1166,8 @@ def _split_segments_by_lines(segments, line_count):
                     "reading": reading,
                     "_romaji_word_start": word_start and i == 0,
                     "_romaji_particle": bool(segment.get("_romaji_particle", False)),
+                    "_dictionary_word_start": bool(segment.get("_dictionary_word_start")) and i == 0,
+                    "_dictionary_word_end": bool(segment.get("_dictionary_word_end")) and i == len(pieces) - 1,
                 })
             if i < len(pieces) - 1:
                 line_index += 1
@@ -1209,10 +1322,10 @@ def build_furigana_segments(text, progress_callback=None, should_continue=None, 
             if row in translations:
                 segments.append({"text": value, "reading": None})
             elif value:
-                segments.extend(build_furigana_segments(
-                    value, should_continue=should_continue, force=force))
+                build_furigana_segments(value, should_continue=should_continue, force=force)
+                segments.extend(_get_raw_cached_furigana_segments(value) or _fallback(value))
         _cache_furigana_segments(text, segments)
-        return segments
+        return get_cached_furigana_segments(text)
 
     mode = get_reading_mode()
     language = detect_lyrics_language(text)
@@ -1222,7 +1335,7 @@ def build_furigana_segments(text, progress_callback=None, should_continue=None, 
         return cached
 
     if not automatic_readings_enabled() and not force:
-        return _fallback(text)
+        return _with_dictionary_readings(text, _fallback(text))
 
     if mode in available_reading_providers():
         try:
@@ -1249,6 +1362,7 @@ def build_furigana_segments(text, progress_callback=None, should_continue=None, 
             segments = _fallback(text)
 
     _cache_furigana_segments(text, segments)
+    segments = get_cached_furigana_segments(text)
     if progress_callback:
         progress_callback(segments)
     return segments

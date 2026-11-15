@@ -68,14 +68,19 @@ class TimingIssue:
     message: str
 
 
-def validate_timing(lines, *, duration_ms=None):
+def validate_timing(lines, *, duration_ms=None, offset_ms=0.0):
     """Report suspicious timing without changing or sorting the document.
 
     Simultaneous lyric lines and separate visual karaoke rows are supported.
     Overlaps are reported for review, since they can be intentional.
+    Audio bounds include the playback offset; model comparisons use the
+    original timestamps.
     """
+    if not _finite(offset_ms):
+        raise ValueError("The lyric offset must be a finite number of milliseconds.")
     issues = []
     duration = duration_ms / 1000.0 if _finite(duration_ms) and duration_ms > 0 else None
+    offset = offset_ms / 1000.0
 
     for index, line in enumerate(lines):
         def report(message):
@@ -85,7 +90,10 @@ def validate_timing(lines, *, duration_ms=None):
             if not _finite(value) or value < 0:
                 report(f"{label} must be a finite, non-negative timestamp.")
                 return False
-            if duration is not None and value > duration + 0.001:
+            audio_time = value + offset
+            if audio_time < -0.001:
+                report(f"{label} is before the audio starts.")
+            if duration is not None and audio_time > duration + 0.001:
                 report(f"{label} is beyond the audio duration.")
             return True
 

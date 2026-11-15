@@ -328,6 +328,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
 
         self.global_lyrics = dict(global_lyrics or {})
+        self._reading_dictionary_draft = None
         self.startup_settings = dict(startup_settings or {})
         self.appearance_settings = dict(appearance_settings or {})
         self.custom_themes = [
@@ -1040,6 +1041,7 @@ class SettingsDialog(QDialog):
             "empty_timestamp_placeholder_edit": "Empty timestamp placeholder",
             "folder_list": "Lyrics search folders",
             "check_updates_button": "Check for updates",
+            "reading_dictionary_button": "Reading dictionaries (furigana)",
         }
         for name, label in labels.items():
             getattr(self, name).setProperty("settingsLabel", label)
@@ -1132,7 +1134,46 @@ class SettingsDialog(QDialog):
             section_layouts=sections,
         )
         self._create_placeholder_controls(sections["Display"])
+        self._add_section_heading(sections["Readings"], "Personal reading dictionaries")
+        dictionary_hint = QLabel("Reuse your word readings across songs. Manage named dictionaries, enable or disable them, "
+                                "and import or export entries.")
+        dictionary_hint.setWordWrap(True)
+        sections["Readings"].addWidget(dictionary_hint)
+        self.reading_dictionary_button = QPushButton("Manage reading dictionaries…")
+        self.reading_dictionary_button.setToolTip("Custom furigana, pinyin and romanization corrections; user dictionary editor")
+        self.reading_dictionary_button.clicked.connect(self._manage_reading_dictionaries)
+        sections["Readings"].addWidget(self.reading_dictionary_button)
         return controls
+
+    def _manage_reading_dictionaries(self):
+        from core.reading_dictionary import load_dictionaries
+        from ui.reading_dictionary import ReadingDictionaryDialog
+        try:
+            data = self._reading_dictionary_draft
+            if data is None:
+                data = load_dictionaries(reload=True)
+        except (OSError, ValueError, TypeError) as error:
+            QMessageBox.warning(self, "Reading Dictionaries", f"Could not load your dictionaries:\n{error}")
+            return
+        dialog = ReadingDictionaryDialog(data, self)
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self._reading_dictionary_draft = dialog.data
+        finally:
+            dialog.deleteLater()
+
+    def accept(self):
+        if hasattr(self, "dependencies_tab") and self.dependencies_tab.busy:
+            super().accept()
+            return
+        if self._reading_dictionary_draft is not None:
+            from core.reading_dictionary import save_dictionaries
+            try:
+                save_dictionaries(self._reading_dictionary_draft)
+            except (OSError, ValueError) as error:
+                QMessageBox.warning(self, "Reading Dictionaries", f"Could not save your dictionaries:\n{error}")
+                return
+        super().accept()
 
     def _create_placeholder_controls(self, layout):
         self._add_section_heading(layout, "Empty timestamp placeholder")

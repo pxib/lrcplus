@@ -29,11 +29,14 @@ class LyricsTimingToolsMixin:
         self.lines = shifted
         self._populate_lines(preserve_line_index=selected)
         if selected is not None:
-            self._select_line_index(selected)
+            self._select_line_index(selected, preserve_selection=True)
         self._refresh_karaoke_waveform_editor()
         self._mark_document_dirty()
 
     def show_timing_shift_dialog(self):
+        if len(self._selected_line_indices()) > 1:
+            self.show_selected_timing_shift_dialog()
+            return
         if not self._prepare_timing_tools():
             return
         dialog = QDialog(self)
@@ -101,7 +104,7 @@ class LyricsTimingToolsMixin:
             return
         media = getattr(self.player, "media_player", None)
         duration = media.duration() if media is not None else None
-        issues = validate_timing(self.lines, duration_ms=duration)
+        issues = validate_timing(self.lines, duration_ms=duration, offset_ms=self.lyrics_offset_ms)
         if not issues:
             QMessageBox.information(self, "Validate Timing", "No timing issues found.")
             return
