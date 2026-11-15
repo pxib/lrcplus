@@ -270,6 +270,7 @@ class FloatingLyricsWindow(QWidget):
         self.settings = settings
         self._drag_offset = None
         self.visibility_changed = None
+        self.closed = None
         self._modal_parent_timer = QTimer(self)
         self._modal_parent_timer.setSingleShot(True)
         self._modal_parent_timer.timeout.connect(self._sync_modal_parent)
@@ -311,6 +312,11 @@ class FloatingLyricsWindow(QWidget):
         if self.visibility_changed is not None:
             self.visibility_changed(False)
 
+    def closeEvent(self, event):
+        super().closeEvent(event)
+        if event.isAccepted() and self.closed is not None:
+            self.closed()
+
     def eventFilter(self, watched, event):
         if isinstance(watched, QWindow):
             if watched is self.windowHandle() and event.type() == QEvent.Type.WindowBlocked:
@@ -341,7 +347,7 @@ class FloatingLyricsWindow(QWidget):
         top.addStretch()
         close = QPushButton("×")
         close.setFixedSize(30, 28)
-        close.clicked.connect(self.hide)
+        close.clicked.connect(self.close)
         top.addWidget(close)
         self.close_button = close
         layout.addLayout(top)
@@ -640,6 +646,7 @@ class FloatingLyricsPlugin:
             return self.floating
         self.floating = FloatingLyricsWindow(self.settings)
         self.floating.visibility_changed = self._set_menu_checked
+        self.floating.closed = self.toggle_window
 
         x = self.settings.get("window_x")
         y = self.settings.get("window_y")
@@ -776,6 +783,7 @@ class FloatingLyricsPlugin:
         if self.floating is not None:
             floating, self.floating = self.floating, None
             floating.visibility_changed = None
+            floating.closed = None
             floating.close()
             floating.deleteLater()
 

@@ -4,6 +4,10 @@ media player
 
 idk
 
+## Community wiki
+
+I have a wiki now! To get started, please refer to the [wiki](https://pxib.github.io/lrcpluswiki/) to get detailed explanations on specific topics!
+
 ## User manual
 
 Choose **Help → Community wiki** in the app, or press **F1**, to open the [official community wiki](https://pxib.github.io/lrcpluswiki/). For offline help, choose **Help → Offline manual** or open [docs/manual/index.html](docs/manual/index.html) directly. The bundled manual includes offline search and needs no server or installation.

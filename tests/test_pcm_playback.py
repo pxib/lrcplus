@@ -286,6 +286,31 @@ def test_player_waits_for_audible_processed_tail_before_advancing(qapp, tmp_path
         qapp.processEvents()
 
 
+def test_output_progress_snapshot_uses_the_audio_thread_clock_and_resets(qapp):
+    class ClockedSink(Sink):
+        played_us = 0
+
+        def processedUSecs(self):
+            self.check_thread()
+            return self.played_us
+
+    sinks = []
+    worker = PcmPlayback(sink_factory=lambda *args: sinks.append(ClockedSink(*args)) or sinks[-1])
+    try:
+        worker.configure(None, 1, 0, 1.5, enabled=True, playing=True)
+        worker.receive_buffer(buffer(frames=4800))
+        wait_without_gui(lambda: bool(sinks) and sinks[0].total_written == 4800 * 8)
+        sinks[0].played_us = 50000
+        wait_without_gui(lambda: worker.output_progress()[1] == 50)
+        before = worker.output_progress()[0]
+        worker.reset()
+        after = worker.output_progress()
+        assert after[0] > before
+        assert after[1] == 0
+    finally:
+        close(worker)
+
+
 def test_renderer_delivery_returns_while_audio_receiver_is_busy(qapp, monkeypatch):
     worker = PcmPlayback(sink_factory=Sink)
     source = QAudioBufferOutput()

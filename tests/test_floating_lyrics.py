@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QDialog, QPushButton
+from PySide6.QtWidgets import QDialog, QMenu, QPushButton
 
 from plugins.community.floating_lyrics.plugin import FloatingLyricsPlugin, FloatingLyricsWindow
 
@@ -25,6 +25,8 @@ def load_floating_plugin(qapp):
                                / "plugins/community/floating_lyrics/plugin.py")
         plugin = manager.plugins["floating_lyrics"].instance
         host = QPushButton("Main player")
+        host.plugins_menu = QMenu(host)
+        manager.set_host_window(host)
         host.current_line = 0
         host.lyric_lines = [SimpleNamespace(text="Current lyric", translation_lines=[])]
         host.show_ruby = False
@@ -79,10 +81,55 @@ def test_saved_enabled_plugin_restores_position_and_resumes_after_pause(
     assert plugin.floating.pos() == QPoint(123, 234)
     plugin.on_playback_state_changed("paused")
     assert not plugin.floating.isVisible()
+    assert plugin.settings["enabled"] is True
+    assert plugin.context.api.get_setting("enabled") is True
     host.lyric_lines[0].text = "Latest lyric"
     plugin.on_playback_state_changed("playing")
     assert plugin.floating.isVisible()
     assert plugin.floating.lyric_widget.lyric == "Latest lyric"
+
+
+@pytest.mark.parametrize("close_method", ["button", "window"])
+def test_closing_floating_window_disables_it_until_explicitly_reenabled(
+    load_floating_plugin, qapp, close_method,
+):
+    plugin, host = load_floating_plugin(enabled=True, hide_on_pause=True)
+    plugin.on_app_ready(host)
+    qapp.processEvents()
+    floating = plugin.floating
+    action = host.plugins_menu.actions()[0]
+    assert floating.isVisible()
+    assert action.isChecked()
+    floating.move(123, 234)
+
+    if close_method == "button":
+        QTest.mouseClick(floating.close_button, Qt.MouseButton.LeftButton)
+    else:
+        floating.close()
+    qapp.processEvents()
+
+    assert not floating.isVisible()
+    assert plugin.settings["enabled"] is False
+    assert plugin.context.api.get_setting("enabled") is False
+    assert not action.isChecked()
+    assert plugin.context.api.get_setting("window_x") == 123
+    assert plugin.context.api.get_setting("window_y") == 234
+    plugin.on_playback_state_changed("paused")
+    plugin.on_playback_state_changed("playing")
+    plugin._show_after_main_window()
+    qapp.processEvents()
+    assert not floating.isVisible()
+
+    restored, restored_host = load_floating_plugin()
+    restored.on_app_ready(restored_host)
+    qapp.processEvents()
+    assert restored.settings["enabled"] is False
+    assert restored.floating is None
+
+    action.trigger()
+    assert floating.isVisible()
+    assert action.isChecked()
+    assert plugin.context.api.get_setting("enabled") is True
 
 
 def test_unloading_before_startup_callback_does_not_create_a_window(
@@ -107,6 +154,7 @@ def test_unloading_destroys_created_floating_window(load_floating_plugin):
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     assert plugin.floating is None
     assert not isValid(floating)
+    assert plugin.context.api.get_setting("enabled") is True
 
 
 @pytest.mark.parametrize("nested", [False, True])

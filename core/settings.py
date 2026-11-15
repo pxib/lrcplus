@@ -82,6 +82,7 @@ PLAYBACK_DEFAULTS = {
     "shuffle_mode": "tracks",
     "after_playback": "next_track",
     "gapless_playback": False,
+    "crossfade_seconds": 0,
     "replaygain_mode": "off",
     "replaygain_preamp": 0,
     "replaygain_prevent_clipping": True,
@@ -167,6 +168,10 @@ def get_playback_settings(payload=None):
     after_playback = str(values.get("after_playback", PLAYBACK_DEFAULTS["after_playback"])).lower()
     if after_playback not in {"next_track", "stop", "repeat_all", "repeat_track"}:
         after_playback = PLAYBACK_DEFAULTS["after_playback"]
+    try:
+        crossfade_seconds = max(0, min(10, int(values.get("crossfade_seconds", 0))))
+    except (TypeError, ValueError, OverflowError):
+        crossfade_seconds = 0
     replaygain_mode = str(values.get("replaygain_mode", "off")).lower()
     if replaygain_mode not in {"off", "track", "album"}:
         replaygain_mode = "off"
@@ -202,6 +207,7 @@ def get_playback_settings(payload=None):
         "shuffle_mode": shuffle_mode,
         "after_playback": after_playback,
         "gapless_playback": bool(values.get("gapless_playback", False)),
+        "crossfade_seconds": crossfade_seconds,
         "replaygain_mode": replaygain_mode,
         "replaygain_preamp": replaygain_preamp,
         "replaygain_prevent_clipping": bool(values.get("replaygain_prevent_clipping", True)),
@@ -248,6 +254,21 @@ def get_sleep_timer_settings(payload=None):
     if action not in ("pause", "finish_track"):
         action = "pause"
     return {"minutes": minutes, "action": action}
+
+
+def get_statistics_settings(payload=None):
+    payload = load_all_settings() if payload is None else payload
+    values = payload.get("listening_statistics", {})
+    if not isinstance(values, dict):
+        values = {}
+    enabled = values.get("enabled", True)
+    return {"enabled": enabled if isinstance(enabled, bool) else True}
+
+
+def save_statistics_settings(values):
+    payload = load_all_settings()
+    payload["listening_statistics"] = get_statistics_settings({"listening_statistics": values})
+    save_all_settings(payload)
 
 
 def save_sleep_timer_settings(values):

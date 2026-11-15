@@ -44,6 +44,7 @@ class PcmPlayback(QObject):
         self._generation = 0
         self._pending = deque()
         self._queued_bytes = 0
+        self._output_progress_us = 0
         self._end_of_stream = False
         self._has_input = False
         self._input_expected = False
@@ -80,6 +81,7 @@ class PcmPlayback(QObject):
         self._generation += 1
         self._pending.clear()
         self._queued_bytes = 0
+        self._output_progress_us = 0
         self._end_of_stream = False
         self._has_input = False
         self._input_expected = False
@@ -92,6 +94,13 @@ class PcmPlayback(QObject):
             self._reset_locked()
         self._refresh_buffer_receiver()
         self._notify()
+
+    def output_progress(self):
+        """Read an output-thread snapshot without touching its Qt audio sink."""
+        with self._lock:
+            if self._closed or not self._controls.enabled:
+                return None
+            return self._generation, self._output_progress_us / 1000, self._controls.playing
 
     def configure(self, device, speed, shift, gain, *, enabled, playing):
         with self._lock:
@@ -374,6 +383,12 @@ class _PlaybackEngine(QObject):
                 self._accept_processed(self._processor.flush(), fmt, settings, tail=True)
                 self._stream_flushed = True
             self._drain(force=end_of_stream)
+            if self._sink is not None:
+                progress = min(self._sink.processedUSecs(),
+                               self._sink.format().durationForBytes(self._written_bytes))
+                with mailbox._lock:
+                    if generation == mailbox._generation:
+                        mailbox._output_progress_us = progress
             if drain_requested and end_of_stream and self._stream_flushed and not self._pending:
                 # Written data still belongs to the device. Advancing on write
                 # completion would cut off the tail already in its buffer.

@@ -1,7 +1,6 @@
 # Listening statistics and sleep timer
 
-Status: sleep timer implemented; listening statistics remains proposed. Both
-features belong to the main player.
+Status: sleep timer and listening statistics implemented as main-player features.
 
 ## First version
 

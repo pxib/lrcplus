@@ -5,6 +5,10 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Added
 
+- Add a built-in Sleep timer to the player dock, with preset and custom durations, a live countdown, five-minute extensions, replacement, and cancellation. Pause immediately when time expires or finish the current song; also offer stopping at the end of the song without a countdown. Respect repeat, shuffle, gapless transitions, and processed audio tails. Remember timer defaults while clearing active timers on app exit.
+- Add a Statistics workspace (Ctrl+3) with listening time, play counts, unique songs, daily activity, and ranked songs, artists, and albums. Filter by Today, Last 7 days, Last 30 days, or All time. Record actual listening time across speed changes and repeats while excluding pauses, seeks, buffering, system sleep, and user-muted playback. Store statistics locally, with recording enabled by default and controls to disable recording or clear statistics without removing music, playlists, or Recent entries.
+- Add an **A–B repeat** menu to the player dock, styled to match the other player buttons. Mark A and B at the current playback position, repeat the range, view its timestamps, or clear it. Show large seekbar flags in two distinct theme-dependent colors, with a shaded gradient range and bracket; keep the seekbar knob above the markers and separate nearby labels for short loops. Keep ranges for the current track only, preserve paused playback, suppress successor preloading during practice, and let sleep timers take priority.
+- Add optional lightweight crossfade under Settings > Playback (Off or 1–10 seconds). Reuse the bounded two-track audio engine and one output, preload near transitions, shorten overlaps for short tracks, and retain queue, ReplayGain, and sleep-timer behavior. Requires FFmpeg and normal speed and pitch; track details and lyrics switch at the end of the overlap.
 - Add timing-preserving text corrections to the lyrics editor. Keep existing karaoke timestamps and readings on unchanged text, preserve the correct timestamps when editing repeated words, and highlight changed chunks for timing review.
 - Add Shift/Ctrl multi-line selection and a **Selected Lines…** menu for batch timing shifts, formatting, movement, and deletion. Preview affected lines before shifting timing, applying formatting, or deleting, and restore selections with Undo/Redo.
 - Add **Split at Cursor…**, **Merge with Next…**, and **Merge Selected…** to the lyrics editor, with previews and Undo/Redo. Preserve word timing, readings, formatting, and translation rows; offer space, newline, or no separator when merging. Estimate new timing boundaries when splitting inside a chunk and flag those chunks for review.
@@ -15,6 +19,9 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Fixed
 
+- Use consistent themed dropdown indicators and numeric step buttons in the Sleep timer and Statistics filter, including light, dark, and disabled states.
+- Update the library performance-test fixture with the Favorites filter and current column layout, resolving five test setup errors.
+- Disable Floating Lyrics when its window is closed, preserving the disabled state across playback and app restarts.
 - Size the reading-dictionary table's dropdown columns immediately after adding entries or switching dictionaries, so Reading type and Match labels display fully without resizing the window.
 - Enable Save and show unsaved changes immediately after committing lyric waveform edits. Refresh playback timing and previews after each commit.
 - Move the next line's karaoke starts, ends, and line end together when committing the Lyrics waveform's B boundary, preserving word synchronization and annotations.

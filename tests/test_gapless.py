@@ -307,6 +307,10 @@ def sleep_window(transport, qapp, monkeypatch):
     transport.next_path = window._gapless_next_path
     transport.mediaStatusChanged.connect(window.handle_media_status)
     transport.playbackStateChanged.connect(window._sleep_playback_state_changed)
+    transport.mediaStatusChanged.connect(window._statistics_state_changed)
+    transport.playbackStateChanged.connect(window._statistics_state_changed)
+    transport.seekStarting.connect(window._statistics_sample)
+    transport.seekFinished.connect(window._statistics_rebase)
     qapp.processEvents()
     try:
         yield window, transport, now
@@ -315,6 +319,10 @@ def sleep_window(transport, qapp, monkeypatch):
         transport.next_path = lambda: None
         transport.mediaStatusChanged.disconnect(window.handle_media_status)
         transport.playbackStateChanged.disconnect(window._sleep_playback_state_changed)
+        transport.mediaStatusChanged.disconnect(window._statistics_state_changed)
+        transport.playbackStateChanged.disconnect(window._statistics_state_changed)
+        transport.seekStarting.disconnect(window._statistics_sample)
+        transport.seekFinished.disconnect(window._statistics_rebase)
         window.media_player = original
         window.close()
         window.deleteLater()
@@ -441,3 +449,123 @@ def test_real_decoder_bounds_memory_preserves_samples_and_cancels(tmp_path):
     second.close()
     second._thread.join(3)
     assert not second._thread.is_alive()
+
+
+@pytest.mark.parametrize("repeat", [False, True])
+def test_statistics_split_audible_gapless_tracks_and_repeats(sleep_window, monkeypatch, repeat):
+    from datetime import datetime, timedelta, timezone
+
+    window, player, now = sleep_window
+    window.statistics._clock = lambda: now[0]
+    window.statistics._wall_clock = lambda: datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=now[0])
+    for method in ("update_background_for_audio", "_start_lyrics_search", "_configure_pcm_volume", "_load_replaygain"):
+        monkeypatch.setattr(window, method, lambda *args: None)
+    monkeypatch.setattr(window.waveform_widget, "load_audio", lambda *args: None)
+    window.playback_settings["after_playback"] = "repeat_track" if repeat else "next_track"
+    player._duration = 100
+    window._statistics_track_started()
+    player._pump()
+    sink = player._sink
+    now[0] = .1
+    sink.time = 100000
+    player._pump()
+    assert window.current_audio_path.name == ("first.wav" if repeat else "second.wav")
+    now[0] = .15
+    sink.time = 150000
+    window._statistics_checkpoint()
+    result = window.statistics_store.snapshot().result(timeout=5)
+    assert result["summary"]["listened_ms"] == 150
+    assert result["summary"]["plays"] == 2
+    assert result["summary"]["songs"] == (1 if repeat else 2)
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_crossfade_mixes_overlap_and_preserves_successor_clock(transport, partial):
+    player = transport
+    player._crossfade_seconds = 1
+    def advance(status):
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            player.setSource(QUrl.fromLocalFile("second.wav"))
+            player.next_path = lambda: None
+    player.mediaStatusChanged.connect(advance)
+    if partial:
+        player._sink = Sink(None, player._format, player)
+        player._io = player._sink
+        player._sink.max_write = 12
+    for _ in range(2600 if partial else 1):
+        player._pump()
+    sink = player._sink
+    samples = [x[0] for x in struct.iter_unpack("<f", sink.written)]
+    assert len(samples) == 7200  # 100 ms + 100 ms - 50 ms overlap
+    assert samples[:2400] == [0.25] * 2400
+    assert samples[2400] == pytest.approx(0.25)
+    assert samples[3599] == pytest.approx(-0.125, abs=0.001)
+    assert samples[4799:] == pytest.approx([-0.5] * 2401)
+    sink.time = 100000
+    player._pump()
+    assert player.position() == 50  # incoming head was already heard
+    assert player._sink is sink
+
+
+def test_crossfade_queue_edit_discards_mixed_audio(transport):
+    player = transport
+    player._crossfade_seconds = 1
+    player._pump()
+    old, sink = player._next_decoder, player._sink
+    player.next_path = lambda: None
+    player.invalidate_preload()
+    assert old.closed and sink.stopped
+    assert player._next_offset_frames == 0
+    assert player._crossfade_out == b""
+    player._pump()
+    assert player._next_decoder is None
+
+
+def test_crossfade_preferences_validation():
+    from core.settings import save_playback_settings, get_playback_settings
+    for raw, expected in [(5, 5), (99, 10), (-3, 0), ("bad", 0), (None, 0)]:
+        save_playback_settings({"crossfade_seconds": raw})
+        assert get_playback_settings()["crossfade_seconds"] == expected
+
+
+def test_crossfade_enables_stream_without_gapless_checkbox(qapp, monkeypatch):
+    monkeypatch.setattr("core.gapless.shutil.which", lambda name: "ffmpeg")
+    player = GaplessMediaPlayer()
+    try:
+        player.configure_gapless(False, 1, ("off", 0, True), crossfade_seconds=3)
+        assert player._gapless_enabled
+        player.configure_gapless(False, 1, ("off", 0, True), compatible=False, crossfade_seconds=3)
+        assert not player._gapless_enabled
+    finally:
+        player.deleteLater()
+
+
+def test_crossfade_settings_control_round_trip(qapp):
+    from ui.settings_dialog import SettingsDialog
+    dialog = SettingsDialog([], {}, playback_settings={"crossfade_seconds": 4})
+    try:
+        assert dialog.crossfade_seconds.value() == 4
+        dialog.crossfade_seconds.setValue(7)
+        assert dialog.get_playback_settings()["crossfade_seconds"] == 7
+    finally:
+        dialog.deleteLater()
+
+
+def test_crossfade_without_successor_preserves_final_track(transport):
+    player = transport
+    player._crossfade_seconds = 5
+    player.next_path = lambda: None
+    player._pump()
+    assert bytes(player._sink.written) == struct.pack("<4800f", *([0.25] * 4800))
+    assert player._next_decoder is None
+
+
+def test_crossfade_defers_successor_decoder_until_near_end(transport):
+    player = transport
+    player._crossfade_seconds = 3
+    player._decoder.duration = 60000
+    player._pump()
+    assert player._next_decoder is None
+    player._read_frames = 55 * 48000
+    player._pump()
+    assert player._next_decoder is not None

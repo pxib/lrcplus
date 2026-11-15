@@ -10,7 +10,7 @@ import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QRect, QThread, QTimer, Qt
 from PySide6.QtGui import QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QLabel, QLineEdit, QStyleOptionViewItem,
+    QAbstractItemView, QDialog, QLabel, QLineEdit, QPushButton, QStyleOptionViewItem,
     QTreeWidget, QVBoxLayout, QWidget,
 )
 
@@ -211,11 +211,15 @@ def test_reading_worker_finishing_after_close_does_not_emit(tmp_path, qapp, monk
 def library(qapp):
     window = QWidget()
     tree = QTreeWidget(window)
-    tree.setColumnCount(12)
+    tree.setColumnCount(14)
     QVBoxLayout(window).addWidget(tree)
+    favorites_filter = QPushButton("Favorites", window)
+    favorites_filter.setCheckable(True)
     player = SimpleNamespace(
         library_table=tree, library_search=QLineEdit(window),
-        _library_search_timer=QTimer(window), library_columns=list(range(12)),
+        _library_search_timer=QTimer(window), library_columns=list(range(14)),
+        library_lyrics_column=12, library_favorite_column=13,
+        library_favorites_filter=favorites_filter, favorite_paths=set(),
         _library_expansion_before_search=None,
         library_folder_label=QLabel(window), library_folders=[],
         library_tracks=[LibraryTrack(f"C:/music/{i}.mp3", f"Song {i}",

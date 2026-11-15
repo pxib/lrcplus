@@ -120,6 +120,40 @@ class ThemedComboBox(_NativeComboBox):
 QComboBox = ThemedComboBox
 
 
+THEMED_INPUT_STYLE = """
+    QComboBox { padding-right: 30px; }
+    QComboBox::drop-down { width: 24px; border: none; background: transparent; }
+    QComboBox::down-arrow { image: none; width: 0; height: 0; }
+    QToolButton#comboDropIndicator,
+    QToolButton#spinStepUp,
+    QToolButton#spinStepDown {
+        color: @text@;
+        background: @raised@;
+        border: none;
+        border-left: 1px solid @border@;
+        padding: 0;
+    }
+    QToolButton#comboDropIndicator {
+        border-top-right-radius: 4px;
+        border-bottom-right-radius: 4px;
+    }
+    QToolButton#spinStepUp {
+        border-bottom: 1px solid @border@;
+        border-top-right-radius: 4px;
+    }
+    QToolButton#spinStepDown { border-bottom-right-radius: 4px; }
+    QToolButton#comboDropIndicator:hover,
+    QToolButton#spinStepUp:hover,
+    QToolButton#spinStepDown:hover { background: @raised_hover@; }
+    QToolButton#comboDropIndicator:pressed,
+    QToolButton#spinStepUp:pressed,
+    QToolButton#spinStepDown:pressed { background: @pressed@; }
+    QToolButton#comboDropIndicator:disabled,
+    QToolButton#spinStepUp:disabled,
+    QToolButton#spinStepDown:disabled { color: @muted@; background: @raised@; }
+"""
+
+
 SETTINGS_DIALOG_STYLE = """
     QDialog {
         background: @WINDOW@;

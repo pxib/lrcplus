@@ -1,7 +1,7 @@
 import math
 
-from PySide6.QtCore import Qt, QTimer, Signal, QThread
-from PySide6.QtGui import QPixmap, QPainter
+from PySide6.QtCore import Qt, QTimer, Signal, QThread, QRect
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPalette, QPen, QLinearGradient, QBrush
 from PySide6.QtWidgets import (
     QDialog,
     QComboBox,
@@ -20,11 +20,94 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 from core.music_library import scan_folders
+from core.theme import _relative_luminance
 
 class ClickableSlider(QSlider):
     """Click or drag to seek, using the current style's handle geometry."""
 
     wheelSeekRequested = Signal(int)
+
+    def set_loop_colors(self, start, end):
+        self._loop_colors = (QColor(start), QColor(end))
+        self.update()
+
+    def set_loop_range(self, start=None, end=None):
+        self._loop_range = (start, end)
+        self.update()
+
+    def _loop_geometry(self):
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        style = self.style()
+        groove = style.subControlRect(QStyle.ComplexControl.CC_Slider, option,
+                                      QStyle.SubControl.SC_SliderGroove, self)
+        handle = style.subControlRect(QStyle.ComplexControl.CC_Slider, option,
+                                      QStyle.SubControl.SC_SliderHandle, self)
+        markers = []
+        for label, value in zip(("A", "B"), getattr(self, "_loop_range", (None, None))):
+            if value is not None:
+                x = groove.x() + handle.width() // 2 + QStyle.sliderPositionFromValue(
+                    self.minimum(), self.maximum(), max(self.minimum(), min(value, self.maximum())),
+                    max(0, groove.width() - handle.width()), option.upsideDown,
+                )
+                markers.append((label, x))
+        return option, groove, markers
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.orientation() != Qt.Orientation.Horizontal or self.maximum() <= self.minimum():
+            return
+        option, groove, markers = self._loop_geometry()
+        if not markers:
+            return
+        painter = QPainter(self)
+        color = self.palette().color(QPalette.ColorRole.Highlight)
+        colors = getattr(self, "_loop_colors", (color, color))
+        center = groove.center().y()
+        if len(markers) == 2:
+            left, right = sorted(x for _, x in markers)
+            gradient = QLinearGradient(markers[0][1], 0, max(markers[0][1] + 1, markers[1][1]), 0)
+            # Preserve A-to-B color direction in right-to-left layouts too.
+            if markers[1][1] < markers[0][1]:
+                gradient = QLinearGradient(markers[0][1], 0, markers[1][1], 0)
+            gradient.setColorAt(0, colors[0])
+            gradient.setColorAt(1, colors[1])
+            fill = QBrush(gradient)
+            painter.setOpacity(0.67)
+            painter.fillRect(QRect(left, center - 4, max(1, right - left), 9), fill)
+            painter.setOpacity(1)
+            # A separate bracket distinguishes the loop from playback progress.
+            bottom = min(self.height() - 2, center + 10)
+            painter.setPen(QPen(fill, 2))
+            painter.drawLine(left, bottom - 4, left, bottom)
+            painter.drawLine(left, bottom, right, bottom)
+            painter.drawLine(right, bottom, right, bottom - 4)
+        font = painter.font()
+        font.setPixelSize(11)
+        font.setBold(True)
+        painter.setFont(font)
+        for label, x in markers:
+            color = colors[0 if label == "A" else 1]
+            painter.setPen(QPen(color, 2))
+            painter.drawLine(x, 13, x, min(self.height() - 1, center + 6))
+            tag_x = max(0, min(x - 8, self.width() - 16))
+            # Separate nearby labels even for very short practice ranges.
+            if len(markers) == 2 and abs(markers[1][1] - markers[0][1]) < 18:
+                forward = markers[0][1] <= markers[1][1]
+                place_left = (label == "A") == forward
+                tag_x = max(0, min(x - 16 if place_left else x, self.width() - 16))
+            tag = QRect(tag_x, 0, 16, 14)
+            painter.fillRect(tag, color)
+            painter.setPen(QColor("#000000" if _relative_luminance(color) > 0.179 else "#ffffff"))
+            painter.drawText(tag, Qt.AlignmentFlag.AlignCenter, label)
+        # Paint the playhead above both marker flags and the range highlight.
+        option.subControls = QStyle.SubControl.SC_SliderHandle
+        painter.save()
+        painter.setClipRect(self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider, option,
+            QStyle.SubControl.SC_SliderHandle, self))
+        self.style().drawComplexControl(QStyle.ComplexControl.CC_Slider, option, painter, self)
+        painter.restore()
 
     def wheelEvent(self, event):
         previous_value = self.value()

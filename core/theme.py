@@ -159,4 +159,22 @@ def build_theme_palette(mode, accent_color, surface_style="classic", overrides=N
         "#ffffff" if white_selection_contrast >= dark_selection_contrast else dark_text.name()
     )
     values["mode"] = "dark" if dark else "light"
+    # Keep practice markers distinct and visible against custom player colors.
+    background = QColor(values["dock"])
+    hue = accent.hsvHueF()
+    secondary = QColor.fromHsvF(((hue if hue >= 0 else 0.15) + 0.42) % 1,
+                                max(0.55, accent.hsvSaturationF()),
+                                max(0.65, accent.valueF()))
+    background_luminance = _relative_luminance(background)
+    for role, marker in (("loop_start", QColor(accent)), ("loop_end", secondary)):
+        target = QColor("#ffffff" if background_luminance < 0.179 else "#000000")
+        for _ in range(20):
+            luminance = _relative_luminance(marker)
+            contrast = (max(luminance, background_luminance) + 0.05) / (min(luminance, background_luminance) + 0.05)
+            if contrast >= 3:
+                break
+            marker = QColor(*(round(a * 0.9 + b * 0.1) for a, b in zip(
+                (marker.red(), marker.green(), marker.blue()),
+                (target.red(), target.green(), target.blue()))))
+        values[role] = marker.name()
     return values

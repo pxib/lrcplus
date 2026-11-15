@@ -76,6 +76,8 @@ class PlayerSleepTimerMixin:
                 self.sleep_timer.finish_current_track()
 
     def _pause_for_sleep_timer(self):
+        if hasattr(self, "statistics"):
+            self._statistics_checkpoint()
         self._sleep_expired = True
         tail_pending = getattr(self, "_pcm_end_pending", False)
         worker = getattr(self, "_pcm_worker", None)

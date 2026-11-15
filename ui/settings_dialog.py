@@ -310,6 +310,7 @@ class PluginSettingsDialog(QDialog):
 class SettingsDialog(QDialog):
     check_updates_requested = Signal()
     relaunch_wizard_requested = Signal()
+    clear_statistics_requested = Signal()
 
     def __init__(
         self,
@@ -324,12 +325,15 @@ class SettingsDialog(QDialog):
         plugin_manager=None,
         parent=None,
         update_settings=None,
+        statistics_settings=None,
     ):
         super().__init__(parent)
 
         self.global_lyrics = dict(global_lyrics or {})
         self._reading_dictionary_draft = None
         self.startup_settings = dict(startup_settings or {})
+        from core.settings import get_statistics_settings
+        self.statistics_settings = statistics_settings if statistics_settings is not None else get_statistics_settings()
         self.appearance_settings = dict(appearance_settings or {})
         self.custom_themes = [
             valid for theme in self.appearance_settings.get("custom_themes", [])
@@ -395,6 +399,17 @@ class SettingsDialog(QDialog):
         self.relaunch_wizard_button = QPushButton("Relaunch Wizard")
         self.relaunch_wizard_button.clicked.connect(self.relaunch_wizard_requested.emit)
         general_layout.addWidget(self.relaunch_wizard_button, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        self._add_section_heading(general_layout, "Listening statistics")
+        self.statistics_enabled_checkbox = QCheckBox("Record listening statistics on this device")
+        self.statistics_enabled_checkbox.setChecked(self.statistics_settings.get("enabled", True))
+        general_layout.addWidget(self.statistics_enabled_checkbox)
+        statistics_note = QLabel("Listening history stays on this device. Turning recording off keeps your existing totals.")
+        statistics_note.setWordWrap(True)
+        general_layout.addWidget(statistics_note)
+        self.clear_statistics_button = QPushButton("Clear listening statistics…")
+        self.clear_statistics_button.clicked.connect(self.clear_statistics_requested.emit)
+        general_layout.addWidget(self.clear_statistics_button, alignment=Qt.AlignmentFlag.AlignLeft)
 
         self._add_section_heading(general_layout, "Updates")
         self.automatic_update_checkbox = QCheckBox(
@@ -1312,6 +1327,16 @@ class SettingsDialog(QDialog):
             "available at normal speed and pitch. Takes effect on the next track."
         )
         layout.addWidget(self.gapless_checkbox)
+        self.crossfade_seconds = ThemedSpinBox()
+        self.crossfade_seconds.setRange(0, 10)
+        self.crossfade_seconds.setSuffix(" s")
+        self.crossfade_seconds.setSpecialValueText("Off")
+        self.crossfade_seconds.setValue(int(self.playback_settings.get("crossfade_seconds", 0)))
+        self.crossfade_seconds.setToolTip(
+            "Overlap automatic track transitions. Requires FFmpeg and normal speed and pitch; "
+            "takes effect on the next track. Short tracks use a shorter fade."
+        )
+        self._add_labeled(layout, "Crossfade:", self.crossfade_seconds)
         self.replaygain_combo = QComboBox()
         for label, value in (("Off", "off"), ("Track", "track"), ("Album", "album")):
             self.replaygain_combo.addItem(label, value)
@@ -2471,6 +2496,10 @@ class SettingsDialog(QDialog):
         }
 
 
+    def get_statistics_settings(self):
+        return {"enabled": self.statistics_enabled_checkbox.isChecked()}
+
+
     def get_appearance_settings(self):
         return {
             "theme_mode": self.theme_mode,
@@ -2549,6 +2578,7 @@ class SettingsDialog(QDialog):
             "shuffle_mode": self.shuffle_mode_combo.currentData(),
             "after_playback": self.after_playback_combo.currentData(),
             "gapless_playback": self.gapless_checkbox.isChecked(),
+            "crossfade_seconds": self.crossfade_seconds.value(),
             "replaygain_mode": self.replaygain_combo.currentData(),
             "replaygain_preamp": self.replaygain_preamp.value(),
             "replaygain_prevent_clipping": self.replaygain_clipping.isChecked(),

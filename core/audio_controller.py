@@ -71,6 +71,8 @@ class AudioController:
                 invalidate()
 
         def _gapless_next_path(self):
+            if getattr(self, "_ab_start", None) is not None:
+                return None
             timer = getattr(self, "sleep_timer", None)
             if timer is not None:
                 timer.check()
@@ -101,8 +103,12 @@ class AudioController:
 
         def load_audio(self, path):
             """Load a track; False means a sleep timer suppressed its autoplay."""
+            if getattr(self, "_ab_start", None) is not None:
+                self._clear_ab_loop()
             audio_path = Path(path).expanduser().resolve()
             allow_autoplay = self._sleep_before_track_load() if hasattr(self, "sleep_timer") else True
+            if hasattr(self, "statistics"):
+                self._statistics_checkpoint()
 
             handoff = getattr(self.media_player, "_gapless_handoff", False)
             if not handoff:
@@ -182,6 +188,8 @@ class AudioController:
                 )
             )
             self._set_native_pitch_compensation()
+            if hasattr(self, "statistics"):
+                self._statistics_track_started()
             self._load_replaygain()
 
             # Folder walks and lyric-file reads must not delay playback or PCM
@@ -243,11 +251,15 @@ class AudioController:
 
 
         def stop_playback(self):
+            if hasattr(self, "statistics"):
+                self._statistics_checkpoint()
             timer = getattr(self, "sleep_timer", None)
             if timer is not None:
                 timer.cancel()
             self._flush_pcm_output()
             self.media_player.stop()
+            if hasattr(self, "statistics"):
+                self._statistics_track_started()
             self.current_line = -1
             self.last_lyric_text = None
             self.seek_slider.setValue(0)
@@ -506,6 +518,8 @@ class AudioController:
 
 
         def _flush_pcm_output(self):
+            if hasattr(self, "statistics"):
+                self._statistics_sample()
             self._pcm_end_pending = False
             self._stop_pcm_sink()
             rate_processor = getattr(self, "_pcm_rate_processor", None)
@@ -560,6 +574,7 @@ class AudioController:
                 self.playback_settings.get("gapless_playback", False),
                 volume_to_gain(value), self._replaygain_options(),
                 compatible=not pitch_active and not rate_active,
+                crossfade_seconds=self.playback_settings.get("crossfade_seconds", 0),
             ):
                 self._stop_pcm_sink()
                 worker = getattr(self, "_pcm_worker", None)
@@ -839,6 +854,10 @@ class AudioController:
 
 
         def handle_volume_change(self, value):
+            if hasattr(self, "statistics"):
+                # The slider already holds the new value; the recorder credits
+                # the elapsed interval using its previous audible state.
+                self._statistics_sample()
             if value > 0:
                 self.last_volume = value
             self.playback_settings["volume"] = value
@@ -868,6 +887,8 @@ class AudioController:
                 self.audio_output.setMuted(False)
                 self.is_muted = False
 
+            if hasattr(self, "statistics"):
+                self._statistics_rebase()
             self.mute_button.setText(
                 "Unmute" if self.is_muted else "Mute"
             )
@@ -905,6 +926,8 @@ class AudioController:
 
 
         def handle_speed_change(self, value):
+            if hasattr(self, "statistics"):
+                self._statistics_sample()
             previous_speed = self.playback_speed
             # Snap to 100% if close enough (within 5 units)
             snap_threshold = 5
@@ -1026,6 +1049,9 @@ class AudioController:
             if timer is not None and self._sleep_before_advance():
                 return
 
+            if hasattr(self, "_check_ab_loop") and self._check_ab_loop(at_end=True):
+                return
+
             paths = self._playback_paths()
             if not paths:
                 return
@@ -1041,6 +1067,8 @@ class AudioController:
                     self.media_player.play()
                     return
                 self._flush_pcm_output()
+                if hasattr(self, "statistics"):
+                    self._statistics_track_started()
                 self.media_player.setPosition(0)
                 self.media_player.play()
                 return

@@ -125,11 +125,17 @@ class GaplessMediaPlayer(QMediaPlayer):
     """Keep the existing transport API and signals for lyrics and plugins."""
 
     gaplessFallback = Signal(str)
+    seekStarting = Signal()
+    seekFinished = Signal()
+    playbackRestarting = Signal()
 
     def __init__(self, parent=None, *, sink_factory=QAudioSink, decoder_factory=TrackDecoder):
         super().__init__(parent)
         self._sink_factory = sink_factory
         self._decoder_factory = decoder_factory
+        self._crossfade_seconds = 0
+        self._read_frames = self._next_offset_frames = self._next_read_frames = 0
+        self._crossfade_out = b""
         self._gapless_enabled = False
         self._gapless_active = False
         self._gapless_handoff = False
@@ -155,10 +161,11 @@ class GaplessMediaPlayer(QMediaPlayer):
         self._timer.setInterval(10)
         self._timer.timeout.connect(self._pump)
 
-    def configure_gapless(self, enabled, volume, rg_settings, *, compatible=True):
+    def configure_gapless(self, enabled, volume, rg_settings, *, compatible=True, crossfade_seconds=0):
         self._rg_settings = rg_settings
         self._volume = volume
-        enabled = bool(enabled and compatible and shutil.which("ffmpeg"))
+        self._crossfade_seconds = max(0, min(10, crossfade_seconds))
+        enabled = bool((enabled or self._crossfade_seconds) and compatible and shutil.which("ffmpeg"))
         self._gapless_enabled = enabled
         if self._gapless_active and (not enabled or self._sink_device != self.audioOutput().device()):
             url, position, state = self.source(), self.position(), self.playbackState()
@@ -181,8 +188,10 @@ class GaplessMediaPlayer(QMediaPlayer):
             self._decoder.close()
             self._decoder, self._next_decoder = self._next_decoder, None
             self._url = QUrl(url)
-            self._offset = 0
-            self._last_position = 0
+            self._read_frames = self._next_read_frames
+            self._offset = self._next_offset_frames * 1000 // self._format.sampleRate()
+            self._next_offset_frames = self._next_read_frames = 0
+            self._last_position = self._offset
             self._track_start_us = self._boundary_us
             self._boundary_us = None
             self._duration = self._decoder.duration
@@ -191,7 +200,7 @@ class GaplessMediaPlayer(QMediaPlayer):
             self._status = QMediaPlayer.MediaStatus.BufferedMedia
             self.sourceChanged.emit(url)
             self.durationChanged.emit(self._duration)
-            self.positionChanged.emit(0)
+            self.positionChanged.emit(self._offset)
             return
         self._release()
         self._gapless_active = False
@@ -255,6 +264,9 @@ class GaplessMediaPlayer(QMediaPlayer):
             self.playbackStateChanged.emit(state)
 
     def play(self):
+        if ((self._gapless_active and self._at_end)
+                or (not self._gapless_active and self.mediaStatus() == QMediaPlayer.MediaStatus.EndOfMedia)):
+            self.playbackRestarting.emit()
         if not self._gapless_active:
             return super().play()
         if self._at_end:
@@ -284,11 +296,19 @@ class GaplessMediaPlayer(QMediaPlayer):
         self.positionChanged.emit(0)
 
     def setPosition(self, position):
+        self.seekStarting.emit()
+        try:
+            self._set_position(position)
+        finally:
+            self.seekFinished.emit()
+
+    def _set_position(self, position):
         if not self._gapless_active:
             return super().setPosition(position)
         state = self._state
         self._release()
         self._offset = max(0, int(position))
+        self._read_frames = self._offset * self._format.sampleRate() // 1000
         self._track_start_us = self._written = 0
         self._at_end = False
         self._decoder = self._new_decoder(self._url.toLocalFile(), self._offset)
@@ -301,7 +321,7 @@ class GaplessMediaPlayer(QMediaPlayer):
         self._preload_resolved = False
         # Queue edits near a boundary discard already-buffered successor audio
         # and restart at the audible position, so a removed track cannot play.
-        if self._boundary_us is not None:
+        if self._boundary_us is not None or self._next_offset_frames:
             self.setPosition(self.position())
             return
         if self._next_decoder is not None:
@@ -315,6 +335,8 @@ class GaplessMediaPlayer(QMediaPlayer):
                 decoder.close()
         self._decoder = self._next_decoder = None
         self._pending = b""
+        self._crossfade_out = b""
+        self._read_frames = self._next_offset_frames = self._next_read_frames = 0
         self._preload_resolved = False
         self._boundary_us = None
         sink, self._sink = self._sink, None
@@ -365,17 +387,14 @@ class GaplessMediaPlayer(QMediaPlayer):
             self._next_path = self.next_path()
             self._preload_resolved = True
         path = self._next_path
-        if path and self._next_decoder is None:
+        preload_due = (not self._crossfade_seconds or not self._duration
+                       or self._read_frames * 1000 // self._format.sampleRate()
+                       >= self._duration - (self._crossfade_seconds + 2) * 1000)
+        if path and self._next_decoder is None and preload_due:
             self._next_decoder = self._new_decoder(path)
         if not self._pending:
-            self._pending = decoder.take(TrackDecoder.BLOCK)
-            if self._pending:
-                gain = decoder.tags.multiplier(*self._rg_settings) * self._volume
-                if abs(gain - 1.0) > 1e-8:
-                    self._pending = apply_pcm_gain_to_bytes(
-                        self._pending, QAudioFormat.SampleFormat.Float, gain,
-                    )
-        if decoder.exhausted and not self._pending and self._sink is None:
+            self._pending = self._take_audio(decoder)
+        if decoder.exhausted and not self._crossfade_out and not self._pending and self._sink is None:
             self._fallback("The decoder produced no audio.")
             return
         if self._sink is None and self._pending:
@@ -401,7 +420,7 @@ class GaplessMediaPlayer(QMediaPlayer):
                 self._written += written
             if self._pending:
                 break
-            if decoder.exhausted:
+            if decoder.exhausted and not self._crossfade_out:
                 if self._boundary_us is not None:
                     break  # A very short successor is buffered; await its clock.
                 if path and self._next_decoder is not None:
@@ -421,13 +440,61 @@ class GaplessMediaPlayer(QMediaPlayer):
                     self._set_state(QMediaPlayer.PlaybackState.StoppedState)
                     self.mediaStatusChanged.emit(self._status)
                 break
-            self._pending = decoder.take(TrackDecoder.BLOCK)
+            self._pending = self._take_audio(decoder)
             if not self._pending:
                 break
-            gain = decoder.tags.multiplier(*self._rg_settings) * self._volume
-            if abs(gain - 1.0) > 1e-8:
-                self._pending = apply_pcm_gain_to_bytes(self._pending, QAudioFormat.SampleFormat.Float, gain)
         position = self.position()
         if abs(position - self._last_position) >= 40:
             self._last_position = position
             self.positionChanged.emit(position)
+
+    def _take_audio(self, decoder):
+        """Mix only the overlap, retaining at most one outgoing PCM block."""
+        frame_bytes = self._format.bytesPerFrame()
+        rate = self._format.sampleRate()
+        successor = self._next_decoder
+        fade = 0
+        if (decoder is self._decoder and self._boundary_us is None
+                and successor is not None and self._crossfade_seconds
+                and decoder.duration and successor.duration):
+            fade = int(min(self._crossfade_seconds * rate,
+                           decoder.duration * rate // 2000,
+                           successor.duration * rate // 2000))
+        end = decoder.duration * rate // 1000
+        start = end - fade
+        count = TrackDecoder.BLOCK
+        if fade and self._read_frames < start:
+            count = min(count, (start - self._read_frames) * frame_bytes)
+        data = self._crossfade_out or decoder.take(count)
+        self._crossfade_out = b""
+        gain = decoder.tags.multiplier(*self._rg_settings) * self._volume
+        if fade and self._read_frames >= start and data:
+            if successor.error:
+                raise RuntimeError(successor.error)
+            other = successor.take(len(data))
+            if not other and not successor.exhausted:
+                self._crossfade_out = data
+                return b""
+            if other:
+                self._crossfade_out = data[len(other):]
+                data = data[:len(other)]
+                import numpy as np
+                channels = self._format.channelCount()
+                frames = len(data) // frame_bytes
+                progress = np.clip((np.arange(frames, dtype=np.float32)
+                                    + self._read_frames - start) / max(1, fade - 1), 0, 1)[:, None]
+                outgoing = np.frombuffer(data, dtype="<f4").reshape(-1, channels)
+                incoming = np.frombuffer(other, dtype="<f4").reshape(-1, channels)
+                next_gain = successor.tags.multiplier(*self._rg_settings) * self._volume
+                data = np.clip(outgoing * gain * (1 - progress)
+                               + incoming * next_gain * progress, -1, 1).astype("<f4").tobytes()
+                self._next_offset_frames += frames
+                self._next_read_frames += frames
+                gain = 1.0
+        if decoder is self._decoder:
+            self._read_frames += len(data) // frame_bytes
+        else:
+            self._next_read_frames += len(data) // frame_bytes
+        if abs(gain - 1.0) > 1e-8:
+            data = apply_pcm_gain_to_bytes(data, QAudioFormat.SampleFormat.Float, gain)
+        return data

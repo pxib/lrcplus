@@ -3,12 +3,12 @@
 from datetime import datetime, timedelta
 
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QPushButton,
-    QSpinBox, QVBoxLayout,
+    QDialog, QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 )
 
 from core.theme import build_theme_palette
 from ui.player_sleep_timer import countdown_text
+from ui.settings_controls import ThemedComboBox, ThemedSpinBox, THEMED_INPUT_STYLE
 
 
 class SleepTimerDialog(QDialog):
@@ -24,14 +24,14 @@ class SleepTimerDialog(QDialog):
         self.status_label.setObjectName("sleepStatus")
         self.status_label.setAccessibleName("Sleep timer status")
 
-        self.duration_combo = QComboBox()
+        self.duration_combo = ThemedComboBox()
         self.duration_combo.setAccessibleName("Sleep timer duration")
         for minutes in (15, 30, 45, 60, 90):
             self.duration_combo.addItem(f"{minutes} minutes", minutes)
         self.duration_combo.addItem("Custom…", None)
         index = self.duration_combo.findData(defaults["minutes"])
         self.duration_combo.setCurrentIndex(index if index >= 0 else 5)
-        self.minutes_spin = QSpinBox()
+        self.minutes_spin = ThemedSpinBox()
         self.minutes_spin.setRange(1, 720)
         self.minutes_spin.setSuffix(" minutes")
         self.minutes_spin.setValue(defaults["minutes"])
@@ -39,7 +39,7 @@ class SleepTimerDialog(QDialog):
         self.duration_combo.currentIndexChanged.connect(self._duration_changed)
         self._duration_changed()
 
-        self.action_combo = QComboBox()
+        self.action_combo = ThemedComboBox()
         self.action_combo.setAccessibleName("Sleep timer expiry action")
         self.action_combo.addItem("Pause immediately", "pause")
         self.action_combo.addItem("Finish the current song", "finish_track")
@@ -105,7 +105,7 @@ class SleepTimerDialog(QDialog):
                 background: @surface@; color: @text@; selection-background-color: @selection@;
                 selection-color: @selection_text@;
             }
-        """
+        """ + THEMED_INPUT_STYLE
         for key, value in palette.items():
             style = style.replace(f"@{key}@", value)
         self.setStyleSheet(style)

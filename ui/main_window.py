@@ -75,13 +75,18 @@ from core.theme import build_theme_palette
 from ui.easter_eggs import BudgetBrandLabel, CatSeekTrack, EasterEggs
 from ui.player_library import PlayerLibraryMixin
 from ui.player_updates import PlayerUpdatesMixin
+from ui.player_ab_loop import PlayerABLoopMixin
 from ui.player_sleep_timer import PlayerSleepTimerMixin
+from ui.player_statistics import PlayerStatisticsMixin
+from ui.statistics_page import StatisticsPage
 from ui.lyrics_search_dialog import LyricsSearchDialogMixin, _lyrics_search_query
 
 
 class Player(
+    PlayerABLoopMixin,
     FavoritesMixin,
     PlayerSleepTimerMixin,
+    PlayerStatisticsMixin,
     PlayerLibraryMixin,
     PlayerUpdatesMixin,
     LyricsSearchDialogMixin,
@@ -339,7 +344,7 @@ class Player(
             self.seek_slider.setRange(0, 0)
             self.seek_slider.setSingleStep(5000)
             self.seek_slider.setPageStep(5000)
-            self.seek_slider.setFixedHeight(20)
+            self.seek_slider.setFixedHeight(32)
             self.seek_slider.sliderPressed.connect(
                 self.start_seeking
             )
@@ -533,6 +538,12 @@ class Player(
             self.workspace_button_group.addButton(self.library_button)
             self.workspace_button_group.addButton(self.lyrics_view_button)
 
+            self.statistics_button = QPushButton("Statistics")
+            self.statistics_button.setObjectName("workspaceButton")
+            self.statistics_button.setCheckable(True)
+            self.statistics_button.clicked.connect(lambda: self.workspace_stack.setCurrentWidget(self.statistics_page))
+            self.workspace_button_group.addButton(self.statistics_button)
+
             # --------------------------------------------------
             # TRANSPORT CONTROLS
             # --------------------------------------------------
@@ -600,6 +611,8 @@ class Player(
             )
             self.pitch_status_label.setMinimumWidth(48)
 
+            self._init_ab_loop()
+
             self.sleep_timer_button = QPushButton("Sleep")
             self.sleep_timer_button.setObjectName("sleepTimerButton")
             self.sleep_timer_button.setCheckable(True)
@@ -646,6 +659,7 @@ class Player(
             volume_layout.addWidget(self.pitch_status_label)
             volume_layout.addWidget(self.favorite_button)
             volume_layout.addWidget(self.sleep_timer_button)
+            volume_layout.addWidget(self.ab_loop_button)
             volume_layout.addStretch(1)
             volume_layout.addWidget(self.mute_button)
             volume_layout.addWidget(QLabel("Volume"))
@@ -683,6 +697,7 @@ class Player(
             header_layout.addSpacing(12)
             header_layout.addWidget(self.library_button)
             header_layout.addWidget(self.lyrics_view_button)
+            header_layout.addWidget(self.statistics_button)
             header_layout.addStretch(1)
 
             self.plugins_menu = QMenu(self)
@@ -755,6 +770,9 @@ class Player(
 
             self.workspace_stack.addWidget(self.library_page)
             self.workspace_stack.addWidget(self.lyrics_page)
+            self._init_statistics()
+            self.statistics_page = StatisticsPage(self)
+            self.workspace_stack.addWidget(self.statistics_page)
             self.workspace_stack.setCurrentWidget(self.library_page)
             self.workspace_stack.currentChanged.connect(self._handle_workspace_changed)
             self._handle_workspace_changed(self.workspace_stack.currentIndex())
@@ -798,6 +816,9 @@ class Player(
             self.media_player.playbackStateChanged.connect(
                 self._emit_plugin_playback_state
             )
+            # Output controls must adopt the new state before statistics reads
+            # the processed sink's playing flag (including its EOF tail).
+            self.media_player.playbackStateChanged.connect(self._statistics_state_changed)
 
             self.media_player.mediaStatusChanged.connect(
                 self.handle_media_status
@@ -852,6 +873,11 @@ class Player(
             )
             self.shortcut_lyrics.activated.connect(
                 lambda: self.workspace_stack.setCurrentWidget(self.lyrics_page)
+            )
+
+            self.shortcut_statistics = QShortcut(QKeySequence("Ctrl+3"), self)
+            self.shortcut_statistics.activated.connect(
+                lambda: self.workspace_stack.setCurrentWidget(self.statistics_page)
             )
 
             self.easter_eggs = EasterEggs(self)
@@ -1040,6 +1066,7 @@ class Player(
                     background: transparent;
                 }
                 QPushButton#dockAction,
+                QToolButton#dockAction,
                 QPushButton#sleepTimerButton {
                     color: @DOCK_TEXT@;
                     background: @DOCK_CONTROL@;
@@ -1094,8 +1121,14 @@ class Player(
                 QComboBox#librarySearchFilter QToolButton#comboDropIndicator:hover {
                     background: @RAISED_HOVER@;
                 }
-                QPushButton#dockAction:hover {
+                QPushButton#dockAction:hover,
+                QToolButton#dockAction:hover {
                     background: @DOCK_CONTROL_HOVER@;
+                }
+                QToolButton#dockAction::menu-indicator {
+                    image: none;
+                    width: 0;
+                    height: 0;
                 }
                 QLabel#timeLabel {
                     color: @DOCK_TEXT@;
@@ -1201,6 +1234,8 @@ class Player(
             for marker, key in replacements.items():
                 style = style.replace(marker, palette[key])
             self.setStyleSheet(style)
+            self.seek_slider.set_loop_colors(palette["loop_start"], palette["loop_end"])
+            self.statistics_page.apply_theme(self.appearance_settings)
 
 
         def _restore_startup_state(self):
@@ -1299,6 +1334,8 @@ class Player(
             current_page = self.workspace_stack.widget(index)
             self.library_button.setChecked(current_page is self.library_page)
             self.lyrics_view_button.setChecked(current_page is self.lyrics_page)
+            self.statistics_button.setChecked(current_page is self.statistics_page)
+            self._sync_waveform_visibility()
             if current_page is self.library_page:
                 self._queue_visible_library_covers()
             if current_page is not self.lyrics_page:
@@ -1602,6 +1639,7 @@ class Player(
                 self.plugin_manager,
                 self,
                 update_settings=self.update_settings,
+                statistics_settings={"enabled": self.statistics.enabled},
             )
 
             def check_updates_after_settings_close():
@@ -1609,6 +1647,7 @@ class Player(
                 QTimer.singleShot(0, lambda: self.check_for_updates(manual=True))
 
             dialog.check_updates_requested.connect(check_updates_after_settings_close)
+            dialog.clear_statistics_requested.connect(self._clear_statistics)
 
             def relaunch_wizard():
                 dialog.accept()
@@ -1629,6 +1668,7 @@ class Player(
                     )
                     self.startup_settings = dialog.get_startup_settings()
                     save_startup_settings(self.startup_settings)
+                    self._set_statistics_enabled(dialog.get_statistics_settings()["enabled"])
 
                     self.update_settings = dialog.get_update_settings()
                     save_update_settings(self.update_settings)
@@ -1655,10 +1695,7 @@ class Player(
                     self.shuffle_enabled = self.playback_settings.get("shuffle_enabled", False)
                     self._clear_shuffle_history()
                     save_playback_settings(self.playback_settings)
-                    self.waveform_widget.setVisible(
-                        self.playback_settings.get("show_waveform", True)
-                        and find_ffmpeg() is not None
-                    )
+                    self._sync_waveform_visibility()
                     self._apply_output_device(self.playback_settings)
                     self._load_replaygain()
                     self._invalidate_gapless_preload()
@@ -1886,6 +1923,7 @@ class Player(
         def closeEvent(self, event):
             if not getattr(self, "_closing", False):
                 self._closing = True
+                self._close_statistics()
                 self.sleep_timer.cancel()
                 self._close_audio_device_dialog()
                 self.audio_output.setMuted(True)
@@ -1895,6 +1933,7 @@ class Player(
                 self.media_player.stop()
                 self.media_player.setAudioBufferOutput(None)
                 self._stop_pcm_sink()
+                self.statistics_store.close()
             check_worker = self._update_check_worker
             download_worker = self._update_download_worker
             if ((check_worker is not None and check_worker.isRunning())
