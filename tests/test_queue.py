@@ -306,6 +306,115 @@ def test_library_end_behavior_uses_library_instead_of_queue(queue_player, tracks
     assert window.playlist == [tracks[3]]
 
 
+def finish_track(window):
+    window.media_player.status = QMediaPlayer.MediaStatus.EndOfMedia
+    window.handle_media_status(QMediaPlayer.MediaStatus.EndOfMedia)
+
+
+def test_counted_repeat_includes_current_play_then_advances(queue_player, tracks):
+    window = queue_player
+    window.replace_queue(tracks)
+    window.media_player.play()
+    window._start_counted_repeat(3)
+    assert window.repeat_button.text() == "Repeat: 1/3"
+    assert window._gapless_next_path() is None
+    for label in ("Repeat: 2/3", "Repeat: 3/3"):
+        finish_track(window)
+        assert window.current_audio_path == tracks[0]
+        assert window.media_player.position() == 0
+        assert window.media_player.isPlaying()
+        assert window.repeat_button.text() == label
+    finish_track(window)
+    assert window.current_audio_path == tracks[1]
+    assert window._repeat_remaining is None
+    assert window.repeat_button.text() == "Repeat: Off"
+
+
+@pytest.mark.parametrize("cancel", ["stop", "skip", "off"])
+def test_counted_repeat_cancel(queue_player, tracks, cancel):
+    window = queue_player
+    window.replace_queue(tracks)
+    window._start_counted_repeat(4)
+    if cancel == "stop":
+        window.stop_playback()
+    elif cancel == "skip":
+        window.next_track()
+    else:
+        window._repeat_actions["next_track"].trigger()
+    assert window._repeat_remaining is None
+
+
+def test_counted_repeat_stays_paused_and_dialog_cancel_preserves_it(queue_player, tracks, monkeypatch):
+    window = queue_player
+    window.replace_queue(tracks)
+    window.media_player.time = 12000
+    window._start_counted_repeat(3)
+    assert not window.media_player.isPlaying()
+    assert window.media_player.position() == 12000
+    monkeypatch.setattr(QInputDialog, "getInt", lambda *args: (5, False))
+    window.repeat_count_action.trigger()
+    assert window._repeat_remaining == 3
+
+
+def test_counted_repeat_honors_sleep_timer(queue_player, tracks):
+    window = queue_player
+    window.replace_queue(tracks)
+    window._start_counted_repeat(3)
+    window.sleep_timer.finish_current_track()
+    finish_track(window)
+    assert window._sleep_expired
+    assert not window.media_player.isPlaying()
+    assert window.current_audio_path == tracks[0]
+    assert window._repeat_remaining == 3
+
+
+def test_counted_repeat_defers_play_next_even_with_shuffle(queue_player, tracks):
+    window = queue_player
+    window.replace_queue(tracks)
+    window.shuffle_enabled = True
+    window._priority_queue_indices = [2]
+    window._start_counted_repeat(2)
+    finish_track(window)
+    assert window.current_audio_path == tracks[0]
+    assert window._priority_queue_indices == [2]
+    finish_track(window)
+    assert window.current_audio_path == tracks[2]
+
+
+@pytest.mark.parametrize("count", [None, 2])
+def test_repeat_works_for_standalone_track(queue_player, tracks, count):
+    window = queue_player
+    window.load_audio(tracks[0])
+    window.playlist = []
+    if count is None:
+        window._set_repeat_mode("repeat_track")
+        assert window._gapless_next_path() == str(tracks[0])
+    else:
+        window._start_counted_repeat(count)
+    finish_track(window)
+    assert window.media_player.isPlaying()
+    assert window.current_audio_path == tracks[0]
+    if count:
+        finish_track(window)
+        assert not window.media_player.isPlaying()
+
+
+@pytest.mark.parametrize("mode", ["next_track", "repeat_track", "repeat_all"])
+def test_repeat_menu_saves_existing_playback_setting(queue_player, mode):
+    queue_player._repeat_actions[mode].trigger()
+    assert get_playback_settings()["after_playback"] == mode
+    assert queue_player._repeat_actions[mode].isChecked()
+
+
+def test_repeat_all_wraps_queue_from_dock(queue_player, tracks):
+    window = queue_player
+    window.replace_queue(tracks)
+    window.play_queue_index(len(tracks) - 1)
+    window._repeat_actions["repeat_all"].trigger()
+    finish_track(window)
+    assert window.current_audio_path == tracks[0]
+
+
 def test_source_change_preserves_playback_and_enqueue_updates_selector(queue_player, tracks):
     window = queue_player
     window.replace_queue(tracks)

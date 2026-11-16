@@ -76,6 +76,7 @@ from ui.easter_eggs import BudgetBrandLabel, CatSeekTrack, EasterEggs
 from ui.player_library import PlayerLibraryMixin
 from ui.player_updates import PlayerUpdatesMixin
 from ui.player_ab_loop import PlayerABLoopMixin
+from ui.player_repeat import PlayerRepeatMixin
 from ui.player_sleep_timer import PlayerSleepTimerMixin
 from ui.player_statistics import PlayerStatisticsMixin
 from ui.statistics_page import StatisticsPage
@@ -83,6 +84,7 @@ from ui.lyrics_search_dialog import LyricsSearchDialogMixin, _lyrics_search_quer
 
 
 class Player(
+    PlayerRepeatMixin,
     PlayerABLoopMixin,
     FavoritesMixin,
     PlayerSleepTimerMixin,
@@ -399,6 +401,7 @@ class Player(
             self.shuffle_button.setObjectName("dockAction")
             self.shuffle_button.clicked.connect(self.cycle_shuffle_mode)
             self._update_shuffle_button_text()
+            self._init_repeat()
 
             # --------------------------------------------------
             # OPEN BUTTON
@@ -654,6 +657,7 @@ class Player(
             volume_layout.addWidget(QLabel("Play from"))
             volume_layout.addWidget(self.playback_source_combo)
             volume_layout.addWidget(self.shuffle_button)
+            volume_layout.addWidget(self.repeat_button)
             volume_layout.addSpacing(8)
             volume_layout.addWidget(self.pitch_options_button)
             volume_layout.addWidget(self.pitch_status_label)
@@ -1700,6 +1704,7 @@ class Player(
                     self._load_replaygain()
                     self._invalidate_gapless_preload()
                     self._update_shuffle_button_text()
+                    self._clear_counted_repeat()
                     self._update_playback_source_control()
                     self.update_transport_buttons()
 

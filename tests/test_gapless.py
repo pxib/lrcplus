@@ -224,7 +224,7 @@ def test_missing_ffmpeg_retains_native_transport(qapp, monkeypatch):
         qapp.processEvents()
 
 
-@pytest.mark.parametrize("mode", ["next_track", "repeat_track", "repeat_all", "shuffle", "priority", "duplicate"])
+@pytest.mark.parametrize("mode", ["next_track", "repeat_track", "repeat_all", "shuffle", "priority", "duplicate", "counted", "counted_crossfade"])
 def test_player_handoff_preserves_queue_rules_and_sink(qapp, monkeypatch, tmp_path, mode):
     from core.settings import save_playback_settings
     from ui.main_window import Player
@@ -233,7 +233,8 @@ def test_player_handoff_preserves_queue_rules_and_sink(qapp, monkeypatch, tmp_pa
     monkeypatch.setattr("core.gapless.shutil.which", lambda name: "ffmpeg")
     # Exercise the same device-free environment as the hosted CI runner.
     monkeypatch.setattr("ui.audio_devices.QMediaDevices.audioOutputs", lambda: [])
-    save_playback_settings({"play_mode": "playlist", "gapless_playback": True})
+    save_playback_settings({"play_mode": "playlist", "gapless_playback": True,
+                            "crossfade_seconds": 2 if mode == "counted_crossfade" else 0})
     window = Player()
     player = window.media_player
     player._decoder_factory = Decoder
@@ -269,14 +270,22 @@ def test_player_handoff_preserves_queue_rules_and_sink(qapp, monkeypatch, tmp_pa
         expected = paths[0]
     try:
         window.load_audio(window.playlist[window.current_index])
+        if mode.startswith("counted"):
+            expected = paths[0]
+            window._start_counted_repeat(3)
         player.play()
         player._pump()
+        if mode.startswith("counted"):
+            assert player._next_decoder is None
         sink = player._sink
         assert sink is not None
         sink.time = 100000
         player._pump()
         assert window.current_audio_path == expected
-        assert player._sink is sink
+        if mode.startswith("counted"):
+            assert window._repeat_remaining == 2
+        else:
+            assert player._sink is sink
         assert Path(player.source().toLocalFile()) == expected
         if mode == "duplicate":
             assert window.current_index == 1
@@ -456,6 +465,8 @@ def test_statistics_split_audible_gapless_tracks_and_repeats(sleep_window, monke
     from datetime import datetime, timedelta, timezone
 
     window, player, now = sleep_window
+    # Recording is opt-in in the factory defaults; this test exercises it on.
+    window.statistics.set_enabled(True)
     window.statistics._clock = lambda: now[0]
     window.statistics._wall_clock = lambda: datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=now[0])
     for method in ("update_background_for_audio", "_start_lyrics_search", "_configure_pcm_volume", "_load_replaygain"):

@@ -8,22 +8,6 @@ idk
 
 I have a wiki now! To get started, please refer to the [wiki](https://pxib.github.io/lrcpluswiki/) to get detailed explanations on specific topics!
 
-## User manual
-
-Choose **Help → Community wiki** in the app, or press **F1**, to open the [official community wiki](https://pxib.github.io/lrcpluswiki/). For offline help, choose **Help → Offline manual** or open [docs/manual/index.html](docs/manual/index.html) directly. The bundled manual includes offline search and needs no server or installation.
-
-## Settings backups
-
-Open **Settings → Advanced** to export preferences as JSON or import a saved settings file. Exports include unsaved edits, saved themes, and plugin preferences. Review imported values in Settings, then click **OK** to apply or **Cancel** to discard them. Restart LRCPlus to apply imported plugin settings.
-
-Music libraries, playlists, history, per-song lyric overrides, and reading dictionaries are excluded. Folder paths may need updating when moving preferences to another computer.
-
-Use **Restore factory defaults…** in the same tab to load the app's default preferences for review. Click **OK** to apply or **Cancel** to discard. Saved themes, folders, plugin settings, and personal data are kept.
-
-The factory baseline uses dark **Nordic Frost**, accent **#88c0d0**, the recorded light/dark colors, zero background blur, and playlist restoration. Listening-statistics recording and automatic update checks start disabled. These defaults apply to fresh installations and the restore action; explicitly saved preferences take precedence. The selected overrides are maintained in [core/factory_defaults.py](core/factory_defaults.py).
-
-To choose a new factory baseline, open the **Debug** menu at the bottom of Settings and select **Record settings changes**. Adjust preferences across the tabs, then select **Stop recording**. **View recording…** shows the before/after history; **Copy changes as JSON** copies final changed values, and **Copy factory defaults** copies the complete chosen setup in the settings-export format. Recordings stay in memory across Settings windows, until cleared or the app closes, so you can apply changes and test the player while choosing defaults. The recorder includes unsaved edits, excludes personal paths and plugin data, and does not save preferences or replace the factory baseline.
-
 ## LRCLIB
 
 LRCPlus integrates with LRCLIB for searching and retrieving synchronized and plain-text lyrics. API integration is authorized by LRCLIB under its API Terms of Use.

@@ -71,6 +71,8 @@ class AudioController:
                 invalidate()
 
         def _gapless_next_path(self):
+            if getattr(self, "_repeat_remaining", None) is not None:
+                return None
             if getattr(self, "_ab_start", None) is not None:
                 return None
             timer = getattr(self, "sleep_timer", None)
@@ -78,13 +80,13 @@ class AudioController:
                 timer.check()
                 if timer.finishing or getattr(self, "_sleep_expired", False):
                     return None
+            after = self.playback_settings.get("after_playback", "next_track")
+            if after == "repeat_track":
+                return str(self.current_audio_path) if self.current_audio_path else None
             paths = self._playback_paths()
             if not paths:
                 return None
             current = self._active_index(paths)
-            after = self.playback_settings.get("after_playback", "next_track")
-            if after == "repeat_track":
-                return str(self.current_audio_path) if self.current_audio_path else None
             priority = getattr(self, "_priority_queue_indices", [])
             if self.playback_settings.get("play_mode", "library") == "playlist" and priority:
                 return str(paths[priority[0]])
@@ -103,6 +105,8 @@ class AudioController:
 
         def load_audio(self, path):
             """Load a track; False means a sleep timer suppressed its autoplay."""
+            if hasattr(self, "_clear_counted_repeat"):
+                self._clear_counted_repeat()
             if getattr(self, "_ab_start", None) is not None:
                 self._clear_ab_loop()
             audio_path = Path(path).expanduser().resolve()
@@ -116,6 +120,8 @@ class AudioController:
                 self.media_player.stop()
 
             self.current_audio_path = audio_path
+            if hasattr(self, "_refresh_repeat"):
+                self._refresh_repeat()
 
             self._cancel_lyrics_search()
             self.lyric_lines = []
@@ -251,6 +257,8 @@ class AudioController:
 
 
         def stop_playback(self):
+            if hasattr(self, "_clear_counted_repeat"):
+                self._clear_counted_repeat()
             if hasattr(self, "statistics"):
                 self._statistics_checkpoint()
             timer = getattr(self, "sleep_timer", None)
@@ -1000,13 +1008,6 @@ class AudioController:
             self._configure_pcm_volume(self.volume_slider.value())
 
 
-        def cycle_loop_mode(self):
-            self.loop_mode = (self.loop_mode + 1) % 3
-        
-            modes = ["Off", "All", "Current"]
-            self.loop_button.setText(f"Loop: {modes[self.loop_mode]}")
-
-
         def update_play_button(self, state):
             if state == QMediaPlayer.PlaybackState.PlayingState and (
                 getattr(self, "_audio_output_unavailable", False)
@@ -1052,13 +1053,17 @@ class AudioController:
             if hasattr(self, "_check_ab_loop") and self._check_ab_loop(at_end=True):
                 return
 
-            paths = self._playback_paths()
-            if not paths:
-                return
-
             after = getattr(self, "playback_settings", {}).get(
                 "after_playback", "next_track"
             )
+            remaining = getattr(self, "_repeat_remaining", None)
+            if remaining is not None:
+                self._repeat_remaining -= 1
+                if self._repeat_remaining > 0:
+                    self._refresh_repeat()
+                    after = "repeat_track"
+                else:
+                    self._clear_counted_repeat()
 
             # Repeat Track takes priority over normal progression.
             if after == "repeat_track":
@@ -1071,6 +1076,11 @@ class AudioController:
                     self._statistics_track_started()
                 self.media_player.setPosition(0)
                 self.media_player.play()
+                return
+
+            paths = self._playback_paths()
+            if not paths:
+                self.stop_playback()
                 return
 
             current = self._active_index(paths)

@@ -5,6 +5,7 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Added
 
+- Add a **Repeat** menu beside Shuffle in the player dock: Off, All, Current Track, and **Play current track N times...**. Count the current play toward the chosen total, show progress in the dock, and advance normally afterward. Cancel counted repeat on Stop or a track change; keep it session-only and let sleep timers take priority. Support standalone files as well as library and queue playback.
 - Add an enabled **Japanese song readings** starter dictionary for fresh installations with whole-word readings `私 → わたし`, `君 → きみ`, and `時 → とき`, preserving existing saved dictionaries. Add **Manage > Restore factory dictionaries…** to the reading-dictionary manager; review the replacement before saving with **OK** in both the manager and Settings, or discard it with **Cancel**.
 - Add karaoke highlighting to Floating Lyrics for timed LRCX songs, including synchronized furigana and existing sweep effects. Follow playback speed and lyric offsets, update when seeking while paused, and keep highlighting active when the main lyrics view is hidden.
 - Add **Settings > Advanced** with JSON import and export for application preferences, saved themes, lyric search folders, and plugin settings. Include unsaved edits in exports, validate imported files, and let users review settings before applying with **OK** or discarding with **Cancel**. Preserve library data, playlists, history, per-song lyric overrides, and reading dictionaries. Imported plugin settings take effect after restarting LRCPlus.

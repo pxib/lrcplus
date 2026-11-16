@@ -114,14 +114,17 @@ class KaraokePlugin:
     def _existing_displays(self):
         if self.window is None:
             return []
-        main_displays = [
-            widget for widget in (
-                getattr(self.window, "lyric_widget", None),
-                getattr(self.window, "scrolling_lyrics_widget", None),
-            ) if widget is not None
-        ]
+        # The public renderer properties create widgets on access. Check readiness
+        # first so startup and playback cleanup preserve deferred creation.
         if getattr(self.window, "_lyrics_renderers_ready", True) is False:
             main_displays = []
+        else:
+            main_displays = [
+                widget for widget in (
+                    getattr(self.window, "lyric_widget", None),
+                    getattr(self.window, "scrolling_lyrics_widget", None),
+                ) if widget is not None
+            ]
         return main_displays + self._external_displays
 
     def _watch_displays(self):
