@@ -37,6 +37,45 @@ def _set_ruby_spans(segment, spans):
         segment.ruby_source = "manual"
 
 
+def replace_reading_span(line, start, end, reading):
+    """Edit one annotation in place, preserving timing and other annotations."""
+    from lyrics.furigana import split_reading_by_text_ranges
+
+    if not 0 <= start < end <= len(line.text):
+        raise ValueError("The reading range must be inside the lyric text.")
+    offset = 0
+    for segment in line.segments:
+        segment_start = offset
+        offset += len(segment.text)
+        first, last = max(start, segment_start), min(end, offset)
+        if first >= last:
+            continue
+        local_first, local_last = first - segment_start, last - segment_start
+        spans = []
+        for a, b, old_reading in _ruby_spans(segment):
+            if b <= local_first or a >= local_last:
+                spans.append((a, b, old_reading))
+                continue
+            # If an imported annotation crosses the edited word, keep its
+            # untouched prefix/suffix with their corresponding readings.
+            for left, right in ((a, min(b, local_first)), (max(a, local_last), b)):
+                if left < right:
+                    piece = split_reading_by_text_ranges(
+                        segment.text[a:b], old_reading, [(left - a, right - a)],
+                    )[0]
+                    if piece:
+                        spans.append((left, right, piece))
+        if reading:
+            piece = reading
+            if first != start or last != end:
+                piece = split_reading_by_text_ranges(
+                    line.text[start:end], reading, [(first - start, last - start)],
+                )[0]
+            if piece:
+                spans.append((local_first, local_last, piece))
+        _set_ruby_spans(segment, sorted(spans))
+
+
 def _slice_segment(segment, first, last):
     child = deepcopy(segment)
     child.text = segment.text[first:last]
@@ -173,6 +212,8 @@ def split_lyric_line(line, position, *, fallback_end=None):
         raise ValueError("The second part starts before this lyric. Correct its timing before splitting.")
     left, right = deepcopy(line), deepcopy(line)
     left.text, right.text = line.text[:position], line.text[position:]
+    left.reading_groups = [(a, b) for a, b in line.reading_groups if b <= position]
+    right.reading_groups = [(a - position, b - position) for a, b in line.reading_groups if a >= position]
     left.segments, right.segments = left_segments, right_segments
     left.end = (left_segments[-1].end if left_segments[-1].end is not None else split_time) if (
         line.has_karaoke or line.end is not None) else None
@@ -190,6 +231,7 @@ def split_lyric_line(line, position, *, fallback_end=None):
         right.text = "\n" + right.text
         right.segments.insert(0, LyricSegment(right.start, "\n"))
         right.style_spans = [(a + 1, b + 1, *styles) for a, b, *styles in right.style_spans]
+        right.reading_groups = [(a + 1, b + 1) for a, b in right.reading_groups]
         right.translation_lines = [row + 1 for row in right.translation_lines]
     _visual_rows(left.segments)
     _visual_rows(right.segments)
@@ -222,6 +264,7 @@ def merge_lyric_lines(lines, separator=" "):
             segments[-1].end = line.end if line.end is not None else lines[index + 1].start
         result.segments.extend(segments)
         result.style_spans.extend((a + offset, b + offset, *styles) for a, b, *styles in line.style_spans)
+        result.reading_groups.extend((a + offset, b + offset) for a, b in line.reading_groups)
         result.translation_lines.extend(row + row_offset for row in line.translation_lines)
         result.text += line.text
     _visual_rows(result.segments)

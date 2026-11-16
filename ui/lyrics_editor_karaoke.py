@@ -8,6 +8,7 @@ from lyrics.writer import format_timestamp
 from lyrics.karaoke_timing import next_lyric_start, segment_end
 from core.debug import debug_print
 from lyrics.furigana import split_reading_by_text_ranges, yomi_word_surfaces
+from lyrics.reading_groups import remap_reading_groups
 
 
 class LyricsEditorKaraokeMixin:
@@ -688,7 +689,9 @@ class LyricsEditorKaraokeMixin:
                 replacement.ruby_spans = old_spans
             line.segments[row] = replacement
 
-        line.text = "".join(segment.text for segment in line.segments)
+        text = "".join(segment.text for segment in line.segments)
+        line.reading_groups = remap_reading_groups(line.text, text, line.reading_groups)
+        line.text = text
         line.has_karaoke = (
             line.has_karaoke or item.column() in (0, 1) or len(line.segments) > 1
             or any(segment.instant for segment in line.segments)
@@ -697,7 +700,7 @@ class LyricsEditorKaraokeMixin:
         self._mark_document_dirty()
         self.refresh_line_label(index)
         self._refresh_ruby_preview(line)
-        self._update_furigana_editor_availability(line)
+        self._populate_furigana_editor(line)
         self._update_overlap_warning(line)
         self._refresh_karaoke_preview()
         self._refresh_karaoke_waveform_editor()

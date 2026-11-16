@@ -192,6 +192,8 @@ class SettingsTransferMixin:
                 setattr(self, key, values[key])
             self.light_theme_button.setChecked(self.theme_mode == "light")
             self.dark_theme_button.setChecked(self.theme_mode == "dark")
+            self.qt_theme_button.setChecked(self.theme_mode == "qt")
+            self.custom_theme_panel.setEnabled(self.theme_mode != "qt")
             self.theme_surface_combo.blockSignals(True)
             self._set_imported_control(self.theme_surface_combo, self.theme_surface)
             self.theme_surface_combo.blockSignals(False)

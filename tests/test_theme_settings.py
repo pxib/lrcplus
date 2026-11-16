@@ -3,6 +3,36 @@ from core.theme import build_theme_palette
 import pytest
 
 
+def test_qt_theme_uses_application_palette_and_preserves_custom_colors(qapp):
+    from PySide6.QtGui import QPalette
+    from ui.settings_dialog import SettingsDialog
+
+    saved = {"theme_mode": "qt", "theme_color": "#4477cc",
+             "theme_overrides": {"light": {"window": "#123456"}}}
+    appearance = get_appearance_settings({"appearance": saved})
+    assert appearance["theme_mode"] == "qt"
+    palette = build_theme_palette("qt", saved["theme_color"], overrides=saved["theme_overrides"])
+    assert palette["window"] == qapp.palette().color(QPalette.ColorRole.Window).name()
+    assert palette["selection"] == qapp.palette().color(QPalette.ColorRole.Highlight).name()
+    dialog = SettingsDialog([], {}, appearance_settings=appearance)
+    try:
+        assert dialog.qt_theme_button.isChecked()
+        assert dialog.styleSheet() == ""
+        assert not dialog.custom_theme_panel.isEnabled()
+        assert dialog.theme_surface_combo._drop_indicator.isHidden()
+        assert dialog.get_appearance_settings()["theme_overrides"] == saved["theme_overrides"]
+        dialog.dark_theme_button.click()
+        assert dialog.styleSheet()
+        assert dialog.custom_theme_panel.isEnabled()
+        assert not dialog.theme_surface_combo._drop_indicator.isHidden()
+        dialog.qt_theme_button.click()
+        assert dialog.get_appearance_settings()["theme_mode"] == "qt"
+        assert dialog.get_appearance_settings()["theme_color"] == saved["theme_color"]
+        assert dialog.styleSheet() == ""
+    finally:
+        dialog.close()
+
+
 @pytest.mark.parametrize("mode", ["light", "dark"])
 def test_core_presets_recolor_surfaces_and_controls_in_both_modes(mode):
     from ui.settings_dialog import apply_theme_preset
@@ -15,6 +45,28 @@ def test_core_presets_recolor_surfaces_and_controls_in_both_modes(mode):
             mode, accent, overrides=appearance["theme_overrides"]))
     for role in ("window", "header", "surface", "raised", "border", "dock", "selection"):
         assert len({palette[role] for palette in palettes}) == 5
+
+
+def test_player_restores_qt_theme_and_can_switch_back(qapp):
+    from core.settings import save_appearance_settings
+    from ui.main_window import Player
+
+    save_appearance_settings({"theme_mode": "qt"})
+    window = Player()
+    try:
+        assert window.appearance_settings["theme_mode"] == "qt"
+        assert window.styleSheet() == ""
+        assert window.statistics_page.styleSheet() == ""
+        assert window.playback_source_combo._drop_indicator.isHidden()
+        window.appearance_settings["theme_mode"] = "dark"
+        window._apply_main_window_style()
+        assert window.styleSheet()
+        assert window.statistics_page.styleSheet()
+        assert not window.playback_source_combo._drop_indicator.isHidden()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
 
 
 def test_core_preset_replaces_previous_theme_colors_without_mutating_preferences():

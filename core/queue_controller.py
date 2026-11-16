@@ -103,6 +103,8 @@ class QueueControllerMixin:
             return
         self._cancel_lyrics_search()
         self.stop_playback()
+        if hasattr(self, "_suspend_ab_loop"):
+            self._suspend_ab_loop()
         self.current_audio_path = None
         self.current_lyrics_path = None
         self.lyric_lines = []

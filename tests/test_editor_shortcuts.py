@@ -95,7 +95,7 @@ def test_timing_letters_do_not_intercept_timestamp_or_reading_inputs(editor, qap
     calls = []
     monkeypatch.setattr(editor, "_seek_preview_relative", lambda delta: calls.append(delta))
     monkeypatch.setattr(editor, "mark_current_line_playback_time", lambda: calls.append("mark"))
-    inline = QLineEdit(editor.furigana_table.viewport())
+    inline = QLineEdit(editor.readings_editor)
     for widget in (editor.line_time, editor.line_time.lineEdit(), editor.lyrics_offset, inline):
         focus_editor(editor, qapp, widget)
         for key in (Qt.Key.Key_Q, Qt.Key.Key_E, Qt.Key.Key_A, Qt.Key.Key_D, Qt.Key.Key_F):

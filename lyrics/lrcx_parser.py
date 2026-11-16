@@ -1,10 +1,12 @@
 import re
+import json
 from io import StringIO
 
 from lyrics.models import LyricLine, LyricSegment
 from lyrics.line_breaks import decode_line_breaks
 from lyrics.formatting import parse_emphasis, parse_quote_prefix
 from lyrics.parser import GENERATION_MODE_RE, normalize_generation_mode
+from lyrics.reading_groups import valid_reading_groups
 
 
 LINE_TIMESTAMP_RE = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
@@ -152,10 +154,19 @@ def parse_lrcx(text, *, infer_ends=True):
     dynamic fallback instead of becoming an authored terminal boundary.
     """
     lines = []
+    reading_groups = {}
 
     with StringIO(text.lstrip("\ufeff")) as file:
         for raw_line in file:
             line = raw_line.rstrip("\r\n")
+            if line.startswith("[reading_groups:") and line.endswith("]"):
+                try:
+                    value = json.loads(line[len("[reading_groups:"):-1])
+                    if isinstance(value, dict):
+                        reading_groups = value
+                except (ValueError, TypeError):
+                    pass
+                continue
             if not line or METADATA_RE.match(line):
                 continue
 
@@ -283,6 +294,16 @@ def parse_lrcx(text, *, infer_ends=True):
                     translation_lines=translation_lines,
                 )
             )
+
+    for index, lyric in enumerate(lines):
+        entries = reading_groups.get(str(index), [])
+        candidates = []
+        for entry in entries if isinstance(entries, list) else []:
+            if (isinstance(entry, list) and len(entry) == 3
+                    and type(entry[0]) is int and type(entry[1]) is int
+                    and lyric.text[entry[0]:entry[1]] == entry[2]):
+                candidates.append(entry[:2])
+        lyric.reading_groups = valid_reading_groups(lyric.text, candidates)
 
     # Keep document/source order intact. A lyric editor may intentionally have
     # unfinished or newly marked timestamps that are out of chronological order.

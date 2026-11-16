@@ -224,7 +224,7 @@ def test_missing_ffmpeg_retains_native_transport(qapp, monkeypatch):
         qapp.processEvents()
 
 
-@pytest.mark.parametrize("mode", ["next_track", "repeat_track", "repeat_all", "shuffle", "priority", "duplicate", "counted", "counted_crossfade"])
+@pytest.mark.parametrize("mode", ["next_track", "repeat_track", "repeat_all", "shuffle", "priority", "duplicate", "counted", "counted_crossfade", "remembered_ab"])
 def test_player_handoff_preserves_queue_rules_and_sink(qapp, monkeypatch, tmp_path, mode):
     from core.settings import save_playback_settings
     from ui.main_window import Player
@@ -268,6 +268,9 @@ def test_player_handoff_preserves_queue_rules_and_sink(qapp, monkeypatch, tmp_pa
     elif mode == "duplicate":
         window.playlist = [paths[0], paths[0], paths[1]]
         expected = paths[0]
+    elif mode == "remembered_ab":
+        from core.playlists import path_key
+        window._ab_loop_memory[path_key(paths[1])] = (10, 50)
     try:
         window.load_audio(window.playlist[window.current_index])
         if mode.startswith("counted"):
@@ -287,6 +290,10 @@ def test_player_handoff_preserves_queue_rules_and_sink(qapp, monkeypatch, tmp_pa
         else:
             assert player._sink is sink
         assert Path(player.source().toLocalFile()) == expected
+        if mode == "remembered_ab":
+            assert (window._ab_start, window._ab_end) == (10, 50)
+            assert window._ab_timer.isActive()
+            assert player._next_decoder is None
         if mode == "duplicate":
             assert window.current_index == 1
         if mode == "priority":

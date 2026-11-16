@@ -354,7 +354,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         if self.theme_surface not in {"classic", "neutral"}:
             self.theme_surface = "classic"
         self.theme_mode = self.appearance_settings.get("theme_mode", "light")
-        if self.theme_mode not in {"light", "dark"}:
+        if self.theme_mode not in {"light", "dark", "qt"}:
             self.theme_mode = "light"
         self.theme_color = str(
             self.appearance_settings.get(
@@ -484,13 +484,18 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         theme_mode_row.addWidget(QLabel("Color mode"))
         self.light_theme_button = QPushButton("Light")
         self.dark_theme_button = QPushButton("Dark")
-        for button in (self.light_theme_button, self.dark_theme_button):
+        self.qt_theme_button = QPushButton("Use Qt Theme")
+        self.qt_theme_button.setToolTip("Use Qt's default widget style and system palette.")
+        for button in (self.light_theme_button, self.dark_theme_button, self.qt_theme_button):
             button.setObjectName("themeModeButton")
             button.setCheckable(True)
         self.theme_mode_group = QButtonGroup(self)
         self.theme_mode_group.setExclusive(True)
         self.theme_mode_group.addButton(self.light_theme_button)
         self.theme_mode_group.addButton(self.dark_theme_button)
+        self.theme_mode_group.addButton(self.qt_theme_button)
+        self.qt_theme_button.setChecked(self.theme_mode == "qt")
+        self.qt_theme_button.clicked.connect(lambda: self._set_theme_mode("qt"))
         self.light_theme_button.setChecked(self.theme_mode == "light")
         self.dark_theme_button.setChecked(self.theme_mode == "dark")
         self.light_theme_button.clicked.connect(
@@ -501,8 +506,16 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         )
         theme_mode_row.addWidget(self.light_theme_button)
         theme_mode_row.addWidget(self.dark_theme_button)
+        theme_mode_row.addWidget(self.qt_theme_button)
         theme_mode_row.addStretch(1)
         appearance_layout.addLayout(theme_mode_row)
+
+        theme_layout = appearance_layout
+        self.custom_theme_panel = QWidget()
+        appearance_layout.addWidget(self.custom_theme_panel)
+        appearance_layout = QVBoxLayout(self.custom_theme_panel)
+        appearance_layout.setContentsMargins(0, 0, 0, 0)
+        self.custom_theme_panel.setEnabled(self.theme_mode != "qt")
 
         surface_row = QHBoxLayout()
         surface_row.addWidget(QLabel("Surface palette"))
@@ -599,6 +612,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         )
         self._update_advanced_theme_controls()
 
+        appearance_layout = theme_layout
         appearance_layout.addStretch()
 
         background_tab = QWidget()
@@ -1046,6 +1060,9 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         footer.addStretch(1)
         footer.addWidget(button_box)
         layout.addLayout(footer)
+        _apply_settings_dialog_style(
+            self, self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides
+        )
 
     def _index_search_settings(self):
         # Labels set by the shared row helpers stay in sync with the visible UI.
@@ -1053,6 +1070,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             "update_channel_combo": "Update channel",
             "light_theme_button": "Light color mode",
             "dark_theme_button": "Dark color mode",
+            "qt_theme_button": "Use Qt Theme",
             "theme_color_button": "Accent color",
             "theme_surface_combo": "Surface palette",
             "advanced_theme_toggle": "Advanced theme colors",
@@ -2053,6 +2071,8 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         self.theme_overrides = values["theme_overrides"]
         self.light_theme_button.setChecked(self.theme_mode == "light")
         self.dark_theme_button.setChecked(self.theme_mode == "dark")
+        self.qt_theme_button.setChecked(self.theme_mode == "qt")
+        self.custom_theme_panel.setEnabled(self.theme_mode != "qt")
         self._update_advanced_theme_controls()
         self._update_theme_color_button()
         _apply_settings_dialog_style(self, self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides)
@@ -2192,6 +2212,10 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
 
     def _set_theme_mode(self, theme_mode):
         self.theme_mode = theme_mode
+        self.light_theme_button.setChecked(theme_mode == "light")
+        self.dark_theme_button.setChecked(theme_mode == "dark")
+        self.qt_theme_button.setChecked(theme_mode == "qt")
+        self.custom_theme_panel.setEnabled(theme_mode != "qt")
         self._update_advanced_theme_controls()
         self._update_theme_color_button()
         _apply_settings_dialog_style(

@@ -1,4 +1,5 @@
 import re
+import json
 
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from lyrics.furigana import build_furigana_segments
 from lyrics.models import LyricSegment
 from lyrics.line_breaks import encode_line_breaks, reading_source
 from lyrics.formatting import format_emphasis
+from lyrics.reading_groups import valid_reading_groups
 from core.file_io import atomic_write_text
 
 
@@ -147,7 +149,12 @@ def serialize_lrc(lines, generation_mode=None) -> str:
 
 
 def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=None) -> str:
+    lines = list(lines)
     output = ["[format:LRCX]", "[version:1]"]
+    groups = {str(index): [[a, b, line.text[a:b]] for a, b in valid_reading_groups(line.text, line.reading_groups)]
+              for index, line in enumerate(lines) if line.reading_groups}
+    if groups:
+        output.append("[reading_groups:" + json.dumps(groups, ensure_ascii=False, separators=(",", ":")) + "]")
     tag = _generation_mode_tag(generation_mode)
     if tag:
         output.append(tag)

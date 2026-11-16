@@ -494,7 +494,7 @@ def get_appearance_settings(payload=None):
     if not re.fullmatch(r"#[0-9a-fA-F]{6}", theme_color):
         theme_color = APPEARANCE_DEFAULTS["theme_color"]
     theme_mode = values.get("theme_mode")
-    if theme_mode not in {"light", "dark"}:
+    if theme_mode not in {"light", "dark", "qt"}:
         theme_mode = APPEARANCE_DEFAULTS["theme_mode"]
     custom_folders = values.get("custom_background_folders", [])
     if not isinstance(custom_folders, list):

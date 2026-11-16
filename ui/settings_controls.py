@@ -392,7 +392,23 @@ SETTINGS_DIALOG_STYLE = """
 """
 
 
+def use_native_controls(widget, enabled):
+    """Restore Qt's own indicators when custom styling is disabled."""
+    for combo in widget.findChildren(ThemedComboBox):
+        combo._drop_indicator.setVisible(not enabled)
+    for spin in widget.findChildren(ThemedSpinBox):
+        spin._step_up.setVisible(not enabled)
+        spin._step_down.setVisible(not enabled)
+        spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows if enabled
+                              else QAbstractSpinBox.ButtonSymbols.NoButtons)
+        spin.lineEdit().setTextMargins(0, 0, 0 if enabled else 24, 0)
+
+
 def _apply_settings_dialog_style(dialog, theme_mode, theme_color, theme_surface="classic", theme_overrides=None):
+    use_native_controls(dialog, theme_mode == "qt")
+    if theme_mode == "qt":
+        dialog.setStyleSheet("")
+        return
     palette = build_theme_palette(theme_mode, theme_color, theme_surface, theme_overrides)
     style = SETTINGS_DIALOG_STYLE
     for token, key in (

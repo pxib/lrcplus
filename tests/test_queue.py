@@ -415,6 +415,60 @@ def test_repeat_all_wraps_queue_from_dock(queue_player, tracks):
     assert window.current_audio_path == tracks[0]
 
 
+def test_ab_loop_returns_with_song_across_queue_duplicates_and_library(queue_player, tracks):
+    window = queue_player
+    window.replace_queue([tracks[0], tracks[1], tracks[0]])
+    window.media_player.time = 1000
+    window._mark_ab_start()
+    window.media_player.time = 3000
+    window._mark_ab_end()
+    window.next_track()
+    assert (window._ab_start, window._ab_end) == (None, None)
+    window.next_track()
+    assert window.current_index == 2
+    assert (window._ab_start, window._ab_end) == (1000, 3000)
+    assert window._gapless_next_path() is None
+    window.library_tracks = [LibraryTrack(str(path), path.stem) for path in tracks]
+    window.set_playback_source("library")
+    window._load_playback_index(window._playback_paths(), 1)
+    window._load_playback_index(window._playback_paths(), 0)
+    assert (window._ab_start, window._ab_end) == (1000, 3000)
+
+
+def test_stop_and_queue_clear_keep_remembered_ab_markers(queue_player, tracks):
+    window = queue_player
+    window.replace_queue(tracks)
+    window.media_player.time = 1000
+    window._mark_ab_start()
+    window.media_player.time = 3000
+    window._mark_ab_end()
+    window.stop_playback()
+    assert (window._ab_start, window._ab_end) == (1000, 3000)
+    window.clear_queue()
+    assert (window._ab_start, window._ab_end) == (None, None)
+    assert not window._ab_timer.isActive()
+    window.load_audio(tracks[0])
+    assert (window._ab_start, window._ab_end) == (1000, 3000)
+    assert not window.media_player.isPlaying()
+
+
+def test_restored_ab_loop_still_defers_to_sleep_timer(queue_player, tracks):
+    window = queue_player
+    window.replace_queue(tracks)
+    window.media_player.time = 1000
+    window._mark_ab_start()
+    window.media_player.time = 3000
+    window._mark_ab_end()
+    window.next_track()
+    window.previous_track()
+    assert (window._ab_start, window._ab_end) == (1000, 3000)
+    window.sleep_timer.finish_current_track()
+    finish_track(window)
+    assert window._sleep_expired
+    assert not window.media_player.isPlaying()
+    assert window.current_audio_path == tracks[0]
+
+
 def test_source_change_preserves_playback_and_enqueue_updates_selector(queue_player, tracks):
     window = queue_player
     window.replace_queue(tracks)

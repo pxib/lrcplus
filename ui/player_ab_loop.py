@@ -3,9 +3,15 @@
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QMenu, QToolButton
 
+from core.playlists import path_key
+
 
 class PlayerABLoopMixin:
     def _init_ab_loop(self):
+        self._ab_loop_memory = {}
+        path = getattr(self, "current_audio_path", None)
+        self._ab_track_key = path_key(path) if path else None
+        self._ab_duration_pending = False
         self._ab_start = self._ab_end = None
         self._ab_seeking = False
         self._ab_timer = QTimer(self)
@@ -23,7 +29,49 @@ class PlayerABLoopMixin:
         self.ab_clear_action = menu.addAction("Clear A-B loop", self._clear_ab_loop)
         self.ab_loop_button.setMenu(menu)
         menu.aboutToShow.connect(self._refresh_ab_loop)
-        self.media_player.durationChanged.connect(lambda *_: self._refresh_ab_loop())
+        self.media_player.durationChanged.connect(self._ab_duration_changed)
+        self._refresh_ab_loop()
+
+    def _remember_ab_loop(self):
+        if self._ab_track_key is None:
+            return
+        if self._ab_start is None:
+            self._ab_loop_memory.pop(self._ab_track_key, None)
+        else:
+            self._ab_loop_memory[self._ab_track_key] = (self._ab_start, self._ab_end)
+
+    def _suspend_ab_loop(self):
+        """Leave the outgoing song without forgetting its markers."""
+        self._remember_ab_loop()
+        self._ab_timer.stop()
+        self._ab_start = self._ab_end = None
+        self._ab_track_key = None
+        self._ab_duration_pending = False
+        self._refresh_ab_loop()
+
+    def _restore_ab_loop(self, path):
+        # Called after setSource so the outgoing track's duration cannot trim
+        # a remembered range on the incoming track.
+        self._ab_track_key = path_key(path)
+        self._ab_start, self._ab_end = self._ab_loop_memory.get(self._ab_track_key, (None, None))
+        self._ab_duration_pending = self._ab_start is not None
+        self._ab_duration_changed(self.media_player.duration())
+
+    def _ab_duration_changed(self, duration):
+        if duration > 0 and self._ab_start is not None:
+            self._ab_duration_pending = False
+            previous = (self._ab_start, self._ab_end)
+            if self._ab_start >= duration:
+                self._ab_start = self._ab_end = None
+            elif self._ab_end is not None and self._ab_end > duration:
+                self._ab_end = None
+            self._remember_ab_loop()
+            if self._ab_end is not None:
+                self._ab_timer.start()
+            else:
+                self._ab_timer.stop()
+            if previous != (self._ab_start, self._ab_end):
+                self._invalidate_gapless_preload()
         self._refresh_ab_loop()
 
     @staticmethod
@@ -47,7 +95,7 @@ class PlayerABLoopMixin:
             tip = f"A: {self._ab_time(start)}. Set B to start looping."
         else:
             tip = "Repeat a section: set A, then set B."
-        self.ab_loop_button.setToolTip(tip)
+        self.ab_loop_button.setToolTip(f"{tip}\nMarkers stay with each song until LRCPlus closes.")
         self.ab_mark_a_action.setText("Set A at current position" if start is None else f"Reset A (currently {self._ab_time(start)})")
         self.ab_mark_b_action.setText("Set B and loop" if end is None else f"Reset B (currently {self._ab_time(end)})")
 
@@ -57,6 +105,8 @@ class PlayerABLoopMixin:
         self._ab_timer.stop()
         self._ab_start = max(0, min(self.media_player.position(), self.media_player.duration()))
         self._ab_end = None
+        self._ab_duration_pending = False
+        self._remember_ab_loop()
         self._invalidate_gapless_preload()
         self._refresh_ab_loop()
 
@@ -68,6 +118,7 @@ class PlayerABLoopMixin:
             self.statusBar().showMessage("Set B at least 0.1 seconds after A.", 4000)
             return
         self._ab_end = end
+        self._remember_ab_loop()
         self._invalidate_gapless_preload()
         self._seek_from_waveform(self._ab_start)
         self._ab_timer.start()
@@ -76,11 +127,13 @@ class PlayerABLoopMixin:
     def _clear_ab_loop(self):
         self._ab_timer.stop()
         self._ab_start = self._ab_end = None
+        self._ab_duration_pending = False
+        self._remember_ab_loop()
         self._invalidate_gapless_preload()
         self._refresh_ab_loop()
 
     def _check_ab_loop(self, at_end=False):
-        if (self._ab_end is None or self._ab_seeking
+        if (self._ab_end is None or self._ab_seeking or self._ab_duration_pending
                 or getattr(self, "_closing", False) or getattr(self, "_sleep_expired", False)):
             return False
         timer = getattr(self, "sleep_timer", None)

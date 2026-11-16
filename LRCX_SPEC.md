@@ -34,6 +34,39 @@ A segment can contain embedded ruby:
 
 `{base|ruby}` means the visible lyric text is `base` and the ruby reading is `ruby`.
 
+### Reading editor word groups
+
+In the visual reading editor, click a base word and Shift-click an adjacent
+piece, then right-click and choose **Combine reading**. Review the prefilled
+reading and apply it to get one editable field for the combined word. Selection
+cannot cross spaces or visual line breaks. Undo/Redo restores word grouping and
+readings together. Karaoke chunks retain their original text, timestamps,
+explicit ends, and instant flags.
+
+For one selected word, choose **Split reading...** from the same right-click
+menu. Pick a boundary in the base text and review the two suggested readings;
+both fields are editable and may be left empty. This works for automatic words
+and previously combined groups. Each piece becomes its own reading field,
+remembered in LRCX even if an automatic provider treats them as one word.
+Unicode combining characters and joined emoji stay intact in the boundary picker.
+Splitting readings preserves lyric text, spacing, formatting, translations,
+and karaoke timing, and supports Undo/Redo.
+
+Save as LRCX to remember these editor word boundaries independently of karaoke.
+The optional `[reading_groups:JSON]` metadata maps zero-based document line
+indices to `[start, end, base]` entries. Offsets count visible Unicode code points,
+with an exclusive end. For example:
+
+```text
+[reading_groups:{"0":[[0,2,"連帯"]]}]
+[00:01.000]<00:01.200>{連|れん}<00:02.300>{帯|たい}<00:03.000>
+```
+
+Readers can ignore this metadata and use the ordinary ruby and timing markup.
+The editor validates each group against the base text when loading. Text edits
+move groups on unchanged words and discard a group when its base word changes.
+Splitting a lyric inside a grouped word separates it again.
+
 ## Text formatting
 
 Use `**bold**`, `*italic*`, `~~strikethrough~~`, or `<u>underline</u>` in LRCX

@@ -1,6 +1,6 @@
 import re
 
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QGuiApplication, QPalette
 
 
 THEME_COLOR_FIELDS = {
@@ -51,6 +51,25 @@ def _relative_luminance(color):
 
 
 def build_theme_palette(mode, accent_color, surface_style="classic", overrides=None):
+    if mode == "qt":
+        palette = QGuiApplication.palette()
+        roles = {
+            "Window": ("window", "header", "dock"),
+            "Base": ("surface",),
+            "AlternateBase": ("surface_alt",),
+            "Button": ("raised", "raised_hover", "pressed", "dock_control", "dock_control_hover", "dock_disabled"),
+            "WindowText": ("text", "brand", "header_button_text", "dock_text", "slider_handle"),
+            "PlaceholderText": ("muted", "dock_muted"),
+            "Mid": ("border", "field_border", "dock_border", "dock_control_border", "seek_track", "scroll_handle"),
+            "Highlight": ("selection", "item_hover"),
+        }
+        colors = {key: palette.color(getattr(QPalette.ColorRole, role)).name()
+                  for role, keys in roles.items() for key in keys}
+        result = build_theme_palette("light", palette.color(QPalette.ColorRole.Highlight).name(),
+                                     overrides={"light": colors})
+        result["selection_text"] = palette.color(QPalette.ColorRole.HighlightedText).name()
+        result["mode"] = "qt"
+        return result
     dark = str(mode).casefold() == "dark"
     accent = QColor(str(accent_color))
     if not accent.isValid():

@@ -115,6 +115,8 @@ class LyricsEditorDocumentMixin:
         self._update_song_association_ui()
 
     def _clear_editor_views(self):
+        if hasattr(self, "readings_editor"):
+            self.readings_editor.set_tokens([])
         if hasattr(self, "line_text"):
             self.line_text.clear()
             self.insert_newline_button.setEnabled(False)
@@ -737,6 +739,8 @@ class LyricsEditorDocumentMixin:
         )
         if has_ruby:
             features.append("Furigana")
+        if any(line.reading_groups for line in self.lines):
+            features.append("Reading word groups")
 
         # Plain LRC only stores one timestamp per lyric line. Multiple segment
         # timestamps or instant markers are karaoke/LRCX data.

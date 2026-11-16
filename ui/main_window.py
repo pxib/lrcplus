@@ -69,7 +69,7 @@ from ui.library_lyrics_search import LibraryLyricsSearchMixin
 from ui.audio_devices import AudioDeviceControllerMixin
 from ui.artwork_background import ArtworkBackgroundWidget, extract_embedded_cover
 from ui.player_dialogs import ClickableSlider, ClickableTimeLabel, PitchChangerDialog
-from ui.settings_controls import ThemedComboBox
+from ui.settings_controls import ThemedComboBox, use_native_controls
 from core.booru_artwork import fetch_booru_artwork
 from core.theme import build_theme_palette
 from ui.easter_eggs import BudgetBrandLabel, CatSeekTrack, EasterEggs
@@ -938,6 +938,8 @@ class Player(
         # WINDOW APPEARANCE
         # --------------------------------------------------
         def _apply_main_window_style(self):
+            native = self.appearance_settings.get("theme_mode") == "qt"
+            use_native_controls(self, native)
             palette = build_theme_palette(
                 self.appearance_settings.get("theme_mode", "light"),
                 self.appearance_settings.get("theme_color", "#3a9879"),
@@ -1237,7 +1239,7 @@ class Player(
             }
             for marker, key in replacements.items():
                 style = style.replace(marker, palette[key])
-            self.setStyleSheet(style)
+            self.setStyleSheet("" if native else style)
             self.seek_slider.set_loop_colors(palette["loop_start"], palette["loop_end"])
             self.statistics_page.apply_theme(self.appearance_settings)
 
@@ -1928,6 +1930,8 @@ class Player(
         def closeEvent(self, event):
             if not getattr(self, "_closing", False):
                 self._closing = True
+                self._suspend_ab_loop()
+                self._ab_loop_memory.clear()
                 self._close_statistics()
                 self.sleep_timer.cancel()
                 self._close_audio_device_dialog()

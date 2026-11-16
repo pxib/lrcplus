@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 
 from core.theme import build_theme_palette
 from ui.player_sleep_timer import countdown_text
-from ui.settings_controls import ThemedComboBox, ThemedSpinBox, THEMED_INPUT_STYLE
+from ui.settings_controls import ThemedComboBox, ThemedSpinBox, THEMED_INPUT_STYLE, use_native_controls
 
 
 class SleepTimerDialog(QDialog):
@@ -85,6 +85,10 @@ class SleepTimerDialog(QDialog):
         self._refresh()
 
     def _apply_theme(self, settings):
+        if settings.get("theme_mode") == "qt":
+            use_native_controls(self, True)
+            self.setStyleSheet("")
+            return
         palette = build_theme_palette(
             settings.get("theme_mode", "light"), settings.get("theme_color", "#3a9879"),
             settings.get("theme_surface", "classic"), settings.get("theme_overrides", {}),

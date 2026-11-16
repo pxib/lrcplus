@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 from core.theme import build_theme_palette
 from core.fonts import library_font
 from ui.content_list import ContentListDelegate
-from ui.settings_controls import ThemedComboBox, THEMED_INPUT_STYLE
+from ui.settings_controls import ThemedComboBox, THEMED_INPUT_STYLE, use_native_controls
 
 
 def listening_time(milliseconds):
@@ -103,6 +103,7 @@ class StatisticsPage(QWidget):
         self._refresh_again = False
         self._closed = False
         self._storage_error = None
+        self._table_rows = {}
         self.setObjectName("statisticsPage")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 0)
@@ -164,8 +165,23 @@ class StatisticsPage(QWidget):
             table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
             table.setAlternatingRowColors(True)
             table.verticalHeader().hide()
-            table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+            table.verticalHeader().setDefaultSectionSize(max(28, table.fontMetrics().height() + 8))
+            # ResizeToContents scans the rankings again on every setItem(),
+            # including hidden rows, and repeatedly evicts shaped text from
+            # the delegate's bounded cache. Only paint visible metadata.
+            header = table.horizontalHeader()
+            header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            metrics = header.fontMetrics()
+            for column, heading in enumerate(headers[1:], 1):
+                sample = {"Plays": "999,999", "Listening time": "999,999h 59m",
+                          "Last played": "30 Sep 2026, 23:59"}.get(heading)
+                width = (max(metrics.horizontalAdvance(heading), metrics.horizontalAdvance(sample)) + 32
+                         if sample else 160)
+                table.setColumnWidth(column, width)
+            header.setSortIndicator(len(headers) - (2 if key == "songs" else 1),
+                                    Qt.SortOrder.DescendingOrder)
             table.setAccessibleName(f"Top 100 {label.lower()} by listening time")
             self.tables[key] = table
             self.rank_tabs.addTab(table, label)
@@ -263,9 +279,22 @@ class StatisticsPage(QWidget):
         self.chart_label.setText("Daily activity · last 365 days" if days is None else "Daily activity")
         self.chart.set_values(result["daily"], days)
         for key, table in self.tables.items():
-            table.setSortingEnabled(False)
-            table.setRowCount(len(result[key]))
-            for row, entry in enumerate(result[key]):
+            if self._table_rows.get(key) != result[key]:
+                self._apply_table(key, table, result[key])
+                self._table_rows[key] = result[key]
+        if self._storage_error:
+            self.status_label.setText(self._storage_error)
+        elif summary["listened_ms"]:
+            self.status_label.setText("Stored locally · top 100 in each list. A play counts after 30 seconds or half the song, whichever is shorter.")
+        else:
+            self.status_label.setText("No listening recorded in this range. Play a song with tracking enabled; earlier listening cannot be recovered.")
+
+    def _apply_table(self, key, table, rows):
+        table.setUpdatesEnabled(False)
+        table.setSortingEnabled(False)
+        try:
+            table.setRowCount(len(rows))
+            for row, entry in enumerate(rows):
                 if key == "songs":
                     stamp = datetime.fromisoformat(entry["last_played"]).astimezone()
                     cells = [(entry["title"], None), (entry["artist"] or "Unknown artist", None),
@@ -282,16 +311,13 @@ class StatisticsPage(QWidget):
                     item = StatisticItem(text, value)
                     item.setToolTip(str(text))
                     table.setItem(row, column, item)
+        finally:
             table.setSortingEnabled(True)
-            table.sortItems(table.columnCount() - (2 if key == "songs" else 1), Qt.SortOrder.DescendingOrder)
-        if self._storage_error:
-            self.status_label.setText(self._storage_error)
-        elif summary["listened_ms"]:
-            self.status_label.setText("Stored locally · top 100 in each list. A play counts after 30 seconds or half the song, whichever is shorter.")
-        else:
-            self.status_label.setText("No listening recorded in this range. Play a song with tracking enabled; earlier listening cannot be recovered.")
+            table.setUpdatesEnabled(True)
 
     def apply_theme(self, settings):
+        native = settings.get("theme_mode") == "qt"
+        use_native_controls(self, native)
         palette = build_theme_palette(settings.get("theme_mode", "light"), settings.get("theme_color", "#3a9879"),
                                       settings.get("theme_surface", "classic"), settings.get("theme_overrides", {}))
         self.chart.colors = palette
@@ -322,7 +348,7 @@ class StatisticsPage(QWidget):
         """ + THEMED_INPUT_STYLE
         for key, value in palette.items():
             style = style.replace(f"@{key}@", value)
-        self.setStyleSheet(style)
+        self.setStyleSheet("" if native else style)
 
     def showEvent(self, event):
         super().showEvent(event)

@@ -38,3 +38,6 @@ class LyricLine:
     is_blockquote: bool = False
     # Zero-based visual rows introduced by a translation break {\nt}.
     translation_lines: list[int] = field(default_factory=list)
+    # User-selected reading words, in visible text coordinates. Timing chunks
+    # remain independent; groups contain no whitespace and do not overlap.
+    reading_groups: list[tuple[int, int]] = field(default_factory=list)

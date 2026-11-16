@@ -5,6 +5,10 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Added
 
+- Add **Use Qt Theme** under **Settings > Appearance > Theme**, alongside Light and Dark. Use Qt's default widget style and system palette, retain the choice across restarts, and preserve custom colors when switching back to Light or Dark.
+- Add **Split reading...** for one selected word in the visual reading editor. Choose a base-text boundary and edit the two suggested readings, preserving Unicode graphemes, lyric text, and karaoke timing. Save both word boundaries in existing LRCX grouping metadata, retain custom reading allocations and internal spaces across save/reload, and support Undo/Redo for automatic and previously combined words.
+- Add **Combine reading** to the visual reading editor: click a base word, Shift-click an adjacent piece, then choose the action from the right-click menu. Review the combined reading in one field, preserve karaoke timing and other lyric metadata, and save editor word boundaries in optional LRCX metadata. Support Undo/Redo, keep groups with unchanged text during corrections, and prevent selection across spaces or line breaks.
+- Replace the Lyrics tab's reading table and separate reading preview with compact visual controls: readings sit above their words, and a subtle plus offers adding a reading. Click to edit, press Enter to apply or Escape to cancel, and keep lyric text editing separate. Scroll long rows horizontally, preserve Undo/Redo and saved readings, and defer background reading refreshes while typing. Support karaoke lines by changing only the selected annotation within existing timed chunks, preserving unrelated readings, timing, formatting, and translation rows. Keep visual controls synchronized with edits in the Karaoke table, and reset authored readings without rebuilding timed chunks.
 - Add a **Repeat** menu beside Shuffle in the player dock: Off, All, Current Track, and **Play current track N times...**. Count the current play toward the chosen total, show progress in the dock, and advance normally afterward. Cancel counted repeat on Stop or a track change; keep it session-only and let sleep timers take priority. Support standalone files as well as library and queue playback.
 - Add an enabled **Japanese song readings** starter dictionary for fresh installations with whole-word readings `私 → わたし`, `君 → きみ`, and `時 → とき`, preserving existing saved dictionaries. Add **Manage > Restore factory dictionaries…** to the reading-dictionary manager; review the replacement before saving with **OK** in both the manager and Settings, or discard it with **Cancel**.
 - Add karaoke highlighting to Floating Lyrics for timed LRCX songs, including synchronized furigana and existing sweep effects. Follow playback speed and lyric offsets, update when seeking while paused, and keep highlighting active when the main lyrics view is hidden.
@@ -14,13 +18,18 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Changed
 
+- Add a horizontal scrollbar to the visual readings editor when needed. Keep words on one row until an explicit line break, reveal active reading fields while editing, and preserve the scroll position when refreshing readings for the same lyric.
+- Show whitespace as noninteractive gaps in the visual readings editor, with explicit line breaks starting new rows. Preserve repeated and full-width spaces, blank rows, lyric text, and spaces inside readings. Keep authored phrase readings together and apply individual edits without rebuilding unrelated annotations or karaoke timing.
+- Keep A-B markers per song until LRCPlus closes. Restore complete loops and A-only selections when returning through the library or queue, share markers between repeated entries of the same file, and clear only the current song's range. Stop retains markers; clearing the queue suspends the active loop while keeping its remembered range. Validate restored boundaries against the loaded song's duration and preserve sleep-timer priority.
 - Use the recorded factory setup for fresh installations and **Restore factory defaults…**: dark **Nordic Frost** with accent **#88c0d0**, the chosen light/dark color overrides, no background blur, and playlist restoration enabled. Disable listening-statistics recording and automatic update checks by default. Retain Yomi readings, full reading rendering, and no lyric highlight animation; preserve explicit saved preferences.
 - Generate complete Japanese furigana readings for numeric minute counters, including `5分` (ごふん) and `10分` (じゅっぷん), while keeping clock notation numeric.
 
 ### Fixed
 
+- Keep the visual readings editor's scroll area transparent so it blends into the surrounding panel without a separate dark background.
 - Correct **All romaji** word boundaries and particle pronunciation in `手はずっと`, producing `te wa zutto` while preserving ordinary `手はず` readings and karaoke timing.
 - Reduce Statistics workspace memory use when displaying multilingual song, artist, and album names by reusing the library's font rendering.
+- Fix severe lag when opening or refreshing the Statistics tab by avoiding repeated measurements of every ranking cell. Use resizable columns, skip unchanged rankings, and preserve the chosen sort order.
 - Reduce image card editing memory use with previews capped at 1080 pixels on the longest edge and a smaller background cache. Render full resolution only when saving, copying, or opening the image viewer, preserving the selected export quality.
 - Release image card previews, album artwork, and image caches when leaving the card tab or hiding the editor. Discard late artwork results and rebuild the preview on return while preserving card settings.
 

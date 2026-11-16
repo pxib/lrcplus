@@ -107,8 +107,8 @@ class AudioController:
             """Load a track; False means a sleep timer suppressed its autoplay."""
             if hasattr(self, "_clear_counted_repeat"):
                 self._clear_counted_repeat()
-            if getattr(self, "_ab_start", None) is not None:
-                self._clear_ab_loop()
+            if hasattr(self, "_suspend_ab_loop"):
+                self._suspend_ab_loop()
             audio_path = Path(path).expanduser().resolve()
             allow_autoplay = self._sleep_before_track_load() if hasattr(self, "sleep_timer") else True
             if hasattr(self, "statistics"):
@@ -193,6 +193,8 @@ class AudioController:
                     str(audio_path)
                 )
             )
+            if hasattr(self, "_restore_ab_loop"):
+                self._restore_ab_loop(audio_path)
             self._set_native_pitch_compensation()
             if hasattr(self, "statistics"):
                 self._statistics_track_started()

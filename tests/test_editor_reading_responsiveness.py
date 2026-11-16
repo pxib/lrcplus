@@ -71,19 +71,19 @@ def test_open_and_select_while_yomi_request_is_pending(tmp_path, qapp, monkeypat
         assert heartbeat == [True]
         assert not release.is_set()
         assert ui_generation_calls == []
-        assert dialog.furigana_table.item(0, 0).text() == "犬だ"
-        assert dialog.furigana_table.item(0, 1).text() == ""
+        assert dialog.readings_editor.tokens()[0]["text"] == "犬だ"
+        assert (dialog.readings_editor.tokens()[0].get("reading") or "") == ""
 
         release.set()
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             qapp.processEvents()
-            if dialog.furigana_table.item(0, 1).text():
+            if (dialog.readings_editor.tokens()[0].get("reading") or ""):
                 break
             threading.Event().wait(0.01)
 
-        assert dialog.furigana_table.item(0, 1).text() == "いぬ"
-        assert "犬(いぬ)" in dialog.ruby_preview.text()
+        assert (dialog.readings_editor.tokens()[0].get("reading") or "") == "いぬ"
+        assert "犬(いぬ)" in dialog.readings_editor.toolTip()
         assert ui_generation_calls == []
         assert dialog.lines == original_lines
         assert not dialog.document_dirty
@@ -93,12 +93,12 @@ def test_open_and_select_while_yomi_request_is_pending(tmp_path, qapp, monkeypat
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             qapp.processEvents()
-            if dialog.furigana_table.rowCount() == 3:
+            if len(dialog.readings_editor.tokens()) == 3:
                 break
             threading.Event().wait(0.01)
-        assert dialog.furigana_table.rowCount() == 3
-        assert dialog.furigana_table.item(2, 0).text() == "犬"
-        assert dialog.furigana_table.item(2, 1).text() == "いぬ"
+        assert len(dialog.readings_editor.tokens()) == 3
+        assert dialog.readings_editor.tokens()[2]["text"] == "犬"
+        assert (dialog.readings_editor.tokens()[2].get("reading") or "") == "いぬ"
         assert ui_generation_calls == []
     finally:
         release.set()
@@ -128,7 +128,7 @@ def test_cold_cache_keeps_manual_readings_in_separate_rows(editor, monkeypatch):
     editor._populate_furigana_editor(line)
 
     assert [
-        (editor.furigana_table.item(row, 0).text(), editor.furigana_table.item(row, 1).text())
-        for row in range(editor.furigana_table.rowCount())
+        (token["text"], token.get("reading") or "")
+        for token in editor.readings_editor.tokens()
     ] == [("猫", "ねこ"), ("と", ""), ("犬", "いぬ")]
     assert line == original

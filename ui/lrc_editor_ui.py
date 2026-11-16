@@ -48,6 +48,7 @@ except Exception:
 
 
 from ui.lrc_editor_controls import ClickableSlider, KaraokeSeparationWidget
+from ui.inline_readings import InlineReadingsEditor
 
 
 class LrcEditorUiMixin:
@@ -296,36 +297,16 @@ class LrcEditorUiMixin:
         form.addRow("Lyric:", lyric_field)
         detail_layout.addLayout(form)
 
-        ruby_box = QFrame()
-        ruby_box.setFrameShape(QFrame.Shape.StyledPanel)
-        ruby_layout = QVBoxLayout(ruby_box)
-        ruby_layout.addWidget(QLabel("Reading preview"))
-        self.ruby_preview = QLabel("Choose Auto, Pinyin, Jyutping, or Yale. Explicit LRCX ruby is preserved.")
-        self.ruby_preview.setWordWrap(True)
-        self.ruby_preview.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        ruby_layout.addWidget(self.ruby_preview)
-        detail_layout.addWidget(ruby_box)
-
         furigana_box = QFrame()
         self.furigana_box = furigana_box
         furigana_box.setFrameShape(QFrame.Shape.StyledPanel)
         furigana_layout = QVBoxLayout(furigana_box)
-        furigana_layout.addWidget(QLabel("Reading editor"))
-        self.furigana_karaoke_notice = QLabel(
-            "Furigana for karaoke lines is edited in the Karaoke tab. "
-            "Existing readings are preserved when karaoke is created or changed."
-        )
-        self.furigana_karaoke_notice.setWordWrap(True)
-        self.furigana_karaoke_notice.setStyleSheet("color: #ffcf70;")
-        self.furigana_karaoke_notice.setVisible(False)
-        furigana_layout.addWidget(self.furigana_karaoke_notice)
-        self.furigana_table = QTableWidget(0, 2)
-        self.furigana_table.setHorizontalHeaderLabels(["Text", "Reading"])
-        furigana_header = self.furigana_table.horizontalHeader()
-        furigana_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        furigana_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.furigana_table.itemChanged.connect(self.furigana_changed)
-        furigana_layout.addWidget(self.furigana_table)
+        furigana_layout.addWidget(QLabel("Readings · click a reading or + to edit; right-click words to combine or split"))
+        self.readings_editor = InlineReadingsEditor()
+        self.readings_editor.readingChanged.connect(self.furigana_changed)
+        self.readings_editor.combineRequested.connect(self.combine_reading)
+        self.readings_editor.splitRequested.connect(self.split_reading)
+        furigana_layout.addWidget(self.readings_editor)
         furigana_buttons = QHBoxLayout()
         reset_furigana = QPushButton("Reset Readings")
         self.reset_furigana_button = reset_furigana

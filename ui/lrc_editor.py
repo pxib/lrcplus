@@ -30,7 +30,8 @@ from lyrics.formatting import format_emphasis, parse_emphasis, parse_quote_prefi
 from lyrics.writer import format_timestamp
 from lyrics.timing import parse_timestamp
 from lyrics.karaoke_timing import next_lyric_start, segment_end
-from lyrics.editor_operations import correct_line_text
+from lyrics.editor_operations import correct_line_text, replace_reading_span
+from lyrics.reading_groups import group_reading_tokens, remap_reading_groups
 from lyrics.furigana import get_cached_furigana_segments
 from core.debug import debug_print
 from lyrics.lrcx_parser import get_lrcx_offset
@@ -703,6 +704,14 @@ class LrcEditorDialog(
         if not changed:
             return
 
+        if self.readings_editor.is_editing():
+            # A provider finishing must not replace a field the user is typing
+            # into. Retry against this selection after the edit has settled.
+            selected = self._current_line_index()
+            if line_index < 0 or selected == line_index:
+                QTimer.singleShot(200, lambda: self._on_reading_generation_finished(token, selected, changed))
+            return
+
         if line_index >= 0:
             # Only refresh if this is still the line the user is looking at.
             if self._current_line_index() != line_index:
@@ -752,6 +761,8 @@ class LrcEditorDialog(
             self.quote_button.setChecked(False)
             self.line_time.setValue(0)
             self.line_text.clear()
+            self.readings_editor.set_tokens([])
+            self._update_furigana_editor_availability(None)
             self._update_text_timing_notice(None)
             if hasattr(self, "lyrics_waveform"):
                 self.lyrics_waveform.clear_selected_lyric_timing()
@@ -960,32 +971,9 @@ class LrcEditorDialog(
 
         generated = any(token.get("reading") for token in tokens)
         if generated:
-            editor_tokens = self._furigana_editor_tokens(line)
-            previous_loading = self.loading
-            self.loading = True
-            blocker = QSignalBlocker(self.furigana_table)
-            try:
-                self.furigana_table.setRowCount(0)
-                for token in editor_tokens:
-                    text_value = str(token.get("text", ""))
-                    if not text_value:
-                        continue
-                    row = self.furigana_table.rowCount()
-                    self.furigana_table.insertRow(row)
-                    self.furigana_table.setItem(
-                        row, 0, QTableWidgetItem(text_value)
-                    )
-                    self.furigana_table.setItem(
-                        row,
-                        1,
-                        QTableWidgetItem(str(token.get("reading") or "")),
-                    )
-            finally:
-                del blocker
-                self.loading = previous_loading
-
-            if self.furigana_table.rowCount():
-                self.furigana_changed(self.furigana_table.item(0, 1))
+            self.readings_editor.set_tokens(self._furigana_editor_tokens(line))
+            if self.readings_editor.tokens():
+                self.furigana_changed()
         else:
             self.load_selected_line(self.line_list.currentRow())
 
@@ -1113,7 +1101,9 @@ class LrcEditorDialog(
             if segment_spans:
                 source = "manual"
                 for start, end, reading in segment_spans:
-                    reading = str(reading or "").strip()
+                    # A timed chunk may own a leading/trailing space from the
+                    # middle of a grouped reading. Preserve it when rejoining.
+                    reading = str(reading or "")
                     if reading:
                         spans.append((
                             cursor + max(0, int(start)),
@@ -1143,6 +1133,7 @@ class LrcEditorDialog(
         # as 描き, the manual span normally covers 描 only; the row still remains
         # "描き" and displays the manual reading "が".
         result = []
+        word_boundaries = {boundary for group in line.reading_groups for boundary in group}
         position = 0
         for token in tokens:
             token_text = str(token.get("text", ""))
@@ -1153,22 +1144,57 @@ class LrcEditorDialog(
             reading = str(token.get("reading") or "") or None
             source = token.get("source")
 
-            # Manual/imported ruby always wins over generated reading.
-            for span_start, span_end, span_reading, span_source in spans:
+            # Reassemble annotations divided across karaoke chunks, keeping
+            # their exact base range so an edit affects only that annotation.
+            groups = []
+            for span_start, span_end, span_reading, span_source in sorted(spans):
                 if span_start < token_end and span_end > token_start:
                     if span_source != "generated" or include_generated:
-                        reading = span_reading
-                        source = span_source
-                        break
+                        first, last = max(span_start, token_start), min(span_end, token_end)
+                        if first != span_start or last != span_end:
+                            span_reading = split_reading_by_text_ranges(
+                                text[span_start:span_end], span_reading,
+                                [(first - span_start, last - span_start)],
+                            )[0]
+                        if not span_reading:
+                            continue
+                        if groups and groups[-1][1] == first and first not in word_boundaries:
+                            a, _, value, kind = groups[-1]
+                            groups[-1] = (a, last, value + span_reading, kind)
+                        else:
+                            groups.append((first, last, span_reading, span_source))
+
+            if len(groups) > 1:
+                # Several separate annotations within one provider token must
+                # stay separately editable instead of showing only the first.
+                cursor = token_start
+                for a, b, value, kind in groups:
+                    if cursor < a:
+                        result.append({"text": text[cursor:a], "reading": None,
+                                       "start": cursor, "end": a})
+                    result.append({"text": text[a:b], "reading": value, "source": kind,
+                                   "start": a, "end": b, "ruby_start": a, "ruby_end": b})
+                    cursor = b
+                if cursor < token_end:
+                    result.append({"text": text[cursor:token_end], "reading": None,
+                                   "start": cursor, "end": token_end})
+                position = token_end
+                continue
+
+            annotation_range = {}
+            if groups:
+                a, b, reading, source = groups[0]
+                annotation_range = {"ruby_start": a, "ruby_end": b}
 
             if reading and source == "generated" and not include_generated:
                 reading = None
                 source = None
 
-            result.append({"text": token_text, "reading": reading, "source": source})
+            result.append({"text": token_text, "reading": reading, "source": source,
+                           "start": token_start, "end": token_end, **annotation_range})
             position = token_end
 
-        return result
+        return group_reading_tokens(text, result, line.reading_groups)
 
     def _stored_reading_tokens(self, line, include_generated=False):
         """Return reading-editor tokens using text boundaries, never karaoke boundaries."""
@@ -1180,14 +1206,14 @@ class LrcEditorDialog(
     def _refresh_ruby_preview(self, line):
         stored = self._furigana_editor_tokens(line)
         if stored:
-            self.ruby_preview.setText("  ".join(
+            self.readings_editor.setToolTip("  ".join(
                 f"{part['text']}({part['reading']})"
                 if part.get("reading") else part["text"]
                 for part in stored
             ))
             return
 
-        self.ruby_preview.setText(
+        self.readings_editor.setToolTip(
             "No stored readings. Automatic generation follows the selected mode."
         )
 
@@ -1211,24 +1237,15 @@ class LrcEditorDialog(
         return round(float(seconds) * 1000.0 + self.lyrics_offset_ms)
 
     def _update_furigana_editor_availability(self, line):
-        """Keep one furigana editor authoritative for each line.
-
-        Once a line has karaoke timing, its ruby belongs to the karaoke segment
-        layer. The Lyrics-tab reading table is therefore read-only/disabled so
-        it cannot accidentally rewrite karaoke structure. Existing ruby data is
-        left untouched and can be edited from the Karaoke table.
-        """
-        has_karaoke = bool(getattr(line, "has_karaoke", False)) if line is not None else False
-        enabled = not has_karaoke
-        if hasattr(self, "furigana_table"):
-            self.furigana_table.setEnabled(enabled)
+        """Readings are editable independently of the line's karaoke timing."""
+        enabled = line is not None
+        if hasattr(self, "readings_editor"):
+            self.readings_editor.setEnabled(enabled)
         if hasattr(self, "reset_furigana_button"):
             self.reset_furigana_button.setEnabled(enabled)
-        if hasattr(self, "furigana_karaoke_notice"):
-            self.furigana_karaoke_notice.setVisible(has_karaoke)
 
     def _populate_furigana_editor(self, line):
-        if not hasattr(self, "furigana_table"):
+        if not hasattr(self, "readings_editor"):
             return
 
         self._update_furigana_editor_availability(line)
@@ -1238,50 +1255,33 @@ class LrcEditorDialog(
         # loading off and let the remaining UI setup mark the document dirty.
         previous_loading = self.loading
         self.loading = True
-        blocker = QSignalBlocker(self.furigana_table)
+        blocker = QSignalBlocker(self.readings_editor)
         try:
-            self.furigana_table.setRowCount(0)
-
-            tokens = self._furigana_editor_tokens(line)
-
-            for token in tokens:
-                text_value = str(token.get("text", ""))
-                if not text_value:
-                    continue
-                row = self.furigana_table.rowCount()
-                self.furigana_table.insertRow(row)
-                self.furigana_table.setItem(row, 0, QTableWidgetItem(text_value))
-                reading = str(token.get("reading") or "")
-                self.furigana_table.setItem(row, 1, QTableWidgetItem(reading))
+            self.readings_editor.set_tokens(self._furigana_editor_tokens(line))
         finally:
             del blocker
             self.loading = previous_loading
 
-    def furigana_changed(self, item):
-        if self.loading or item.column() != 1:
+    def furigana_changed(self, token_index=None):
+        if self.loading:
             return
         _, line = self._current_line()
         if line is None:
             return
 
 
-        self._push_undo_state()
-        tokens = []
-        for row in range(self.furigana_table.rowCount()):
-            base_item = self.furigana_table.item(row, 0)
-            reading_item = self.furigana_table.item(row, 1)
-            if base_item is None:
-                continue
-            base = base_item.text()
-            reading = (
-                reading_item.text().strip()
-                if reading_item is not None
-                else ""
-            ) or None
-            tokens.append((base, reading))
+        editor_tokens = self.readings_editor.tokens()
+        tokens = [(str(token["text"]), str(token.get("reading") or "").strip() or None)
+                  for token in editor_tokens]
 
         if "".join(base for base, _ in tokens) != line.text:
             return
+        if token_index is not None and not 0 <= token_index < len(tokens):
+            return
+        if line.has_karaoke and "".join(segment.text for segment in line.segments) != line.text:
+            return
+
+        self._push_undo_state()
 
 
         old_segments = list(line.segments) or [
@@ -1292,65 +1292,25 @@ class LrcEditorDialog(
         # Rebuilding line.segments from ruby tokens used to overwrite the real
         # karaoke boundaries, so merely editing/readjusting a reading could turn
         # one timed chunk into many tiny timed chunks after save/reload.
-        if getattr(line, "has_karaoke", False):
-            # Furigana is metadata *inside* karaoke chunks. Never rebuild or
-            # split line.segments here: their text/timestamps are authoritative.
-            token_ranges = []
-            position = 0
-            for base, reading in tokens:
-                base = str(base or "")
-                end_position = position + len(base)
-                if reading:
-                    runs = list(re.finditer(r"[\u3400-\u9fff]+", base))
-                    if runs:
-                        # Manual readings apply to the first kanji run, with
-                        # okurigana left outside the ruby span.
-                        match = runs[0]
-                        token_ranges.append((
-                            position + match.start(),
-                            position + match.end(),
-                            str(reading).strip(),
-                        ))
-                position = end_position
-
-            if position != len(line.text):
-                return
-
-            global_position = 0
-            for source in old_segments:
-                source_text = str(source.text or "")
-                source_start = global_position
-                source_end = source_start + len(source_text)
-                spans = []
-
-                for ruby_start, ruby_end, reading in token_ranges:
-                    overlap_start = max(source_start, ruby_start)
-                    overlap_end = min(source_end, ruby_end)
-                    if overlap_start >= overlap_end:
-                        continue
-                    local_start = overlap_start - source_start
-                    local_end = overlap_end - source_start
-                    span_reading = reading
-                    if (overlap_start != ruby_start or overlap_end != ruby_end) and split_reading_by_text_ranges is not None:
-                        span_reading = split_reading_by_text_ranges(
-                            line.text[ruby_start:ruby_end], reading,
-                            [(overlap_start-ruby_start, overlap_end-ruby_start)],
-                        )[0]
-                    if span_reading:
-                        spans.append((local_start, local_end, span_reading))
-
-                source.ruby_spans = spans
-                # Legacy whole-segment ruby remains available only when the
-                # span covers the entire karaoke chunk.
-                if len(spans) == 1 and spans[0][0] == 0 and spans[0][1] == len(source_text):
-                    source.ruby = spans[0][2]
-                    source.ruby_source = "manual"
+        if getattr(line, "has_karaoke", False) or token_index is not None:
+            if not line.segments:
+                line.segments = old_segments
+            indices = range(len(tokens)) if token_index is None else [token_index]
+            for index in indices:
+                token = editor_tokens[index]
+                base, reading = tokens[index]
+                if token_index is None and not reading:
+                    continue
+                start, end = token["start"], token["end"]
+                if "ruby_start" in token:
+                    start, end = token["ruby_start"], token["ruby_end"]
                 else:
-                    source.ruby = None
-                    source.ruby_source = None
-                global_position = source_end
-
-            line.has_karaoke = True
+                    # Keep okurigana outside a new annotation. Scripts without
+                    # kanji (e.g. Korean romanization) use the whole token.
+                    match = re.search(r"[\u3400-\u9fff]+", base)
+                    if match:
+                        start, end = start + match.start(), start + match.end()
+                replace_reading_span(line, start, end, reading)
         else:
             # No karaoke structure exists, so ruby tokens may safely define the
             # ordinary display segments.
@@ -1401,6 +1361,63 @@ class LrcEditorDialog(
             self.loading = True
             self._populate_segments(line)
             self.loading = False
+            self._refresh_karaoke_preview()
+
+    def combine_reading(self, start, end, reading):
+        if self.loading:
+            return
+        _, line = self._current_line()
+        if line is None or not 0 <= start < end <= len(line.text):
+            return
+        if any(char.isspace() for char in line.text[start:end]):
+            return
+        if line.segments and "".join(segment.text for segment in line.segments) != line.text:
+            return
+        self._push_undo_state()
+        if not line.segments:
+            line.segments = [LyricSegment(line.start, line.text)]
+        replace_reading_span(line, start, end, reading or None)
+        line.reading_groups = sorted([(a, b) for a, b in line.reading_groups if b <= start or a >= end]
+                                     + [(start, end)])
+        self._mark_document_dirty()
+        self._refresh_ruby_preview(line)
+        self._populate_furigana_editor(line)
+        if self.karaoke_enabled:
+            self._populate_segments(line)
+            self._refresh_karaoke_preview()
+
+    def split_reading(self, start, cut, end, left, right, ruby_start, ruby_end):
+        if self.loading:
+            return
+        _, line = self._current_line()
+        if line is None or not 0 <= start < cut < end <= len(line.text):
+            return
+        from ui.reading_split_dialog import reading_split_points
+
+        base = line.text[start:end]
+        if any(char.isspace() for char in base) or cut - start not in reading_split_points(base):
+            return
+        if not start <= ruby_start < ruby_end <= end:
+            return
+        if line.segments and "".join(segment.text for segment in line.segments) != line.text:
+            return
+        self._push_undo_state()
+        if not line.segments:
+            line.segments = [LyricSegment(line.start, line.text)]
+        for a, b, reading in ((start, cut, left), (cut, end, right)):
+            first, last = max(a, ruby_start), min(b, ruby_end)
+            if first < last:
+                replace_reading_span(line, first, last, reading or None)
+            elif reading:
+                replace_reading_span(line, a, b, reading)
+        line.reading_groups = sorted([(a, b) for a, b in line.reading_groups if b <= start or a >= end]
+                                     + [(start, cut), (cut, end)])
+        self._mark_document_dirty()
+        self._refresh_ruby_preview(line)
+        self._populate_furigana_editor(line)
+        if self.karaoke_enabled:
+            self._populate_segments(line)
+            self._refresh_karaoke_preview()
 
     def reset_all_readings_advanced(self):
         if not self.lines:
@@ -1491,6 +1508,8 @@ class LrcEditorDialog(
                         replacement.ruby_source = None
                     segments.append(replacement)
                 offset = end
+            line.reading_groups = [(positions[a], positions[b]) for a, b in line.reading_groups
+                                   if all(keep[a:b]) and positions[a] < positions[b]]
             line.text = new_text
             line.segments = segments
             line.translation_lines = []
@@ -1522,22 +1541,14 @@ class LrcEditorDialog(
         self._push_undo_state()
         changed = False
         for line in self.lines:
-            for index, segment in enumerate(line.segments):
-                if (
-                    segment.ruby
-                    and getattr(segment, "ruby_source", None) == "manual"
-                ):
-                    line.segments[index] = LyricSegment(
-                        segment.start,
-                        segment.text,
-                        None,
-                        segment.instant,
-                        segment.end,
-                        None,
-                    )
+            for segment in line.segments:
+                if segment.ruby_spans or (segment.ruby and segment.ruby_source != "generated"):
+                    segment.ruby = None
+                    segment.ruby_source = None
+                    segment.ruby_spans = []
                     changed = True
         if changed:
-            self.document_dirty = True
+            self._mark_document_dirty()
             # Reading generation may split internal segments so ruby can be
             # rendered precisely, but that does not create karaoke timing.
             # Keep karaoke state/dirty tracking completely independent.
@@ -1771,6 +1782,8 @@ class LrcEditorDialog(
         self.quote_button.setChecked(line.is_blockquote)
         if text != line.text:
             line.segments = correct_line_text(line, text, getattr(self, "_line_text_change", None))
+            line.reading_groups = remap_reading_groups(
+                line.text, text, line.reading_groups, getattr(self, "_line_text_change", None))
             line.text = text
             self._preview_segments_line_index = None
             if not text:
