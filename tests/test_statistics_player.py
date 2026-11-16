@@ -9,7 +9,7 @@ from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QMessageBox
 
 from core.music_library import LibraryTrack
-from core.settings import get_statistics_settings
+from core.settings import get_statistics_settings, save_statistics_settings
 from ui.main_window import Player
 from ui.settings_dialog import SettingsDialog
 
@@ -17,6 +17,7 @@ from ui.settings_dialog import SettingsDialog
 @pytest.fixture
 def playback(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(Player, "_automatic_update_check", lambda self: None)
+    save_statistics_settings({"enabled": True})
     window = Player()
     state = SimpleNamespace(now=0.0, position=0, playing=True, duration=120000,
                             status=QMediaPlayer.MediaStatus.BufferedMedia)

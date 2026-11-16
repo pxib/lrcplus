@@ -1104,7 +1104,38 @@ def _with_number_readings(text, segments):
     return result
 
 
+def _resolve_tewa_zutto(text, words):
+    """Recover 手 + は + ずっと when a parser consumes the topic particle.
+
+    手はず is also a noun, but its apparent suffix っと here belongs to
+    ずっと. Only repair these complete adjacent tokens; real 手はず stays intact.
+    Return fresh records without modifying the analyzer's cached response.
+    """
+    result = []
+    index = 0
+    cursor = 0
+    while index < len(words):
+        pair = tuple(str(word.get("surface", "")) for word in words[index:index + 2])
+        start = text.find(pair[0], cursor)
+        if (pair in {("手はず", "っと"), ("手は", "ずっと")}
+                and start >= 0 and text.startswith("手はずっと", start)):
+            result.extend([
+                {"surface": "手", "reading": "テ", "pos": ["名詞"]},
+                {"surface": "は", "reading": "ハ", "pos": ["助詞"]},
+                {"surface": "ずっと", "reading": "ズット", "pos": ["副詞"]},
+            ])
+            cursor = start + len("手はずっと")
+            index += 2
+        else:
+            result.append(words[index])
+            if start >= 0:
+                cursor = start + len(pair[0])
+            index += 1
+    return result
+
+
 def _build_segments_from_words(text, words, should_continue=None):
+    words = _resolve_tewa_zutto(text, words)
     segments = []
     source_position = 0
     previous_word = None

@@ -4,7 +4,7 @@ import json
 import pytest
 
 from core.reading_dictionary import (
-    dictionary_matches, export_dictionary_file, import_dictionary_file,
+    dictionary_matches, export_dictionary_file, get_factory_dictionaries, import_dictionary_file,
     load_dictionaries, new_dictionary, save_dictionaries, validate_dictionaries,
 )
 from core.settings import get_app_data_dir
@@ -15,6 +15,32 @@ def dictionary_data(entries, name="Custom"):
     dictionary = new_dictionary(name)
     dictionary["entries"] = [dict(word=word, reading=reading, type=kind, comment="", match="word") for word, reading, kind in entries]
     return {"version": 1, "dictionaries": [dictionary]}
+
+
+def test_fresh_install_uses_editable_starter_readings_without_writing():
+    expected = get_factory_dictionaries()
+    assert validate_dictionaries(expected) == expected
+    assert load_dictionaries(reload=True) == expected
+    for word, reading in (("私", "わたし"), ("君", "きみ"), ("時", "とき")):
+        assert dictionary_matches(word, "furigana") == [(0, len(word), reading)]
+    for compound in ("私立", "君主", "時間"):
+        assert dictionary_matches(compound, "furigana") == []
+    expected["dictionaries"][0]["entries"][0]["reading"] = "わたくし"
+    assert load_dictionaries()["dictionaries"][0]["entries"][0]["reading"] == "わたし"
+    assert get_factory_dictionaries()["dictionaries"][0]["entries"][0]["reading"] == "わたし"
+    assert not (get_app_data_dir() / "reading-dictionaries.json").exists()
+
+
+@pytest.mark.parametrize("data", [
+    {"version": 1, "dictionaries": []},
+    dictionary_data([("私", "わたくし", "furigana")]),
+])
+def test_existing_dictionaries_are_preserved_without_adding_starters(data):
+    save_dictionaries(data)
+    path = get_app_data_dir() / "reading-dictionaries.json"
+    before = path.read_bytes()
+    assert load_dictionaries(reload=True) == data
+    assert path.read_bytes() == before
 
 
 @pytest.fixture

@@ -3,13 +3,15 @@
 from datetime import date, datetime, timedelta
 
 from PySide6.QtCore import Qt, QTimer, QSignalBlocker, QRectF
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
     QCheckBox, QFrame, QHBoxLayout, QHeaderView, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from core.theme import build_theme_palette
+from core.fonts import library_font
+from ui.content_list import ContentListDelegate
 from ui.settings_controls import ThemedComboBox, THEMED_INPUT_STYLE
 
 
@@ -150,6 +152,13 @@ class StatisticsPage(QWidget):
             ("albums", "Albums", ["Album", "Artist", "Plays", "Listening time"]),
         ):
             table = QTableWidget(0, len(headers))
+            # Metadata needs the same glyph-checked rendering as the library;
+            # Qt's default fallback can load large legacy CJK fonts on Windows.
+            font = library_font(table.font())
+            font.setStyleStrategy(font.styleStrategy() | QFont.StyleStrategy.NoFontMerging)
+            table.setFont(font)
+            table.setItemDelegate(ContentListDelegate(table))
+            table.setWordWrap(False)
             table.setHorizontalHeaderLabels(headers)
             table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
             table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)

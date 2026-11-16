@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.reading_dictionary import (
-    READING_TYPES, MATCH_TYPES, export_dictionary_file, import_dictionary_file,
+    READING_TYPES, MATCH_TYPES, export_dictionary_file, get_factory_dictionaries, import_dictionary_file,
     new_dictionary, validate_dictionaries,
 )
 from ui.settings_controls import ThemedComboBox
@@ -45,6 +45,8 @@ class ReadingDictionaryDialog(QDialog):
         self.manage_menu.addSeparator()
         self.manage_menu.addAction("Import dictionaries…", self._import_dictionaries)
         self.export_action = self.manage_menu.addAction("Export selected dictionary…", self._export_dictionary)
+        self.manage_menu.addSeparator()
+        self.manage_menu.addAction("Restore factory dictionaries…", self._restore_factory_dictionaries)
         self.manage_button.setMenu(self.manage_menu)
         self.add_button = QPushButton("Add entry")
         self.add_button.clicked.connect(self._add_entry)
@@ -232,6 +234,18 @@ class ReadingDictionaryDialog(QDialog):
         if 0 <= row < len(dictionaries) and 0 <= other < len(dictionaries):
             dictionaries[row], dictionaries[other] = dictionaries[other], dictionaries[row]
             self._populate_dictionaries(other)
+
+    def _restore_factory_dictionaries(self):
+        if QMessageBox.question(
+            self, "Restore Factory Dictionaries",
+            "Replace all dictionaries with the starter Japanese song readings? "
+            "Your current entries will be removed when you save Settings.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes:
+            self.data = get_factory_dictionaries()
+            self.search.clear()
+            self._populate_dictionaries()
 
     def _add_entry(self):
         dictionary = self._current_dictionary()

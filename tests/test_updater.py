@@ -69,15 +69,18 @@ def test_malformed_versions_are_rejected(value):
 
 def test_automatic_check_interval_and_disabled_setting():
     now = datetime(2026, 11, 2, 12, tzinfo=timezone.utc)
-    assert updater.should_check_automatically({}, now)
+    assert not updater.should_check_automatically({}, now)
+    assert updater.should_check_automatically({"automatic_check": True}, now)
     assert not updater.should_check_automatically({"automatic_check": False}, now)
     assert not updater.should_check_automatically({
+        "automatic_check": True,
         "last_attempt": "2026-11-02T00:01:00+00:00",
     }, now)
     assert updater.should_check_automatically({
+        "automatic_check": True,
         "last_attempt": "2026-11-01T11:59:59Z",
     }, now)
-    assert updater.should_check_automatically({"last_attempt": "invalid"}, now)
+    assert updater.should_check_automatically({"automatic_check": True, "last_attempt": "invalid"}, now)
 
 
 def test_stable_lookup_uses_latest_endpoint_and_validates_asset(monkeypatch):

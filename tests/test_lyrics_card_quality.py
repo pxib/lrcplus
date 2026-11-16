@@ -34,6 +34,10 @@ def test_quality_renders_more_pixels_without_changing_text_layout(qapp, monkeypa
         # The scene is painted again, rather than resizing the finished bitmap.
         assert image != standard.scaled(image.size(), Qt.AspectRatioMode.IgnoreAspectRatio,
                                         Qt.TransformationMode.SmoothTransformation)
+    recorded.clear()
+    preview = renderer.render_lyric_card(source, replace(style, export_scale=3), max_dimension=270)
+    assert (preview.width(), preview.height()) == (202, 270)
+    assert recorded == layout
 
 
 @pytest.mark.parametrize("scale", (2, 3))
@@ -77,7 +81,7 @@ def test_quality_control_preset_export_clipboard_and_dimensions(editor, monkeypa
     card = editor.share_card
     card.quality_combo.setCurrentIndex(card.quality_combo.findData(2))
     card.refresh()
-    assert (card._image.width(), card._image.height()) == (2160, 2160)
+    assert (card._image.width(), card._image.height()) == (1080, 1080)
     assert "2160" in card.preview_details.text()
     save_card_preset("High quality", card.current_style())
     card._reload_presets()
@@ -87,9 +91,12 @@ def test_quality_control_preset_export_clipboard_and_dimensions(editor, monkeypa
     target = tmp_path / "high.png"
     monkeypatch.setattr(card_module.QFileDialog, "getSaveFileName", lambda *args: (str(target), ""))
     card.export_image()
-    assert QImage(str(target)).convertToFormat(card._image.format()) == card._image
+    exported = QImage(str(target))
+    assert (exported.width(), exported.height()) == (2160, 2160)
+    assert card._image.width() == 1080
     card.copy_image()
-    assert QApplication.clipboard().image() == card._image
+    assert QApplication.clipboard().image().convertToFormat(exported.format()) == exported
+    assert card._image.width() == 1080
     save_card_preset("Old style", renderer.CardStyle())
     card._reload_presets()
     card.preset_combo.setCurrentText("Old style")

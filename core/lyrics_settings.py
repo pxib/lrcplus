@@ -1,6 +1,8 @@
 from copy import deepcopy
 from pathlib import Path
 
+from core.factory_defaults import FACTORY_DEFAULTS
+
 
 def load_all_settings():
     from core.settings import load_all_settings as load
@@ -47,6 +49,7 @@ LYRICS_DEFAULTS = {
     "scroll_animation_speed": 300,
     "scroll_animation_easing": "out_cubic",
     "scroll_behavior": "center",
+    **FACTORY_DEFAULTS.get("lyrics_global", {}),
 }
 
 

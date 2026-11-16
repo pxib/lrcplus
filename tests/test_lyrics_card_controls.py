@@ -53,7 +53,9 @@ def test_separate_typography_and_story_export_round_trip_through_presets(editor,
     card.export_image()
     exported = QImage(str(target))
     assert (exported.width(), exported.height()) == (1080, 1920)
-    assert exported.convertToFormat(card._image.format()) == card._image
+    expected = card_module.render_lyric_card("Hello\nWorld", style)
+    assert exported.convertToFormat(expected.format()) == expected
+    assert max(card._image.width(), card._image.height()) == card_module.PREVIEW_MAX_DIMENSION
     # Older presets clear the new overrides and recover template defaults.
     save_card_preset("Original", card_module.CardStyle())
     card._reload_presets()

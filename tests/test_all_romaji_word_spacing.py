@@ -61,6 +61,13 @@ def test_kana_context_crosses_timing_boundaries(parts, expected):
 
 
 ROMAJI_LINES = [
+    (
+        [("あぁ", "アァ", "感動詞"), (" ", "", "空白"),
+         ("手はず", "テハズ", "名詞"), ("っと", "ット", "助詞"),
+         ("濡れ", "ヌレ", "動詞"), ("て", "テ", "助詞"),
+         ("い", "イ", "動詞"), ("て", "テ", "助詞")],
+        "aa, te wa zutto nurete ite",
+    ),
     ([("ぽっちゅ", "ポッチュ", "副詞")], "potchu"),
     (
         [("だ", "ダ", "助動詞", "助動詞-ダ"), ("って", "ッテ", "助詞"),
@@ -130,6 +137,26 @@ def test_word_division_and_quotes(spec, expected, grammar):
 def test_inflection_and_copula_are_distinguished(spec, expected):
     _, tokens = line_tokens(spec, grammar=True)
     assert "".join(all_romaji_texts(tokens)) == expected
+
+
+@pytest.mark.parametrize("surfaces", [("手は", "ずっと"), ("手はず", "っと"), ("手", "は", "ずっと")])
+def test_tewa_zutto_resolves_parser_boundaries_without_mutating_words(surfaces):
+    words = [{"surface": surface, "reading": "テ" if surface == "手" else ""} for surface in surfaces]
+    original = deepcopy(words)
+    tokens = _build_segments_from_words("手はずっと", words)
+    assert "".join(all_romaji_texts(tokens)) == "te wa zutto"
+    assert words == original
+
+
+@pytest.mark.parametrize("source, words, expected", [
+    ("手はずを", [("手はず", "テハズ"), ("を", "ヲ")], "tehazu o"),
+    ("手はず っと", [("手はず", "テハズ"), ("っと", "ット")], "tehazu, tto"),
+    ("手羽", [("手羽", "テバ")], "teba"),
+])
+def test_tewa_correction_preserves_other_words_and_authored_gaps(source, words, expected):
+    tokens = _build_segments_from_words(source, [{"surface": surface, "reading": reading} for surface, reading in words])
+    assert "".join(all_romaji_texts(tokens)) == expected
+    assert "".join(token["text"] for token in tokens) == source
 
 
 @pytest.mark.parametrize("spec, expected", ROMAJI_LINES)

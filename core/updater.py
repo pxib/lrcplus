@@ -24,6 +24,7 @@ from logging.handlers import RotatingFileHandler
 from packaging.version import InvalidVersion, Version
 
 from core.app_info import APP_NAME, APP_VERSION, PROJECT_URL
+from core.factory_defaults import FACTORY_DEFAULTS
 
 
 GITHUB_REPOSITORY = "pxib/lrcplus"
@@ -143,7 +144,8 @@ def log_update_event(message: str) -> None:
 
 
 def should_check_automatically(update_settings: dict, now: datetime | None = None) -> bool:
-    if not isinstance(update_settings, dict) or not update_settings.get("automatic_check", True):
+    default_check = FACTORY_DEFAULTS.get("updates", {}).get("automatic_check", True)
+    if not isinstance(update_settings, dict) or not update_settings.get("automatic_check", default_check):
         return False
     last_attempt = str(update_settings.get("last_attempt", "") or "")
     if not last_attempt:

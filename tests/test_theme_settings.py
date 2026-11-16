@@ -1,4 +1,4 @@
-from core.settings import get_appearance_settings
+from core.settings import APPEARANCE_DEFAULTS, get_appearance_settings
 from core.theme import build_theme_palette
 import pytest
 
@@ -43,7 +43,7 @@ def test_appearance_settings_normalize_theme_mode_and_accent():
     assert appearance["theme_color"] == "#4477cc"
 
 
-def test_invalid_theme_preferences_fall_back_to_light_defaults():
+def test_invalid_theme_preferences_fall_back_to_factory_defaults():
     appearance = get_appearance_settings({
         "appearance": {
             "theme_mode": "system",
@@ -51,8 +51,8 @@ def test_invalid_theme_preferences_fall_back_to_light_defaults():
         }
     })
 
-    assert appearance["theme_mode"] == "light"
-    assert appearance["theme_color"] == "#3a9879"
+    assert appearance["theme_mode"] == APPEARANCE_DEFAULTS["theme_mode"]
+    assert appearance["theme_color"] == APPEARANCE_DEFAULTS["theme_color"]
 
 
 def test_light_and_dark_palettes_retain_the_custom_accent():
@@ -114,7 +114,7 @@ def test_advanced_colors_save_and_reset_by_mode(qapp, monkeypatch):
     from ui.settings_dialog import SettingsDialog, QColorDialog
     from core.settings import save_appearance_settings
 
-    dialog = SettingsDialog([], {}, appearance_settings={})
+    dialog = SettingsDialog([], {}, appearance_settings={"theme_mode": "light", "theme_overrides": {}})
     try:
         dialog.theme_role_combo.setCurrentIndex(dialog.theme_role_combo.findData("window"))
         monkeypatch.setattr(QColorDialog, "getColor", lambda *args: QColor("#123456"))
@@ -138,7 +138,7 @@ def test_simple_colors_and_collapsible_advanced_controls_stay_in_sync(qapp, monk
     from PySide6.QtGui import QColor
     from ui.settings_dialog import SettingsDialog, QColorDialog
 
-    dialog = SettingsDialog([], {}, appearance_settings={})
+    dialog = SettingsDialog([], {}, appearance_settings={"theme_mode": "light", "theme_overrides": {}})
     try:
         assert dialog.advanced_theme_panel.isHidden()
         dialog.advanced_theme_toggle.setChecked(True)

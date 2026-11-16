@@ -1,6 +1,9 @@
 """Regressions for native image buffers retained by editor UI objects."""
 
-from PySide6.QtCore import QEvent
+import weakref
+
+import pytest
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import QApplication
 
 
@@ -51,6 +54,115 @@ def test_card_shutdown_releases_render_and_preview(editor):
     assert card._image.isNull()
     assert card.preview.image.isNull()
     assert not card._refresh_timer.isActive()
+
+
+@pytest.mark.parametrize("exit_to", ("text", "editor_tab", "hide_editor"))
+def test_leaving_card_releases_images_and_returning_restores_style(editor, qapp, tmp_path, exit_to):
+    from PySide6.QtGui import QImage
+    from PySide6.QtTest import QSignalSpy
+    from ui import lyrics_card_renderer as renderer
+    from ui.lyrics_card_artwork import AlbumCoverResult
+
+    editor.show()
+    editor.tabs.setCurrentWidget(editor.share_page)
+    card = editor.share_card
+    editor.share_tabs.setCurrentWidget(card)
+    editor.select_all_share_lines()
+    background = QImage(80, 60, QImage.Format.Format_RGB32)
+    background.fill(Qt.GlobalColor.blue)
+    path = tmp_path / "background.png"
+    assert background.save(str(path))
+    card.image_path_edit.setText(str(path))
+    card.background_mode.setCurrentText("Image")
+    card.watermark_enabled.setChecked(True)
+    card.refresh()
+    style = card.current_style()
+    image = weakref.ref(card._image)
+    stat = path.stat()
+    cached = weakref.ref(renderer._image_background(
+        str(path), stat.st_mtime_ns, stat.st_size, 1080, 1080, 100, 50, 50, 0))
+    card.album_art.image = QImage(40, 40, QImage.Format.Format_RGB32)
+    artwork = weakref.ref(card.album_art.image)
+    old_token = card.album_art._token
+
+    if exit_to == "text":
+        editor.share_tabs.setCurrentIndex(0)
+    elif exit_to == "editor_tab":
+        editor.tabs.setCurrentIndex(0)
+    else:
+        editor.hide()
+    assert not card.isVisible()
+    assert image() is None and cached() is None and artwork() is None
+    assert card._image.isNull() and card.preview.image.isNull()
+    assert card.album_art.image.isNull()
+    assert card._render_key is None and card._render_contents is None
+    assert not card._refresh_timer.isActive()
+    assert renderer._watermark_logo.cache_info().currsize == 0
+    assert card.current_style() == style
+    # A cover request that finishes after leaving must not retain its image.
+    card.album_art._complete(old_token, AlbumCoverResult(QImage(40, 40, QImage.Format.Format_RGB32)))
+    assert card.album_art.image.isNull()
+
+    editor.show()
+    editor.tabs.setCurrentWidget(editor.share_page)
+    editor.share_tabs.setCurrentWidget(card)
+    assert QSignalSpy(card._refresh_timer.timeout).wait(3000)
+    assert not card._image.isNull()
+    assert card.current_style() == style
+    assert card.copy_button.isEnabled() and card.save_button.isEnabled()
+
+
+def test_ultra_card_edits_keep_bounded_previews_and_render_full_size_on_demand(
+    editor, monkeypatch, tmp_path,
+):
+    from PySide6.QtGui import QImage
+    from ui import lyrics_card_renderer as renderer
+    from ui import lyrics_share_card as cards
+    from ui.player_dialogs import CoverPreviewDialog
+
+    card = editor.share_card
+    editor.select_all_share_lines()
+    card.quality_combo.setCurrentIndex(card.quality_combo.findData(3))
+    card.size_combo.setCurrentIndex(next(i for i in range(card.size_combo.count())
+                                        if tuple(card.size_combo.itemData(i)) == (1080, 1920)))
+    background = QImage(800, 600, QImage.Format.Format_RGB32)
+    background.fill(Qt.GlobalColor.blue)
+    path = tmp_path / "background.png"
+    assert background.save(str(path))
+    card.image_path_edit.setText(str(path))
+    card.background_mode.setCurrentText("Image")
+    card.image_blur.setValue(8)
+    card.shadow_enabled.setChecked(True)
+    sizes = []
+    render = cards.render_lyric_card
+
+    def capture(*args, **kwargs):
+        image = render(*args, **kwargs)
+        sizes.append((image.width(), image.height()))
+        return image
+
+    monkeypatch.setattr(cards, "render_lyric_card", capture)
+    for crop in (30, 50, 70):
+        card.crop_x.setValue(crop)
+        card.refresh()
+        assert card._image.sizeInBytes() <= 1080 * 1080 * 4
+        assert card.preview.image.cacheKey() == card._image.cacheKey()
+    assert sizes == [(608, 1080)] * 3
+    assert renderer._image_background.cache_info().currsize == 1
+
+    # Cancelling Save must not allocate a full-resolution export.
+    monkeypatch.setattr(cards.QFileDialog, "getSaveFileName", lambda *args: ("", ""))
+    card.export_image()
+    assert len(sizes) == 3
+
+    viewed = []
+    monkeypatch.setattr(CoverPreviewDialog, "exec", lambda viewer: viewed.append(
+        viewer.view.image_item.pixmap().size()))
+    card.open_image_viewer()
+    assert (viewed[0].width(), viewed[0].height()) == (3240, 5760)
+    assert sizes[-1] == (3240, 5760)
+    assert renderer._image_background.cache_info().currsize == 0
+    assert card._image.sizeInBytes() <= 1080 * 1080 * 4
 
 
 def test_closing_editor_releases_cached_backgrounds_and_preserves_other_previews(

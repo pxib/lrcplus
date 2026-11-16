@@ -18,6 +18,7 @@ class BaseLyricRenderer:
         painter.setPen(QColor(owner.text_color))
         for segment in prepared:
             painter.setFont(owner._styled_font(owner.base_font, segment))
+            painter.setPen(owner._floating_text_pen(segment, prepared))
             width = segment["width"]
             base_y = segment.get("base_y", self.FIXED_BASE_Y)
             base_x = (
@@ -26,7 +27,7 @@ class BaseLyricRenderer:
             )
             painter.drawText(
                 int(base_x),
-                int(base_y),
+                int(base_y + owner._word_lift_offset(segment)),
                 segment["text"],
             )
 
@@ -49,6 +50,7 @@ class RubyRenderer:
             reading = segment.get("reading")
             if not reading:
                 continue
+            painter.setPen(owner._floating_text_pen(segment, prepared, reading=True))
 
             width = segment["width"]
             reading_x = (
@@ -65,7 +67,7 @@ class RubyRenderer:
                 )
             painter.drawText(
                 int(reading_x),
-                int(reading_y),
+                int(reading_y + owner._word_lift_offset(segment)),
                 reading,
             )
 
@@ -108,6 +110,18 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
         super().set_lyric(lyric, **kwargs)
         self._stop_pan()
         self._pan_configure_timer.start(0)
+
+    def set_segments(self, *args, **kwargs):
+        super().set_segments(*args, **kwargs)
+        self._stop_pan()
+        self._pan_configure_timer.start(0)
+
+    def _floating_text_pen(self, segment, prepared, reading=False):
+        metrics = QFontMetrics(self.reading_font if reading else self.base_font)
+        return self._karaoke_text_pen(
+            segment, self._segment_progress(segment, prepared), QColor(self.text_color),
+            self._floating_timing_spans, {}, metrics, reading=reading,
+        )
 
     def _raw_segments(self):
         return super()._prepare_segments()
@@ -199,11 +213,21 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
 
         painter = QPainter(self)
         try:
+            self._floating_timing_spans = {}
+            for segment in prepared:
+                group = segment.get("timing_group", segment.get("karaoke_group"))
+                if group is not None:
+                    key = (group, segment.get("base_y"))
+                    left, right = segment["x"], segment["x"] + segment["width"]
+                    old = self._floating_timing_spans.get(key, (left, right))
+                    self._floating_timing_spans[key] = (min(old[0], left), max(old[1], right))
             painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
             painter.translate(self._pan_offset, (self.height() - (bottom - top)) / 2 - top)
             painter.save()
             try:
-                painter.setOpacity(self.display_opacity)
+                entrance = self.line_entrance_progress if self.karaoke_line_entrance else 1.0
+                painter.setOpacity(self.display_opacity * (0.2 + 0.8 * entrance))
+                painter.translate(0, base.height() * 0.16 * (1 - entrance))
 
                 # Independent passes, shared positions.
                 self._base_renderer.paint(painter, self, prepared)
@@ -419,15 +443,29 @@ class FloatingLyricsWindow(QWidget):
     def export_settings(self):
         return dict(self.settings)
 
-    def set_text(self, text, translation_lines=()):
+    def set_text(self, text, translation_lines=(), segments=(), line_end=None,
+                 style_spans=(), is_blockquote=False):
         text = str(text or "")
         translation_lines = tuple(translation_lines)
-        if (getattr(self, "_current_text", None) == text
-                and getattr(self, "_translation_lines", ()) == translation_lines):
+        # Snapshot mutable timing data so editor changes to the same line refresh.
+        content = (text, translation_lines, repr(segments), line_end,
+                   tuple(style_spans), is_blockquote)
+        if getattr(self, "_current_content", None) == content:
             return
+        self._current_content = content
         self._current_text = text
         self._translation_lines = translation_lines
-        self.lyric_widget.set_lyric(text, translation_lines=translation_lines)
+        if segments:
+            self.lyric_widget.set_segments(
+                text, segments, line_end=line_end, style_spans=style_spans,
+                is_blockquote=is_blockquote, translation_lines=translation_lines,
+            )
+        else:
+            self.lyric_widget.set_lyric(
+                text, translation_lines=translation_lines,
+                style_spans=style_spans, is_blockquote=is_blockquote,
+            )
+        self.lyric_widget.start_line_entrance()
 
     def set_context(self, previous="", following=""):
         self.previous_label.setText(str(previous or ""))
@@ -603,6 +641,7 @@ class FloatingLyricsPlugin:
         context.api.on("position_changed", self.on_position_changed)
         context.api.on("track_changed", self.on_track_changed)
         context.api.on("playback_state_changed", self.on_playback_state_changed)
+        context.api.on("karaoke_displays_requested", self._register_karaoke_display)
 
         context.api.add_menu_action(
             "Plugins",
@@ -645,6 +684,7 @@ class FloatingLyricsPlugin:
         if self.floating is not None:
             return self.floating
         self.floating = FloatingLyricsWindow(self.settings)
+        self._register_karaoke_display()
         self.floating.visibility_changed = self._set_menu_checked
         self.floating.closed = self.toggle_window
 
@@ -663,6 +703,12 @@ class FloatingLyricsPlugin:
             else:
                 self.floating.move(100, 100)
         return self.floating
+
+    def _register_karaoke_display(self):
+        if self.floating is not None:
+            emit = getattr(self.context.api, "emit", None)
+            if emit is not None:
+                emit("karaoke_display_created", widget=self.floating.lyric_widget)
 
     def _show_after_main_window(self):
         if self.window is None:
@@ -750,6 +796,9 @@ class FloatingLyricsPlugin:
             return
 
         self.floating.set_furigana_enabled(getattr(self.window, "show_ruby", True))
+        main_display = getattr(self.window, "lyric_widget", None)
+        if main_display is not None and hasattr(main_display, "highlight_color"):
+            self.floating.lyric_widget.highlight_color = QColor(main_display.highlight_color)
 
         index = getattr(self.window, "current_line", -1)
         lyric_lines = getattr(self.window, "lyric_lines", []) or []
@@ -768,10 +817,18 @@ class FloatingLyricsPlugin:
             return str(entry)
 
         if 0 <= index < len(lyrics):
+            line = lyrics[index]
+            line_end = getattr(line, "end", None)
+            if line_end is None and index + 1 < len(lyrics):
+                line_end = getattr(lyrics[index + 1], "start", None)
             self.floating.set_context(text_at(index - 1), text_at(index + 1))
             self.floating.set_text(
                 text_at(index),
                 translation_lines=getattr(lyrics[index], "translation_lines", []),
+                segments=getattr(line, "segments", ()),
+                line_end=line_end,
+                style_spans=getattr(line, "style_spans", ()),
+                is_blockquote=getattr(line, "is_blockquote", False),
             )
         else:
             self.floating.set_context("", text_at(0) if index < 0 else "")
@@ -781,6 +838,9 @@ class FloatingLyricsPlugin:
         self._remember_position()
         self.window = None  # A queued startup callback must not reopen the window.
         if self.floating is not None:
+            emit = getattr(self.context.api, "emit", None)
+            if emit is not None:
+                emit("karaoke_display_removed", widget=self.floating.lyric_widget)
             floating, self.floating = self.floating, None
             floating.visibility_changed = None
             floating.closed = None

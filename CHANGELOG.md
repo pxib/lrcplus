@@ -1,6 +1,28 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [2026-11-16]
+
+### Added
+
+- Add an enabled **Japanese song readings** starter dictionary for fresh installations with whole-word readings `私 → わたし`, `君 → きみ`, and `時 → とき`, preserving existing saved dictionaries. Add **Manage > Restore factory dictionaries…** to the reading-dictionary manager; review the replacement before saving with **OK** in both the manager and Settings, or discard it with **Cancel**.
+- Add karaoke highlighting to Floating Lyrics for timed LRCX songs, including synchronized furigana and existing sweep effects. Follow playback speed and lyric offsets, update when seeking while paused, and keep highlighting active when the main lyrics view is hidden.
+- Add **Settings > Advanced** with JSON import and export for application preferences, saved themes, lyric search folders, and plugin settings. Include unsaved edits in exports, validate imported files, and let users review settings before applying with **OK** or discarding with **Cancel**. Preserve library data, playlists, history, per-song lyric overrides, and reading dictionaries. Imported plugin settings take effect after restarting LRCPlus.
+- Add **Restore factory defaults…** under **Settings > Advanced**, with review before **OK** and cancellation through **Cancel**. Restore application preferences while keeping saved themes, folders, plugin settings, library data, playlists, history, per-song lyric overrides, and reading dictionaries.
+- Add a **Debug** menu in Settings to record preference edits while choosing factory defaults. View before/after changes, stop or clear recording, copy final changed values as JSON, or copy the complete factory setup. Keep recordings in memory across Settings windows until cleared or the app closes. Include unsaved edits while excluding personal paths, output-device IDs, plugin data, and session state; copying does not save preferences or replace the factory baseline.
+
+### Changed
+
+- Use the recorded factory setup for fresh installations and **Restore factory defaults…**: dark **Nordic Frost** with accent **#88c0d0**, the chosen light/dark color overrides, no background blur, and playlist restoration enabled. Disable listening-statistics recording and automatic update checks by default. Retain Yomi readings, full reading rendering, and no lyric highlight animation; preserve explicit saved preferences.
+- Generate complete Japanese furigana readings for numeric minute counters, including `5分` (ごふん) and `10分` (じゅっぷん), while keeping clock notation numeric.
+
+### Fixed
+
+- Correct **All romaji** word boundaries and particle pronunciation in `手はずっと`, producing `te wa zutto` while preserving ordinary `手はず` readings and karaoke timing.
+- Reduce Statistics workspace memory use when displaying multilingual song, artist, and album names by reusing the library's font rendering.
+- Reduce image card editing memory use with previews capped at 1080 pixels on the longest edge and a smaller background cache. Render full resolution only when saving, copying, or opening the image viewer, preserving the selected export quality.
+- Release image card previews, album artwork, and image caches when leaving the card tab or hiding the editor. Discard late artwork results and rebuild the preview on return while preserving card settings.
+
 ## [2026-11-15]
 
 ### Added

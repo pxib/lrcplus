@@ -29,6 +29,20 @@ def new_dictionary(name="User dictionary"):
     return {"id": uuid.uuid4().hex, "name": name, "enabled": True, "entries": []}
 
 
+def get_factory_dictionaries():
+    """Return a fresh, editable starter set based on the supplied song dictionary."""
+    return {"version": 1, "dictionaries": [{
+        "id": "b05b1d04e57942109bbb5a757d054371",
+        "name": "Japanese song readings",
+        "enabled": True,
+        "entries": [
+            {"word": word, "reading": reading, "type": "furigana",
+             "comment": "", "match": "word"}
+            for word, reading in (("私", "わたし"), ("君", "きみ"), ("時", "とき"))
+        ],
+    }]}
+
+
 def validate_dictionaries(data):
     if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("dictionaries"), list):
         raise ValueError("This is not a supported LRCPlus reading dictionary.")
@@ -101,7 +115,7 @@ def load_dictionaries(*, reload=False):
             try:
                 data = validate_dictionaries(json.loads(path.read_text(encoding="utf-8-sig")))
             except FileNotFoundError:
-                data = {"version": 1, "dictionaries": [new_dictionary()]}
+                data = get_factory_dictionaries()
             _install(path, data)
         return deepcopy(_DATA)
 

@@ -10,7 +10,7 @@ import sys
 import uuid
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMessageBox
-from core.settings import get_update_settings, save_update_settings, get_app_data_dir
+from core.settings import UPDATE_DEFAULTS, get_update_settings, save_update_settings, get_app_data_dir
 from core.updater import build_handoff_request, find_updater_executable, log_update_event
 from ui.update_dialogs import (
     UpdateAvailableDialog,
@@ -24,7 +24,7 @@ from core.file_io import atomic_write_text
 class PlayerUpdatesMixin:
     def _automatic_update_check(self):
         self.update_settings = get_update_settings()
-        if not self.update_settings.get("automatic_check", True):
+        if not self.update_settings.get("automatic_check", UPDATE_DEFAULTS["automatic_check"]):
             return
         previous = self.update_settings.get("last_attempt", "")
         if previous:

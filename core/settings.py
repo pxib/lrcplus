@@ -7,6 +7,8 @@ import uuid
 from copy import deepcopy
 from pathlib import Path
 
+from core.factory_defaults import FACTORY_DEFAULTS
+
 APP_ROOT = Path(__file__).resolve().parent.parent
 LEGACY_SETTINGS_PATH = APP_ROOT / "lrc_player_settings.json"
 
@@ -43,6 +45,7 @@ SETTINGS_PATH = _default_settings_path()
 STARTUP_DEFAULTS = {
     "remember_window": True,
     "restore_playlist": False,
+    **FACTORY_DEFAULTS.get("startup", {}),
 }
 
 ONBOARDING_TEXT_INTERVALS = {"slow": 50, "normal": 25, "fast": 10, "instant": 0}
@@ -73,6 +76,12 @@ UPDATE_DEFAULTS = {
     "skipped_version": "",
     "last_checked": "",
     "last_attempt": "",
+    **FACTORY_DEFAULTS.get("updates", {}),
+}
+
+STATISTICS_DEFAULTS = {
+    "enabled": True,
+    **FACTORY_DEFAULTS.get("listening_statistics", {}),
 }
 
 PLAYBACK_DEFAULTS = {
@@ -261,8 +270,8 @@ def get_statistics_settings(payload=None):
     values = payload.get("listening_statistics", {})
     if not isinstance(values, dict):
         values = {}
-    enabled = values.get("enabled", True)
-    return {"enabled": enabled if isinstance(enabled, bool) else True}
+    enabled = values.get("enabled", STATISTICS_DEFAULTS["enabled"])
+    return {"enabled": enabled if isinstance(enabled, bool) else STATISTICS_DEFAULTS["enabled"]}
 
 
 def save_statistics_settings(values):
@@ -462,6 +471,7 @@ APPEARANCE_DEFAULTS = {
     "booru_tags": "scenery",
     "empty_timestamp_placeholder_enabled": True,
     "empty_timestamp_placeholder": "♪ {countdown}",
+    **deepcopy(FACTORY_DEFAULTS.get("appearance", {})),
 }
 
 
@@ -516,16 +526,18 @@ def get_appearance_settings(payload=None):
                 "advancedColors": normalize_theme_overrides(theme.get("advancedColors", {})),
                 **{key: color.lower() for key, color in colors.items()},
             })
-    theme_preset_name = values.get("theme_preset_name", "")
+    theme_preset_name = values.get("theme_preset_name", APPEARANCE_DEFAULTS["theme_preset_name"])
     if not isinstance(theme_preset_name, str):
-        theme_preset_name = ""
+        theme_preset_name = APPEARANCE_DEFAULTS["theme_preset_name"]
 
     return {
         "theme_mode": theme_mode,
         "theme_color": theme_color.lower(),
         "theme_preset_name": theme_preset_name,
         "custom_themes": custom_themes,
-        "theme_overrides": normalize_theme_overrides(values.get("theme_overrides")),
+        "theme_overrides": normalize_theme_overrides(
+            values.get("theme_overrides", APPEARANCE_DEFAULTS["theme_overrides"])
+        ),
         "theme_surface": values.get("theme_surface") if values.get("theme_surface") in ("classic", "neutral") else "classic",
         "background_enabled": bool(
             values.get(

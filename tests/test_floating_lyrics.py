@@ -452,3 +452,133 @@ def test_long_current_line_pans_both_ways_and_resets_for_resize_and_new_line(qap
         floating.close()
         floating.deleteLater()
         qapp.processEvents()
+
+@pytest.mark.parametrize("late_karaoke", [False, True])
+def test_floating_karaoke_uses_shared_clock_and_cleans_up(
+    load_floating_plugin, qapp, monkeypatch, late_karaoke,
+):
+    from PySide6.QtCore import QObject, Signal
+    from PySide6.QtMultimedia import QMediaPlayer
+    from lyrics.models import LyricLine, LyricSegment
+
+    class Player(QObject):
+        playbackStateChanged = Signal(object)
+        positionChanged = Signal(int)
+        playbackRateChanged = Signal(float)
+        state = QMediaPlayer.PlaybackState.PlayingState
+        position_ms = 2000
+
+        def position(self):
+            return self.position_ms
+
+        def playbackState(self):
+            return self.state
+
+    now = [100.0]
+    monkeypatch.setattr("time.monotonic", lambda: now[0])
+    floating, host = load_floating_plugin()
+    host.media_player = Player(host)
+    host.current_lyrics_path = Path("song.lrcx")
+    host.lyrics_offset_seconds = 0.5
+    host._lyrics_renderers_ready = False
+    host.lyric_lines = [
+        LyricLine(1, "Hello", [LyricSegment(1, "Hello", end=3)], has_karaoke=True),
+        LyricLine(5, "Next"),
+    ]
+    manager = floating.context.manager
+    floating.on_app_ready(host)
+    if late_karaoke:
+        floating.toggle_window(True)
+        qapp.processEvents()
+    manager.load_from_file("karaoke", Path(__file__).resolve().parents[1]
+                           / "plugins/core/karaoke/plugin.py")
+    karaoke = manager.plugins["karaoke"].instance
+    karaoke.on_app_ready(host)
+    if not late_karaoke:
+        floating.toggle_window(True)
+    qapp.processEvents()
+    widget = floating.floating.lyric_widget
+    assert karaoke._external_displays == [widget]
+    assert karaoke.timer.isActive()  # Main player renderers are still unmounted.
+    assert widget.karaoke_line_end == 5
+    assert widget.karaoke_position == pytest.approx(1.5)
+    assert widget.segments[0]["start"] == 1
+
+    host.media_player.playbackRateChanged.emit(2.0)
+    now[0] += 0.25
+    karaoke.update_karaoke_position()
+    assert widget.karaoke_position == pytest.approx(2.0)
+    host.media_player.state = QMediaPlayer.PlaybackState.PausedState
+    host.media_player.playbackStateChanged.emit(host.media_player.state)
+    assert not karaoke.timer.isActive()
+    host.media_player.position_ms = 2750
+    host.media_player.positionChanged.emit(2750)
+    now[0] += 10
+    karaoke.update_karaoke_position()
+    assert widget.karaoke_position == pytest.approx(2.25)
+
+    floating.toggle_window(False)
+    assert not karaoke.timer.isActive()
+    host.media_player.position_ms = 3500
+    floating.toggle_window(True)
+    qapp.processEvents()
+    assert widget.karaoke_position == pytest.approx(3.0)
+    assert not karaoke.timer.isActive()
+
+    from core.settings import save_karaoke_settings
+    save_karaoke_settings({"sweep_style": "glow", "sweep_fps": 120})
+    manager.emit("karaoke_settings_changed")
+    assert widget.karaoke_sweep_style == "glow"
+    host.media_player.state = QMediaPlayer.PlaybackState.PlayingState
+    host.media_player.playbackStateChanged.emit(host.media_player.state)
+    assert karaoke.timer.isActive()
+    assert karaoke.timer.interval() == 8
+    floating.toggle_window(False)
+    assert not karaoke.timer.isActive()
+    floating.toggle_window(True)
+    assert karaoke.timer.isActive()
+    host.current_lyrics_path = Path("plain.lrc")
+    host.media_player.positionChanged.emit(3500)
+    assert widget.karaoke_position is None
+    assert not karaoke.timer.isActive()
+
+    manager.unload("floating_lyrics")
+    assert karaoke._external_displays == []
+    assert widget not in karaoke._watched_displays
+    assert not karaoke.timer.isActive()
+
+
+@pytest.mark.parametrize("style", ["classic", "soft", "glow", "shimmer", "rainbow", "pulse", "spotlight"])
+def test_floating_karaoke_paints_sweep_and_retains_timing_edits(qapp, style):
+    from lyrics.models import LyricSegment
+    from PySide6.QtGui import QColor
+
+    window = FloatingLyricsWindow(dict(FloatingLyricsPlugin.DEFAULTS))
+    segments = [LyricSegment(1, "Hello", ruby="reading", end=3)]
+    try:
+        window.set_text("Hello", segments=segments, line_end=4)
+        window.show()
+        qapp.processEvents()
+        widget = window.lyric_widget
+        widget.set_karaoke_sweep_style(style)
+        widget.highlight_color = QColor("#ff0000")
+        widget.set_karaoke_position(0)
+        before = widget.grab().toImage()
+        widget.set_karaoke_position(2)
+        middle = widget.grab().toImage()
+        widget.set_karaoke_position(4)
+        after = widget.grab().toImage()
+        assert before != middle != after
+        assert widget._prepare_segments()[0]["reading"] == "reading"
+
+        original = widget.segments
+        window.set_text("Hello", segments=segments, line_end=4)
+        assert widget.segments is original
+        segments[0].start = 2
+        window.set_text("Hello", segments=segments, line_end=4)
+        assert widget.segments[0]["start"] == 2
+        window.set_text("Plain lyric")
+        assert all(segment.get("start") is None for segment in widget.segments)
+    finally:
+        window.close()
+        window.deleteLater()

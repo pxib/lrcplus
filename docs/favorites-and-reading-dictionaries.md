@@ -15,6 +15,15 @@ favorite automatically.
 
 ## Reading dictionaries
 
+Fresh installs start with the enabled **Japanese song readings** dictionary:
+`私 → わたし`, `君 → きみ`, and `時 → とき`, all using Whole word matching.
+These starter entries are editable and can be disabled or deleted. Existing
+saved dictionaries are preserved, including an intentionally empty list.
+Use **Manage > Restore factory dictionaries** in the dictionary manager to
+replace the current set with these starter readings. The replacement takes
+effect only after pressing **OK** in both the manager and Settings; Cancel
+discards it. The general Settings factory reset preserves personal dictionaries.
+
 Open **Settings > Lyrics > Global > Readings > Manage reading dictionaries**.
 The left panel lists named dictionaries; its checkboxes enable or disable each
 dictionary. **Manage** provides new, rename, delete, priority, import and export

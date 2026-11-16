@@ -31,11 +31,17 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QMessageBox,
 )
-from core.settings import APPEARANCE_DEFAULTS, KARAOKE_SWEEP_STYLES, get_karaoke_settings
+from core.settings import (
+    APPEARANCE_DEFAULTS, KARAOKE_SWEEP_STYLES, get_appearance_settings,
+    get_karaoke_settings, get_startup_settings, get_statistics_settings,
+    get_update_settings,
+)
 from core.theme import build_theme_palette, normalize_theme_overrides, THEME_COLOR_FIELDS
 from ui.dependency_settings import DependencyManagerWidget
 from ui.about_tab import AboutTab
 from ui.settings_search import SettingsSearch
+from ui.settings_transfer import SettingsTransferMixin
+from ui.settings_debug import SettingsDebugMixin
 from ui.settings_controls import (
     ThemedSpinBox,
     ThemedComboBox,
@@ -307,7 +313,7 @@ class PluginSettingsDialog(QDialog):
         self.accept()
 
 
-class SettingsDialog(QDialog):
+class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
     check_updates_requested = Signal()
     relaunch_wizard_requested = Signal()
     clear_statistics_requested = Signal()
@@ -331,10 +337,13 @@ class SettingsDialog(QDialog):
 
         self.global_lyrics = dict(global_lyrics or {})
         self._reading_dictionary_draft = None
-        self.startup_settings = dict(startup_settings or {})
-        from core.settings import get_statistics_settings
-        self.statistics_settings = statistics_settings if statistics_settings is not None else get_statistics_settings()
-        self.appearance_settings = dict(appearance_settings or {})
+        self._imported_settings = {}
+        self.startup_settings = get_startup_settings({"startup": startup_settings or {}})
+        self.statistics_settings = (
+            get_statistics_settings() if statistics_settings is None else
+            get_statistics_settings({"listening_statistics": statistics_settings})
+        )
+        self.appearance_settings = get_appearance_settings({"appearance": appearance_settings or {}})
         self.custom_themes = [
             valid for theme in self.appearance_settings.get("custom_themes", [])
             if (valid := _valid_theme_definition(theme)) is not None
@@ -361,7 +370,7 @@ class SettingsDialog(QDialog):
         self.local_overrides = dict(local_overrides or {})
         self.current_file = current_file
         self.plugin_manager = plugin_manager
-        self.update_settings = dict(update_settings or {})
+        self.update_settings = get_update_settings({"updates": update_settings or {}})
         self.plugin_toggles = {}
 
         _apply_settings_dialog_style(
@@ -999,6 +1008,8 @@ class SettingsDialog(QDialog):
                 self._dependencies_loaded = True
 
         tabs.currentChanged.connect(load_dependencies)
+        self.advanced_tab = self._create_advanced_tab()
+        tabs.addTab(self.advanced_tab, "Advanced")
         self.about_tab = AboutTab(self.plugin_manager, self)
         tabs.addTab(self.about_tab, "About")
 
@@ -1030,7 +1041,11 @@ class SettingsDialog(QDialog):
         content.addWidget(self.settings_search, 1)
         layout = QVBoxLayout(self)
         layout.addLayout(content, 1)
-        layout.addWidget(button_box)
+        footer = QHBoxLayout()
+        footer.addWidget(self._create_settings_debug_button())
+        footer.addStretch(1)
+        footer.addWidget(button_box)
+        layout.addLayout(footer)
 
     def _index_search_settings(self):
         # Labels set by the shared row helpers stay in sync with the visible UI.
@@ -1109,6 +1124,8 @@ class SettingsDialog(QDialog):
                 "Please wait for the dependency operation to finish before closing Settings."
             )
             return
+        if hasattr(self, "settings_recorder"):
+            self._finish_settings_recording()
         super().done(result)
 
     @staticmethod
@@ -1188,6 +1205,11 @@ class SettingsDialog(QDialog):
             except (OSError, ValueError) as error:
                 QMessageBox.warning(self, "Reading Dictionaries", f"Could not save your dictionaries:\n{error}")
                 return
+        try:
+            self._save_imported_settings()
+        except (OSError, ValueError, TypeError) as error:
+            QMessageBox.warning(self, "Save Settings", f"Could not save settings:\n{error}")
+            return
         super().accept()
 
     def _create_placeholder_controls(self, layout):
@@ -1880,7 +1902,13 @@ class SettingsDialog(QDialog):
         return controls
 
     def get_disabled_plugins(self):
-        return {
+        from core.settings import get_disabled_plugins
+        if "disabled_plugins" in self._imported_settings:
+            disabled = get_disabled_plugins(self._imported_settings)
+        else:
+            disabled = get_disabled_plugins()
+        disabled.difference_update(self.plugin_toggles)
+        return disabled | {
             plugin_id
             for plugin_id, toggle in self.plugin_toggles.items()
             if not toggle.isChecked()

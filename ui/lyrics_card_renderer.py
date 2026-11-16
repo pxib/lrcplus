@@ -257,7 +257,7 @@ def _paint_lyrics(painter, document, x, y, color, style):
         return
     from PIL import Image, ImageFilter
     scale = style.export_scale
-    width, height = style.width * scale, style.height * scale
+    width, height = max(1, round(style.width * scale)), max(1, round(style.height * scale))
     layer = QImage(width, height, QImage.Format.Format_RGBA8888)
     layer.fill(Qt.GlobalColor.transparent)
     layer_painter = QPainter(layer)
@@ -300,15 +300,19 @@ def theme_colors(theme, template):
     return (background, end, text, muted if template == "Classic" else text, muted, accent)
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=1)
 def _image_background(path, modified, file_size, width, height, zoom, crop_x, crop_y, blur):
     # Decode once near export size; cache crop/blur independently of text styling.
     reader = QImageReader(path)
     reader.setAutoTransform(True)
     original = reader.size()
-    decode_limit = max(3840, width, height)
-    if original.isValid() and max(original.width(), original.height()) > decode_limit:
-        reader.setScaledSize(original.scaled(QSize(decode_limit, decode_limit), Qt.AspectRatioMode.KeepAspectRatio))
+    # Decode enough pixels to fill the crop, including zoom, without loading
+    # a 4K source for a small preview or reducing detail in the final export.
+    if original.isValid():
+        target = QSize(math.ceil(width * zoom / 100), math.ceil(height * zoom / 100))
+        decoded = original.scaled(target, Qt.AspectRatioMode.KeepAspectRatioByExpanding)
+        if decoded.width() < original.width() and decoded.height() < original.height():
+            reader.setScaledSize(decoded)
     source = reader.read()
     if source.isNull():
         raise ValueError("Could not read the background image. Choose another image.")
@@ -333,7 +337,8 @@ def _image_background(path, modified, file_size, width, height, zoom, crop_x, cr
 def card_background(style, colors):
     background, gradient_end = colors[:2]
     scale = style.export_scale
-    result = QImage(style.width * scale, style.height * scale, QImage.Format.Format_ARGB32_Premultiplied)
+    width, height = max(1, round(style.width * scale)), max(1, round(style.height * scale))
+    result = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
     result.fill(QColor(background))
     painter = QPainter(result)
     painter.scale(scale, scale)
@@ -357,7 +362,7 @@ def card_background(style, colors):
             if stat is None:
                 raise ValueError("The background image is missing. Choose an image or switch to a color background.")
             image = _image_background(style.image_path, stat.st_mtime_ns, stat.st_size,
-                                      style.width * scale, style.height * scale, style.image_zoom,
+                                      width, height, style.image_zoom,
                                       style.crop_x, style.crop_y, style.image_blur * scale)
             painter.drawImage(rect, image)
             painter.fillRect(rect, QColor(0, 0, 0, round(255 * style.image_dim / 100)))
@@ -432,10 +437,13 @@ def _song_details(style, width):
     return entries, height
 
 
-def render_lyric_card(text, style, cover_image=None):
-    """Render at export resolution; reject overflow instead of clipping lyrics."""
+def render_lyric_card(text, style, cover_image=None, *, max_dimension=None):
+    """Keep logical layout fixed while optionally bounding preview pixels."""
     if type(style.export_scale) is not int or style.export_scale not in CARD_QUALITIES.values():
         raise ValueError("Choose Standard, High, or Ultra card quality.")
+    if max_dimension is not None:
+        scale = min(style.export_scale, max_dimension / max(style.width, style.height))
+        style = replace(style, export_scale=scale)
     source = text.trimmed() if isinstance(text, CardLyrics) else None
     text = source.text if source is not None else str(text).strip()
     if source is not None:

@@ -4,7 +4,7 @@ import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, Qt
 from PySide6.QtWidgets import QDialog, QFileDialog, QLineEdit, QMessageBox
 
-from core.reading_dictionary import load_dictionaries, new_dictionary, save_dictionaries
+from core.reading_dictionary import get_factory_dictionaries, load_dictionaries, new_dictionary, save_dictionaries
 from core.settings import get_app_data_dir
 from ui.reading_dictionary import ReadingDictionaryDialog
 from ui.settings_dialog import SettingsDialog
@@ -17,6 +17,31 @@ def sample_data():
         {"word": "重慶", "reading": "chóng qìng", "type": "pinyin", "comment": "Place name", "match": "word"},
     ]
     return {"version": 1, "dictionaries": [first, new_dictionary("Other")]}
+
+
+def test_factory_dictionary_restore_stays_in_draft_until_saved(qapp, monkeypatch):
+    original = sample_data()
+    snapshot = deepcopy(original)
+    save_dictionaries(original)
+    dialog = ReadingDictionaryDialog(original)
+    try:
+        monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.No)
+        dialog._restore_factory_dictionaries()
+        assert dialog.data == original
+        dialog.search.setText("absent")
+        monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+        dialog._restore_factory_dictionaries()
+        assert dialog.data == get_factory_dictionaries()
+        assert dialog.search.text() == ""
+        assert dialog.table.rowCount() == 3
+        assert dialog.dictionary_list.item(0).checkState() == Qt.CheckState.Checked
+        assert load_dictionaries(reload=True) == original
+        dialog.accept()
+        assert dialog.data == get_factory_dictionaries()
+        assert load_dictionaries(reload=True) == original
+        assert original == snapshot
+    finally:
+        dialog.deleteLater()
 
 
 @pytest.mark.parametrize("theme", ["light", "dark"])

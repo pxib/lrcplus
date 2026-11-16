@@ -28,6 +28,9 @@ from ui.lyrics_card_artwork import CardAlbumArt
 from ui.lyrics_card_text import snapshot_card_lyrics
 
 
+PREVIEW_MAX_DIMENSION = 1080
+
+
 def _color_swatch(button, value):
     color = QColor(value)
     ink = "#111111" if color.lightness() > 140 else "#ffffff"
@@ -99,6 +102,7 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         self.editor = editor
         self._image = QImage()
         self._render_key = None
+        self._render_contents = None
         self._updating_style = False
         self.album_art = CardAlbumArt(self)
         self._refresh_timer = QTimer(self)
@@ -220,6 +224,10 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         self._image = QImage()
         self.preview.image = self._image
         self._render_key = None
+        self._render_contents = None
+        self.preview_details.clear()
+        self.copy_button.setEnabled(False)
+        self.save_button.setEnabled(False)
         clear_card_image_caches()
 
     def _spin(self, name, value, suffix=""):
@@ -503,7 +511,9 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         self.schedule_refresh()
 
     def hideEvent(self, event):
-        self._refresh_timer.stop()
+        # Keep the controls, but release rendered pixels and invalidate any
+        # outstanding artwork result. Returning to the tab rebuilds on demand.
+        self.shutdown()
         self.album_art.pause()
         super().hideEvent(event)
 
@@ -532,26 +542,31 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         if key == self._render_key:
             return
         try:
+            preview_options = {}
+            if max(style.width, style.height) * style.export_scale > PREVIEW_MAX_DIMENSION:
+                preview_options["max_dimension"] = PREVIEW_MAX_DIMENSION
             if style.show_album_cover and not self.album_art.image.isNull():
-                self._image = render_lyric_card(contents, style, self.album_art.image)
+                self._image = render_lyric_card(contents, style, self.album_art.image, **preview_options)
             else:
-                self._image = render_lyric_card(contents, style)
+                self._image = render_lyric_card(contents, style, **preview_options)
         except ValueError as error:
             self._set_error(str(error))
             return
         self._render_key = key
+        self._render_contents = contents
         self.preview.image = self._image
         self.preview.update()
         self.copy_button.setEnabled(not self.album_art.loading)
         self.save_button.setEnabled(not self.album_art.loading)
         count = len(lines)
-        self.preview_details.setText(f"{self._image.width()} × {self._image.height()} · {count} {'line' if count == 1 else 'lines'}")
+        self.preview_details.setText(f"{style.width * style.export_scale} × {style.height * style.export_scale} · {count} {'line' if count == 1 else 'lines'}")
         self.status.setText(self.album_art.message if self.album_art.loading else
                             "Ready to share. Long excerpts shrink to fit.")
 
     def _set_error(self, message):
         self.preview_details.clear()
         self._render_key = None
+        self._render_contents = None
         self._image = QImage()
         self.preview.image = self._image
         self.preview.update()
@@ -568,15 +583,36 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
 
     def copy_image(self):
         if self._prepare_image():
-            QApplication.clipboard().setImage(self._image)
+            image = self._full_resolution_image()
+            if image.isNull():
+                return
+            QApplication.clipboard().setImage(image)
             self.status.setText("Copied image to clipboard.")
+
+    def _full_resolution_image(self):
+        """Keep export buffers local to the action rather than the workspace."""
+        style = self._render_key[1]
+        if (self._image.width(), self._image.height()) == (style.width * style.export_scale,
+                                                          style.height * style.export_scale):
+            return self._image
+        try:
+            return render_lyric_card(self._render_contents, style, self.album_art.image)
+        except ValueError as error:
+            self._set_error(str(error))
+            return QImage()
+        finally:
+            clear_card_image_caches()
 
     def open_image_viewer(self):
         if not self._prepare_image():
             return
         from ui.player_dialogs import CoverPreviewDialog
 
-        viewer = CoverPreviewDialog(QPixmap.fromImage(self._image), self)
+        image = self._full_resolution_image()
+        if image.isNull():
+            return
+        viewer = CoverPreviewDialog(QPixmap.fromImage(image), self)
+        del image
         viewer.setWindowTitle("Lyrics Card")
         try:
             viewer.exec()
@@ -596,7 +632,10 @@ class LyricsShareCardWidget(LyricsCardControlsMixin, QWidget):
         if target.suffix.lower() != ".png":
             target = target.with_suffix(".png")
         try:
-            save_card_png(self._image, target)
+            image = self._full_resolution_image()
+            if image.isNull():
+                return
+            save_card_png(image, target)
         except OSError as error:
             QMessageBox.warning(self, "Save Lyrics Image", f"Could not save image:\n{error}")
             return

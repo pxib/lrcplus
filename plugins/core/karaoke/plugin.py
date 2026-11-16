@@ -34,12 +34,31 @@ class KaraokePlugin:
         self._playing = False
         self._visibility_filter = None
         self._watched_displays = []
+        self._external_displays = []
         # Reading settings parses the whole library; keep it off the frame timer.
         self._settings = get_karaoke_settings()
         self.connected = False
         context.on("app_ready", self.on_app_ready)
         context.on("track_changed", self.on_track_changed)
         context.on("karaoke_settings_changed", self.on_karaoke_settings_changed)
+        context.on("karaoke_display_created", self.register_display)
+        context.on("karaoke_display_removed", self.unregister_display)
+
+    def register_display(self, widget):
+        if widget not in self._external_displays:
+            self._external_displays.append(widget)
+        if self._visibility_filter is not None:
+            self._watch_displays()
+            self.update_karaoke_position()
+
+    def unregister_display(self, widget):
+        if widget in self._external_displays:
+            widget.set_karaoke_position(None)
+            self._external_displays.remove(widget)
+        if widget in self._watched_displays:
+            widget.removeEventFilter(self._visibility_filter)
+            self._watched_displays.remove(widget)
+        self._sync_timer_with_visibility()
 
     def on_karaoke_settings_changed(self):
         self._settings = get_karaoke_settings()
@@ -67,6 +86,9 @@ class KaraokePlugin:
             self.connected = True
         self._apply_sweep_style()
         self.on_playback_state_changed(window.media_player.playbackState())
+        api = getattr(self.context, "api", None)
+        if api is not None:
+            api.emit("karaoke_displays_requested")
 
     def on_track_changed(self, path=None, **_kwargs):
         self._apply_sweep_style()
@@ -90,14 +112,17 @@ class KaraokePlugin:
         return [widget for widget in self._existing_displays() if widget.isVisible()]
 
     def _existing_displays(self):
-        if self.window is None or getattr(self.window, "_lyrics_renderers_ready", True) is False:
+        if self.window is None:
             return []
-        return [
+        main_displays = [
             widget for widget in (
                 getattr(self.window, "lyric_widget", None),
                 getattr(self.window, "scrolling_lyrics_widget", None),
             ) if widget is not None
         ]
+        if getattr(self.window, "_lyrics_renderers_ready", True) is False:
+            main_displays = []
+        return main_displays + self._external_displays
 
     def _watch_displays(self):
         for widget in self._existing_displays():
@@ -114,6 +139,8 @@ class KaraokePlugin:
         self._apply_sweep_style()
         if not self._playing or not self._visible_displays():
             self.timer.stop()
+            if self._visible_displays():
+                self.update_karaoke_position()
             return
         if not self._has_timed_segments():
             self.timer.stop()
@@ -145,6 +172,7 @@ class KaraokePlugin:
             return
         self._position_anchor_monotonic = time.monotonic()
         self._sync_timer_with_visibility()
+        self.update_karaoke_position()
 
     def on_playback_rate_changed(self, rate):
         try:
@@ -153,7 +181,7 @@ class KaraokePlugin:
             self._playback_rate = 1.0
 
     def _estimated_position_seconds(self):
-        if self._position_anchor_monotonic is None:
+        if self._position_anchor_monotonic is None or not self._playing:
             try:
                 return float(self.window.media_player.position()) / 1000.0
             except (AttributeError, TypeError, ValueError):
@@ -229,6 +257,7 @@ class KaraokePlugin:
             self.timer.deleteLater()
             self.timer = None
         self._clear_karaoke_position()
+        self._external_displays = []
         self._playing = False
         self.connected = False
         self.window = None
