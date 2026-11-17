@@ -27,7 +27,7 @@ STEPS = (
     ("firststeplanguage", "Welcome", "Welcome to LRCPlus", ""),
     ("secondstepmusiclibraryfolders", "Music library", "Your music library", ""),
     ("thirdstepappearance", "Appearance", "Appearance", ""),
-    ("readingpreferences", "Reading preferences", "Reading preferences", ""),
+    ("readingpreferences", "Lyric layers", "Lyric layers", ""),
     ("fourthsteplyrics", "Lyrics", "Lyrics", ""),
     (None, "Ready", "Ready to listen", "Setup is complete. You can change your settings and manage your music library at any time."),
 )
@@ -729,11 +729,14 @@ class OnboardingDialog(QDialog):
         if not changes:
             return
         values = settings.get_global_lyrics_settings()
+        layers_changed = any(key in changes for key in (
+            "lyric_layer_order", "show_lyrics", "show_romaji", "show_translation", "show_ruby",
+        ))
+        if layers_changed and values["all_romaji"]:
+            values.update(show_lyrics=False, show_romaji=True, show_ruby=False)
         values.update(changes)
-        # Reading modes are mutually exclusive, including after concurrent edits.
-        if any(key in changes for key in ("show_ruby", "show_romaji", "all_romaji")):
-            values.update({key: self.reading_preferences.values()[key]
-                           for key in ("show_ruby", "show_romaji", "all_romaji")})
+        if layers_changed:
+            values["all_romaji"] = False
         values = settings.normalize_lyrics_settings(values)
         settings.save_global_lyrics_settings(values)
         self.player.global_lyrics_settings = values

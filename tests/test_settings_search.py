@@ -19,7 +19,7 @@ def test_search_finds_aliases_scopes_and_tooltips_without_changing_settings(qapp
     dialog = SettingsDialog([], values, current_file="song.mp3")
     try:
         search = dialog.settings_search
-        search.search_edit.setText("furigana position")
+        search.search_edit.setText("layer order")
         entries = matches(search)
         assert len(entries) == 2
         assert {entry.path for entry in entries} == {

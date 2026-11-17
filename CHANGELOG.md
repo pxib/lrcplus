@@ -5,6 +5,9 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Added
 
+- Update onboarding with sortable Lyrics, Romaji, Translation, and Furigana layers, independent toggles, and a live scrollable preview. Explain Romaji sizing and Floating Lyrics, keep one layer enabled, and preserve Apply/Skip behavior and unrelated saved preferences.
+- Add sortable lyric layers in **Lyrics > Readings**: independently toggle Lyrics, Romaji, Translation, and Furigana, and drag or move them to change their rendered order. Apply the layout to compact and scrolling lyrics, with saved global and per-file preferences.
+- Apply lyric layer order and visibility to Floating Lyrics immediately, including while paused. Keep Romaji smaller alongside Lyrics and full-size on its own, fit the window to enabled layers, and preserve horizontal panning for long lines.
 - Show destination previews while dragging files: add to Library or append to the end of the queue. Select and scroll to dropped tracks after importing, open the Library workspace, and clear active library filters when needed to reveal the import.
 - Add **Remove from library** to track and album context menus, preserving disk files, playback queues, favorites, and saved playlists. Keep removed tracks excluded after rescans and restarts; dropping a removed audio file restores it. Support dropping audio files and folders on the main player to import in the background, and dropping audio files on the queue to append while retaining internal drag reordering.
 - Group General settings into **Startup**, **Listening history**, and **Updates**, and Playback settings into **Behavior**, **Shuffle**, **Transitions**, **Audio**, and **Display** tabs. Keep each section scrollable and let settings search open its matching subcategory.
@@ -19,6 +22,9 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Fixed
 
+- Keep authored music-note symbols in Lyrics while suppressing duplicate copies and empty note-only rows in Romaji and Furigana. Preserve notes when Romaji is shown on its own, including in Floating Lyrics.
+- Keep at least one lyric layer enabled in Settings, and restore Lyrics when saved global or per-file preferences disable every layer.
+- Attach displayed Romaji commas to the preceding word's karaoke span, including commas generated from phrase spaces, so they highlight with the word in the player and Floating Lyrics without changing source lyrics or timestamps.
 - Reduce Korean lyrics-editor memory spikes by choosing modern covering fonts for lyric and source fields, the sidebar, karaoke controls and previews, and song-association labels. Prevent hidden labels from loading the large Windows Gulim fallback for Korean song or lyric paths, including filenames with emoji. Preserve text selection, editing, and Undo/Redo while retaining bundled Noto Sans JP.
 - Remove library tracks in place, preserving column order and widths, sorting, collapsed albums, scroll position, and surviving selections. Keep pending lyric-search results consistent when a track is removed.
 

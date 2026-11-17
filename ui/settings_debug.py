@@ -61,6 +61,11 @@ class SettingsDebugMixin:
                 widget.valueChanged.connect(self._schedule_settings_recording)
             elif isinstance(widget, QLineEdit):
                 widget.textChanged.connect(self._schedule_settings_recording)
+        from ui.lyric_layers import LyricLayerOrder
+        for widget in self.findChildren(LyricLayerOrder):
+            widget.model().rowsMoved.connect(self._schedule_settings_recording)
+            widget.model().rowsInserted.connect(self._schedule_settings_recording)
+            widget.model().rowsRemoved.connect(self._schedule_settings_recording)
         self.settings_debug_menu.aboutToShow.connect(self._capture_settings_recording)
         self._capture_settings_recording()
         return self.settings_debug_button

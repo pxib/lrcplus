@@ -27,7 +27,8 @@ def test_authored_phrase_gap_becomes_one_comma(space):
     original = deepcopy(tokens)
     displayed = all_romaji_texts(tokens)
     assert "".join(displayed) == "aa, nani mo nai"
-    assert displayed[1] == ","
+    assert displayed[0] == "aa,"
+    assert displayed[1] == ""
     assert tokens == original
     assert "".join(token["text"] for token in tokens) == source
 
@@ -102,8 +103,44 @@ def test_pause_rendering_preserves_lyrics_and_timestamps(qapp, monkeypatch, spac
         assert chunks == original
         if timed:
             assert [(piece["start"], piece["end"]) for piece in pieces] == [(index, index + 1) for index in range(len(source))]
-            assert next(piece for piece in pieces if "," in piece["text"])["start"] == 2
+            assert next(piece for piece in pieces if "," in piece["text"])["start"] == 1
         row.set_all_romaji_visible(False)
         assert "".join(piece["text"] for piece in row._prepare_segments()) == source
+    finally:
+        row.deleteLater()
+
+
+@pytest.mark.parametrize("separator", [",", "、", " ", "\u3000"])
+@pytest.mark.parametrize("mode", ["legacy", "layers", "floating"])
+def test_comma_shares_preceding_word_timing_across_displays(qapp, monkeypatch, separator, mode):
+    source = f"ああ{separator}いい"
+    tokens = [{"text": text, "reading": None} for text in ("ああ", separator, "いい")]
+    monkeypatch.setattr(renderer, "get_cached_furigana_segments", lambda _: tokens)
+    if mode == "floating":
+        from plugins.community.floating_lyrics.plugin import SplitRenderFuriganaWidget
+        row = SplitRenderFuriganaWidget()
+    else:
+        row = renderer.FuriganaWidget()
+    chunks = [LyricSegment(start, text, end=end) for start, end, text in (
+        (0, 1, "ああ"), (3, 4, separator), (5, 6, "いい"),
+    )]
+    original = deepcopy(chunks)
+    try:
+        row.resize(1000, 180)
+        if mode == "legacy":
+            row.set_all_romaji_visible(True)
+        else:
+            row.set_lyric_layers(["lyrics", "romaji", "translation", "furigana"],
+                                 False, True, False, False)
+        row.set_segments(source, chunks, line_end=7)
+        pieces = row._prepare_segments()
+        assert "".join(piece["text"] for piece in pieces) == "aa, ii"
+        word = next(piece for piece in pieces if "," in piece["text"])
+        assert word["text"] == "aa,"
+        assert (word["start"], word["end"]) == (0, 1)
+        row.set_karaoke_position(2)
+        assert row._segment_progress(word, pieces) == 1
+        assert chunks == original
+        assert row.lyric == source
     finally:
         row.deleteLater()

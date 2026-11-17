@@ -69,6 +69,70 @@ def test_disabled_plugin_defers_window_through_events_and_settings(
     assert plugin.floating is floating
 
 
+def test_layer_changes_refresh_paused_floating_lyrics_and_resize_readings(
+    load_floating_plugin, qapp, monkeypatch,
+):
+    tokens = [{"text": "歌", "reading": "うた"}, {"text": "\nSong", "reading": None}]
+    monkeypatch.setattr("lyrics.furigana_widget.get_cached_furigana_segments", lambda _: tokens)
+    plugin, host = load_floating_plugin(base_font_size=48, ruby_font_size=18)
+    host.lyric_layer_order = ["translation", "furigana", "romaji", "lyrics"]
+    host.show_lyrics = host.show_romaji = host.show_translation = host.show_ruby = True
+    host.lyric_lines = [SimpleNamespace(text="歌\nSong", translation_lines=[1]) for _ in range(3)]
+    host.current_line = 1
+    plugin.on_app_ready(host)
+    plugin.toggle_window(True)
+    qapp.processEvents()
+    widget = plugin.floating.lyric_widget
+    pieces = widget._prepare_segments()
+    assert [p["display_layer"] for p in pieces] == host.lyric_layer_order
+    assert [p["base_y"] for p in pieces] == sorted(p["base_y"] for p in pieces)
+    romaji = next(p for p in pieces if p["display_layer"] == "romaji")
+    assert widget._paint_font(widget.base_font, romaji).pointSize() == 18
+    assert widget.height() >= widget.sizeHint().height()
+    full_height = plugin.floating.height()
+
+    # A settings event updates the same line without playback advancing.
+    host.show_lyrics = host.show_translation = host.show_ruby = False
+    plugin.context.api.emit("lyrics_settings_changed")
+    qapp.processEvents()
+    pieces = widget._prepare_segments()
+    assert {p["display_layer"] for p in pieces} == {"romaji"}
+    assert widget._paint_font(widget.base_font, pieces[0]).pointSize() == 48
+    assert plugin.floating.height() < full_height
+    assert plugin.floating.previous_label.text() == plugin.floating.next_label.text() == ""
+
+    host.show_lyrics = True
+    host.lyric_layer_order = ["lyrics", "romaji", "translation", "furigana"]
+    plugin.context.api.emit("lyrics_settings_changed")
+    qapp.processEvents()
+    assert [p["display_layer"] for p in widget._prepare_segments()] == ["lyrics", "romaji"]
+    assert plugin.floating.previous_label.text() == plugin.floating.next_label.text() == "歌"
+
+
+def test_layered_floating_lyrics_keep_long_lines_panning(qapp, monkeypatch):
+    monkeypatch.setattr("lyrics.furigana_widget.get_cached_furigana_segments", lambda _: None)
+    window = FloatingLyricsWindow(dict(FloatingLyricsPlugin.DEFAULTS, window_width=350))
+    try:
+        window.set_lyric_layers(["romaji", "lyrics", "translation", "furigana"],
+                               True, True, False, False)
+        window.lyric_widget.set_lyric("A long lyric that needs to pan " * 10, generate=False)
+        window.show()
+        qapp.processEvents()
+        widget = window.lyric_widget
+        assert widget._pan_active
+        pieces = widget._prepare_segments()
+        assert {p["display_layer"] for p in pieces} == {"lyrics", "romaji"}
+        assert len({p["base_y"] for p in pieces}) == 2
+        assert max(p["x"] + p["width"] for p in pieces) > widget.width()
+        before = widget.grab().toImage()
+        widget._pan_pause.stop()
+        widget._pan_offset = widget._pan_end
+        assert widget.grab().toImage() != before
+    finally:
+        window.close()
+        window.deleteLater()
+
+
 def test_saved_enabled_plugin_restores_position_and_resumes_after_pause(
     load_floating_plugin, qapp,
 ):

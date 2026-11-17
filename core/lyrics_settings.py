@@ -15,7 +15,21 @@ def save_all_settings(payload):
 
     return save(payload)
 
+LYRIC_LAYER_ORDER = ("lyrics", "romaji", "translation", "furigana")
+
+
+def normalize_layer_order(value):
+    order = []
+    for layer in value if isinstance(value, (list, tuple)) else ():
+        if layer in LYRIC_LAYER_ORDER and layer not in order:
+            order.append(layer)
+    return order + [layer for layer in LYRIC_LAYER_ORDER if layer not in order]
+
+
 LYRICS_DEFAULTS = {
+    "lyric_layer_order": list(LYRIC_LAYER_ORDER),
+    "show_lyrics": True,
+    "show_translation": True,
     "scrolling_lyrics": False,
     "lyrics_direction": "horizontal",
     "lyrics_padding": 8,
@@ -138,11 +152,22 @@ def normalize_lyrics_settings(values):
     )
     ruby_position = str(values.get("ruby_position", result["ruby_position"])).lower()
     result["ruby_position"] = ruby_position if ruby_position in {"above", "below"} else "above"
-    if result["all_romaji"]:
+    if "lyric_layer_order" not in values and result["all_romaji"]:
         result["show_ruby"] = False
         result["show_romaji"] = False
-    elif result["show_romaji"]:
+    elif "lyric_layer_order" not in values and result["show_romaji"]:
         result["show_ruby"] = False
+
+    result["lyric_layer_order"] = normalize_layer_order(values.get("lyric_layer_order"))
+    result["show_lyrics"] = bool(values.get("show_lyrics", not result["all_romaji"]))
+    result["show_translation"] = bool(values.get("show_translation", True))
+    # The earlier replacement mode becomes a standalone Romaji layer.
+    if result["all_romaji"] and "lyric_layer_order" not in values:
+        result["show_romaji"] = True
+    if not any(result[key] for key in (
+        "show_lyrics", "show_romaji", "show_translation", "show_ruby", "all_romaji",
+    )):
+        result["show_lyrics"] = True
 
     parser = str(values.get("furigana_parser", result["furigana_parser"])).lower()
     result["furigana_parser"] = parser if parser in {"yomi", "mecab_local"} else "yomi"
@@ -362,7 +387,7 @@ def get_effective_lyrics_settings(path=None, payload=None):
 
     effective = dict(global_values)
     effective.update(local_overrides)
-    return effective
+    return normalize_lyrics_settings(effective)
 
 # ---------------------------------------------------------------------------
 # Music library

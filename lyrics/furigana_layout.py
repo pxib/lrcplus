@@ -284,6 +284,8 @@ class FuriganaLayoutMixin:
         base_height = QFontMetrics(self.base_font).height()
         ruby_height = 0
         romaji_height = 0
+        if getattr(self, "lyric_layers", None) and not getattr(self, "_layer_layout_active", False):
+            return base_height, 0, 0, self.TOP_MARGIN + base_height + self.BOTTOM_MARGIN
         if self._has_visible_ruby() or (
             self.reserve_ruby_space
             and self.show_ruby
@@ -308,7 +310,7 @@ class FuriganaLayoutMixin:
         if self.direction == "vertical":
             self.setMinimumHeight(1)
         else:
-            height = (self.sizeHint().height() if self.translation_lines
+            height = (self.sizeHint().height() if self.translation_lines or getattr(self, "lyric_layers", None)
                       else total * (self.lyric.count("\n") + 1))
             self.setMinimumHeight(height)
         self.updateGeometry()
@@ -329,6 +331,11 @@ class FuriganaLayoutMixin:
             parent = parent.parentWidget()
 
     def sizeHint(self):
+        if getattr(self, "lyric_layers", None) and not getattr(self, "_layer_layout_active", False):
+            self._prepare_segments()
+            if self.direction == "vertical":
+                return QSize(self._layer_layout_width, 1)
+            return QSize(max(0, self.minimumWidth()), self._horizontal_layout_height)
         _base, _ruby, _gap, total = self._content_metrics()
         if self.direction == "vertical":
             base_metrics = QFontMetrics(self.base_font)
@@ -630,6 +637,8 @@ class FuriganaLayoutMixin:
             offset += len(text)
 
     def _styled_font(self, font, segment):
+        if segment.get("display_layer") == "furigana" or segment.get("use_reading_font"):
+            font = self.reading_font
         if not segment.get("translation") and not any(segment.get(style) for style in ("bold", "italic", "strike", "underline")):
             return font
         styled = QFont(font)
@@ -784,6 +793,7 @@ class FuriganaLayoutMixin:
         key = (
             self.lyric, [dict(segment) for segment in self.segments],
             list(self.style_spans), tuple(self.translation_lines),
+            getattr(self, "lyric_layers", None),
             self.is_blockquote,
             self.base_font.key(), self.reading_font.key(),
             self.width(), self.height(), self.direction, self.alignment,
@@ -833,6 +843,8 @@ class FuriganaLayoutMixin:
         return [dict(piece) for piece in self._prepared_layout]
 
     def _build_prepared_segments(self):
+        if getattr(self, "lyric_layers", None) and not getattr(self, "_layer_layout_active", False):
+            return self._build_layered_segments()
         self._horizontal_layout_height = self._content_metrics()[3] * (self.lyric.count("\n") + 1)
         if not self.lyric:
             return []
@@ -844,7 +856,9 @@ class FuriganaLayoutMixin:
         total_width = 0
 
         previous_text = ""
-        visual_segments = list(self._visual_source_segments())
+        visual_segments = getattr(self, "_layer_visual_segments", None)
+        if visual_segments is None:
+            visual_segments = list(self._visual_source_segments())
         romaji_texts = all_romaji_texts(visual_segments) if self.all_romaji else []
         reading_texts = romanized_readings(visual_segments) if self.show_romaji else []
         row_width = 0

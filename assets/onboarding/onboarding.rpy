@@ -368,12 +368,14 @@ label readingpreferences:
     before sound("interesting")
     wizard "One more thing before the lyrics search: can you actually read the lyrics comfortably?"
     $ auto(4)
-    wizard "There's a sample coming up. Adjust the lyric size and try furigana or romaji to see what feels right."
+    wizard "There's a sample coming up. Lyrics, Romaji, Translation, and Furigana are separate layers. Check the ones you want, then drag them into your preferred order."
     $ auto(4)
     if detailed_tour:
-        wizard "Furigana adds Japanese readings above the words. Romaji shows those readings in Latin letters."
+        wizard "Furigana shows Japanese readings, and Romaji uses Latin letters. Romaji stays smaller beside Lyrics. Hide Lyrics to make Romaji full-size instead."
         $ auto(4)
-    wizard "Try the sample below and pick what's comfortable today. You can change your reading preferences in Settings whenever."
+        wizard "Translation shows translated lines saved in the lyric file. Keep at least one layer on. Floating Lyrics follows these preferences too."
+        $ auto(4)
+    wizard "Try the sample below and pick what's comfortable today. Apply and Next saves your defaults; Do this later keeps your current settings. You can change layers in Settings whenever."
     $ end
 
 label fourthsteplyrics:
@@ -393,7 +395,7 @@ label fourthsteplyrics:
             jump lyrics_local
     before checkpoint(6)
     before toggle_outside_click(false)
-    wizard "You can explore furigana, romanization, and other lyric display options in Settings."
+    wizard "You can reorder and toggle lyric layers in Settings, under Lyrics, then Readings."
     $ pause(4)
     if lyrics_found:
         wizard "And you've already found some lyrics online. First expedition: successful."

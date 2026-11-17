@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QApplication, QLabel, QSizePolicy
 )
 from lyrics.widgets import FuriganaWidget
+from core.lyrics_settings import LYRIC_LAYER_ORDER
 
 
 class BaseLyricRenderer:
@@ -104,7 +105,16 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
         self._pan_configure_timer.setSingleShot(True)
         self._pan_configure_timer.timeout.connect(self._configure_pan)
         self._pan_geometry = None
+        self.wrap_display_layers = False
         self.set_text_wrapping(False)
+
+    def _update_content_geometry(self):
+        super()._update_content_geometry()
+        parent = self.parentWidget()
+        if parent is not None:
+            schedule = getattr(parent, "_schedule_content_resize", None)
+            if schedule is not None:
+                schedule()
 
     def set_lyric(self, lyric, **kwargs):
         super().set_lyric(lyric, **kwargs)
@@ -117,7 +127,7 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
         self._pan_configure_timer.start(0)
 
     def _floating_text_pen(self, segment, prepared, reading=False):
-        metrics = QFontMetrics(self.reading_font if reading else self.base_font)
+        metrics = QFontMetrics(self.reading_font if reading else self._styled_font(self.base_font, segment))
         return self._karaoke_text_pen(
             segment, self._segment_progress(segment, prepared), QColor(self.text_color),
             self._floating_timing_spans, {}, metrics, reading=reading,
@@ -203,8 +213,10 @@ class SplitRenderFuriganaWidget(FuriganaWidget):
 
         base = QFontMetrics(self.base_font)
         reading = QFontMetrics(self.reading_font)
-        top = min(s["base_y"] - base.ascent() for s in prepared)
-        bottom = max(s["base_y"] + base.descent() for s in prepared)
+        top = min(s["base_y"] - QFontMetrics(self._styled_font(self.base_font, s)).ascent()
+                  for s in prepared)
+        bottom = max(s["base_y"] + QFontMetrics(self._styled_font(self.base_font, s)).descent()
+                     for s in prepared)
         if self.show_ruby:
             for segment in prepared:
                 if segment.get("reading") and segment.get("reading_y") is not None:
@@ -298,6 +310,9 @@ class FloatingLyricsWindow(QWidget):
         self._modal_parent_timer = QTimer(self)
         self._modal_parent_timer.setSingleShot(True)
         self._modal_parent_timer.timeout.connect(self._sync_modal_parent)
+        self._content_resize_timer = QTimer(self)
+        self._content_resize_timer.setSingleShot(True)
+        self._content_resize_timer.timeout.connect(self._resize_for_content)
 
         # Required for rgba() window backgrounds to actually reveal whatever
         # is behind this top-level floating window.
@@ -442,6 +457,19 @@ class FloatingLyricsWindow(QWidget):
 
     def export_settings(self):
         return dict(self.settings)
+
+    def _schedule_content_resize(self):
+        self._content_resize_timer.start(0)
+
+    def _resize_for_content(self):
+        self.layout().activate()
+        self.resize(self.width(), max(250, self.layout().minimumSize().height()))
+
+    def set_lyric_layers(self, order, show_lyrics=True, show_romaji=False,
+                         show_translation=True, show_furigana=True):
+        self.lyric_widget.set_lyric_layers(
+            order, show_lyrics, show_romaji, show_translation, show_furigana,
+        )
 
     def set_text(self, text, translation_lines=(), segments=(), line_end=None,
                  style_spans=(), is_blockquote=False):
@@ -640,6 +668,7 @@ class FloatingLyricsPlugin:
         context.api.on("app_ready", self.on_app_ready)
         context.api.on("position_changed", self.on_position_changed)
         context.api.on("track_changed", self.on_track_changed)
+        context.api.on("lyrics_settings_changed", self.on_lyrics_settings_changed)
         context.api.on("playback_state_changed", self.on_playback_state_changed)
         context.api.on("karaoke_displays_requested", self._register_karaoke_display)
 
@@ -764,6 +793,9 @@ class FloatingLyricsPlugin:
     def on_track_changed(self, path):
         self.refresh()
 
+    def on_lyrics_settings_changed(self, *args, **kwargs):
+        self.refresh()
+
     def on_position_changed(self, position_ms):
         self.refresh()
 
@@ -795,7 +827,14 @@ class FloatingLyricsPlugin:
         if self.window is None or self.floating is None or not self.floating.isVisible():
             return
 
-        self.floating.set_furigana_enabled(getattr(self.window, "show_ruby", True))
+        all_romaji = getattr(self.window, "all_romaji", False)
+        self.floating.set_lyric_layers(
+            getattr(self.window, "lyric_layer_order", LYRIC_LAYER_ORDER),
+            getattr(self.window, "show_lyrics", True) and not all_romaji,
+            getattr(self.window, "show_romaji", False) or all_romaji,
+            getattr(self.window, "show_translation", True),
+            getattr(self.window, "show_ruby", True) and not all_romaji,
+        )
         main_display = getattr(self.window, "lyric_widget", None)
         if main_display is not None and hasattr(main_display, "highlight_color"):
             self.floating.lyric_widget.highlight_color = QColor(main_display.highlight_color)
@@ -816,12 +855,23 @@ class FloatingLyricsPlugin:
                 return entry.get("text", "")
             return str(entry)
 
+        def context_at(row):
+            if not 0 <= row < len(lyrics):
+                return ""
+            translations = getattr(lyrics[row], "translation_lines", ())
+            show_lyrics = getattr(self.window, "show_lyrics", True) and not all_romaji
+            show_translation = getattr(self.window, "show_translation", True)
+            return "\n".join(
+                text for index, text in enumerate(text_at(row).splitlines())
+                if (show_translation if index in translations else show_lyrics)
+            )
+
         if 0 <= index < len(lyrics):
             line = lyrics[index]
             line_end = getattr(line, "end", None)
             if line_end is None and index + 1 < len(lyrics):
                 line_end = getattr(lyrics[index + 1], "start", None)
-            self.floating.set_context(text_at(index - 1), text_at(index + 1))
+            self.floating.set_context(context_at(index - 1), context_at(index + 1))
             self.floating.set_text(
                 text_at(index),
                 translation_lines=getattr(lyrics[index], "translation_lines", []),
@@ -831,7 +881,7 @@ class FloatingLyricsPlugin:
                 is_blockquote=getattr(line, "is_blockquote", False),
             )
         else:
-            self.floating.set_context("", text_at(0) if index < 0 else "")
+            self.floating.set_context("", context_at(0) if index < 0 else "")
             self.floating.set_text("No lyrics")
 
     def on_unload(self, context):

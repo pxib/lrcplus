@@ -135,6 +135,9 @@ class LyricsController(LyricsSearchMixin):
         self.vertical_padding = effective["vertical_padding"]
         self.ruby_padding = effective["ruby_padding"]
         self.ruby_font_size = effective["ruby_font_size"]
+        self.lyric_layer_order = effective["lyric_layer_order"]
+        self.show_lyrics = effective["show_lyrics"]
+        self.show_translation = effective["show_translation"]
         self.show_ruby = effective["show_ruby"]
         self.show_romaji = effective.get("show_romaji", False)
         self.all_romaji = effective.get("all_romaji", False)
@@ -258,6 +261,13 @@ class LyricsController(LyricsSearchMixin):
         self.lyric_widget.set_all_romaji_visible(self.all_romaji)
         self.lyric_widget.set_ruby_position(self.ruby_position)
         self.lyric_widget.set_ruby_padding(self.ruby_padding)
+        self.lyric_widget.set_lyric_layers(
+            self.lyric_layer_order,
+            self.show_lyrics and not self.all_romaji,
+            self.show_romaji or self.all_romaji,
+            self.show_translation,
+            self.show_ruby and not self.all_romaji,
+        )
 
         self.scrolling_lyrics_widget.set_direction(self.lyrics_direction)
         self.scrolling_lyrics_widget.set_alignment(self.lyrics_alignment)
@@ -287,6 +297,13 @@ class LyricsController(LyricsSearchMixin):
         self.scrolling_lyrics_widget.set_all_romaji_visible(self.all_romaji)
         self.scrolling_lyrics_widget.set_ruby_position(self.ruby_position)
         self.scrolling_lyrics_widget.set_ruby_padding(self.ruby_padding)
+        self.scrolling_lyrics_widget.set_lyric_layers(
+            self.lyric_layer_order,
+            self.show_lyrics and not self.all_romaji,
+            self.show_romaji or self.all_romaji,
+            self.show_translation,
+            self.show_ruby and not self.all_romaji,
+        )
         self.scrolling_lyrics_widget.set_limited_reading_rendering(
             self.limited_reading_rendering,
             self.limited_reading_range,

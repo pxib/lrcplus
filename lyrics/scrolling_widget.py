@@ -188,6 +188,7 @@ class ScrollingLyricsWidget(QWidget):
         signature = (vertical, self.alignment, self.font_family, self.font_size,
                      self.ruby_font_size, self.show_ruby, self.show_romaji,
                      getattr(self, "all_romaji", False), self.ruby_position,
+                     getattr(self, "lyric_layers", None),
                      self.ruby_padding, self.padding, self.vertical_padding,
                      getattr(self, "karaoke_line_entrance", False),
                      getattr(self, "karaoke_word_lift", False),
@@ -237,8 +238,12 @@ class ScrollingLyricsWidget(QWidget):
     def _measure_row(self, row):
         if self._is_vertical_layout():
             row.setFixedHeight(max(1, self.scroll_area.viewport().height()))
-            flags = row._vertical_column_ruby_flags()
             base = QFontMetrics(row.base_font).height()
+            if getattr(row, "lyric_layers", None):
+                row._prepare_segments()
+                row.setFixedWidth(max(1, row._layer_layout_width + self.padding))
+                return row.width()
+            flags = row._vertical_column_ruby_flags()
             ruby = row._vertical_ruby_lane_width() if row.show_ruby else 0
             width = FuriganaWidget.PADDING + sum(
                 base + FuriganaWidget.PADDING + (ruby + row.ruby_padding if has_ruby and ruby else 0)
@@ -339,6 +344,20 @@ class ScrollingLyricsWidget(QWidget):
         self.padding = padding
         self._refresh_row_heights()
         self.updateGeometry()
+        self.update()
+
+    def set_lyric_layers(self, order, show_lyrics=True, show_romaji=False,
+                         show_translation=True, show_furigana=True):
+        from core.lyrics_settings import normalize_layer_order
+        self.lyric_layers = (tuple(normalize_layer_order(order)), bool(show_lyrics),
+                             bool(show_romaji), bool(show_translation), bool(show_furigana))
+        self.show_ruby = bool(show_furigana)
+        self.show_romaji = bool(show_romaji)
+        self.all_romaji = False
+        for row in self.rows:
+            row.set_lyric_layers(*self.lyric_layers)
+        self._update_reading_render_window(self.current_line, initial=True)
+        self._refresh_row_heights()
         self.update()
 
     def set_romaji_visible(self, visible):
@@ -840,6 +859,8 @@ class ScrollingLyricsWidget(QWidget):
         row.set_ruby_visible(self.show_ruby)
         row.set_romaji_visible(self.show_romaji)
         row.set_all_romaji_visible(getattr(self, "all_romaji", False))
+        if getattr(self, "lyric_layers", None):
+            row.set_lyric_layers(*self.lyric_layers)
         row.set_ruby_position(self.ruby_position)
         row.set_ruby_padding(self.ruby_padding)
         row.set_active(False)

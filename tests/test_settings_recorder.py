@@ -80,7 +80,8 @@ def test_debug_menu_captures_edits_and_copies_importable_snapshots(qapp, tmp_pat
         changes = dialog.settings_recorder.changes()
         assert changes["lyrics_global"]["font_size"] == 48
         assert changes["lyrics_global"]["show_romaji"] is True
-        assert changes["lyrics_global"]["show_ruby"] is False
+        assert "show_ruby" not in changes["lyrics_global"]
+        assert dialog.global_controls["show_ruby"].isChecked()
         assert changes["appearance"]["theme_mode"] == "dark"
         assert "Recording" in dialog.settings_debug_button.text()
         dialog.copy_settings_changes_action.trigger()

@@ -40,6 +40,7 @@ from core.theme import build_theme_palette, normalize_theme_overrides, THEME_COL
 from ui.dependency_settings import DependencyManagerWidget
 from ui.about_tab import AboutTab
 from ui.settings_search import SettingsSearch
+from ui.lyric_layers import LyricLayerOrder
 from ui.settings_transfer import SettingsTransferMixin
 from ui.settings_debug import SettingsDebugMixin
 from ui.settings_controls import (
@@ -54,6 +55,7 @@ from ui.settings_controls import (
 
 
 LYRIC_KEYS = (
+    "lyric_layer_order", "show_lyrics", "show_translation",
     "scrolling_lyrics",
     "lyrics_direction",
     "lyrics_padding",
@@ -206,6 +208,7 @@ LYRIC_SECTIONS = {
         "lyrics_padding", "vertical_padding", "focus_transition",
     ),
     "Readings": (
+        "lyric_layer_order", "show_lyrics", "show_translation",
         "show_ruby", "show_romaji", "all_romaji", "ruby_position",
         "furigana_parser", "mecab_parse_mode", "limited_reading_rendering",
         "limited_reading_range", "fade_in_readings", "ruby_padding", "ruby_font_size",
@@ -224,7 +227,7 @@ LYRIC_SECTIONS = {
 }
 
 # Parser selection is an application-wide engine choice, not a per-file lyric override.
-LOCAL_LYRIC_KEYS = tuple(key for key in LYRIC_KEYS if key not in {"furigana_parser", "mecab_parse_mode"})
+LOCAL_LYRIC_KEYS = tuple(key for key in LYRIC_KEYS if key not in {"furigana_parser", "mecab_parse_mode", "all_romaji", "ruby_position"})
 
 
 class PluginSettingsDialog(QDialog):
@@ -1128,6 +1131,8 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             if title in {"Dependencies", "About"}:
                 continue
             for widget in page.findChildren(QWidget):
+                if widget.property("settingsSearchSkip"):
+                    continue
                 label = widget.property("settingsLabel")
                 if not label and isinstance(widget, QCheckBox) and widget.text() != "Override":
                     label = widget.text()
@@ -1593,54 +1598,50 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         controls["vertical_padding"] = vertical_padding
 
         layout = sections["Readings"]
-        self._add_section_heading(layout, "Furigana")
-        show_ruby = QCheckBox("Show furigana")
-        show_ruby.setChecked(bool(values.get("show_ruby", True)))
-        controls["show_ruby"] = show_ruby
-        layout.addWidget(show_ruby)
-
-        show_romaji = QCheckBox("Show romaji")
-        show_romaji.setChecked(bool(values.get("show_romaji", False)))
-        if show_romaji.isChecked():
-            show_ruby.setChecked(False)
-        controls["show_romaji"] = show_romaji
-        layout.addWidget(show_romaji)
-
-        all_romaji = QCheckBox("All romaji")
-        all_romaji.setChecked(bool(values.get("all_romaji", False)))
-        if all_romaji.isChecked():
-            show_ruby.setChecked(False)
-            show_romaji.setChecked(False)
+        self._add_section_heading(layout, "Lyric layers")
+        note = QLabel("Drag layers to change their display order, or use Move up / Move down. Keep at least one layer checked.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        order = LyricLayerOrder(values.get("lyric_layer_order"))
+        controls["lyric_layer_order"] = order
+        order.setProperty("settingsLabel", "Lyric layer order and visibility")
+        order.setToolTip("Layers render in this order. Romaji and furigana are independent reading rows. Translation uses translations saved in the lyric file.")
+        layout.addWidget(order)
+        moves = QHBoxLayout()
+        for title, delta in (("Move up", -1), ("Move down", 1)):
+            button = QPushButton(title)
+            button.clicked.connect(lambda _checked=False, delta=delta: order.move_current(delta))
+            moves.addWidget(button)
+        layout.addLayout(moves)
+        for key, title, default in (
+            ("show_lyrics", "Lyrics", True), ("show_romaji", "Romaji", False),
+            ("show_translation", "Translation", True), ("show_ruby", "Furigana", True),
+        ):
+            checkbox = QCheckBox(title)
+            checkbox.setChecked(bool(values.get(key, default)))
+            controls[key] = checkbox
+            layout.addWidget(checkbox)
+            checkbox.hide()
+            checkbox.setProperty("settingsSearchSkip", True)
+        order.bind_visibility({
+            "lyrics": controls["show_lyrics"], "romaji": controls["show_romaji"],
+            "translation": controls["show_translation"], "furigana": controls["show_ruby"],
+        })
+        # Keep legacy settings readable by older plugins and preference presets.
+        all_romaji = QCheckBox()
+        all_romaji.setChecked(False)
         controls["all_romaji"] = all_romaji
         layout.addWidget(all_romaji)
-
-        # Furigana, romaji, and all-romaji are mutually exclusive display modes.
-        # Keep the controls synchronized so there is only ever one reading style.
-        show_ruby.toggled.connect(
-            lambda checked: (
-                (show_romaji.setChecked(False), all_romaji.setChecked(False))
-                if checked else None
-            )
-        )
-        show_romaji.toggled.connect(
-            lambda checked: (
-                (show_ruby.setChecked(False), all_romaji.setChecked(False))
-                if checked else None
-            )
-        )
-        all_romaji.toggled.connect(
-            lambda checked: (
-                (show_ruby.setChecked(False), show_romaji.setChecked(False))
-                if checked else None
-            )
-        )
+        all_romaji.hide()
 
         ruby_position = QComboBox()
         ruby_position.addItem("Above lyrics", "above")
         ruby_position.addItem("Below lyrics", "below")
         ruby_position.setCurrentIndex(max(0, ruby_position.findData(values.get("ruby_position", "above"))))
         controls["ruby_position"] = ruby_position
-        self._add_labeled(layout, "Ruby position:", ruby_position)
+        layout.addWidget(ruby_position)
+        ruby_position.hide()
+        ruby_position.setProperty("settingsSearchSkip", True)
 
         parser = QComboBox()
         parser.addItem("Yomi (online, recommended)", "yomi")
@@ -1716,7 +1717,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         _sync_fade_readings(limited_rendering.checkState())
 
         ruby_padding = self._add_slider(
-            layout, "Ruby padding:",
+            layout, "Layer spacing:",
             values.get("ruby_padding", 2), 0, 18, "px"
         )
         controls["ruby_padding"] = ruby_padding
@@ -1726,7 +1727,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         ruby_font_size.setValue(int(values.get("ruby_font_size", 18)))
         ruby_font_size.setSuffix(" pt")
         controls["ruby_font_size"] = ruby_font_size
-        self._add_labeled(layout, "Ruby text font size:", ruby_font_size)
+        self._add_labeled(layout, "Furigana font size:", ruby_font_size)
 
         layout = sections["Typography"]
         self._add_section_heading(layout, "Typography")
@@ -2332,7 +2333,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         names = {
             "scrolling_lyrics": "Display mode:", "lyrics_direction": "Lyrics direction:",
             "lyrics_padding": "Lyrics padding:", "vertical_padding": "Vertical padding:", "show_ruby": "Show furigana:", "show_romaji": "Show romaji:",
-            "ruby_padding": "Ruby padding:", "ruby_font_size": "Ruby font size:",
+            "ruby_padding": "Layer spacing:", "ruby_font_size": "Furigana font size:",
             "font_family": "Font family:", "font_size": "Font size:",
             "lyrics_alignment": "Lyrics alignment:", "highlight_current": "Highlight current lyric:",
             "highlight_animation": "Highlight animation:",
@@ -2399,9 +2400,27 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
                 grid.addWidget(label, row_index, 3)
             controls[key] = (enabled, editor)
 
+        visibility_keys = ("show_lyrics", "show_romaji", "show_translation", "show_ruby")
+
+        def keep_local_layer_visible():
+            if any(editor.isChecked() if override.isChecked()
+                   else self.global_controls[key].isChecked()
+                   for key in visibility_keys for override, editor in (controls[key],)):
+                return
+            override, editor = controls["show_lyrics"]
+            override.setChecked(True)
+            editor.setChecked(True)
+
+        for key in visibility_keys:
+            override, editor = controls[key]
+            override.clicked.connect(keep_local_layer_visible)
+            editor.clicked.connect(keep_local_layer_visible)
+
         return controls
 
     def _editor_for_key(self, key, value):
+        if key == "lyric_layer_order":
+            return LyricLayerOrder(value)
         if key == "scrolling_lyrics":
             editor = QComboBox()
             editor.addItem("Compact", False)
@@ -2438,7 +2457,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             index = editor.findData(value)
             editor.setCurrentIndex(index if index >= 0 else 1)
             return editor
-        if key in {"show_ruby", "show_romaji", "all_romaji", "highlight_current", "focus_transition"}:
+        if key in {"show_lyrics", "show_translation", "show_ruby", "show_romaji", "all_romaji", "highlight_current", "focus_transition"}:
             editor = QCheckBox()
             editor.setChecked(bool(value))
             return editor
@@ -2567,7 +2586,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
     def _read_value(self, key, control):
         if key == "scrolling_lyrics":
             return control.currentData()
-        if key in {"show_ruby", "show_romaji", "all_romaji", "highlight_current", "continuous_scroll_duration_based", "continuous_scroll_nudge_current", "limited_reading_rendering", "fade_in_readings", "focus_transition"}:
+        if key in {"show_lyrics", "show_translation", "show_ruby", "show_romaji", "all_romaji", "highlight_current", "continuous_scroll_duration_based", "continuous_scroll_nudge_current", "limited_reading_rendering", "fade_in_readings", "focus_transition"}:
             return control.isChecked()
         if key in {
             "lyrics_direction",

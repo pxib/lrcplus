@@ -21,6 +21,7 @@ from lyrics.furigana_layout import (
     _normalize_all_romaji_punctuation,
     _normalize_all_romaji_blocks,
 )
+from lyrics.display_layers import DisplayLayersMixin
 from lyrics.furigana_painting import FuriganaPaintingMixin
 
 _FURIGANA_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="LRCPlus-Yomi")
@@ -38,7 +39,7 @@ class _FuriganaBridge(QObject):
     ready = Signal(str, object)
 
 
-class FuriganaWidget(FuriganaLayoutMixin, FuriganaPaintingMixin, QWidget):
+class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMixin, QWidget):
     BASE_FONT_SIZE = 32
     READING_FONT_SIZE = 18
 

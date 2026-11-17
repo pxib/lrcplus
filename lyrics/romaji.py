@@ -133,8 +133,8 @@ def all_romaji_texts(segments):
     previous = ""
     offset = 0
     for segment, raw_source, word_start in zip(segments, raw_sources, word_starts):
-        # The comma belongs to the original whitespace's timed chunk. Keep
-        # this separate from the word spaces inserted below.
+        # Mark authored phrase gaps separately from generated word spaces.
+        # The display pass below attaches their commas to the preceding word.
         source = "".join(
             "," if offset + index in pauses else char
             for index, char in enumerate(raw_source)
@@ -156,6 +156,7 @@ def all_romaji_texts(segments):
     openers = {"「": '"', "『": '"', "“": '"', "(": "(", "[": "[", "{": "{"}
     closers = {"」": '"', "』": '"', "”": '"', ")": ")", "]": "]", "}": "}"}
     previous = ""
+    previous_owner = None
     after_open = False
     pending_space = False
     ascii_quote_open = False
@@ -168,6 +169,7 @@ def all_romaji_texts(segments):
             if char == "\n":
                 output[index] += char
                 previous = ""
+                previous_owner = None
                 after_open = pending_space = ascii_quote_open = False
                 continue
             if char.isspace():
@@ -187,7 +189,13 @@ def all_romaji_texts(segments):
                 char = closers.get(char, char)
             elif char not in ",.?!:;" and pending_space and previous and not after_open:
                 output[index] += " "
-            output[index] += char
+            if char == "," and previous_owner is not None:
+                # Punctuation/space chunks may have later timestamps. Include
+                # the comma in the preceding word's visual and karaoke span.
+                output[previous_owner] += char
+            else:
+                output[index] += char
+                previous_owner = index
             numeric_separator = char in ",.:" and previous.isdecimal() and following.isdecimal()
             previous = char
             after_open = opening

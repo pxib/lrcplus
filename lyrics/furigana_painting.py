@@ -270,6 +270,9 @@ class FuriganaPaintingMixin:
                 cursor += span
 
         for segment in prepared:
+            auxiliary_layer = segment.get("display_layer") in {"romaji", "furigana"}
+            if auxiliary_layer and not self.reading_render_enabled:
+                continue
             width = segment["width"]
             base_x = (
                 segment["x"]
@@ -291,6 +294,8 @@ class FuriganaPaintingMixin:
             timing_group = segment.get("timing_group", segment.get("karaoke_group"))
             lift = group_lift[timing_group] if timing_group in group_lift else self._word_lift_offset(segment)
             painter.save()
+            if auxiliary_layer:
+                painter.setOpacity(painter.opacity() * self.reading_opacity)
             painter.translate(0, lift)
             painter.setFont(self._paint_font(self.base_font, segment))
 
@@ -487,7 +492,7 @@ class FuriganaPaintingMixin:
                 painter, segment, normal_pen, highlight_pen, progress,
                 timing_spans.get((timing_group, segment.get("base_y"))),
                 normal_highlight and self.highlight_animation == "slide",
-                opacity=line_opacity,
+                opacity=line_opacity * self.reading_opacity if auxiliary_layer else line_opacity,
             )
             painter.restore()
 
