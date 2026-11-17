@@ -29,7 +29,7 @@ def _library_font_family():
 
 
 def library_font(base_font):
-    """Keep the view's size and style, using Noto's Japanese/Latin coverage."""
+    """Keep the view's size and style, using the bundled Noto Sans JP font."""
     font = QFont(base_font)
     family = _library_font_family()
     if family:
@@ -38,33 +38,40 @@ def library_font(base_font):
 
 
 def content_font(base_font, text):
-    """Use Noto's own glyphs when covered, allowing fallback for other text.
+    """Use Noto's glyphs when covered, allowing fallback for other text.
 
     Windows can otherwise load large system fonts for Simplified Chinese even
-    when Noto has those glyphs. Check coverage before disabling font merging so
-    text containing unsupported characters still renders normally.
+    when Noto has those glyphs. Check coverage before disabling font merging
+    so text containing unsupported characters still renders normally.
     """
     font = library_font(base_font)
+    if _library_font_family():
+        return covering_font(font, text)
+    font.setStyleStrategy(font.styleStrategy() & ~QFont.StyleStrategy.NoFontMerging)
+    return font
+
+
+def covering_font(base_font, text):
+    """Keep a chosen face when it covers the text, otherwise try modern fonts."""
+    font = QFont(base_font)
     strategy = font.styleStrategy() & ~QFont.StyleStrategy.NoFontMerging
     font.setStyleStrategy(strategy)
-    family = _library_font_family()
-    if family:
-        raw_font = QRawFont.fromFont(font)
-        # Use UCS-4 integers; PySide's string overload can misreport coverage.
-        characters = {ord(char) for char in unicodedata.normalize("NFC", text)
-                      if not char.isspace()}
-        if (raw_font.isValid() and raw_font.familyName() == family
+    raw_font = QRawFont.fromFont(font)
+    # Use UCS-4 integers; PySide's string overload can misreport coverage.
+    characters = {ord(char) for char in unicodedata.normalize("NFC", text)
+                  if not char.isspace()}
+    if (raw_font.isValid()
+            and all(raw_font.supportsCharacter(char) for char in characters)):
+        font.setStyleStrategy(strategy | QFont.StyleStrategy.NoFontMerging)
+        return font
+    for fallback in CONTENT_FALLBACK_FAMILIES:
+        if not QFontDatabase.hasFamily(fallback):
+            continue
+        candidate = QFont(font)
+        candidate.setFamily(fallback)
+        raw_font = QRawFont.fromFont(candidate)
+        if (raw_font.isValid()
                 and all(raw_font.supportsCharacter(char) for char in characters)):
-            font.setStyleStrategy(strategy | QFont.StyleStrategy.NoFontMerging)
-            return font
-        for fallback in CONTENT_FALLBACK_FAMILIES:
-            if not QFontDatabase.hasFamily(fallback):
-                continue
-            candidate = QFont(font)
-            candidate.setFamily(fallback)
-            raw_font = QRawFont.fromFont(candidate)
-            if (raw_font.isValid()
-                    and all(raw_font.supportsCharacter(char) for char in characters)):
-                candidate.setStyleStrategy(strategy | QFont.StyleStrategy.NoFontMerging)
-                return candidate
+            candidate.setStyleStrategy(strategy | QFont.StyleStrategy.NoFontMerging)
+            return candidate
     return font

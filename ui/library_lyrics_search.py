@@ -163,6 +163,9 @@ class LibraryLyricsSearchMixin:
         if (self.library_search_filter.currentData() != "lyrics"
                 or normalize_lyric_query(self.library_search.text()) != query):
             return
+        # A track can be removed while the background search is still running.
+        paths = {track.path for track in self.library_tracks}
+        matches = {path: match for path, match in matches.items() if path in paths}
         self.library_lyrics_movie.stop()
         self.library_lyrics_loading.hide()
         icon = "success.png" if matches else "fail.png"

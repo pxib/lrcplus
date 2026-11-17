@@ -17,6 +17,7 @@ from core.settings import get_app_data_dir
 class StatisticsStore(QObject):
     changed = Signal()
     failed = Signal(str)
+    shuffle_history_ready = Signal(int, dict)
     MAX_PENDING = 4096
 
     def __init__(self, parent=None, path=None):
@@ -159,6 +160,30 @@ class StatisticsStore(QObject):
                 self._error(f"Could not save listening statistics: {error}")
                 return
             self._changed()
+
+    def request_shuffle_history(self):
+        """Read all recent tracks on the existing worker, never on the GUI thread."""
+        with self._lock:
+            if not self._closed:
+                self._schedule_locked()
+                self._executor.submit(self._shuffle_history, self._generation)
+
+    def _shuffle_history(self, generation):
+        history = {}
+        try:
+            with closing(self._connect()) as connection:
+                # Older entries have full weight, so need not stay in memory.
+                rows = connection.execute("""
+                    SELECT path_key, MAX(last_played) FROM daily
+                    WHERE day >= ? GROUP BY path_key
+                """, ((date.today() - timedelta(days=15)).isoformat(),))
+                history = dict(rows)
+        except (sqlite3.Error, OSError) as error:
+            self._error(f"Could not read shuffle history: {error}")
+        with self._lock:
+            notify = not self._closed
+        if notify:
+            self.shuffle_history_ready.emit(generation, history)
 
     def snapshot(self, days=None, today=None):
         today = today or date.today()

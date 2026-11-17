@@ -7,6 +7,7 @@ from lyrics.models import LyricSegment
 from lyrics.writer import format_timestamp
 from lyrics.karaoke_timing import next_lyric_start, segment_end
 from core.debug import debug_print
+from core.fonts import covering_font
 from lyrics.furigana import split_reading_by_text_ranges, yomi_word_surfaces
 from lyrics.reading_groups import remap_reading_groups
 
@@ -718,6 +719,13 @@ class LyricsEditorKaraokeMixin:
 
         line_changed = self._preview_segments_line_index != index
         if rebuild_segments or line_changed:
+            base_font, reading_font = self._karaoke_preview_fonts
+            self.karaoke_renderer_preview.base_font = covering_font(base_font, line.text)
+            readings = "".join(
+                (segment.ruby or "") + "".join(str(span[2]) for span in segment.ruby_spans or [])
+                for segment in line.segments
+            )
+            self.karaoke_renderer_preview.reading_font = covering_font(reading_font, readings)
             line_end = getattr(line, "end", None)
             if line_end is None:
                 timeline = sorted(

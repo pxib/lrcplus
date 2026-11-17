@@ -16,6 +16,10 @@ from core.audio_sink import dispose_audio_sink
 # Keep threads alive if their window is deleted during a native DSP call.
 _LIVE_THREADS = set()
 
+# Leave room for decoder jitter without filling the device with old controls.
+_OUTPUT_BUFFER_US = 60_000
+_STARTUP_RESERVE_US = 30_000
+
 
 @dataclass(frozen=True)
 class _Controls:
@@ -361,8 +365,12 @@ class _PlaybackEngine(QObject):
                     if (mailbox._closed or mailbox._generation != generation
                             or not mailbox._pending):
                         break
-                    data, fmt, settings = mailbox._pending.popleft()
+                    data, fmt, _ = mailbox._pending.popleft()
                     mailbox._queued_bytes -= len(data)
+                    # Pitch and gain are live controls. Apply the latest values
+                    # to queued input, rather than replaying old slider targets.
+                    # Changes that require new audio history bump generation.
+                    settings = mailbox._controls
                 self._last_input = (fmt, settings)
                 self._stream_flushed = False
                 pcm = self._rate_processor.process(
@@ -448,7 +456,7 @@ class _PlaybackEngine(QObject):
             self._sink.setVolume(min(1.0, self._controls.gain))
             # Capacity alone does not provide a reserve: wait for actual audio
             # below before starting playback, then retain room for decoder bursts.
-            self._sink.setBufferSize(max(fmt.bytesForDuration(120_000), fmt.bytesPerFrame()))
+            self._sink.setBufferSize(max(fmt.bytesForDuration(_OUTPUT_BUFFER_US), fmt.bytesPerFrame()))
             self._io = self._sink.start()
             if self._io is None:
                 raise RuntimeError("Qt could not start the PCM audio sink.")
@@ -472,7 +480,7 @@ class _PlaybackEngine(QObject):
         if not self._primed:
             # Python-backed decoder delivery and DSP still need the GIL. Dialog
             # construction can briefly hold it even with an independent Qt loop.
-            reserve = self._sink.format().bytesForDuration(60_000)
+            reserve = self._sink.format().bytesForDuration(_STARTUP_RESERVE_US)
             if len(self._pending) < reserve and not force:
                 return
             self._primed = True

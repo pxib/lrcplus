@@ -14,7 +14,7 @@ import zipfile
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
-from core.updater import UpdateError, parse_version
+from core.update_package import UpdateError, parse_version
 
 
 def set_app_version(path: Path, requested_version: str) -> tuple[str, str]:
@@ -135,7 +135,7 @@ def main(argv=None) -> int:
     release_dir.mkdir(exist_ok=True)
     basename = f"LRCPlus-v{app_version}-Windows-{architecture}"
     archive_path = release_dir / f"{basename}.zip"
-    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for path in sorted(app_folder.rglob("*")):
             if path.is_file():
                 archive.write(path, Path("LRCPlus") / path.relative_to(app_folder))

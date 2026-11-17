@@ -11,3 +11,7 @@ The font is distributed under the accompanying upstream SIL Open Font License
 in `LICENSE`. Qt registers it for this application only. The existing PyInstaller
 configuration includes the whole `assets` directory, including this font and
 its license.
+
+Korean and other unsupported characters use glyph-checked modern system fonts
+where available. The editor keeps this explicit fallback to avoid loading large
+legacy Windows fonts such as Gulim.

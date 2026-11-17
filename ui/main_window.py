@@ -58,6 +58,7 @@ from core.settings import (
 )
 from core.recent import get_recent_songs
 from core.music_library import LibraryTrack
+from core.playlists import path_key
 from core.favorites import load_favorites
 from ui.favorites import FavoritesMixin
 from lyrics.widgets import FuriganaWidget, ScrollingLyricsWidget
@@ -176,6 +177,8 @@ class Player(
             # the library; the library is the primary workspace.
             music_library = load_music_library()
             self.library_folders = music_library["folders"]
+            self.library_files = music_library["files"]
+            self.library_excluded_paths = {path_key(path) for path in music_library["excluded_paths"]}
             self.library_tracks = []
             self.favorite_paths = load_favorites()
             self.library_column_state = music_library.get("columns", {}) or {}
@@ -197,7 +200,7 @@ class Player(
                     continue
                 try:
                     track = LibraryTrack(**{k: raw.get(k, "") for k in LibraryTrack.__dataclass_fields__})
-                    if Path(track.path).is_file():
+                    if Path(track.path).is_file() and path_key(track.path) not in self.library_excluded_paths:
                         self.library_tracks.append(track)
                 except (TypeError, ValueError):
                     continue
@@ -1030,7 +1033,8 @@ class Player(
                     selection-background-color: @ACCENT_SOFT@;
                     outline: none;
                 }
-                QLabel#libraryFolderLabel {
+                QLabel#libraryFolderLabel,
+                QLabel#librarySearchStatus {
                     color: @TEXT@;
                 }
                 QTreeWidget#libraryTable {

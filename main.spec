@@ -79,7 +79,7 @@ a = Analysis(
     # Translation panels are created by plugins loaded from real files.
     hiddenimports=["ui.translation_panel", "PySide6.QtNetwork"],
 
-    hookspath=[],
+    hookspath=[str(PROJECT_ROOT / "tools" / "pyinstaller-hooks")],
     hooksconfig=[],
     runtime_hooks=[],
 

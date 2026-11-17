@@ -9,7 +9,7 @@ import threading
 
 from PySide6.QtCore import Qt, QSignalBlocker, Signal, QSize, QTimer, QUrl, QEvent
 from PySide6.QtMultimedia import QMediaPlayer
-from PySide6.QtGui import QKeySequence, QShortcut, QPainter, QFontMetrics, QColor, QPen, QDesktopServices, QAction
+from PySide6.QtGui import QKeySequence, QShortcut, QPainter, QFont, QFontMetrics, QColor, QPen, QDesktopServices, QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
@@ -47,8 +47,11 @@ except Exception:
     find_reading_provider = lambda *args, **kwargs: None
 
 
-from ui.lrc_editor_controls import ClickableSlider, KaraokeSeparationWidget
+from ui.lrc_editor_controls import ClickableSlider, KaraokeSeparationWidget, LyricLabel
 from ui.inline_readings import InlineReadingsEditor
+from ui.content_list import configure_content_list
+from ui.content_fonts import ContentLabel
+from ui.lyrics_preview import LyricsTextEdit
 
 
 class LrcEditorUiMixin:
@@ -78,6 +81,7 @@ class LrcEditorUiMixin:
         # The line list is intentionally outside the tabs. Selecting a lyric
         # must work the same way in Lyrics, Karaoke and Source modes.
         self.line_list = QListWidget()
+        configure_content_list(self.line_list)
         self.line_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.line_list.setMinimumWidth(250)
         self.line_list.currentRowChanged.connect(self.load_selected_line)
@@ -226,7 +230,7 @@ class LrcEditorUiMixin:
         timestamp_widget = QWidget()
         timestamp_widget.setLayout(timestamp_row)
         form.addRow("Timestamp:", timestamp_widget)
-        self.line_text = QTextEdit()
+        self.line_text = LyricsTextEdit()
         self.line_text.setAcceptRichText(False)
         self.line_text.setPlaceholderText("Lyric text")
         self.line_text.setToolTip(
@@ -489,7 +493,7 @@ class LrcEditorUiMixin:
             separation_box.setFrameShape(QFrame.Shape.StyledPanel)
             separation_layout = QVBoxLayout(separation_box)
             separation_layout.addWidget(QLabel("Separation Center"))
-            self.full_line_label = QLabel("")
+            self.full_line_label = LyricLabel("")
             self.full_line_label.setWordWrap(True)
             separation_layout.addWidget(self.full_line_label)
 
@@ -517,7 +521,7 @@ class LrcEditorUiMixin:
                 separation_buttons.addWidget(button)
             separation_buttons.addStretch()
             separation_layout.addLayout(separation_buttons)
-            self.separation_preview = QLabel("")
+            self.separation_preview = LyricLabel("")
             self.separation_preview.setWordWrap(True)
             separation_layout.addWidget(self.separation_preview)
             karaoke_layout.addWidget(separation_box)
@@ -588,7 +592,7 @@ class LrcEditorUiMixin:
         source_layout.addWidget(QLabel("Edit raw syntax here. Source edits are applied when leaving this tab or saving."))
         self.source_format_label = QLabel()
         source_layout.addWidget(self.source_format_label)
-        self.source_editor = QTextEdit()
+        self.source_editor = LyricsTextEdit()
         self.source_editor.setAcceptRichText(False)
         self.source_editor.textChanged.connect(self._source_text_changed)
         self.source_editor.undoAvailable.connect(self._update_history_actions)
@@ -676,13 +680,13 @@ class LrcEditorUiMixin:
         title.setFont(title_font)
         association_layout.addWidget(title)
 
-        self.song_association_status = QLabel()
+        self.song_association_status = ContentLabel()
         self.song_association_status.setWordWrap(True)
         association_layout.addWidget(self.song_association_status)
 
         path_row = QHBoxLayout()
         path_row.addWidget(QLabel("Associated Song:"))
-        self.song_association_label = QLabel()
+        self.song_association_label = ContentLabel()
         self.song_association_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -799,6 +803,10 @@ class LrcEditorUiMixin:
                 get_effective_lyrics_settings(getattr(self.player, "current_audio_path", None))["focus_transition"]
             )
             apply_karaoke_settings(self.karaoke_renderer_preview, get_karaoke_settings())
+            self._karaoke_preview_fonts = (
+                QFont(self.karaoke_renderer_preview.base_font),
+                QFont(self.karaoke_renderer_preview.reading_font),
+            )
             self.karaoke_renderer_preview.setMinimumHeight(180)
             self.karaoke_renderer_preview.alignment = "center"
             self.karaoke_renderer_preview.highlight_animation = "none"

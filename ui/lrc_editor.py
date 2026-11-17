@@ -34,6 +34,7 @@ from lyrics.editor_operations import correct_line_text, replace_reading_span
 from lyrics.reading_groups import group_reading_tokens, remap_reading_groups
 from lyrics.furigana import get_cached_furigana_segments
 from core.debug import debug_print
+from core.fonts import content_font
 from lyrics.lrcx_parser import get_lrcx_offset
 from lyrics.waveform import WaveformWidget
 from core.settings import get_playback_settings
@@ -802,6 +803,11 @@ class LrcEditorDialog(
         )
 
     def _populate_segments(self, line):
+        def make_item(text):
+            value = QTableWidgetItem(text)
+            value.setFont(content_font(self.segment_table.font(), text))
+            return value
+
         previous_loading = self.loading
         self.loading = True
         blocker = QSignalBlocker(self.segment_table)
@@ -813,19 +819,19 @@ class LrcEditorDialog(
             self.segment_table.setRowCount(len(segments))
             for row, segment in enumerate(segments):
                 self.segment_table.setItem(
-                    row, 0, QTableWidgetItem(format_timestamp(segment.start))
+                    row, 0, make_item(format_timestamp(segment.start))
                 )
                 end_time = segment_end(line, row, fallback_end)
                 self.segment_table.setItem(
-                    row, 1, QTableWidgetItem(format_timestamp(end_time) if end_time is not None else "")
+                    row, 1, make_item(format_timestamp(end_time) if end_time is not None else "")
                 )
-                self.segment_table.setItem(row, 2, QTableWidgetItem(segment.text))
+                self.segment_table.setItem(row, 2, make_item(segment.text))
                 segment_spans = list(getattr(segment, "ruby_spans", []) or [])
                 if segment_spans and len(segment_spans) == 1:
                     ruby_text = str(segment_spans[0][2] or "")
                 else:
                     ruby_text = segment.ruby or ""
-                self.segment_table.setItem(row, 3, QTableWidgetItem(ruby_text))
+                self.segment_table.setItem(row, 3, make_item(ruby_text))
                 if segment.needs_timing_review:
                     for column in range(4):
                         item = self.segment_table.item(row, column)

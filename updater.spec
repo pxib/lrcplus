@@ -14,7 +14,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # The installer must remain independent of the application's Qt runtime.
+    excludes=["PySide6", "shiboken6"],
     noarchive=False,
     optimize=0,
 )

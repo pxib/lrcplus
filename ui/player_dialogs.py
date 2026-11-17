@@ -305,7 +305,7 @@ class PitchChangerDialog(QDialog):
         self._on_change = on_change
         self._pitch_update_timer = QTimer(self)
         self._pitch_update_timer.setSingleShot(True)
-        self._pitch_update_timer.setInterval(40)
+        self._pitch_update_timer.setInterval(16)
         self._pitch_update_timer.timeout.connect(self._notify_pitch_change)
 
         heading = QLabel("Pitch changer")
@@ -584,13 +584,14 @@ class LibraryScanWorker(QThread):
     completed = Signal(list)
     failed = Signal(str)
 
-    def __init__(self, folders, parent=None):
+    def __init__(self, folders, parent=None, *, files=()):
         super().__init__(parent)
         self.folders = list(folders)
+        self.files = list(files)
 
     def run(self):
         try:
-            tracks = scan_folders(self.folders, cancelled=self.isInterruptionRequested)
+            tracks = scan_folders(self.folders + self.files, cancelled=self.isInterruptionRequested)
         except Exception as error:
             if not self.isInterruptionRequested():
                 self.failed.emit(str(error))

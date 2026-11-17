@@ -122,10 +122,10 @@ def scan_folders(folders: Iterable[str | Path], *, cancelled=lambda: False):
         if cancelled():
             return []
         root = Path(folder).expanduser()
-        if not root.is_dir():
+        if not root.is_dir() and not root.is_file():
             continue
         try:
-            iterator = root.rglob('*')
+            iterator = (root,) if root.is_file() else root.rglob('*')
             for path in iterator:
                 if cancelled():
                     return []

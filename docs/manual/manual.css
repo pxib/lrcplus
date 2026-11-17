@@ -140,9 +140,9 @@ html[lang="ko"]{font-family:Arial,'Malgun Gothic','Apple SD Gothic Neo',sans-ser
 html[lang="ko"] h1,html[lang="ko"] h2{font-family:Georgia,'Malgun Gothic','Apple SD Gothic Neo',sans-serif}
 html[lang="ko"] .toc summary::after{content:' [펼치기]'}
 html[lang="ko"] .toc[open] summary::after{content:' [접기]'}
-/* Installed fonts are preferred; bundled WOFF files keep Cantonese offline. */
-@font-face{font-family:'Chocolate Classical Sans';src:local('Chocolate Classical Sans'),url('assets/fonts/ChocolateClassicalSans-Regular.woff') format('woff');font-weight:400;font-style:normal;font-display:swap}
-@font-face{font-family:'Cactus Classical Serif';src:local('Cactus Classical Serif'),url('assets/fonts/CactusClassicalSerif-Regular.woff') format('woff');font-weight:400;font-style:normal;font-display:swap}
+/* Installed fonts are preferred; bundled WOFF2 files keep Cantonese offline. */
+@font-face{font-family:'Chocolate Classical Sans';src:local('Chocolate Classical Sans'),url('assets/fonts/ChocolateClassicalSans-Regular.woff2') format('woff2');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:'Cactus Classical Serif';src:local('Cactus Classical Serif'),url('assets/fonts/CactusClassicalSerif-Regular.woff2') format('woff2');font-weight:400;font-style:normal;font-display:swap}
 html[lang|="yue"]{font-family:'Chocolate Classical Sans','Noto Sans HK','Microsoft JhengHei','PingFang HK',sans-serif;line-break:strict}
 html[lang|="yue"] main{font-size:15px;line-height:1.7}
 html[lang|="yue"] main h1,html[lang|="yue"] main h2{font-family:'Cactus Classical Serif','Noto Serif HK','PMingLiU',serif}

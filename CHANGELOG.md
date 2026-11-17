@@ -1,6 +1,27 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [2026-11-17]
+
+### Added
+
+- Show destination previews while dragging files: add to Library or append to the end of the queue. Select and scroll to dropped tracks after importing, open the Library workspace, and clear active library filters when needed to reveal the import.
+- Add **Remove from library** to track and album context menus, preserving disk files, playback queues, favorites, and saved playlists. Keep removed tracks excluded after rescans and restarts; dropping a removed audio file restores it. Support dropping audio files and folders on the main player to import in the background, and dropping audio files on the queue to append while retaining internal drag reordering.
+- Group General settings into **Startup**, **Listening history**, and **Updates**, and Playback settings into **Behavior**, **Shuffle**, **Transitions**, **Audio**, and **Display** tabs. Keep each section scrollable and let settings search open its matching subcategory.
+- Add **Weighted tracks** under **Settings > Playback > Shuffle**, with separate preferences for favorites and songs not played recently. Favorites receive twice the weight; recently heard tracks recover from 20% to full weight over 14 days. Load local history in the background only while statistics recording is enabled, retain favorites-only behavior without history, and preserve queue priority and gapless handoffs. (thanks to [gmusicbrowser](https://github.com/squentin/gmusicbrowser) for the inspiration!)
+- Add simple typo tolerance to library track-detail searches when ordinary search finds no results. Match one missing, extra, wrong, or swapped letter in title, artist, or album words of at least four characters, show **Close matches**, and respect Favorites. Keep short words, numbers, and lyric searches literal. (thanks to [namida](https://github.com/namidaco/namida) for the inspiration!)
+
+### Changed
+
+- Reduce Windows release ZIP size by keeping GUI libraries out of the standalone updater and using maximum Deflate compression.
+- Compress the offline manual's fonts as WOFF2 while preserving all glyphs and remove unused Qt PDF and virtual-keyboard plugins from Windows releases.
+- Smooth live pitch adjustments with short audio-timed ramps, faster slider updates, and the latest target applied to queued audio. Halve processed output and startup buffer targets to reduce delay while preserving decoder-burst handling and final audio samples.
+
+### Fixed
+
+- Reduce Korean lyrics-editor memory spikes by choosing modern covering fonts for lyric and source fields, the sidebar, karaoke controls and previews, and song-association labels. Prevent hidden labels from loading the large Windows Gulim fallback for Korean song or lyric paths, including filenames with emoji. Preserve text selection, editing, and Undo/Redo while retaining bundled Noto Sans JP.
+- Remove library tracks in place, preserving column order and widths, sorting, collapsed albums, scroll position, and surviving selections. Keep pending lyric-search results consistent when a track is removed.
+
 ## [2026-11-16]
 
 ### Added
@@ -9,7 +30,7 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 - Add **Split reading...** for one selected word in the visual reading editor. Choose a base-text boundary and edit the two suggested readings, preserving Unicode graphemes, lyric text, and karaoke timing. Save both word boundaries in existing LRCX grouping metadata, retain custom reading allocations and internal spaces across save/reload, and support Undo/Redo for automatic and previously combined words.
 - Add **Combine reading** to the visual reading editor: click a base word, Shift-click an adjacent piece, then choose the action from the right-click menu. Review the combined reading in one field, preserve karaoke timing and other lyric metadata, and save editor word boundaries in optional LRCX metadata. Support Undo/Redo, keep groups with unchanged text during corrections, and prevent selection across spaces or line breaks.
 - Replace the Lyrics tab's reading table and separate reading preview with compact visual controls: readings sit above their words, and a subtle plus offers adding a reading. Click to edit, press Enter to apply or Escape to cancel, and keep lyric text editing separate. Scroll long rows horizontally, preserve Undo/Redo and saved readings, and defer background reading refreshes while typing. Support karaoke lines by changing only the selected annotation within existing timed chunks, preserving unrelated readings, timing, formatting, and translation rows. Keep visual controls synchronized with edits in the Karaoke table, and reset authored readings without rebuilding timed chunks.
-- Add a **Repeat** menu beside Shuffle in the player dock: Off, All, Current Track, and **Play current track N times...**. Count the current play toward the chosen total, show progress in the dock, and advance normally afterward. Cancel counted repeat on Stop or a track change; keep it session-only and let sleep timers take priority. Support standalone files as well as library and queue playback.
+- Add a **Repeat** menu beside Shuffle in the player dock: Off, All, Current Track, and **Play current track N times...**. Count the current play toward the chosen total, show progress in the dock, and advance normally afterward. Cancel counted repeat on Stop or a track change; keep it session-only and let sleep timers take priority. Support standalone files as well as library and queue playback. (thanks to [namida](https://github.com/namidaco/namida) for the inspiration!)
 - Add an enabled **Japanese song readings** starter dictionary for fresh installations with whole-word readings `私 → わたし`, `君 → きみ`, and `時 → とき`, preserving existing saved dictionaries. Add **Manage > Restore factory dictionaries…** to the reading-dictionary manager; review the replacement before saving with **OK** in both the manager and Settings, or discard it with **Cancel**.
 - Add karaoke highlighting to Floating Lyrics for timed LRCX songs, including synchronized furigana and existing sweep effects. Follow playback speed and lyric offsets, update when seeking while paused, and keep highlighting active when the main lyrics view is hidden.
 - Add **Settings > Advanced** with JSON import and export for application preferences, saved themes, lyric search folders, and plugin settings. Include unsaved edits in exports, validate imported files, and let users review settings before applying with **OK** or discarding with **Cancel**. Preserve library data, playlists, history, per-song lyric overrides, and reading dictionaries. Imported plugin settings take effect after restarting LRCPlus.

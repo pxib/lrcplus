@@ -5,6 +5,8 @@ import runpy
 from datetime import datetime, timezone
 from pathlib import Path
 import stat
+import subprocess
+import sys
 import threading
 import urllib.error
 import uuid
@@ -22,6 +24,32 @@ _build_release = runpy.run_path(
     str(Path(__file__).resolve().parents[1] / "tools" / "build_release.py")
 )
 _set_app_version = _build_release["set_app_version"]
+
+
+def test_standalone_updater_and_release_builder_do_not_need_app_or_gui_modules():
+    project_root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import importlib.abc
+import runpy
+import sys
+
+class RejectAppAndGui(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in {"core.updater", "core.settings", "core.theme"} or fullname.split(".")[0] in {"PySide6", "shiboken6"}:
+            raise AssertionError(f"Unexpected app or GUI dependency: {fullname}")
+
+sys.meta_path.insert(0, RejectAppAndGui())
+import updater_helper
+assert updater_helper.parse_version("2026-11-17") > updater_helper.parse_version("2026-11-16")
+runpy.run_path("tools/build_release.py")
+"""],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def _release(tag="v2026-11-02.0", *, prerelease=False, assets=None):

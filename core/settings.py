@@ -89,6 +89,8 @@ PLAYBACK_DEFAULTS = {
     "play_mode": "library",
     "shuffle_enabled": False,
     "shuffle_mode": "tracks",
+    "shuffle_prefer_favorites": True,
+    "shuffle_prefer_older": True,
     "after_playback": "next_track",
     "gapless_playback": False,
     "crossfade_seconds": 0,
@@ -172,7 +174,7 @@ def get_playback_settings(payload=None):
     if play_mode not in {"playlist", "library"}:
         play_mode = PLAYBACK_DEFAULTS["play_mode"]
     shuffle_mode = str(values.get("shuffle_mode", PLAYBACK_DEFAULTS["shuffle_mode"])).lower()
-    if shuffle_mode not in {"tracks", "albums"}:
+    if shuffle_mode not in {"tracks", "albums", "weighted"}:
         shuffle_mode = PLAYBACK_DEFAULTS["shuffle_mode"]
     after_playback = str(values.get("after_playback", PLAYBACK_DEFAULTS["after_playback"])).lower()
     if after_playback not in {"next_track", "stop", "repeat_all", "repeat_track"}:
@@ -214,6 +216,8 @@ def get_playback_settings(payload=None):
         "play_mode": play_mode,
         "shuffle_enabled": bool(values.get("shuffle_enabled", PLAYBACK_DEFAULTS["shuffle_enabled"])),
         "shuffle_mode": shuffle_mode,
+        "shuffle_prefer_favorites": bool(values.get("shuffle_prefer_favorites", True)),
+        "shuffle_prefer_older": bool(values.get("shuffle_prefer_older", True)),
         "after_playback": after_playback,
         "gapless_playback": bool(values.get("gapless_playback", False)),
         "crossfade_seconds": crossfade_seconds,
@@ -737,7 +741,32 @@ def load_music_library():
             columns = stored
     except (OSError, ValueError, TypeError):
         pass
+    def path_list(key):
+        paths = values.get(key, [])
+        return [p for p in paths if isinstance(p, str) and p] if isinstance(paths, list) else []
+
+    files = path_list("files")
+    if "files" not in values:
+        # Older libraries also contain tracks opened outside watched folders.
+        # Preserve these explicit imports when the first new scan runs.
+        roots = []
+        for folder in folders:
+            try:
+                roots.append(Path(folder).expanduser().resolve())
+            except (OSError, ValueError):
+                continue
+        for track in tracks:
+            if not isinstance(track, dict) or not isinstance(track.get("path"), str) or not track["path"]:
+                continue
+            try:
+                path = Path(track["path"]).expanduser().resolve()
+                if not any(path.is_relative_to(root) for root in roots) and str(path) not in files:
+                    files.append(str(path))
+            except (OSError, ValueError):
+                continue
+
     return {"folders": folders, "tracks": tracks,
+            "files": files, "excluded_paths": path_list("excluded_paths"),
             "columns": columns if isinstance(columns, dict) else {}}
 
 
@@ -750,12 +779,17 @@ def save_music_library_columns(columns):
     atomic_write_text(_library_columns_path(), json.dumps(columns, ensure_ascii=False))
 
 
-def save_music_library(folders, tracks, columns=None):
+def save_music_library(folders, tracks, columns=None, *, files=None, excluded_paths=None):
     payload = load_all_settings()
+    previous = payload.get("music_library", {})
+    if not isinstance(previous, dict):
+        previous = {}
     payload["music_library"] = {
         "folders": [str(Path(folder).expanduser()) for folder in folders if folder],
         "tracks": tracks,
         "columns": columns or {},
+        "files": list(files) if files is not None else previous.get("files", []),
+        "excluded_paths": sorted(excluded_paths) if excluded_paths is not None else previous.get("excluded_paths", []),
     }
     save_all_settings(payload)
     if columns is not None:

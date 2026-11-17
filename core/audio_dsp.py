@@ -111,8 +111,12 @@ class PcmPitchProcessor:
             self._started = False
             self._effect = effect
             self._startup_remaining = effect.latency_frames
-        if not reset_effect and self._shift != shift:
-            self._effect.set_semitones(shift)
+            self._current_shift = shift
+            self._ramp_remaining = 0
+        elif self._shift != shift:
+            # Ramp in audio time, rather than jumping once per decoder callback.
+            # A new slider target continues from the pitch actually reached.
+            self._ramp_remaining = max(1, round(sample_rate * 0.03))
         self._shift = shift
         input_buffer = np.concatenate((self._input, frames), axis=0)
         output = [self._pending]
@@ -120,6 +124,11 @@ class PcmPitchProcessor:
         # Keep the same processor alive: no repeated resets or synthetic joins.
         consumed = len(input_buffer) - len(input_buffer) % BLOCK_FRAMES
         for start in range(0, consumed, BLOCK_FRAMES):
+            if self._ramp_remaining:
+                step = min(BLOCK_FRAMES, self._ramp_remaining)
+                self._current_shift += (shift - self._current_shift) * step / self._ramp_remaining
+                self._ramp_remaining -= step
+                self._effect.set_semitones(self._current_shift)
             output.append(self._effect.process(
                 input_buffer[start:start + BLOCK_FRAMES],
             ))
@@ -183,6 +192,7 @@ class PcmPitchProcessor:
         self._started = False
         self._effect = None
         self._startup_remaining = 0
+        self._ramp_remaining = 0
         self._flushed = False
 
 

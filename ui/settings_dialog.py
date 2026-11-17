@@ -386,6 +386,10 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         # ===== GENERAL =====
         general_tab = QWidget()
         general_layout = QVBoxLayout(general_tab)
+        general_sections = self._create_settings_sections(
+            general_layout, ("Startup", "Listening history", "Updates"), "generalSections"
+        )
+        general_layout = general_sections["Startup"]
 
         self._add_section_heading(general_layout, "Startup")
 
@@ -409,6 +413,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         self.relaunch_wizard_button.clicked.connect(self.relaunch_wizard_requested.emit)
         general_layout.addWidget(self.relaunch_wizard_button, alignment=Qt.AlignmentFlag.AlignLeft)
 
+        general_layout = general_sections["Listening history"]
         self._add_section_heading(general_layout, "Listening statistics")
         self.statistics_enabled_checkbox = QCheckBox("Record listening statistics on this device")
         self.statistics_enabled_checkbox.setChecked(self.statistics_settings.get("enabled", True))
@@ -420,6 +425,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         self.clear_statistics_button.clicked.connect(self.clear_statistics_requested.emit)
         general_layout.addWidget(self.clear_statistics_button, alignment=Qt.AlignmentFlag.AlignLeft)
 
+        general_layout = general_sections["Updates"]
         self._add_section_heading(general_layout, "Updates")
         self.automatic_update_checkbox = QCheckBox(
             "Check for updates automatically"
@@ -841,10 +847,8 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         background_layout.addStretch()
 
         # ===== PLAYBACK =====
-        playback_tab = self._make_scroll_tab(
-            "Playback behavior and timing settings.",
-            lambda body_layout: self._create_playback_controls(body_layout),
-        )
+        playback_tab = QWidget()
+        self._create_playback_controls(QVBoxLayout(playback_tab))
 
         # ===== LYRICS =====
         lyrics_tab = QWidget()
@@ -1000,7 +1004,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         plugin_scroll.setWidget(plugin_body)
         plugins_layout.addWidget(plugin_scroll, 1)
 
-        tabs.addTab(self._scroll_page(general_tab), "General")
+        tabs.addTab(general_tab, "General")
         tabs.addTab(self._scroll_page(appearance_tab), "Appearance")
         tabs.addTab(self._scroll_page(background_tab), "Background")
         tabs.addTab(playback_tab, "Playback")
@@ -1169,6 +1173,20 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         tabs.setAccessibleName("Lyric settings sections")
         sections = {}
         for title in LYRIC_SECTIONS:
+            body = QWidget()
+            body_layout = QVBoxLayout(body)
+            body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+            sections[title] = body_layout
+            tabs.addTab(self._scroll_page(body), title)
+        layout.addWidget(tabs, 1)
+        return sections
+
+    def _create_settings_sections(self, layout, titles, name):
+        tabs = QTabWidget()
+        tabs.setObjectName(name)
+        tabs.setAccessibleName("Settings subcategories")
+        sections = {}
+        for title in titles:
             body = QWidget()
             body_layout = QVBoxLayout(body)
             body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -1359,7 +1377,11 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
                 animation.setProperty("_mode_sync_connected", True)
 
     def _create_playback_controls(self, layout):
-        self._add_section_heading(layout, "Playback")
+        sections = self._create_settings_sections(
+            layout, ("Behavior", "Shuffle", "Transitions", "Audio", "Display"), "playbackSections"
+        )
+        layout = sections["Transitions"]
+        self._add_section_heading(layout, "Track transitions")
         self.gapless_checkbox = QCheckBox("Gapless playback")
         self.gapless_checkbox.setChecked(bool(self.playback_settings.get("gapless_playback", False)))
         self.gapless_checkbox.setToolTip(
@@ -1377,6 +1399,8 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             "takes effect on the next track. Short tracks use a shorter fade."
         )
         self._add_labeled(layout, "Crossfade:", self.crossfade_seconds)
+        layout = sections["Audio"]
+        self._add_section_heading(layout, "Volume normalization")
         self.replaygain_combo = QComboBox()
         for label, value in (("Off", "off"), ("Track", "track"), ("Album", "album")):
             self.replaygain_combo.addItem(label, value)
@@ -1395,6 +1419,8 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         self.replaygain_clipping = QCheckBox("Prevent clipping using ReplayGain peak tags")
         self.replaygain_clipping.setChecked(bool(self.playback_settings.get("replaygain_prevent_clipping", True)))
         layout.addWidget(self.replaygain_clipping)
+        layout = sections["Display"]
+        self._add_section_heading(layout, "Waveform and timing")
         self.show_waveform_checkbox = QCheckBox(
             "Show playback waveform"
         )
@@ -1419,6 +1445,8 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             "How often the precise playback timestamp updates."
         )
 
+        layout = sections["Behavior"]
+        self._add_section_heading(layout, "Playback order")
         self.play_mode_combo = QComboBox()
         self.play_mode_combo.addItem("Queue", "playlist")
         self.play_mode_combo.addItem("Library", "library")
@@ -1431,17 +1459,40 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             "Adding tracks to the queue or loading a saved playlist selects Queue mode."
         )
 
+        layout = sections["Shuffle"]
+        self._add_section_heading(layout, "Shuffle preferences")
         self.shuffle_mode_combo = QComboBox()
         self.shuffle_mode_combo.addItem("Tracks", "tracks")
         self.shuffle_mode_combo.addItem("Albums", "albums")
+        self.shuffle_mode_combo.addItem("Weighted tracks", "weighted")
         shuffle_mode = self.playback_settings.get("shuffle_mode", "tracks")
         index = self.shuffle_mode_combo.findData(shuffle_mode)
         self.shuffle_mode_combo.setCurrentIndex(index if index >= 0 else 0)
         self._add_labeled(layout, "Shuffle:", self.shuffle_mode_combo)
         self.shuffle_mode_combo.setToolTip(
-            "When shuffle is enabled, randomize individual tracks or entire albums."
+            "When shuffle is enabled, randomize tracks, albums, or use weighted track preferences."
         )
+        self.shuffle_favorites_checkbox = QCheckBox("Favor favorite songs")
+        self.shuffle_favorites_checkbox.setChecked(self.playback_settings.get("shuffle_prefer_favorites", True))
+        self.shuffle_favorites_checkbox.setToolTip("Give favorite songs twice the chance in weighted shuffle.")
+        layout.addWidget(self.shuffle_favorites_checkbox)
+        self.shuffle_older_checkbox = QCheckBox("Favor songs not played recently")
+        self.shuffle_older_checkbox.setChecked(self.playback_settings.get("shuffle_prefer_older", True))
+        self.shuffle_older_checkbox.setToolTip(
+            "In weighted shuffle, reduce the chance of recently heard songs, recovering over 14 days. "
+            "Uses local listening history only while statistics recording is enabled."
+        )
+        layout.addWidget(self.shuffle_older_checkbox)
 
+        def sync_weighted_controls():
+            weighted = self.shuffle_mode_combo.currentData() == "weighted"
+            self.shuffle_favorites_checkbox.setEnabled(weighted)
+            self.shuffle_older_checkbox.setEnabled(weighted)
+
+        self.shuffle_mode_combo.currentIndexChanged.connect(sync_weighted_controls)
+        sync_weighted_controls()
+
+        layout = sections["Behavior"]
         self.after_playback_combo = QComboBox()
         self.after_playback_combo.addItem("Next Track", "next_track")
         self.after_playback_combo.addItem("Stop", "stop")
@@ -1455,6 +1506,8 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             "Choose what happens when playback reaches the end of the current play mode."
         )
 
+        layout = sections["Audio"]
+        self._add_section_heading(layout, "Output")
         self.output_device_combo = QComboBox()
         self.output_device_combo.addItem("System Default", "")
         for device in QMediaDevices.audioOutputs():
@@ -2628,6 +2681,8 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             "play_mode": self.play_mode_combo.currentData(),
             "shuffle_enabled": self.playback_settings.get("shuffle_enabled", False),
             "shuffle_mode": self.shuffle_mode_combo.currentData(),
+            "shuffle_prefer_favorites": self.shuffle_favorites_checkbox.isChecked(),
+            "shuffle_prefer_older": self.shuffle_older_checkbox.isChecked(),
             "after_playback": self.after_playback_combo.currentData(),
             "gapless_playback": self.gapless_checkbox.isChecked(),
             "crossfade_seconds": self.crossfade_seconds.value(),

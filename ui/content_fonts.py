@@ -3,10 +3,11 @@
 import html
 import unicodedata
 
-from PySide6.QtCore import QTextBoundaryFinder
+from PySide6.QtCore import Qt, QTextBoundaryFinder
 from PySide6.QtGui import QFont, QFontDatabase, QRawFont, QTextCharFormat, QTextLayout
+from PySide6.QtWidgets import QLabel
 
-from core.fonts import CONTENT_FALLBACK_FAMILIES
+from core.fonts import CONTENT_FALLBACK_FAMILIES, library_font
 
 
 def graphemes(text):
@@ -100,3 +101,33 @@ class FontRunResolver:
         value = QTextLayout.FormatRange()
         value.start, value.length, value.format = start, end - start, char_format
         return value
+
+
+class ContentLabel(QLabel):
+    """Keep selectable plain text while choosing covering fonts per grapheme."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
+        self._plain_text = ""
+        self._resolver = None
+        self.setTextFormat(Qt.TextFormat.RichText)
+        self.setText(text)
+
+    def setText(self, text):
+        self._plain_text = text
+        font = library_font(self.font())
+        font.setStyleStrategy(font.styleStrategy() | QFont.StyleStrategy.NoFontMerging)
+        if self._resolver is None or self._resolver.font.key() != font.key():
+            self._resolver = FontRunResolver(font)
+        contents, automatic = self._resolver.html(text)
+        if automatic:
+            font.setStyleStrategy(font.styleStrategy() & ~QFont.StyleStrategy.NoFontMerging)
+        self.setFont(font)
+        super().setText('<span style="white-space: pre-wrap;">' + contents + '</span>')
+
+    def text(self):
+        return self._plain_text
+
+    def clear(self):
+        self._plain_text = ""
+        super().clear()

@@ -1,5 +1,6 @@
 import random
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QSignalBlocker, Qt, QUrl
@@ -15,6 +16,8 @@ from core.background_job import BackgroundJob
 from core.audio_sink import dispose_audio_sink
 from core.settings import save_playback_settings
 from core.playlists import path_key
+from core.favorites import favorite_key
+from core.weighted_shuffle import track_weight
 from core.replaygain import ReplayGain, read_replaygain
 from core.audio_dsp import (
     volume_to_gain,
@@ -366,6 +369,19 @@ class AudioController:
                 chosen = random.choice(candidates)
                 return groups[chosen][-1 if direction < 0 else 0]
             candidates = [i for i in range(len(paths)) if i != current]
+            if mode == "weighted":
+                history_getter = getattr(self, "_weighted_shuffle_history", None)
+                history = history_getter() if history_getter else {}
+                settings = self.playback_settings
+                favorites = getattr(self, "favorite_paths", set())
+                now = datetime.now(timezone.utc)
+                weights = [track_weight(
+                    favorite=favorite_key(paths[i]) in favorites,
+                    last_played=history.get(path_key(paths[i])),
+                    prefer_favorites=settings.get("shuffle_prefer_favorites", True),
+                    prefer_older=settings.get("shuffle_prefer_older", True), now=now,
+                ) for i in candidates]
+                return random.choices(candidates, weights=weights, k=1)[0]
             return random.choice(candidates)
 
 
@@ -490,7 +506,10 @@ class AudioController:
                 self.shuffle_button.setText("Shuffle: Off")
                 return
             mode = getattr(self, "playback_settings", {}).get("shuffle_mode", "tracks")
-            self.shuffle_button.setText(f"Shuffle: {mode.title()}")
+            self.shuffle_button.setText(f"Shuffle: {'Weighted' if mode == 'weighted' else mode.title()}")
+            refresh = getattr(self, "_refresh_shuffle_history", None)
+            if refresh is not None:
+                refresh()
 
 
         def start_seeking(self):

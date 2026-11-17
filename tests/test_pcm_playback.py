@@ -68,6 +68,10 @@ class Sink:
         self.progress.set()
         return len(data)
 
+    def processedUSecs(self):
+        self.check_thread()
+        return self.fmt.durationForBytes(self.total_written)
+
     def reset(self):
         self.check_thread()
         self.written.clear()
@@ -107,12 +111,11 @@ def test_output_primes_real_audio_reserve_before_starting(qapp):
     worker = PcmPlayback(sink_factory=lambda *args: sinks.append(Sink(*args)) or sinks[-1])
     try:
         worker.configure(None, 1, 0, 1.5, enabled=True, playing=True)
-        for expected in (8192, 16384):
-            worker.receive_buffer(buffer(frames=1024))
-            wait_without_gui(lambda: len(worker._engine._pending) == expected)
-            assert sinks[0].total_written == 0
         worker.receive_buffer(buffer(frames=1024))
-        wait_without_gui(lambda: sinks[0].total_written == 24576)
+        wait_without_gui(lambda: len(worker._engine._pending) == 8192)
+        assert sinks[0].total_written == 0
+        worker.receive_buffer(buffer(frames=416))  # Exactly 30 ms of real audio.
+        wait_without_gui(lambda: sinks[0].total_written == 1440 * 8)
         assert worker._engine._primed
     finally:
         close(worker)
@@ -513,7 +516,7 @@ def test_decoder_processing_and_device_writes_continue_while_gui_is_stalled(qapp
         producer.join(3)
         assert not producer.is_alive()
         assert sinks[0].owner != threading.get_ident()
-        assert sinks[0].buffer_size == audio_format().bytesForDuration(120000)
+        assert sinks[0].buffer_size == audio_format().bytesForDuration(60000)
         assert not routes  # The UI notification is still queued.
         np.testing.assert_array_equal(np.frombuffer(sinks[0].written, np.float32), 0.375)
         qapp.processEvents()
@@ -548,6 +551,43 @@ def test_seek_discards_inflight_audio_without_waiting_on_gui(qapp, monkeypatch):
         wait_without_gui(lambda: bool(sinks) and sinks[0].total_written == 32768)
         assert len(sinks) == 1
         np.testing.assert_array_equal(np.frombuffer(sinks[0].written, np.float32), 0.75)
+    finally:
+        release.set()
+        close(worker)
+
+
+def test_queued_audio_uses_latest_pitch_and_gain_without_restarting(qapp, monkeypatch):
+    sinks = []
+    entered, release = threading.Event(), threading.Event()
+    shifts = []
+    worker = PcmPlayback(sink_factory=lambda *args: sinks.append(Sink(*args)) or sinks[-1])
+
+    def blocked(data, sample_format, channels, rate, shift):
+        shifts.append(shift)
+        if len(shifts) == 1:
+            entered.set()
+            assert release.wait(3)
+        worker._engine._processor._started = True
+        return data
+
+    monkeypatch.setattr(worker._engine._processor, "process", blocked)
+    try:
+        worker.configure(None, 1, 5, 1, enabled=True, playing=True)
+        generation = worker._generation
+        worker.receive_buffer(buffer(.25, frames=1024))
+        assert entered.wait(2)
+        for _ in range(2):
+            worker.receive_buffer(buffer(.5, frames=1024))
+        worker.configure(None, 1, -5, 1.5, enabled=True, playing=True)
+        release.set()
+        wait_without_gui(lambda: bool(sinks) and sinks[0].total_written == 3072 * 8)
+        assert shifts == [5, -5, -5]
+        samples = np.frombuffer(sinks[0].written, np.float32).reshape(-1, 2).copy()
+        np.testing.assert_array_equal(samples[:1024], .25)
+        np.testing.assert_array_equal(samples[1024:], .75)
+        assert worker._generation == generation
+        assert len(sinks) == 1
+        assert not sinks[0].was_reset.is_set()
     finally:
         release.set()
         close(worker)

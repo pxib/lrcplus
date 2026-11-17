@@ -224,7 +224,7 @@ def test_missing_ffmpeg_retains_native_transport(qapp, monkeypatch):
         qapp.processEvents()
 
 
-@pytest.mark.parametrize("mode", ["next_track", "repeat_track", "repeat_all", "shuffle", "priority", "duplicate", "counted", "counted_crossfade", "remembered_ab"])
+@pytest.mark.parametrize("mode", ["next_track", "repeat_track", "repeat_all", "shuffle", "weighted", "priority", "duplicate", "counted", "counted_crossfade", "remembered_ab"])
 def test_player_handoff_preserves_queue_rules_and_sink(qapp, monkeypatch, tmp_path, mode):
     from core.settings import save_playback_settings
     from ui.main_window import Player
@@ -261,6 +261,11 @@ def test_player_handoff_preserves_queue_rules_and_sink(qapp, monkeypatch, tmp_pa
     elif mode == "shuffle":
         window.shuffle_enabled = True
         monkeypatch.setattr("core.audio_controller.random.choice", lambda candidates: candidates[-1])
+        expected = paths[2]
+    elif mode == "weighted":
+        window.shuffle_enabled = True
+        window.playback_settings["shuffle_mode"] = "weighted"
+        monkeypatch.setattr("core.audio_controller.random.choices", lambda candidates, **kwargs: [candidates[-1]])
         expected = paths[2]
     elif mode == "priority":
         window._priority_queue_indices = [2]

@@ -3,7 +3,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal, QTimer, QItemSelectionModel
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFileDialog, QHBoxLayout,
-    QInputDialog, QLabel, QListWidget, QListWidgetItem, QMenu, QMessageBox,
+    QInputDialog, QLabel, QListWidgetItem, QMenu, QMessageBox,
     QPushButton, QToolButton, QVBoxLayout,
 )
 
@@ -13,6 +13,7 @@ from core.playlists import (
 )
 from ui.track_actions import add_saved_playlist_menu, add_track_file_actions, add_favorite_action
 from core.favorites import load_favorites
+from ui.file_drops import QueueTrackList
 
 
 class PlaylistDialog(QDialog):
@@ -60,9 +61,10 @@ class PlaylistDialog(QDialog):
         saved_row.addWidget(manage_button)
 
         self.title_label = QLabel()
-        hint = QLabel("Drag tracks to reorder. Right-click for playback, playlists and file actions. Repeated tracks are kept.")
+        hint = QLabel("Drag tracks to reorder; drop audio files to append. Right-click for playback, playlists and file actions. Repeated tracks are kept.")
         hint.setWordWrap(True)
-        self.list_widget = QListWidget()
+        self.list_widget = QueueTrackList()
+        self.list_widget.files_dropped.connect(lambda paths: self.add_requested.emit(paths, False))
         from ui.content_list import configure_content_list
         configure_content_list(self.list_widget)
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)

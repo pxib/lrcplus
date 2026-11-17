@@ -46,10 +46,10 @@ def test_mixed_preview_has_no_missing_glyphs_and_preserves_source_and_selection(
                 families.add(run.rawFont().familyName())
                 assert all(glyph != 0 for glyph in run.glyphIndexes())
             block = block.next()
-        if QFontDatabase.hasFamily("Microsoft YaHei UI") and QFontDatabase.hasFamily("Malgun Gothic"):
-            assert "Microsoft YaHei UI" in families
-            assert "Malgun Gothic" in families
-            assert not families.intersection({"SimSun", "Gulim"})
+        assert preview.font().family() in families
+        assert "Malgun Gothic" in families
+        assert "Segoe UI Emoji" in families
+        assert not families.intersection({"SimSun", "Gulim"})
         preview.selectAll()
         assert preview.textCursor().selection().toPlainText() == text
         replacement = "[00:01.000]\u611b\u3057\u3066"

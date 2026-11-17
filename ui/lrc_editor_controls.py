@@ -1,6 +1,14 @@
 from PySide6.QtCore import Qt, QSize, Signal, QTextBoundaryFinder
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
-from PySide6.QtWidgets import QSlider, QSizePolicy, QWidget
+from PySide6.QtWidgets import QLabel, QSlider, QSizePolicy, QWidget
+
+from core.fonts import content_font
+
+
+class LyricLabel(QLabel):
+    def setText(self, text):
+        self.setFont(content_font(self.font(), text))
+        super().setText(text)
 
 class ClickableSlider(QSlider):
     """Slider that seeks immediately when its groove is clicked."""
@@ -58,6 +66,7 @@ class KaraokeSeparationWidget(QWidget):
 
     def set_content(self, text, boundaries=None):
         self._text = text or ""
+        self.setFont(content_font(self.font(), self._text.replace("\n", "\u21b5")))
         # Qt reports UTF-16 positions; Python slices use Unicode code points.
         # Map only whole grapheme boundaries so accents and emoji stay intact.
         utf16_to_python = {0: 0}

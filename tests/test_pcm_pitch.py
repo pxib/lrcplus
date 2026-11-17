@@ -588,21 +588,115 @@ def test_active_pitch_change_keeps_history_and_output_route(playback):
     assert apply_pcm_pitch_to_bytes._started
 
 
-def test_live_pitch_change_reaches_new_frequency_without_recreation():
-    rate = 48000
+@pytest.mark.parametrize("rate", [44100, 48000, 96000])
+@pytest.mark.parametrize("target", [-5, 12])
+def test_live_pitch_change_reaches_new_frequency_without_recreation(rate, target):
     effect = None
     result = []
     for start in range(0, rate * 3, 1024):
         tone = (0.25 * np.sin(2 * np.pi * 440 * np.arange(start, start + 1024) / rate))
         shifted = apply_pcm_pitch_to_bytes(
             np.column_stack((tone, tone)).astype(np.float32).tobytes(),
-            QAudioFormat.SampleFormat.Float, 2, rate, 5 if start < rate else -5,
+            QAudioFormat.SampleFormat.Float, 2, rate, 5 if start < rate else target,
         )
         if effect is None:
             effect = apply_pcm_pitch_to_bytes._effect
         assert apply_pcm_pitch_to_bytes._effect is effect
         result.append(np.frombuffer(shifted, np.float32).reshape(-1, 2))
-    steady = np.concatenate(result)[rate * 2:, 0]
+    output = np.concatenate(result)
+    # A live change must not insert a block of silence while the ramp settles.
+    transition = output[rate:rate * 2, 0]
+    windows = transition[:len(transition) // 256 * 256].reshape(-1, 256)
+    assert np.all(np.sqrt(np.mean(windows ** 2, axis=1)) > .02)
+    steady = output[rate * 2:, 0]
     spectrum = abs(np.fft.rfft(steady * np.hanning(len(steady))))
     frequency = np.argmax(spectrum) * rate / len(steady)
-    assert frequency == pytest.approx(440 * 2 ** (-5 / 12), rel=0.002)
+    assert frequency == pytest.approx(440 * 2 ** (target / 12), rel=0.002)
+
+
+@pytest.mark.parametrize("rate", [44100, 48000, 96000])
+def test_live_pitch_ramp_uses_audio_time_across_irregular_callbacks(monkeypatch, rate):
+    from core.pitch_stream import BLOCK_FRAMES
+
+    histories = []
+
+    class RecordingPitch:
+        latency_frames = 8000
+
+        def __init__(self, channels, sample_rate, shift):
+            self.shift = shift
+            self.history = []
+            histories.append(self.history)
+
+        def set_semitones(self, shift):
+            self.shift = shift
+
+        def process(self, block):
+            self.history.append(self.shift)
+            return block
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(audio_dsp, "create_pitch_stream", RecordingPitch)
+
+    def render(sizes):
+        processor = audio_dsp.PcmPitchProcessor()
+        result = []
+        try:
+            for shift in (5, -5):
+                remaining = 4096
+                index = 0
+                while remaining:
+                    count = min(remaining, sizes[index % len(sizes)])
+                    result.append(processor.process(
+                        np.full((count, 2), .25, np.float32).tobytes(),
+                        QAudioFormat.SampleFormat.Float, 2, rate, shift,
+                    ))
+                    remaining -= count
+                    index += 1
+            return b"".join(result), histories[-1]
+        finally:
+            processor.reset()
+
+    regular, history = render([1024])
+    irregular, irregular_history = render([1, 127, 2011, 63, 511])
+    assert regular == irregular
+    assert history == irregular_history
+    ramp = np.asarray(history[4096 // BLOCK_FRAMES:])
+    ramp_blocks = int(np.ceil(round(rate * .03) / BLOCK_FRAMES))
+    assert -5 < ramp[0] < 5
+    assert np.all(np.diff(ramp) <= 0)
+    assert np.all(ramp[:ramp_blocks - 1] > -5)
+    assert np.all(ramp[ramp_blocks - 1:] == -5)
+
+
+def test_new_pitch_target_continues_from_current_ramp_position(monkeypatch):
+    observed = []
+
+    class RecordingPitch:
+        latency_frames = 8000
+        shift = 5
+
+        def set_semitones(self, shift):
+            self.shift = shift
+
+        def process(self, block):
+            observed.append(self.shift)
+            return block
+
+        def close(self):
+            pass
+
+    effect = RecordingPitch()
+    monkeypatch.setattr(audio_dsp, "create_pitch_stream", lambda *args: effect)
+    processor = audio_dsp.PcmPitchProcessor()
+    try:
+        for shift in (5, -5, 6):
+            processor.process(bytes(512 * 8), QAudioFormat.SampleFormat.Float, 2, 48000, shift)
+        assert observed[0] == 5
+        assert -5 < observed[1] < 5
+        assert observed[1] < observed[2] < 6
+        assert processor._effect is effect
+    finally:
+        processor.reset()

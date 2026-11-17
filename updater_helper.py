@@ -15,7 +15,7 @@ import sys
 import time
 import uuid
 
-from core.updater import MAX_ASSET_SIZE, UpdateError, extract_update_archive, parse_version
+from core.update_package import MAX_ASSET_SIZE, UpdateError, extract_update_archive, parse_version
 
 
 APP_FOLDER = "LRCPlus"

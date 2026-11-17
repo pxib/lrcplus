@@ -1,7 +1,7 @@
 """Music library widgets, column preferences, cover loading and folder scanning."""
 
 from pathlib import Path
-from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtCore import Qt, QTimer, QSize, QItemSelectionModel
 from PySide6.QtGui import QMovie, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -12,10 +12,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QFileDialog,
-    QTreeWidget,
     QAbstractItemView,
+    QMessageBox,
 )
 from core.settings import save_music_library, save_music_library_columns
+from core.playlists import path_key
+from ui.file_drops import audio_drop_paths, LibraryTrackTree, DropIndicator
+from core.library_search import close_metadata_match, search_words
 from ui.search_history import SearchHistoryLineEdit
 from ui.library_lyrics_search import LyricMatchDelegate
 from ui.library_sorting import LIBRARY_SORT_ROLE, LibraryTreeItem
@@ -28,6 +31,7 @@ from ui.content_list import ContentListDelegate
 
 class PlayerLibraryMixin:
     def _build_library_page(self):
+        self.setAcceptDrops(True)
         page = QWidget()
         root = QVBoxLayout(page)
         root.setContentsMargins(0, 0, 0, 0)
@@ -68,6 +72,10 @@ class PlayerLibraryMixin:
         toolbar.addWidget(rescan)
         root.addLayout(toolbar)
 
+        self.library_close_matches = QLabel("Close matches")
+        self.library_close_matches.setObjectName("librarySearchStatus")
+        self.library_close_matches.hide()
+        root.addWidget(self.library_close_matches)
         root.addWidget(self.library_lyrics_status_widget)
 
         scan_status = QHBoxLayout()
@@ -105,7 +113,10 @@ class PlayerLibraryMixin:
         # Append the logical column to preserve existing saved indexes.
         self.library_lyrics_column = next(i for i, (key, _) in enumerate(self.library_columns) if key == "lyric_match")
         self.library_favorite_column = len(self.library_columns) - 1
-        self.library_table = QTreeWidget()
+        self.library_table = LibraryTrackTree()
+        self.library_table.setDragEnabled(True)
+        self.library_table.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        self.library_table.setToolTip("Drop audio files or folders to add to the library. Right-click tracks to remove them without deleting files.")
         self.library_table.setObjectName("libraryTable")
         self.library_table.setFont(library_font(self.library_table.font()))
         # Resolve script runs explicitly for song metadata. Qt's automatic
@@ -342,7 +353,7 @@ class PlayerLibraryMixin:
                 item = LibraryTrackItem(track, artist, self._library_row_data)
                 parent.addChild(item)
 
-        folder_text = "; ".join(self.library_folders) if self.library_folders else "No music folders yet. Add a folder to build your library."
+        folder_text = "; ".join(self.library_folders) if self.library_folders else "Drop audio files or folders here, or use Add Music Folder."
         self.library_folder_label.setText(f"Library folders: {folder_text}")
         self.library_table.setSortingEnabled(sorting_enabled)
         # Do not auto-resize the cover column here: the user controls its width.
@@ -369,6 +380,8 @@ class PlayerLibraryMixin:
             self._library_expansion_before_search = expansion
         self.library_table.setUpdatesEnabled(False)
         try:
+            found = False
+            close_matches = False
             matches_changed = self._library_row_data.matches is not lyrics_matches
             self._library_row_data.matches = lyrics_matches
             for parent, rows in self._library_filter_groups:
@@ -388,6 +401,7 @@ class PlayerLibraryMixin:
                     any_visible |= visible
                 if parent.isHidden() == any_visible:
                     parent.setHidden(not any_visible)
+                found |= any_visible
                 if filtering and any_visible:
                     parent.setExpanded(True)
                 elif not filtering and expansion is not None:
@@ -400,6 +414,24 @@ class PlayerLibraryMixin:
                         model.index(parent.childCount() - 1, lyric_column, group_index),
                         [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole, Qt.ItemDataRole.UserRole],
                     )
+            if query and lyrics_matches is None and not found:
+                words = search_words(query)
+                for parent, rows in self._library_filter_groups:
+                    any_visible = False
+                    for item, _ in rows:
+                        visible = ((not favorites_only or item.favorite_key in self.favorite_paths)
+                                   and close_metadata_match(words, item.track))
+                        if item.isHidden() == visible:
+                            item.setHidden(not visible)
+                        any_visible |= visible
+                    if parent.isHidden() == any_visible:
+                        parent.setHidden(not any_visible)
+                    if any_visible:
+                        parent.setExpanded(True)
+                    close_matches |= any_visible
+            status = getattr(self, "library_close_matches", None)
+            if status is not None:
+                status.setVisible(close_matches)
             if matches_changed and self.library_table.sortColumn() == lyric_column:
                 header = self.library_table.header()
                 self.library_table.sortItems(lyric_column, header.sortIndicatorOrder())
@@ -490,6 +522,173 @@ class PlayerLibraryMixin:
         finally:
             viewer.deleteLater()
 
+    def dragEnterEvent(self, event):
+        paths = audio_drop_paths(event.mimeData(), folders=True)
+        if paths and not self._close_after_library_scan:
+            if not hasattr(self, "_library_drop_indicator"):
+                self._library_drop_indicator = DropIndicator(self.centralWidget())
+            count = len(paths)
+            self._library_drop_indicator.preview(
+                f"Add {count} {'item' if count == 1 else 'items'} to Library\n\n"
+                "Tracks appear under their artist and album.\n"
+                "Imported tracks will be selected and brought into view."
+            )
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+        else:
+            self._hide_library_drop_indicator()
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        self.dragEnterEvent(event)
+
+    def _hide_library_drop_indicator(self):
+        if hasattr(self, "_library_drop_indicator"):
+            self._library_drop_indicator.hide()
+
+    def dragLeaveEvent(self, event):
+        self._hide_library_drop_indicator()
+        event.accept()
+
+    def dropEvent(self, event):
+        self._hide_library_drop_indicator()
+        paths = audio_drop_paths(event.mimeData(), folders=True)
+        if not paths or self._close_after_library_scan:
+            event.ignore()
+            return
+        folders = {path_key(path) for path in self.library_folders}
+        files = {path_key(path) for path in self.library_files}
+        previous = (list(self.library_folders), list(self.library_files), set(self.library_excluded_paths))
+        for path in paths:
+            key = path_key(path)
+            if path.is_dir():
+                if key not in folders:
+                    self.library_folders.append(str(path))
+                    folders.add(key)
+            else:
+                self.library_excluded_paths.discard(key)
+                if key not in files:
+                    self.library_files.append(str(path))
+                    files.add(key)
+        try:
+            self._save_library_state()
+        except (OSError, ValueError) as error:
+            self.library_folders, self.library_files, self.library_excluded_paths = previous
+            event.ignore()
+            QMessageBox.warning(self, "Library import", f"Could not save the library: {error}")
+            return
+        pending = getattr(self, "_library_drop_reveal_paths", [])
+        self._library_drop_reveal_paths = pending + paths
+        self.statusBar().showMessage("Importing dropped tracks into Library...", 8000)
+        self.rescan_music_library()
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+
+    def _save_library_state(self):
+        save_music_library(
+            self.library_folders, [track.to_dict() for track in self.library_tracks],
+            self.library_column_state, files=self.library_files,
+            excluded_paths=self.library_excluded_paths,
+        )
+
+    def _reveal_library_drop(self):
+        paths = getattr(self, "_library_drop_reveal_paths", [])
+        self._library_drop_reveal_paths = []
+        if not paths:
+            return
+        exact = {path_key(path) for path in paths if not path.is_dir()}
+        folders = [path for path in paths if path.is_dir()]
+        targets = []
+        for i in range(self.library_table.topLevelItemCount()):
+            parent = self.library_table.topLevelItem(i)
+            for j in range(parent.childCount()):
+                item = parent.child(j)
+                path = Path(item.data(0, Qt.ItemDataRole.UserRole))
+                if path_key(path) in exact or any(path.is_relative_to(folder) for folder in folders):
+                    targets.append(item)
+        if not targets:
+            self.statusBar().showMessage("No supported audio tracks found in the dropped items.", 8000)
+            return
+        # A previous search or Favorites filter must not hide the import.
+        filters_cleared = bool(self.library_search.text() or self.library_favorites_filter.isChecked())
+        if filters_cleared:
+            self.library_search.clear()
+            self.library_favorites_filter.setChecked(False)
+            self._filter_library_view()
+        self.workspace_stack.setCurrentWidget(self.library_page)
+        self.library_table.clearSelection()
+        for item in targets:
+            item.parent().setExpanded(True)
+            item.setSelected(True)
+        first = targets[0]
+        self.library_table.setCurrentItem(first, 2, QItemSelectionModel.SelectionFlag.NoUpdate)
+        self.library_table.scrollToItem(first, QAbstractItemView.ScrollHint.PositionAtCenter)
+        message = f"Showing {len(targets)} dropped {'track' if len(targets) == 1 else 'tracks'} in Library."
+        if filters_cleared:
+            message += " Search and Favorites filters cleared to show the import."
+        self.statusBar().showMessage(message, 10000)
+
+    def remove_library_tracks(self, paths):
+        keys = {path_key(path) for path in paths}
+        tracks = [track for track in self.library_tracks if path_key(track.path) not in keys]
+        if len(tracks) == len(self.library_tracks):
+            return
+        excluded = self.library_excluded_paths | keys
+        files = [path for path in self.library_files if path_key(path) not in keys]
+        # Persist before updating the view; no music files are changed.
+        try:
+            save_music_library(self.library_folders, [track.to_dict() for track in tracks],
+                               self.library_column_state, files=files, excluded_paths=excluded)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Remove from library", f"Could not save the library: {error}")
+            return
+        self.library_tracks = tracks
+        self.library_files = files
+        self.library_excluded_paths = excluded
+        self._clear_shuffle_history()
+        self._invalidate_gapless_preload()
+        self._remove_library_rows(keys)
+        self.update_transport_buttons()
+        self.statusBar().showMessage("Removed from library. Files remain on disk; drop a file again to restore it.", 8000)
+        if self._library_scan_worker is not None:
+            self.rescan_music_library()
+
+    def _remove_library_rows(self, keys):
+        """Prune existing items without resetting headers, expansion or selection."""
+        tree = self.library_table
+        vertical = tree.verticalScrollBar().value()
+        horizontal = tree.horizontalScrollBar().value()
+        retained = []
+        tree.setUpdatesEnabled(False)
+        try:
+            for parent, rows in self._library_filter_groups:
+                expanded = parent.isExpanded()
+                for index in range(parent.childCount() - 1, -1, -1):
+                    item = parent.child(index)
+                    if path_key(item.data(0, Qt.ItemDataRole.UserRole)) in keys:
+                        parent.takeChild(index)
+                if parent.childCount():
+                    retained.append((parent, rows, expanded))
+                else:
+                    tree.takeTopLevelItem(tree.indexOfTopLevelItem(parent))
+                    expansion = self._library_expansion_before_search
+                    if expansion is not None:
+                        expansion.pop(tuple(parent.data(0, Qt.ItemDataRole.UserRole + 1)), None)
+            self._library_filter_groups = [(parent, rows) for parent, rows, _ in retained]
+            matches = self._library_lyrics_matches
+            for path in list(matches):
+                if path_key(path) in keys:
+                    del matches[path]
+            if self._library_lyrics_query and self.library_lyrics_loading.isHidden():
+                self.library_lyrics_status.setText(f"{len(matches)} song(s) match the lyrics.")
+            self._filter_library_view()
+            for parent, _, expanded in retained:
+                parent.setExpanded(expanded)
+            tree.verticalScrollBar().setValue(vertical)
+            tree.horizontalScrollBar().setValue(horizontal)
+        finally:
+            tree.setUpdatesEnabled(True)
+
     def add_music_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Add Music Folder")
         if not folder:
@@ -520,7 +719,7 @@ class PlayerLibraryMixin:
         self._set_library_scan_indicator("loading")
         self.library_folder_label.setText("Scanning music library...")
         self.library_table.setEnabled(False)
-        worker = LibraryScanWorker(self.library_folders, self)
+        worker = LibraryScanWorker(self.library_folders, self, files=self.library_files)
         self._library_scan_worker = worker
         worker.completed.connect(self._library_scan_finished)
         worker.failed.connect(self._library_scan_failed)
@@ -544,7 +743,8 @@ class PlayerLibraryMixin:
         worker = self.sender()
         return (self._close_after_library_scan or self._library_scan_pending
                 or (worker is not None and (worker is not self._library_scan_worker
-                    or worker.folders != self.library_folders)))
+                    or worker.folders != self.library_folders
+                    or worker.files != self.library_files)))
 
     def _set_library_scan_indicator(self, state):
         self.library_scan_movie.stop()
@@ -572,14 +772,16 @@ class PlayerLibraryMixin:
         if self._discard_library_scan_result():
             return
         self._library_cover_cache.clear()
-        self.library_tracks = list(tracks)
-        save_music_library(self.library_folders, [track.to_dict() for track in self.library_tracks], self.library_column_state)
+        self.library_tracks = [track for track in tracks if path_key(track.path) not in self.library_excluded_paths]
+        self._save_library_state()
         self._populate_library_view()
         self._set_library_scan_indicator("success")
         self.update_transport_buttons()
+        self._reveal_library_drop()
 
     def _library_scan_failed(self, error):
         if self._discard_library_scan_result():
             return
         self._set_library_scan_indicator("error")
+        self._library_drop_reveal_paths = []
         self.library_folder_label.setText(f"Could not scan music library: {error}")

@@ -48,7 +48,7 @@ The Korean edition covers all 28 articles, including the settings reference, scr
 
 The Cantonese edition also covers all 28 articles with matching section and screenshot IDs. It uses written Cantonese in Traditional Chinese and retains English app control names. Its Talk view has a localized empty state; `yue-account.html` provides the fictional account views and returns to the Cantonese manual. Authored Talk discussions and their generator/editor continue to target English/Japanese.
 
-Cantonese headings use **Cactus Classical Serif** and body/navigation text uses **Chocolate Classical Sans**. `manual.css` prefers installed copies and falls back to the full bundled WOFF fonts in `assets/fonts/`, with system fonts as further fallbacks. No network font requests are required. The fonts contain Regular only; browsers synthesize emphasis. See `assets/fonts/README.md` and `OFL.txt` for provenance and licensing. Keep the font files and license in the bundled manual when packaging the app.
+Cantonese headings use **Cactus Classical Serif** and body/navigation text uses **Chocolate Classical Sans**. `manual.css` prefers installed copies and falls back to the full bundled WOFF2 fonts in `assets/fonts/`, with system fonts as further fallbacks. All glyphs are retained; no network font requests are required. The fonts contain Regular only; browsers synthesize emphasis. See `assets/fonts/README.md` and `OFL.txt` for provenance and licensing. Keep the font files and license in the bundled manual when packaging the app.
 
 ## Read-only Talk pages
 

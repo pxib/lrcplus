@@ -30,6 +30,12 @@ class PlayerStatisticsMixin:
         self.statistics = ListeningStatistics(
             self.statistics_store.record, enabled=get_statistics_settings()["enabled"],
         )
+        self._shuffle_last_played = {}
+        self._shuffle_history_pending = False
+        self._shuffle_history_generation = self.statistics_store.generation
+        self.statistics_store.shuffle_history_ready.connect(self._receive_shuffle_history)
+        self.statistics_store.changed.connect(self._refresh_shuffle_history)
+        self._refresh_shuffle_history()
         self._statistics_timer = QTimer(self)
         self._statistics_timer.setInterval(250)
         self._statistics_timer.timeout.connect(self._statistics_sample)
@@ -37,6 +43,33 @@ class PlayerStatisticsMixin:
         self.media_player.seekStarting.connect(self._statistics_sample)
         self.media_player.seekFinished.connect(self._statistics_rebase)
         self.media_player.playbackRestarting.connect(self._statistics_restart_attempt)
+
+    def _refresh_shuffle_history(self):
+        if (getattr(self, "_statistics_closed", True)
+                or getattr(self, "_shuffle_history_pending", False)):
+            return
+        if (not self.statistics.enabled
+                or self.playback_settings.get("shuffle_mode") != "weighted"
+                or not self.playback_settings.get("shuffle_prefer_older", True)):
+            return
+        self._shuffle_history_pending = True
+        self.statistics_store.request_shuffle_history()
+
+    def _receive_shuffle_history(self, generation, history):
+        self._shuffle_history_pending = False
+        if self._statistics_closed:
+            return
+        if generation != self.statistics_store.generation:
+            self._refresh_shuffle_history()
+            return
+        self._shuffle_history_generation = generation
+        self._shuffle_last_played = history
+
+    def _weighted_shuffle_history(self):
+        if (not self.statistics.enabled
+                or self._shuffle_history_generation != self.statistics_store.generation):
+            return {}
+        return self._shuffle_last_played
 
     def _statistics_snapshot(self):
         media = self.media_player
@@ -111,6 +144,9 @@ class PlayerStatisticsMixin:
         save_statistics_settings({"enabled": enabled})
         self._statistics_checkpoint()
         self.statistics.set_enabled(enabled, **self._statistics_snapshot())
+        if not enabled:
+            self._shuffle_last_played = {}
+        self._refresh_shuffle_history()
         self._statistics_state_changed()
         self.statistics_page.sync_tracking()
 

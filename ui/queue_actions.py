@@ -6,8 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFileDialog, QMenu, QMessageBox
 
 from core.music_library import read_track
-from core.playlists import available_tracks
-from core.settings import save_music_library
+from core.playlists import available_tracks, path_key
 from ui.playlist_dialog import PlaylistDialog
 from ui.track_actions import add_saved_playlist_menu, add_track_file_actions, add_favorite_action
 
@@ -18,16 +17,22 @@ class QueueActionsMixin:
         changed = False
         for path in paths:
             resolved = str(Path(path).resolve())
+            if path_key(resolved) in self.library_excluded_paths:
+                continue
             if resolved not in known:
                 try:
                     self.library_tracks.append(read_track(resolved))
+                    if resolved not in self.library_files:
+                        self.library_files.append(resolved)
                     known.add(resolved)
                     changed = True
                 except (OSError, ValueError):
                     pass
         if changed:
-            save_music_library(self.library_folders, [track.to_dict() for track in self.library_tracks], self.library_column_state)
+            self._save_library_state()
             self._populate_library_view()
+            if self._library_scan_worker is not None:
+                self.rescan_music_library()
 
     def _enqueue_from_ui(self, paths, play_next=False):
         result = available_tracks(paths)
@@ -89,6 +94,8 @@ class QueueActionsMixin:
             add_favorite_action(menu, paths, self.favorite_paths, self._set_tracks_favorite)
         menu.addSeparator()
         add_track_file_actions(menu, paths, self)
+        remove = menu.addAction("Remove from library", lambda: self.remove_library_tracks(paths))
+        remove.setToolTip("Keep files on disk and leave the queue and saved playlists unchanged. Exclude from future rescans.")
         menu.addSeparator()
         menu.addAction("Queue and saved playlists…", self.show_playlist)
         try:
