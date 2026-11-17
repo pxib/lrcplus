@@ -18,6 +18,10 @@ Settings defaults were checked against `core/settings.py` and `core/lyrics_setti
 
 Plugin guides describe the bundled source plugins. Declared requirements come from their `manifest.json` files; controls and workflows were checked against the corresponding implementations. Recheck these sources after changing app behavior.
 
+The listening and practice guides were checked against `ui/player_repeat.py`, `ui/player_ab_loop.py`, `ui/sleep_timer_dialog.py`, `core/listening_statistics.py`, and `ui/settings_transfer.py`. Library workflows use `ui/player_library.py`, `ui/queue_actions.py`, and `core/weighted_shuffle.py`; reading layers and dictionary guidance use `ui/settings_dialog.py`, `ui/lyric_layers.py`, and `ui/reading_dictionary.py`. Factory defaults include the overrides in `core/factory_defaults.py`, not just the fallback values in the settings modules.
+
+All four editions include dedicated `practice`, `sleep-timer`, `statistics`, and `settings-transfer` articles, linked from the main page, sidebar, index, and related guides. Keep these routes and their section IDs aligned. The settings reference describes the independently enabled lyric layers; the former exclusive reading modes and hidden Ruby position control are no longer presented as current controls. A-B markers are session-only per song, while settings exports exclude separately stored personal data.
+
 ## Screenshots
 
 `assets/screenshots/` contains captures of real Qt widgets with isolated preferences, an empty library, and three original demonstration lyric lines. No user collection, saved preferences, credentials, or personal lyrics were used. The editor view has no optional providers loaded, as its caption explains.
@@ -44,9 +48,9 @@ Keep article IDs, section IDs, screenshot callout IDs, related-page IDs, and ass
 
 `manual.js` selects interface messages from the document's `lang` attribute. Add translated generated labels there, and localized contents-toggle labels in `manual.css`. Article search indexes only the currently open edition; changing the manual language does not change the app's language or lyric translation target. View source shows the current edition's article HTML. Review all editions when changing the manual.
 
-The Korean edition covers all 28 articles, including the settings reference, screenshot tour, and plugin guides. Its Talk view currently shows a Korean empty state; authored discussions and their generator/editor remain English/Japanese. `ko-account.html` localizes the fictional account pages and preserves return links to the Korean manual. Translate new shared interface strings in both `manual.js` and `account.js` when extending those views.
+The Korean edition covers all 32 articles plus the article index, including the settings reference, screenshot tour, and plugin guides. Its Talk view currently shows a Korean empty state; authored discussions and their generator/editor remain English/Japanese. `ko-account.html` localizes the fictional account pages and preserves return links to the Korean manual. Translate new shared interface strings in both `manual.js` and `account.js` when extending those views.
 
-The Cantonese edition also covers all 28 articles with matching section and screenshot IDs. It uses written Cantonese in Traditional Chinese and retains English app control names. Its Talk view has a localized empty state; `yue-account.html` provides the fictional account views and returns to the Cantonese manual. Authored Talk discussions and their generator/editor continue to target English/Japanese.
+The Cantonese edition also covers all 32 articles plus the article index with matching section and screenshot IDs. It uses written Cantonese in Traditional Chinese and retains English app control names. Its Talk view has a localized empty state; `yue-account.html` provides the fictional account views and returns to the Cantonese manual. Authored Talk discussions and their generator/editor continue to target English/Japanese.
 
 Cantonese headings use **Cactus Classical Serif** and body/navigation text uses **Chocolate Classical Sans**. `manual.css` prefers installed copies and falls back to the full bundled WOFF2 fonts in `assets/fonts/`, with system fonts as further fallbacks. All glyphs are retained; no network font requests are required. The fonts contain Regular only; browsers synthesize emphasis. See `assets/fonts/README.md` and `OFL.txt` for provenance and licensing. Keep the font files and license in the bundled manual when packaging the app.
 

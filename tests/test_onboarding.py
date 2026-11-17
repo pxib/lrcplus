@@ -334,7 +334,9 @@ def test_inline_command_pauses_then_continues_text(monkeypatch):
     dialog.finish_typing()
     assert dialog.description.text() == "Wait..."
     assert dialog.script_timer.isActive()
-    QTest.qWait(30)
+    # Check the continuation without racing the pause or subsequent typing.
+    dialog.script_timer.stop()
+    dialog.script_timer.timeout.emit()
     assert dialog.typing_timer.isActive()
     dialog.finish_typing()
     assert dialog.description.text() == "Wait... okay!"

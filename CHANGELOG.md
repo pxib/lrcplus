@@ -5,6 +5,7 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Added
 
+- Expand all four manual editions with repeat/practice, sleep timer, listening statistics, and settings-transfer guides. Document library imports and removal, Favorites, weighted shuffle, independent lyric layers, personal dictionaries, and visual editor operations; refresh factory defaults and navigation.
 - Update onboarding with sortable Lyrics, Romaji, Translation, and Furigana layers, independent toggles, and a live scrollable preview. Explain Romaji sizing and Floating Lyrics, keep one layer enabled, and preserve Apply/Skip behavior and unrelated saved preferences.
 - Add sortable lyric layers in **Lyrics > Readings**: independently toggle Lyrics, Romaji, Translation, and Furigana, and drag or move them to change their rendered order. Apply the layout to compact and scrolling lyrics, with saved global and per-file preferences.
 - Apply lyric layer order and visibility to Floating Lyrics immediately, including while paused. Keep Romaji smaller alongside Lyrics and full-size on its own, fit the window to enabled layers, and preserve horizontal panning for long lines.

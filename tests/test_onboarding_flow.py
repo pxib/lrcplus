@@ -1,5 +1,7 @@
 """Auto-reading, pause affordances, and data-only branching state."""
 
+from time import monotonic
+
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
@@ -30,6 +32,14 @@ def play(dialog, text):
     dialog.dialogue_lines = [("Guide", text), ("Guide", r"Next line.\e")]
     dialog.dialogue_index = -1
     dialog.advance_dialogue()
+
+
+def wait_until(predicate, timeout_ms=2000):
+    """Process Qt events until ready, allowing for busy CI runners."""
+    deadline = monotonic() + timeout_ms / 1000
+    while not predicate() and monotonic() < deadline:
+        QTest.qWait(10)
+    assert predicate(), "Timed out waiting for the dialogue continuation"
 
 
 def test_auto_read_can_stop_and_restart_scripted_delay(wizard):
@@ -70,7 +80,7 @@ def test_pause_hides_arrow_until_time_is_up(wizard, cue):
     wizard.auto_read_check.setChecked(True)
     assert not wizard.dialogue_indicator.isVisible()
     assert not wizard.timer.isActive()
-    QTest.qWait(90)
+    wait_until(lambda: wizard.dialogue_indicator.isVisible())
     assert wizard.dialogue_indicator.isVisible()
     assert not wizard._pause_active
     assert wizard.description.text() == ("Before. More." if "More." in cue else "Before.")
@@ -78,7 +88,7 @@ def test_pause_hides_arrow_until_time_is_up(wizard, cue):
 
 def test_pause_transition_does_not_restore_arrow_over_choice(wizard):
     play(wizard, r"Choose.\wait(0.01)\button(Continue,route)")
-    QTest.qWait(30)
+    wait_until(lambda: wizard.route_buttons.count() == 1)
     assert not wizard.dialogue_indicator.isVisible()
     assert wizard.route_buttons.count() == 1
     assert not wizard.timer.isActive()
