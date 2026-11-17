@@ -57,7 +57,7 @@ def publisher(monkeypatch):
         return SimpleNamespace(returncode=1 if bad else 0, stdout=line, stderr="")
 
     monkeypatch.setattr(tools, "_release", release)
-    monkeypatch.setattr(tools.subprocess, "run", run)
+    monkeypatch.setattr(tools, "run_process", run)
     return data
 
 
@@ -167,6 +167,27 @@ def test_old_deno_is_rejected(manager, tmp_path, monkeypatch):
                         SimpleNamespace(returncode=0, stdout="deno 2.2.0\n", stderr=""))
     with pytest.raises(DependencyError, match="2.3 or newer"):
         manager._check_paths("deno", {"deno": str(tmp_path / "deno.exe")})
+
+
+def test_cancelled_tool_download_keeps_existing_install(manager, publisher):
+    from core.dependency_tasks import DependencyCancelled, cancellation_scope
+
+    manager.install("ffmpeg")
+    original = manager.paths("ffmpeg")
+    cancelled = False
+
+    def log(message):
+        nonlocal cancelled
+        if message.startswith("Downloaded"):
+            cancelled = True
+
+    with cancellation_scope(lambda: cancelled):
+        with pytest.raises(DependencyCancelled):
+            manager.install("ffmpeg", log)
+    assert manager.paths("ffmpeg") == original
+    assert len(list((manager.root / "ffmpeg" / "versions").iterdir())) == 1
+    assert not list((manager.root / "ffmpeg").glob("download-*"))
+    assert not list((manager.root / "ffmpeg").glob("active-*.tmp"))
 
 
 def test_tool_rows_and_threaded_install_work_without_plugin_manager(qapp, manager, publisher, monkeypatch):

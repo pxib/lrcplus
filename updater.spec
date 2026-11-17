@@ -15,7 +15,7 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     # The installer must remain independent of the application's Qt runtime.
-    excludes=["PySide6", "shiboken6"],
+    excludes=["PySide6", "shiboken6", "tools.renderer_playground"],
     noarchive=False,
     optimize=0,
 )

@@ -554,6 +554,7 @@ class PluginManager:
             if owner == plugin_id:
                 _unregister_reading_provider(provider_id)
                 self.reading_providers.pop(provider_id, None)
+                clear_reading_segment_cache()
         for name, (owner, _) in list(self.services.items()):
             if owner == plugin_id:
                 self.services.pop(name, None)

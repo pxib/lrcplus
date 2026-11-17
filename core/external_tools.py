@@ -20,6 +20,7 @@ from packaging.version import Version
 
 from core.app_info import APP_NAME, APP_VERSION, PROJECT_URL
 from core.dependencies import DependencyError, _installation_lock
+from core.dependency_tasks import check_cancelled, diagnostic, run_process
 from core.settings import get_app_data_dir
 
 
@@ -40,6 +41,8 @@ _active_paths = set()
 
 
 def _request(url):
+    check_cancelled()
+    diagnostic(f"HTTP GET {url} (timeout: 30 seconds)")
     return urllib.request.urlopen(urllib.request.Request(url, headers={
         "User-Agent": f"{APP_NAME}/{APP_VERSION} ({PROJECT_URL})",
         "Accept": "application/vnd.github+json" if url.startswith("https://api.github.com/") else "*/*",
@@ -58,15 +61,18 @@ def _release(repo):
 
 
 def _download(url, destination, digest, log):
+    diagnostic(f"Downloading tool archive: {url}\nDestination: {destination}\nSHA-256 expected: {digest}")
     count, last_progress = 0, -1
     checksum = hashlib.sha256()
     with _request(url) as response, destination.open("wb") as output:
         final = urllib.parse.urlsplit(response.geturl())
+        diagnostic(f"Download redirected to: {urllib.parse.urlunsplit((final.scheme, final.netloc, final.path, '', ''))}")
         if final.scheme != "https" or final.hostname not in {
             "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com",
         }:
             raise DependencyError("The tool download redirected to an unexpected location.")
         for chunk in iter(lambda: response.read(1024 * 1024), b""):
+            check_cancelled()
             count += len(chunk)
             if count > 1024 * 1024 * 1024:
                 raise DependencyError("The tool download exceeds the size limit.")
@@ -76,14 +82,17 @@ def _download(url, destination, digest, log):
             if progress > last_progress:
                 log(f"Downloaded {count // (1024 * 1024)} MB…")
                 last_progress = progress
+    diagnostic(f"Tool download complete: {count:,} bytes\nSHA-256 actual: {checksum.hexdigest()}")
     if checksum.hexdigest().lower() != digest.lower():
         raise DependencyError("SHA-256 verification failed. The existing installation was kept.")
 
 
 def _extract(archive, target):
+    diagnostic(f"Extracting tool archive: {archive}\nDestination: {target}")
     root = target.resolve()
     with zipfile.ZipFile(archive) as bundle:
         entries = bundle.infolist()
+        diagnostic(f"Archive contains {len(entries)} entries; {sum(item.file_size for item in entries):,} bytes uncompressed")
         if len(entries) > 10000 or sum(item.file_size for item in entries) > 2 * 1024 ** 3:
             raise DependencyError("The tool archive exceeds the extraction limits.")
         for item in entries:
@@ -92,7 +101,9 @@ def _extract(archive, target):
                     or not (root / item.filename).resolve().is_relative_to(root)
                     or stat.S_ISLNK(item.external_attr >> 16)):
                 raise DependencyError("The tool archive contains an invalid path.")
-        bundle.extractall(target)
+        for item in entries:
+            check_cancelled()
+            bundle.extract(item, target)
 
 
 class ExternalToolManager:
@@ -167,7 +178,7 @@ class ExternalToolManager:
             if not path:
                 raise DependencyError(f"{executable} was not found. Select Install / Repair to install it for LRCPlus.")
             argument = "--version" if name == "deno" else "-version"
-            result = subprocess.run(
+            result = run_process(
                 [path, argument], capture_output=True, timeout=15, text=True,
                 encoding="utf-8", errors="replace",
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -187,12 +198,14 @@ class ExternalToolManager:
         return self._check_paths(name, self.paths(name))
 
     def install(self, name, log=lambda message: None):
+        check_cancelled()
         folder = self._folder(name)
         if not self.supported(name):
             raise DependencyError("Automatic installation is unavailable for this platform. Install the tool on PATH instead.")
         with _installation_lock(folder):
             log(f"Finding the latest {TOOLS[name]['label']} release…")
             release = _release(TOOLS[name]["repo"])
+            diagnostic(f"Selected release: {release.get('tag_name', 'latest')}\nPlatform: {sysconfig.get_platform()}")
             asset_name = TOOLS[name]["assets"][sysconfig.get_platform()]
             asset = next((item for item in release["assets"] if item.get("name") == asset_name), None)
             digest = asset.get("digest", "") if asset else ""
@@ -214,6 +227,7 @@ class ExternalToolManager:
                     archive = Path(temporary) / "tool.zip"
                     log(f"Downloading {asset_name}. SHA-256 verification runs before installation.")
                     _download(url, archive, digest.removeprefix("sha256:"), log)
+                    check_cancelled()
                     _extract(archive, destination)
                 matches = list(destination.rglob(TOOLS[name]["executables"][0] + ".exe"))
                 if len(matches) != 1:
@@ -225,8 +239,11 @@ class ExternalToolManager:
                 data = {"installation": installation, "bin": binary.relative_to(destination).as_posix(),
                         "version": str(release.get("tag_name", "latest")), "sha256": digest[7:], "url": url}
                 pending.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                check_cancelled()
                 pending.replace(folder / "active.json")
+                diagnostic(f"Activated tool: {binary}\nRegistry updated: {folder / 'active.json'}")
             except Exception:
+                diagnostic("Tool installation did not complete; keeping the previous active installation.")
                 if destination.exists():
                     shutil.rmtree(destination, ignore_errors=True)
                 raise

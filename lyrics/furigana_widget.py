@@ -1124,6 +1124,17 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
                 if has_automatic_readings:
                     spans = timing_for_range(a, b)
                     if spans:
+                        # Authored ruby and its neighboring text share the
+                        # chunk's visual sweep. Automatic words instead keep
+                        # their source fractions, even inside a single chunk,
+                        # so each word fills in sequence.
+                        shared_owner = len(spans) == 1 and any(
+                            x < spans[0]["end_offset"]
+                            and y > spans[0]["start_offset"]
+                            for x, y, _, _ in explicit_ranges
+                        )
+                        if shared_owner:
+                            spans = [dict(spans[0], _source_fraction=(0.0, 1.0), _weight=1.0)]
                         last = spans[-1]
                         final_end = last["end"]
                         if final_end is None or (last["start"] is not None and final_end <= last["start"]):
@@ -1132,7 +1143,7 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
                             final_end = float(last["start"]) + 1.0
                         prepared[-1].update(
                             _timing_spans=spans,
-                            timing_group=("token", a, b),
+                            timing_group=last["karaoke_group"] if shared_owner else ("token", a, b),
                             end=final_end,
                             instant=all(span["instant"] for span in spans),
                         )

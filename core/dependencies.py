@@ -31,6 +31,7 @@ from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from core.settings import get_app_data_dir
+from core.dependency_tasks import check_cancelled, diagnostic, diagnostics_enabled, run_process
 
 
 class DependencyError(RuntimeError):
@@ -190,9 +191,13 @@ def _run(command, *, payload=None, timeout=900):
         env.pop(key, None)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONNOUSERSITE"] = "1"
+    env["PYTHONUNBUFFERED"] = "1"
+    command = [str(part) for part in command]
+    if diagnostics_enabled() and "pip" in command and ("install" in command or "wheel" in command):
+        command.insert(command.index("pip") + 1, "--verbose")
     try:
-        completed = subprocess.run(
-            [str(part) for part in command], input=payload,
+        completed = run_process(
+            command, input=payload,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             encoding="utf-8", errors="replace", timeout=timeout,
             env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -223,6 +228,8 @@ def probe_imports(imports, site, paths, *, python=None):
         try:
             result = json.loads(response.read_text(encoding="utf-8"))
             if isinstance(result, dict) and set(result) == set(imports):
+                for module, error in sorted(result.items()):
+                    diagnostic(f"Import probe {module}: {error or 'passed'}")
                 return result
         except (OSError, ValueError):
             pass
@@ -237,12 +244,22 @@ def _official_url(url):
 
 
 def _download(url, destination, expected_hash=None):
+    check_cancelled()
+    diagnostic(f"Downloading Python runtime: {url}\nDestination: {destination}")
     digest = hashlib.sha256()
+    downloaded, last_progress = 0, -1
     with urllib.request.urlopen(_official_url(url), timeout=30) as response, destination.open("wb") as handle:
         _official_url(response.geturl())
         while chunk := response.read(1024 * 1024):
+            check_cancelled()
             digest.update(chunk)
             handle.write(chunk)
+            downloaded += len(chunk)
+            progress = downloaded // (8 * 1024 * 1024)
+            if progress != last_progress:
+                diagnostic(f"Runtime download: {downloaded:,} bytes received")
+                last_progress = progress
+    diagnostic(f"Runtime download complete: {downloaded:,} bytes\nSHA-256 expected: {expected_hash}\nSHA-256 actual: {digest.hexdigest()}")
     if expected_hash and digest.hexdigest().lower() != expected_hash.lower():
         raise DependencyError("The Python runtime download failed its SHA-256 check.")
 
@@ -255,6 +272,8 @@ def _runtime_entry():
     tag = f"{sys.version_info.major}.{sys.version_info.minor}{threaded}-{suffix}"
     url = "https://www.python.org/ftp/python/index-windows.json"
     for _ in range(5):
+        check_cancelled()
+        diagnostic(f"Checking Python runtime index: {url}; requested platform: {tag}")
         with urllib.request.urlopen(_official_url(url), timeout=30) as response:
             _official_url(response.geturl())
             index = json.load(response)
@@ -278,12 +297,16 @@ def _runtime_entry():
 
 
 def _extract_runtime(archive, destination):
+    check_cancelled()
+    diagnostic(f"Extracting Python runtime: {archive}\nDestination: {destination}")
     with zipfile.ZipFile(archive) as bundle:
         root = destination.resolve()
         for entry in bundle.infolist():
             if not (root / entry.filename).resolve().is_relative_to(root):
                 raise DependencyError("The runtime archive contains an invalid path.")
-        bundle.extractall(destination)
+        for entry in bundle.infolist():
+            check_cancelled()
+            bundle.extract(entry, destination)
 
 
 def ensure_installer(log):
@@ -307,6 +330,7 @@ def ensure_installer(log):
         staged = work / "runtime"
         _extract_runtime(archive, staged)
         _run([staged / executable, "-I", "-m", "pip", "--version"], timeout=30)
+        check_cancelled()
         staged.rename(runtime)
     log("Private Python runtime is ready.")
     return python
@@ -425,10 +449,13 @@ class DependencyManager:
         return self._change(canonicalize_name(name), True, log)
 
     def _change(self, name, remove, log):
+        check_cancelled()
+        diagnostic(f"Dependency registry: {self.root}\nAction: {'remove' if remove else 'install'} {name}")
         if name not in self.catalog:
             raise DependencyError("This dependency is not declared by an installed plugin.")
         with _installation_lock(self.root):
             state = self.state()
+            diagnostic(f"Previously active environment: {state['environment']}")
             requirements = dict(state["requirements"])
             if remove:
                 requirements.pop(name, None)
@@ -457,6 +484,7 @@ class DependencyManager:
                                 constraint.extras = set()
                                 pins.append(str(constraint))
                     constraints.write_text("\n".join(pins) + "\n", encoding="utf-8")
+                    diagnostic(f"Installation target: {target}\nConstraints file: {constraints}\nConstraints:\n" + "\n".join(pins))
                     python = ensure_installer(log)
                     selected = sorted({item for values in requirements.values() for item in values})
                     wheel_options = []
@@ -469,12 +497,14 @@ class DependencyManager:
                         wheels = get_app_data_dir() / "cache" / "dictionary-wheels"
                         wheels.mkdir(parents=True, exist_ok=True)
                         log("Preparing the MeCab dictionary. The download is about 47 MB.")
-                        log(_run([
+                        output = _run([
                             python, "-I", "-m", "pip", "--isolated", "--disable-pip-version-check",
                             "wheel", "--index-url", "https://pypi.org/simple", "--no-deps",
                             "--wheel-dir", wheels, "--find-links", wheels,
                             "--constraint", constraints, *dictionaries,
-                        ]).strip())
+                        ])
+                        if not diagnostics_enabled():
+                            log(output.strip())
                         wheel_options = ["--find-links", wheels]
                     log("Resolving and installing dependencies. This can take a few minutes.")
                     output = _run([
@@ -487,12 +517,14 @@ class DependencyManager:
                         "--constraint", constraints,
                         *wheel_options, *selected,
                     ])
-                    log(output.strip())
+                    if not diagnostics_enabled():
+                        log(output.strip())
                     log("Checking installed versions and imports…")
                     staged_state = {"environment": environment, "requirements": requirements}
                     imports = []
                     for key in requirements.keys() & self.catalog.keys():
                         status = self.status(key, state=staged_state)
+                        diagnostic(f"Installed version check {key}: {status['text']}")
                         if status["state"] != "available":
                             raise DependencyError(f"{key}: {status['text']}")
                         imports.extend(item.import_name for item in self.catalog[key]["dependencies"])
@@ -502,17 +534,21 @@ class DependencyManager:
                             f"{key}: {error}" for key, error in failures.items() if error
                         ))
                 updated = {"environment": environment, "requirements": requirements}
+                check_cancelled()
                 pending = self.root / f"active-{uuid.uuid4().hex}.tmp"
                 try:
                     pending.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
                     pending.replace(self.root / "active.json")
+                    diagnostic(f"Activated environment: {environment}\nRegistry updated: {self.root / 'active.json'}")
                 finally:
                     pending.unlink(missing_ok=True)
             except Exception:
+                diagnostic("Installation did not complete; keeping the previous active environment.")
                 if directory:
                     # Only this operation's new, never-activated environment is removed.
                     if directory.resolve().is_relative_to((self.root / "environments").resolve()):
                         shutil.rmtree(directory, ignore_errors=True)
+                        diagnostic(f"Removed staging directory: {directory}")
                 raise
             log("Dependencies updated. Restart LRCPlus to apply the changes.")
             return updated

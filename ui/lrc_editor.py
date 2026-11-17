@@ -32,6 +32,7 @@ from lyrics.timing import parse_timestamp
 from lyrics.karaoke_timing import next_lyric_start, segment_end
 from lyrics.editor_operations import correct_line_text, replace_reading_span
 from lyrics.reading_groups import group_reading_tokens, remap_reading_groups
+from lyrics.reading_warnings import missing_english_readings, unconverted_words_message
 from lyrics.furigana import get_cached_furigana_segments
 from core.debug import debug_print
 from core.fonts import content_font
@@ -305,6 +306,8 @@ class LrcEditorDialog(
             lines.append("Jyutping: Cantonese pronunciation.")
         if "yale" in available:
             lines.append("Yale: Cantonese Yale romanization.")
+        if "english_katakana" in available:
+            lines.append("English → Katakana: offline dictionary readings; select explicitly. Unknown words stay unannotated.")
         self.reading_mode_info.setText("\n".join(lines))
 
     def _tab_changed(self, index):
@@ -983,7 +986,11 @@ class LrcEditorDialog(
         else:
             self.load_selected_line(self.line_list.currentRow())
 
-        QMessageBox.information(
+        missing = (
+            missing_english_readings(self._furigana_editor_tokens(line), line.translation_lines)
+            if mode == "english_katakana" else []
+        )
+        (QMessageBox.warning if missing else QMessageBox.information)(
             self,
             "Generate Readings",
             (
@@ -991,7 +998,7 @@ class LrcEditorDialog(
                 "for this timestamp."
                 if generated
                 else "No reading could be generated for this timestamp."
-            ),
+            ) + unconverted_words_message(missing),
         )
 
     def generate_readings_for_all_lyrics(self):
@@ -1023,13 +1030,14 @@ class LrcEditorDialog(
                     segment.ruby_source = None
 
         texts = [reading_source(line.text, line.translation_lines) for line in self.lines if line.text]
-        if mode == "pinyin" or (mode == "auto" and detect_lyrics_collection_language(texts) == "chinese"):
-            # Warm Mandarin readings together so Generate All starts a single
-            # disposable dictionary worker instead of one process per line.
+        if mode in {"pinyin", "english_katakana"} or (mode == "auto" and detect_lyrics_collection_language(texts) == "chinese"):
+            # Warm dictionary readings together so Generate All starts a
+            # single disposable worker instead of one process per line.
             prefetch_furigana_batches(texts, force=True)
 
         generated_lines = 0
         errors = 0
+        missing = []
         for line in self.lines:
             source_text = str(line.text or "")
             if not source_text:
@@ -1042,17 +1050,22 @@ class LrcEditorDialog(
                 continue
             if any(token.get("reading") for token in tokens):
                 generated_lines += 1
+            if mode == "english_katakana":
+                missing.extend(missing_english_readings(
+                    self._furigana_editor_tokens(line), line.translation_lines,
+                ))
 
         row = self.line_list.currentRow()
         if row >= 0:
             self.load_selected_line(row)
 
-        if errors:
+        if errors or missing:
             QMessageBox.warning(
                 self,
                 "Generate Readings",
-                f"Generated readings for {generated_lines} lyric line(s), "
-                f"with {errors} error(s).",
+                f"Generated readings for {generated_lines} lyric line(s)"
+                + (f", with {errors} error(s)." if errors else ".")
+                + unconverted_words_message(missing),
             )
         else:
             QMessageBox.information(

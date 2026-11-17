@@ -17,6 +17,7 @@ READING_TYPES = {
     "furigana": "Japanese furigana", "pinyin": "Mandarin pinyin",
     "korean": "Korean romanization", "jyutping": "Cantonese Jyutping",
     "yale": "Cantonese Yale",
+    "english_katakana": "English katakana",
 }
 MATCH_TYPES = {"word": "Whole word", "substring": "Inside words"}
 _LOCK = threading.RLock()

@@ -65,7 +65,8 @@ def test_reading_preview_uses_supplied_readings_without_workers(wizard, monkeypa
     assert panel.preview.show_ruby is ("furigana" in layers)
     assert panel.preview.show_romaji is ("romaji" in layers)
     assert not panel.preview.all_romaji
-    assert {p["display_layer"] for p in panel.preview._prepare_segments()} == set(layers)
+    expected = set(layers) - ({"furigana"} if "lyrics" in layers else set())
+    assert {p["display_layer"] for p in panel.preview._prepare_segments()} == expected
     assert panel.preview._furigana_future is None
     assert not panel.preview._reading_timer.isActive()
     assert not settings.SETTINGS_PATH.exists()
@@ -225,7 +226,7 @@ def test_preview_reorders_live_and_keeps_one_layer_enabled(wizard):
     panel.layer_order.setCurrentRow(3)
     panel.layer_order.move_current(-1)
     pieces = panel.preview._prepare_segments()
-    assert list(dict.fromkeys(p["display_layer"] for p in pieces)) == panel.layer_order.value()
+    assert list(dict.fromkeys(p["display_layer"] for p in pieces)) == [layer for layer in panel.layer_order.value() if layer != "furigana"]
     assert "".join(p["text"] for p in pieces).count("♪") == 1
     romaji = next(p for p in pieces if p["display_layer"] == "romaji")
     assert panel.preview._paint_font(panel.preview.base_font, romaji).pointSize() == panel.initial["ruby_font_size"]

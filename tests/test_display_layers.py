@@ -25,12 +25,15 @@ def test_order_controls_text_and_baselines_without_changing_timing(qapp, order):
     try:
         widget.set_lyric_layers(order, True, True, True, True)
         prepared = widget._prepare_segments()
-        assert [p["display_layer"] for p in prepared] == list(order)
+        assert [p["display_layer"] for p in prepared] == [layer for layer in order if layer != "furigana"]
         assert [p["base_y"] for p in prepared] == sorted(p["base_y"] for p in prepared)
         assert {p["display_layer"]: p["text"] for p in prepared} == {
-            "lyrics": "歌", "romaji": "uta", "translation": "Song", "furigana": "うた",
+            "lyrics": "歌", "romaji": "uta", "translation": "Song",
         }
-        assert widget.segments[0]["text"] == "歌"
+        lyric = next(p for p in prepared if p["display_layer"] == "lyrics")
+        assert lyric["_display_reading"] == "\u3046\u305f"
+        assert (lyric["reading_y"] < lyric["base_y"]) == (order.index("furigana") < order.index("lyrics"))
+        assert widget.segments[0]["text"] == "\u6b4c"
         widget.karaoke_position = 2
         progress = [widget._segment_progress(p, prepared) for p in prepared if p["display_layer"] != "translation"]
         assert len(set(progress)) == 1
@@ -88,11 +91,60 @@ def test_vertical_layers_use_separate_columns(qapp):
         widget.set_lyric_layers(LYRIC_LAYER_ORDER, True, True, True, True)
         pieces = widget._prepare_segments()
         bounds = []
-        for layer in LYRIC_LAYER_ORDER:
+        for layer in ("lyrics", "romaji", "translation"):
             row = [p for p in pieces if p["display_layer"] == layer]
             bounds.append((min(p["x"] for p in row), max(p["x"] + p["width"] for p in row)))
         assert all(left[1] < right[0] for left, right in zip(bounds, bounds[1:]))
         assert widget.sizeHint().width() >= bounds[-1][1]
+    finally:
+        widget.close()
+
+
+@pytest.mark.parametrize("floating", [False, True])
+@pytest.mark.parametrize("above", [False, True])
+def test_furigana_stays_on_its_word_with_romaji_and_wrapping(qapp, floating, above):
+    from PySide6.QtGui import QFontMetrics
+    from core.fonts import library_font
+
+    if floating:
+        from plugins.community.floating_lyrics.plugin import SplitRenderFuriganaWidget
+        widget = SplitRenderFuriganaWidget()
+    else:
+        widget = FuriganaWidget()
+    try:
+        widget.resize(180 if not floating else 900, 600)
+        widget.set_font(library_font(qapp.font()).family(), 32, 14)
+        widget.set_lyric("未来へ未来へ未来へ", generate=False)
+        widget.segments = [piece for _ in range(3) for piece in (
+            {"text": "未来", "reading": "みらい"}, {"text": "へ", "reading": None},
+        )]
+        order = ["furigana", "lyrics", "romaji", "translation"] if above else list(LYRIC_LAYER_ORDER)
+        widget.set_lyric_layers(order, True, True, False, True)
+        pieces = widget._prepare_segments()
+        lyrics = [p for p in pieces if p["display_layer"] == "lyrics"]
+        annotated = [p for p in lyrics if p["reading"]]
+        assert len(annotated) == 3
+        for piece in annotated:
+            assert piece["_display_reading"] == "みらい"
+            assert piece["_display_reading_width"] == QFontMetrics(widget.reading_font).horizontalAdvance("みらい")
+            assert (piece["reading_y"] < piece["base_y"]) == above
+            assert piece["reading_y"] == piece["romaji_y"]
+        assert all(not p["_display_reading"] for p in lyrics if p["text"] == "へ")
+        if not floating:
+            assert len({p["base_y"] for p in lyrics}) > 1
+            base_metrics = QFontMetrics(widget.base_font)
+            reading_metrics = QFontMetrics(widget.reading_font)
+            for previous, following in zip(annotated, annotated[1:]):
+                if above:
+                    assert previous["base_y"] + base_metrics.descent() <= following["reading_y"] - reading_metrics.ascent()
+                else:
+                    assert previous["reading_y"] + reading_metrics.descent() <= following["base_y"] - base_metrics.ascent()
+        assert widget.sizeHint().height() > max(
+            max(p["base_y"], p.get("reading_y") or 0) for p in pieces
+        )
+        widget.show()
+        qapp.processEvents()
+        assert not widget.grab().isNull()
     finally:
         widget.close()
 
@@ -106,7 +158,7 @@ def test_layer_settings_restore_both_readings_after_legacy_setters(qapp):
         widget.set_all_romaji_visible(False)
         widget.set_lyric_layers(LYRIC_LAYER_ORDER, True, True, True, True)
         assert widget.show_ruby and widget.show_romaji
-        assert {p["display_layer"] for p in widget._prepare_segments()} == set(LYRIC_LAYER_ORDER)
+        assert {p["display_layer"] for p in widget._prepare_segments()} == {"lyrics", "romaji", "translation"}
     finally:
         widget.close()
 
@@ -120,7 +172,7 @@ def test_long_reading_rows_wrap_inside_the_widget(qapp):
         pieces = widget._prepare_segments()
         assert all(p["x"] >= 0 and p["x"] + p["width"] <= widget.width() for p in pieces)
         assert widget.sizeHint().height() > 100
-        for layer in ("lyrics", "romaji", "furigana"):
+        for layer in ("lyrics", "romaji"):
             assert len({p["base_y"] for p in pieces if p["display_layer"] == layer}) > 1
     finally:
         widget.close()
@@ -217,7 +269,7 @@ def test_scrolling_rows_keep_layers_after_seek_and_recreation(qapp, monkeypatch,
         assert 90 in widget._mounted_rows
         for row in widget.rows:
             pieces = row._prepare_segments()
-            assert {p["display_layer"] for p in pieces} == set(LYRIC_LAYER_ORDER)
+            assert {p["display_layer"] for p in pieces} == {"lyrics", "romaji", "translation"}
             if direction == "horizontal":
                 assert row.height() >= row.sizeHint().height()
             else:

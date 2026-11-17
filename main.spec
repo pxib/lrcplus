@@ -88,8 +88,11 @@ a = Analysis(
     # Keeping them out helps reduce the distribution size considerably,
     # especially with PySide6.
     excludes=[
+        # Standalone development tool; run it from the source checkout only.
+        "tools.renderer_playground",
         # Optional plugin engines are installed through Settings > Dependencies.
         "koroman",
+        "alkana",
         "pycantonese",
         "argostranslate",
         "ctranslate2",

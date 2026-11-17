@@ -246,6 +246,20 @@ class FuriganaPaintingMixin:
                 timing_spans[group][0] = min(timing_spans[group][0], left)
                 timing_spans[group][1] = max(timing_spans[group][1], right)
 
+        # Treat wrapped horizontal rows as one continuous reading-order path.
+        # Project that path back onto each row's X coordinates, so the shared
+        # timestamp advances through earlier rows before revealing later ones.
+        # Ruby and decorations use the same projected span as the base glyphs.
+        horizontal_groups = {}
+        for key, (left, right) in timing_spans.items():
+            horizontal_groups.setdefault(key[0], []).append((key, left, right))
+        for spans in horizontal_groups.values():
+            total = sum(right - left for _, left, right in spans)
+            offset = 0.0
+            for key, left, right in spans:
+                timing_spans[key] = [left - offset, left - offset + total]
+                offset += right - left
+
         # Resolve karaoke progress ONCE per stable timing group. Generated ruby
         # may create many visual pieces, but those pieces must never get their
         # own independent timing calculation.

@@ -41,6 +41,8 @@ class DisplayLayersMixin:
         saved = self.show_ruby, self.show_romaji, self.all_romaji
         saved_font = self.base_font
         saved_wrapping = self.wrap_text, self.wrap_max_lines
+        saved_ruby_position = self.ruby_position
+        attached_furigana = lyrics and furigana
         result = []
         y_offset = 0
         x_offset = 0
@@ -50,8 +52,11 @@ class DisplayLayersMixin:
             self.wrap_text, self.wrap_max_lines = True, -1
         try:
             for layer in order:
-                if not visible[layer]:
+                if not visible[layer] or (layer == "furigana" and attached_furigana):
                     continue
+                self.show_ruby = layer == "lyrics" and attached_furigana
+                if self.show_ruby:
+                    self.ruby_position = "above" if order.index("furigana") < order.index("lyrics") else "below"
                 use_reading_font = layer == "furigana" or (layer == "romaji" and lyrics)
                 self.base_font = self.reading_font if use_reading_font else saved_font
                 layer_rows = translations if layer == "translation" else originals
@@ -69,7 +74,9 @@ class DisplayLayersMixin:
                             piece["text"] = piece.get("reading") or piece["text"]
                         if lyrics and layer in {"romaji", "furigana"}:
                             piece["text"] = piece["text"].translate(_MUSIC_NOTES)
-                        piece.update(reading=None, display_layer=layer,
+                        if not self.show_ruby:
+                            piece["reading"] = None
+                        piece.update(display_layer=layer, attached_furigana=self.show_ruby,
                                      use_reading_font=use_reading_font)
                         row_source.append(piece)
                     if layer in {"romaji", "furigana"} and not any(
@@ -84,24 +91,38 @@ class DisplayLayersMixin:
                     continue
                 self._layer_visual_segments = source
                 prepared = self._build_prepared_segments()
+                for piece in prepared:
+                    if piece.get("attached_furigana"):
+                        # The outer paint pass may also have a Romaji layer
+                        # enabled; both names must point to this word's ruby.
+                        piece["romaji_y"] = piece.get("reading_y")
                 if self.direction == "vertical":
                     if prepared:
-                        left = min(p["x"] for p in prepared)
-                        right = max(p["x"] + p["width"] for p in prepared)
+                        left = min(min(p["x"], p.get("reading_x", p["x"])) for p in prepared)
+                        right = max(max(p["x"] + p["width"],
+                                        p.get("reading_x", p["x"]) + p.get("reading_width", 0))
+                                    for p in prepared)
                         shift = x_offset - left + self.PADDING
                         for piece in prepared:
-                            for key in ("x", "base_x", "karaoke_x"):
+                            for key in ("x", "base_x", "karaoke_x", "reading_x"):
                                 if piece.get(key) is not None:
                                     piece[key] += shift
                         x_offset += right - left + self.PADDING + self.ruby_padding
                 else:
                     metrics = QFontMetrics(self.base_font)
+                    reading_metrics = QFontMetrics(self.reading_font)
                     height = max((p["base_y"] + metrics.descent() + self.BOTTOM_MARGIN
                                   for p in prepared), default=0)
+                    height = max(height, max(
+                        (p["reading_y"] + reading_metrics.descent() + self.BOTTOM_MARGIN
+                         for p in prepared if p.get("reading_y") is not None), default=0,
+                    ))
                     if result:
                         y_offset += self.ruby_padding
                     for piece in prepared:
-                        piece["base_y"] += y_offset
+                        for key in ("base_y", "reading_y", "romaji_y"):
+                            if piece.get(key) is not None:
+                                piece[key] += y_offset
                     y_offset += height
                 # Each layer keeps the authored timing but owns its visual spans.
                 for piece in prepared:
@@ -113,6 +134,7 @@ class DisplayLayersMixin:
             self.show_ruby, self.show_romaji, self.all_romaji = saved
             self.base_font = saved_font
             self.wrap_text, self.wrap_max_lines = saved_wrapping
+            self.ruby_position = saved_ruby_position
             self._layer_layout_active = False
             self.__dict__.pop("_layer_visual_segments", None)
         self._horizontal_layout_height = max(1, y_offset)

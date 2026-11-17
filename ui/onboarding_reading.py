@@ -86,6 +86,7 @@ class ReadingPreferences(QWidget):
 
         explanation = QLabel(
             "Romaji is smaller alongside Lyrics and full-size on its own. "
+            "Furigana stays attached to words; put it before or after Lyrics for above or below. "
             "Translation uses translated lines saved in the lyric file. "
             "These defaults also apply to Floating Lyrics."
         )

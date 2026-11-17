@@ -281,7 +281,8 @@ class FuriganaLayoutMixin:
         return max(1, int(lane))
 
     def _content_metrics(self):
-        base_height = QFontMetrics(self.base_font).height()
+        base_metrics = QFontMetrics(self.base_font)
+        base_height = base_metrics.height()
         ruby_height = 0
         romaji_height = 0
         if getattr(self, "lyric_layers", None) and not getattr(self, "_layer_layout_active", False):
@@ -299,6 +300,8 @@ class FuriganaLayoutMixin:
         ruby_gap = self.ruby_padding if reading_height else 0
         if reading_height and self.ruby_position == "below":
             total = self.TOP_MARGIN + base_height + ruby_gap + reading_height + self.BOTTOM_MARGIN
+            if getattr(self, "_layer_layout_active", False):
+                total += base_metrics.descent()
         else:
             total = self.TOP_MARGIN + reading_height + ruby_gap + base_height + self.BOTTOM_MARGIN
         return base_height, ruby_height, ruby_gap, max(1, total)
@@ -829,7 +832,10 @@ class FuriganaLayoutMixin:
             for index, piece in enumerate(prepared):
                 reading_metrics = (QFontMetrics(self._styled_font(self.reading_font, piece))
                                    if piece.get("bold") or piece.get("italic") or piece.get("translation") else default_reading_metrics)
-                reading = reading_texts[index] if self.show_romaji else self._reading_text_for_display(piece.get("reading"))
+                if piece.get("attached_furigana"):
+                    reading = str(piece.get("reading") or "")
+                else:
+                    reading = reading_texts[index] if self.show_romaji else self._reading_text_for_display(piece.get("reading"))
                 piece["_display_reading"] = reading
                 piece["_display_reading_width"] = (
                     reading_metrics.horizontalAdvance(reading) if reading else 0

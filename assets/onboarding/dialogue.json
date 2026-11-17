@@ -34,7 +34,7 @@
         "speaker": "Setup Wizard",
         "lines": [
           "Lyrics, Romaji, Translation, and Furigana are separate layers. Check the ones you want and drag them into your preferred order.\\nw4",
-          "Romaji is smaller beside Lyrics and full-size on its own. Translation uses translated lines saved in the lyric file. Keep at least one layer checked.\\nw4",
+          "Furigana stays attached to words: put it before Lyrics for above, or after Lyrics for below. Romaji is smaller beside Lyrics and full-size on its own. Translation uses translated lines saved in the lyric file. Keep at least one layer checked.\\nw4",
           "Try the sample below. Apply and Next saves your defaults; Do this later keeps your current settings. Floating Lyrics follows these preferences too.\\e"
         ]
         }

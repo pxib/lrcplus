@@ -1,9 +1,9 @@
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QDateTime, QLocale, QPoint, Qt, Signal
+from PySide6.QtCore import QDateTime, QLocale, QPoint, Qt, QUrl, Signal
 from PySide6.QtMultimedia import QMediaDevices
-from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPolygon
+from PySide6.QtGui import QColor, QDesktopServices, QFontDatabase, QPainter, QPolygon
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QButtonGroup,
@@ -917,7 +917,18 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         # ===== PLUGINS =====
         plugins_tab = QWidget()
         plugins_layout = QVBoxLayout(plugins_tab)
-        plugins_layout.addWidget(QLabel("Installed plugins"))
+        plugins_header = QHBoxLayout()
+        plugins_header.addWidget(QLabel("Installed plugins"))
+        plugins_header.addStretch()
+        get_plugins_button = QPushButton("Get more plugins")
+        get_plugins_button.setToolTip("Open the wiki's plugin directory and installation guide")
+        get_plugins_button.clicked.connect(
+            lambda _checked=False: QDesktopServices.openUrl(
+                QUrl("https://pxib.github.io/lrcpluswiki/#plugin-directory")
+            )
+        )
+        plugins_header.addWidget(get_plugins_button)
+        plugins_layout.addLayout(plugins_header)
         plugins_notice = QLabel(
             "Plugin changes are saved immediately when Settings is accepted and take effect after restarting LRCPlus    ."
         )
@@ -1605,7 +1616,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         order = LyricLayerOrder(values.get("lyric_layer_order"))
         controls["lyric_layer_order"] = order
         order.setProperty("settingsLabel", "Lyric layer order and visibility")
-        order.setToolTip("Layers render in this order. Romaji and furigana are independent reading rows. Translation uses translations saved in the lyric file.")
+        order.setToolTip("Layers render in this order. Furigana stays attached to its words: place it before Lyrics for above, or after Lyrics for below. Translation uses translations saved in the lyric file.")
         layout.addWidget(order)
         moves = QHBoxLayout()
         for title, delta in (("Move up", -1), ("Move down", 1)):

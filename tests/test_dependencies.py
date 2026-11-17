@@ -422,3 +422,267 @@ def test_app_version_mismatch_still_allows_check_and_explains_repair(qapp, versi
     finally:
         widget.deleteLater()
         qapp.processEvents()
+
+
+def test_checked_dependencies_install_as_queue_and_continue_after_failure(qapp, monkeypatch):
+    import time
+    from ui.dependency_settings import DependencyManagerWidget
+
+    manager = PluginManager()
+    manager.dependency_manager.configure([
+        _plugin("lp-test-alpha"), _plugin("lp-test-beta"),
+        _plugin("packaging", "packaging>=24", "packaging"),
+    ])
+    calls = []
+
+    def install(name, log):
+        calls.append(("library", name))
+        if name == "lp-test-alpha":
+            raise DependencyError("test install failure")
+        log("test install completed")
+
+    monkeypatch.setattr(manager.dependency_manager, "install", install)
+    widget = DependencyManagerWidget(manager)
+    monkeypatch.setattr(widget.tools, "supported", lambda name: name == "ffmpeg")
+    monkeypatch.setattr(widget.tools, "install", lambda name, log: calls.append(("tool", name)))
+    try:
+        widget.select_all.click()
+        # Includes app-provided packaging and an unsupported tool: both must be skipped.
+        assert len(widget._checked_items()) == widget.tree.topLevelItemCount()
+        widget.refresh()
+        assert len(widget._checked_items()) == widget.tree.topLevelItemCount()
+        widget._buttons["install"].click()
+        assert widget.busy
+        assert not widget.tree.isEnabled()
+        assert not widget.select_all.isEnabled()
+        deadline = time.monotonic() + 5
+        while widget.busy and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.005)
+        assert not widget.busy
+        assert ("library", "lp-test-alpha") in calls
+        assert ("library", "lp-test-beta") in calls
+        assert ("tool", "ffmpeg") in calls
+        assert ("library", "packaging") not in calls
+        assert ("tool", "deno") not in calls
+        assert "1 failed" in widget.status.text()
+        assert "lp-test-alpha: test install failure" in widget.details.toPlainText()
+        assert widget.tree.isEnabled()
+        assert widget._buttons["install"].isEnabled()
+        widget.clear_selection.click()
+        assert widget._checked_items() == []
+    finally:
+        if widget._job is not None:
+            widget._job.wait()
+            qapp.processEvents()
+        widget.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("disable", [False, True])
+def test_dependency_notice_dont_show_again_survives_changed_errors(qapp, monkeypatch, disable):
+    from types import SimpleNamespace
+    from PySide6.QtWidgets import QMessageBox
+    from ui import dependency_settings as module
+
+    shown = []
+
+    def dismiss(notice):
+        shown.append(notice)
+        notice.checkBox().setChecked(disable)
+        next(button for button in notice.buttons() if button.text() == "Later").click()
+        return notice.result()
+
+    monkeypatch.setattr(QMessageBox, "exec", dismiss)
+    manager = SimpleNamespace(dependency_errors={"first": "missing library"})
+    module.show_dependency_notice(manager, None)
+    assert module.load_all_settings()["dependency_notice_disabled"] is disable
+    manager.dependency_errors = {"second": "another missing library"}
+    module.show_dependency_notice(manager, None)
+    assert len(shown) == (1 if disable else 2)
+
+    widget = module.DependencyManagerWidget(None)
+    try:
+        assert widget.hide_notices.isChecked() is disable
+        widget.hide_notices.setChecked(not disable)
+        assert module.load_all_settings()["dependency_notice_disabled"] is (not disable)
+        manager.dependency_errors = {"third": "new missing library"}
+        module.show_dependency_notice(manager, None)
+        assert len(shown) == 2
+    finally:
+        widget.deleteLater()
+        qapp.processEvents()
+
+
+def test_cancelled_library_install_rolls_back_before_activation(offline_manager, monkeypatch):
+    from core.dependency_tasks import DependencyCancelled, cancellation_scope
+
+    manager = offline_manager
+    original = manager.install("lp-test-alpha")
+    existing = set((manager.root / "environments").iterdir())
+    probe = dependencies.probe_imports
+    cancelled = False
+
+    def cancel_after_probe(*args, **kwargs):
+        nonlocal cancelled
+        result = probe(*args, **kwargs)
+        cancelled = True
+        return result
+
+    monkeypatch.setattr(dependencies, "probe_imports", cancel_after_probe)
+    with cancellation_scope(lambda: cancelled):
+        with pytest.raises(DependencyCancelled):
+            manager.install("lp-test-beta")
+    assert manager.state() == original
+    assert set((manager.root / "environments").iterdir()) == existing
+
+
+def test_cancel_button_stops_current_install_and_remaining_batch(qapp, monkeypatch):
+    import threading
+    import time
+    from core.dependency_tasks import check_cancelled
+    from ui.dependency_settings import DependencyManagerWidget
+
+    manager = PluginManager()
+    manager.dependency_manager.configure([_plugin("lp-test-alpha"), _plugin("lp-test-beta")])
+    calls = []
+    started = threading.Event()
+
+    def install(name, log):
+        calls.append(name)
+        started.set()
+        while True:
+            check_cancelled()
+            time.sleep(0.005)
+
+    monkeypatch.setattr(manager.dependency_manager, "install", install)
+    widget = DependencyManagerWidget(manager)
+    try:
+        for i in range(widget.tree.topLevelItemCount()):
+            item = widget.tree.topLevelItem(i)
+            if item.data(0, Qt.ItemDataRole.UserRole) in {"lp-test-alpha", "lp-test-beta"}:
+                item.setCheckState(0, Qt.CheckState.Checked)
+        widget._buttons["install"].click()
+        assert started.wait(2)
+        assert widget.cancel_button.isEnabled()
+        widget.cancel_button.click()
+        assert widget.busy
+        assert "Cancelling" in widget.status.text()
+        deadline = time.monotonic() + 5
+        while widget.busy and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.005)
+        assert not widget.busy
+        assert calls == ["lp-test-alpha"]
+        assert "Cancelled" in widget.status.text()
+        assert not widget.cancel_button.isEnabled()
+        assert widget.tree.isEnabled()
+        assert widget._buttons["install"].isEnabled()
+        # A new batch can run after cancellation.
+        monkeypatch.setattr(manager.dependency_manager, "install", lambda name, log: calls.append(name))
+        widget._buttons["install"].click()
+        deadline = time.monotonic() + 5
+        while widget.busy and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.005)
+        assert not widget.busy
+        assert calls == ["lp-test-alpha", "lp-test-alpha", "lp-test-beta"]
+        assert "2 succeeded" in widget.status.text()
+    finally:
+        if widget._job is not None:
+            widget._job.requestInterruption()
+            widget._job.wait()
+            qapp.processEvents()
+        widget.deleteLater()
+        qapp.processEvents()
+
+
+def test_verbose_library_install_reports_resolution_checks_and_activation(offline_manager):
+    from core.dependency_tasks import diagnostic_scope
+
+    logs = []
+    with diagnostic_scope(logs.append):
+        offline_manager.install("lp-test-alpha")
+    text = "\n".join(logs)
+    assert "--verbose" in text
+    assert "Installation target:" in text
+    assert "Constraints file:" in text
+    assert "[stdout]" in text
+    assert "Successfully installed" in text
+    assert "Process exited 0" in text
+    assert "Installed version check lp-test-alpha:" in text
+    assert "Import probe lp_test_alpha: passed" in text
+    assert "Activated environment:" in text
+
+
+def test_dependency_job_verbose_failure_contains_traceback(qapp):
+    from types import SimpleNamespace
+    from ui.dependency_settings import _DependencyJob
+
+    def fail(name):
+        raise DependencyError("test diagnostic failure")
+
+    job = _DependencyJob(SimpleNamespace(check=fail), "check", "test")
+    logs, errors = [], []
+    job.diagnostic_message.connect(logs.append)
+    job.failed.connect(errors.append)
+    job.run()
+    assert errors == ["test diagnostic failure"]
+    text = "\n".join(logs)
+    assert "Python:" in text
+    assert "Platform:" in text
+    assert "Traceback (most recent call last)" in text
+    assert "DependencyError: test diagnostic failure" in text
+    assert "Operation failed after" in text
+
+
+def test_verbose_log_burst_batches_worker_notifications(qapp, monkeypatch):
+    from ui import dependency_settings as module
+
+    monkeypatch.setattr(module.time, "monotonic", lambda: 10.0)
+    job = module._DependencyJob(None, "check", "test")
+    batches = []
+    job.diagnostic_message.connect(batches.append)
+    for index in range(10000):
+        job._buffer_diagnostic(f"Installer output {index}")
+    job._flush_diagnostics()
+    assert len(batches) == 2
+    assert batches[0] == "Installer output 0"
+    assert len(batches[1].splitlines()) == 5000
+    assert batches[1].splitlines()[0] == "Installer output 5000"
+    assert batches[1].splitlines()[-1] == "Installer output 9999"
+
+
+def test_hidden_verbose_logs_defer_rendering_and_retain_latest_lines(qapp):
+    from ui.dependency_settings import DependencyManagerWidget
+
+    widget = DependencyManagerWidget(None)
+    try:
+        for index in range(10000):
+            widget._log(f"Installer output {index}")
+        assert widget.details.toPlainText() == ""
+        assert not widget._log_timer.isActive()
+        widget.details_button.setChecked(True)
+        lines = widget.details.toPlainText().splitlines()
+        assert len(lines) == 5000
+        assert lines[0].endswith("Installer output 5000")
+        assert lines[-1].endswith("Installer output 9999")
+
+        before = widget.details.toPlainText()
+        widget._log("New live output")
+        assert widget.details.toPlainText() == before
+        assert widget._log_timer.isActive()
+        widget._flush_logs()
+        assert widget.details.toPlainText().endswith("New live output")
+        assert len(widget.details.toPlainText().splitlines()) == 5000
+
+        widget.details_button.setChecked(False)
+        widget._log("Old operation output")
+        widget._clear_logs()
+        widget._log("Next operation output")
+        widget.details_button.setChecked(True)
+        assert "Old operation output" not in widget.details.toPlainText()
+        assert "Next operation output" in widget.details.toPlainText()
+    finally:
+        widget.deleteLater()
+        qapp.processEvents()

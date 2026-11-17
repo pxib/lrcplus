@@ -371,7 +371,7 @@ label readingpreferences:
     wizard "There's a sample coming up. Lyrics, Romaji, Translation, and Furigana are separate layers. Check the ones you want, then drag them into your preferred order."
     $ auto(4)
     if detailed_tour:
-        wizard "Furigana shows Japanese readings, and Romaji uses Latin letters. Romaji stays smaller beside Lyrics. Hide Lyrics to make Romaji full-size instead."
+        wizard "Furigana attaches Japanese readings to each word. Put it before Lyrics for above, or after Lyrics for below. Romaji uses Latin letters and stays smaller beside Lyrics. Hide Lyrics to make Romaji full-size instead."
         $ auto(4)
         wizard "Translation shows translated lines saved in the lyric file. Keep at least one layer on. Floating Lyrics follows these preferences too."
         $ auto(4)

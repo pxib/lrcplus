@@ -5,6 +5,12 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Added
 
+- Add **Get more plugins** to **Settings > Plugins**, opening the wiki's Plugin directory. Link the community plugin repository and document **Code > Download ZIP**, extraction, individual plugin folder placement in `plugins/community`, dependency setup, and restarting LRCPlus in all four wiki editions.
+- Add dependency checkboxes with **Select all** and **Clear selection** for installing, checking, or removing several packages and tools in one batch. Skip items that do not support the selected action, continue after individual failures, and report the results.
+- Add **Cancel download** to stop the active dependency download or installer and skip remaining batch items. Keep completed installations and preserve the previous active installation when cancelling an unfinished replacement.
+- Add a saved **Don't show again** option to startup dependency notices, with a control in the Dependency Manager to re-enable notices.
+- Add **Show verbose logs** with live pip output, commands, exit codes, timings, download checksums, version and import checks, activation details, and error traces. Retain the latest 5,000 lines and open the logs automatically after an error.
+- Add optional offline **English → Katakana (alkana)** readings to the lyrics editor's **Generate as** selector, with installation through **Settings > Dependencies**. Keep Auto unchanged, preserve English source text, and support contractions and custom **English katakana** dictionary entries. Warn after generation when words remain unconverted, listing up to 20 distinct words and excluding translation rows and existing manual readings.
 - Expand all four manual editions with repeat/practice, sleep timer, listening statistics, and settings-transfer guides. Document library imports and removal, Favorites, weighted shuffle, independent lyric layers, personal dictionaries, and visual editor operations; refresh factory defaults and navigation.
 - Update onboarding with sortable Lyrics, Romaji, Translation, and Furigana layers, independent toggles, and a live scrollable preview. Explain Romaji sizing and Floating Lyrics, keep one layer enabled, and preserve Apply/Skip behavior and unrelated saved preferences.
 - Add sortable lyric layers in **Lyrics > Readings**: independently toggle Lyrics, Romaji, Translation, and Furigana, and drag or move them to change their rendered order. Apply the layout to compact and scrolling lyrics, with saved global and per-file preferences.
@@ -17,17 +23,29 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Changed
 
+- Use Qt's native system style for the standalone Dependency Manager window, independently of the player's custom theme. Label packages by the features they enable, with technical package names underneath for troubleshooting.
+- Load alkana's dictionary only in a temporary helper process during conversion, then release it when the helper exits. Batch **Generate All** requests into one helper run so the player retains only generated lyric readings.
 - Reduce Windows release ZIP size by keeping GUI libraries out of the standalone updater and using maximum Deflate compression.
 - Compress the offline manual's fonts as WOFF2 while preserving all glyphs and remove unused Qt PDF and virtual-keyboard plugins from Windows releases.
 - Smooth live pitch adjustments with short audio-timed ramps, faster slider updates, and the latest target applied to queued audio. Halve processed output and startup buffer targets to reduce delay while preserving decoder-burst handling and final audio samples.
 
 ### Fixed
 
+- Reduce Dependency Manager lag by batching live log notifications and text updates, deferring log rendering while the panel is hidden, disabling log line wrapping, and avoiding repeated package scans while rebuilding the list.
+- Continue karaoke highlighting through wrapped horizontal rows in reading order instead of starting the same timed chunk's wipe on every row at once. Keep furigana and text decorations aligned with the continuous sweep.
+- Keep kana next to authored furigana on the same karaoke sweep when automatic readings are cached, preventing characters such as の and が from highlighting before the preceding word and reading finish. Preserve generated readings that span multiple timestamps.
+- Stabilize onboarding pause tests on busy CI runners by waiting for dialogue completion with a bounded timeout and triggering the timer callback directly when checking the typing continuation.
+- Keep Furigana attached to its lyric words instead of rendering a separate kana line. Place it before or after Lyrics to show readings above or below, and preserve word alignment with Romaji, wrapping, scrolling, Floating Lyrics, and the onboarding preview.
 - Keep authored music-note symbols in Lyrics while suppressing duplicate copies and empty note-only rows in Romaji and Furigana. Preserve notes when Romaji is shown on its own, including in Floating Lyrics.
 - Keep at least one lyric layer enabled in Settings, and restore Lyrics when saved global or per-file preferences disable every layer.
 - Attach displayed Romaji commas to the preceding word's karaoke span, including commas generated from phrase spaces, so they highlight with the word in the player and Floating Lyrics without changing source lyrics or timestamps.
 - Reduce Korean lyrics-editor memory spikes by choosing modern covering fonts for lyric and source fields, the sidebar, karaoke controls and previews, and song-association labels. Prevent hidden labels from loading the large Windows Gulim fallback for Korean song or lyric paths, including filenames with emoji. Preserve text selection, editing, and Undo/Redo while retaining bundled Noto Sans JP.
 - Remove library tracks in place, preserving column order and widths, sorting, collapsed albums, scroll position, and surviving selections. Keep pending lyric-search results consistent when a track is removed.
+
+### Developer
+
+- Add a standalone **Renderer Playground** using the player's lyric renderer and LRCX parser, with editable source, six presets, row selection, audio-free playback and time scrubbing, rendering controls, viewport bounds, paint timing, JSON case save/load, and PNG export. Run `Scripts/python.exe tools/renderer_playground.py` from the source checkout; see `tools/RENDERER_PLAYGROUND.md`. Explicitly exclude the playground from both PyInstaller builds.
+- Add rendering regressions for continuous wrapped karaoke wipes and consistent authored-ruby timing with and without cached automatic readings, including horizontal and vertical layouts.
 
 ## [2026-11-16]
 

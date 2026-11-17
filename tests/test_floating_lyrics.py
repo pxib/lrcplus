@@ -84,7 +84,7 @@ def test_layer_changes_refresh_paused_floating_lyrics_and_resize_readings(
     qapp.processEvents()
     widget = plugin.floating.lyric_widget
     pieces = widget._prepare_segments()
-    assert [p["display_layer"] for p in pieces] == host.lyric_layer_order
+    assert [p["display_layer"] for p in pieces] == [layer for layer in host.lyric_layer_order if layer != "furigana"]
     assert [p["base_y"] for p in pieces] == sorted(p["base_y"] for p in pieces)
     romaji = next(p for p in pieces if p["display_layer"] == "romaji")
     assert widget._paint_font(widget.base_font, romaji).pointSize() == 18
