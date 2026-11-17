@@ -28,6 +28,3 @@ pyvenv.cfg
 *.jsonl
 talk-editor.*
 *_*manual*
-plugins/community/english_katakana
-plugins/community/anki_flashcards
-plugins/community/cantonese_readings
