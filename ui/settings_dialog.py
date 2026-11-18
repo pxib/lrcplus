@@ -44,6 +44,7 @@ from ui.lyric_layers import LyricLayerOrder
 from ui.settings_transfer import SettingsTransferMixin
 from ui.settings_debug import SettingsDebugMixin
 from ui.settings_controls import (
+    DeferredOptionsComboBox,
     ThemedSpinBox,
     ThemedComboBox,
     QComboBox,
@@ -376,9 +377,6 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         self.update_settings = get_update_settings({"updates": update_settings or {}})
         self.plugin_toggles = {}
 
-        _apply_settings_dialog_style(
-            self, self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides
-        )
         self.setWindowTitle("Settings")
         self.resize(880, 640)
 
@@ -1524,17 +1522,15 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
 
         layout = sections["Audio"]
         self._add_section_heading(layout, "Output")
-        self.output_device_combo = QComboBox()
-        self.output_device_combo.addItem("System Default", "")
-        for device in QMediaDevices.audioOutputs():
-            device_name = device.description().strip() or "Unnamed output"
-            device_id = bytes(device.id()).hex()
-            self.output_device_combo.addItem(device_name, device_id)
-
         current_device = str(self.playback_settings.get("output_device", "") or "")
-        device_index = self.output_device_combo.findData(current_device)
-        self.output_device_combo.setCurrentIndex(
-            device_index if device_index >= 0 else 0
+        self.output_device_combo = DeferredOptionsComboBox(
+            "System Default",
+            lambda: [
+                (device.description().strip() or "Unnamed output", bytes(device.id()).hex())
+                for device in QMediaDevices.audioOutputs()
+            ],
+            current_device,
+            selected_text="Saved output device",
         )
         self._add_labeled(layout, "Output device:", self.output_device_combo)
         self.output_device_combo.setToolTip(
@@ -1742,13 +1738,9 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
 
         layout = sections["Typography"]
         self._add_section_heading(layout, "Typography")
-        font_family = QComboBox()
-        font_family.setEditable(False)
-        font_family.addItem("System default", "")
-        for family in QFontDatabase.families():
-            font_family.addItem(family, family)
-        index = font_family.findData(values.get("font_family", ""))
-        font_family.setCurrentIndex(index if index >= 0 else 0)
+        font_family = DeferredOptionsComboBox(
+            "System default", self._font_options, values.get("font_family", "")
+        )
         controls["font_family"] = font_family
         self._add_labeled(layout, "Font family:", font_family)
 
@@ -2429,6 +2421,13 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
 
         return controls
 
+    def _font_options(self):
+        # Both lyric scopes share one enumeration for this dialog. A new dialog
+        # can pick up fonts installed since the previous one was closed.
+        if not hasattr(self, "_font_choices"):
+            self._font_choices = [(family, family) for family in QFontDatabase.families()]
+        return self._font_choices
+
     def _editor_for_key(self, key, value):
         if key == "lyric_layer_order":
             return LyricLayerOrder(value)
@@ -2473,13 +2472,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             editor.setChecked(bool(value))
             return editor
         if key in {"font_family"}:
-            editor = QComboBox()
-            editor.addItem("System default", "")
-            for family in QFontDatabase.families():
-                editor.addItem(family, family)
-            index = editor.findData(value)
-            editor.setCurrentIndex(index if index >= 0 else 0)
-            return editor
+            return DeferredOptionsComboBox("System default", self._font_options, value)
         if key in {"font_size", "ruby_font_size"}:
             editor = ThemedSpinBox()
             if key == "ruby_font_size":

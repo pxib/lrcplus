@@ -271,6 +271,11 @@ class InlineReadingsEditor(QScrollArea):
             target.customContextMenuRequested.connect(
                 lambda point, target=target: self._reading_menu(control, target, point))
         self._flow.addWidget(card)
+        # QLayout queues showing new children when the content is already
+        # visible. Until then QWidgetItem reports an empty size, allowing the
+        # outer panel to cache an 8 px height during an initial cache refresh.
+        # Make the card participate before set_tokens measures the new row.
+        card.show()
 
     def _select_word(self, index, extend=False):
         if not extend or self._selection_anchor is None:

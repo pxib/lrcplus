@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 
 from core import settings
 from core.settings_transfer import export_settings, get_factory_settings, import_settings, merge_settings
+from ui.settings_controls import DeferredOptionsComboBox
 
 
 class SettingsTransferMixin:
@@ -141,6 +142,8 @@ class SettingsTransferMixin:
     def _set_imported_control(widget, value):
         if isinstance(widget, QCheckBox):
             widget.setChecked(value)
+        elif isinstance(widget, DeferredOptionsComboBox):
+            widget.setCurrentValue(value)
         elif isinstance(widget, QComboBox):
             if widget.property("_forced_continuous"):
                 value = "continuous"

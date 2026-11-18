@@ -161,6 +161,13 @@ class FakeMedia:
         self.current_position = 0
         self.playing = False
         self.pause_count = 0
+        self.rate = 1.0
+
+    def isPlaying(self):
+        return self.playing
+
+    def playbackRate(self):
+        return self.rate
 
     def position(self):
         return self.current_position
@@ -199,6 +206,53 @@ def test_manual_seeking_cancels_segment_preview_limit(editor):
     editor.seek_preview(4000)
     editor.preview_position_changed(4000)
     assert media.playing
+    assert not editor._segment_preview_timer.isActive()
+
+
+def test_preview_stops_without_any_position_notifications(editor):
+    from PySide6.QtTest import QSignalSpy
+
+    media = FakeMedia()
+    editor.player = SimpleNamespace(media_player=media)
+    expired = QSignalSpy(editor._segment_preview_timer.timeout)
+    editor.play_waveform_segment(2200, 2240)
+    assert expired.wait(1000)
+    assert not media.playing and media.pause_count == 1
+    assert media.position() == 2240
+    assert editor._segment_preview_range is None
+    assert editor.karaoke_waveform._position_ms == 2240
+
+
+def test_late_position_notification_restores_exact_preview_end(editor):
+    media = FakeMedia()
+    editor.player = SimpleNamespace(media_player=media)
+    editor.preview_duration_changed(media.duration())
+    editor.preview_karaoke_segment()
+    media.current_position = 3700
+    editor.preview_position_changed(3700)
+    assert not media.playing and media.position() == 3500
+    assert editor.karaoke_seek.value() == 3500
+    assert not editor._segment_preview_timer.isActive()
+
+
+def test_preview_deadline_follows_speed_pause_and_resume(editor):
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    media = FakeMedia()
+    editor.player = SimpleNamespace(media_player=media)
+    editor.preview_karaoke_segment()
+    assert editor._segment_preview_timer.interval() == 1300
+    media.current_position = 2500
+    media.rate = 2.0
+    editor._segment_preview_rate_changed(2.0)
+    assert editor._segment_preview_timer.interval() == 500
+    media.pause()
+    editor._update_precise_display_playback_state(QMediaPlayer.PlaybackState.PausedState)
+    assert not editor._segment_preview_timer.isActive()
+    media.play()
+    editor._update_precise_display_playback_state(QMediaPlayer.PlaybackState.PlayingState)
+    assert editor._segment_preview_timer.isActive()
+    assert editor._segment_preview_timer.interval() == 500
 
 
 def test_closing_editor_mid_preview_pauses_audio(editor):
@@ -207,6 +261,7 @@ def test_closing_editor_mid_preview_pauses_audio(editor):
     editor.preview_karaoke_segment()
     editor.close()
     assert not media.playing
+    assert not editor._segment_preview_timer.isActive()
 
 
 def test_marking_single_segment_keeps_explicit_karaoke_on_save(editor):

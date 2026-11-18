@@ -19,6 +19,56 @@ def lyric_widget():
     return widget
 
 
+@pytest.mark.parametrize("floating", [False, True])
+@pytest.mark.parametrize("direction", ["horizontal", "vertical"])
+@pytest.mark.parametrize("text", ["Hello world", "We're alive!", "Café déjà vu"])
+def test_latin_lyrics_have_no_romaji_layer(qapp, floating, direction, text):
+    if floating:
+        from plugins.community.floating_lyrics.plugin import SplitRenderFuriganaWidget
+        widget = SplitRenderFuriganaWidget()
+    else:
+        widget = FuriganaWidget()
+    try:
+        widget.resize(700, 500)
+        widget.set_direction(direction)
+        widget.set_lyric(text, generate=False)
+        widget.segments = [{"text": text, "reading": "ハロー", "start": 1, "end": 3}]
+        widget.set_lyric_layers(LYRIC_LAYER_ORDER, True, True, False, False)
+        pieces = widget._prepare_segments()
+        assert {p["display_layer"] for p in pieces} == {"lyrics"}
+        assert "".join(p["text"] for p in pieces) == text
+        widget.set_lyric_layers(LYRIC_LAYER_ORDER, False, True, False, False)
+        assert widget._prepare_segments() == []
+
+        # Suppression applies to this lyric, without changing the user's toggle.
+        widget.set_lyric("歌", generate=False)
+        widget.segments = [{"text": "歌", "reading": "うた"}]
+        assert "".join(p["text"] for p in widget._prepare_segments()) == "uta"
+    finally:
+        widget.close()
+
+
+def test_english_row_is_not_duplicated_in_mixed_lyrics(qapp):
+    widget = lyric_widget()
+    try:
+        widget.set_lyric("Hello world\n歌\nSong", generate=False, translation_lines=[2])
+        widget.segments = [
+            {"text": "Hello ", "reading": None, "start": 1, "end": 2},
+            {"text": "world", "reading": None, "start": 2, "end": 3},
+            {"text": "\n", "reading": None},
+            {"text": "歌", "reading": "うた", "start": 3, "end": 4},
+            {"text": "\nSong", "reading": None, "instant": True},
+        ]
+        widget.set_lyric_layers(LYRIC_LAYER_ORDER, True, True, True, False)
+        pieces = widget._prepare_segments()
+        assert "".join(p["text"] for p in pieces if p["display_layer"] == "romaji") == "uta"
+        assert "".join(p["text"] for p in pieces if p["display_layer"] == "translation") == "Song"
+        english = [p for p in pieces if p["text"] in {"Hello ", "world"}]
+        assert [(p["start"], p["end"]) for p in english] == [(1, 2), (2, 3)]
+    finally:
+        widget.close()
+
+
 @pytest.mark.parametrize("order", list(permutations(LYRIC_LAYER_ORDER)))
 def test_order_controls_text_and_baselines_without_changing_timing(qapp, order):
     widget = lyric_widget()

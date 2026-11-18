@@ -3,6 +3,7 @@
 from PySide6.QtGui import QFontMetrics
 
 from core.lyrics_settings import normalize_layer_order
+from lyrics.furigana import detect_lyrics_language
 from lyrics.romaji import all_romaji_texts
 
 
@@ -62,6 +63,12 @@ class DisplayLayersMixin:
                 layer_rows = translations if layer == "translation" else originals
                 source = []
                 for row in layer_rows:
+                    # Latin lyrics already supply their own pronunciation text.
+                    # Check the authored text, even if a provider added readings.
+                    if layer == "romaji" and detect_lyrics_language(
+                        "".join(p["text"] for p in row)
+                    ) == "latin":
+                        continue
                     if layer == "furigana" and not any(p.get("reading") for p in row):
                         continue
                     romanized = all_romaji_texts(row) if layer == "romaji" else None

@@ -43,6 +43,32 @@ def _lyric_state(lyric, field_names):
 
 
 class LyricsEditorDocumentMixin:
+    def create_new_lrcx(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Create New LRCX", "Untitled.lrcx", "LRCX Files (*.lrcx)",
+        )
+        if not path:
+            return
+        target = Path(path)
+        if target.suffix.lower() != ".lrcx":
+            target = target.with_name(target.name + ".lrcx")
+            if target.exists():
+                answer = QMessageBox.question(
+                    self, "Create New LRCX", f"Replace {target.name}?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+        self._initialize_document(target, new_document=True)
+
+    def open_lrcx_document(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open LRCX", "", "LRCX Files (*.lrcx)",
+        )
+        if path:
+            self._initialize_document(Path(path))
+
     def _document_state(self):
         return {
             "lines": tuple(_lyric_state(line, _LINE_STATE_FIELDS) for line in self.lines),
@@ -117,6 +143,7 @@ class LyricsEditorDocumentMixin:
     def _clear_editor_views(self):
         if hasattr(self, "readings_editor"):
             self.readings_editor.set_tokens([])
+        self._refresh_lyrics_preview()
         if hasattr(self, "line_text"):
             self.line_text.clear()
             self.insert_newline_button.setEnabled(False)
@@ -851,7 +878,7 @@ class LyricsEditorDocumentMixin:
                 # Parsing failed; reload_model_from_source showed the error.
                 return
 
-        if not self.document_dirty and self.lrc_path.is_file():
+        if not self.is_new_document and not self.document_dirty and self.lrc_path.is_file():
             if close_after_save:
                 self.accept()
             return True

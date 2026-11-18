@@ -73,6 +73,57 @@ def test_real_transport_seeks_exclude_even_small_position_jumps(playback):
     assert totals(window)["plays"] == 1
 
 
+@pytest.mark.parametrize("route", ["native", "pcm"])
+@pytest.mark.parametrize("outcome", ["reject", "exec_error", "init_error"])
+def test_editor_playback_is_excluded_and_tracking_resumes(playback, monkeypatch, route, outcome):
+    window, state = playback
+    if route == "pcm":
+        monkeypatch.setattr(window._pcm_worker, "output_progress",
+                            lambda: (7, state.position, state.playing))
+        window._statistics_rebase()
+    state.now = 10
+    state.position = 10000
+
+    class Dialog:
+        def __init__(self, *args):
+            assert window._statistics_editor_active
+            assert not window._statistics_timer.isActive()
+            state.now = 50
+            state.position = 50000
+            assert totals(window)["listened_ms"] == 10000
+            assert totals(window)["plays"] == 0
+            if outcome == "init_error":
+                raise RuntimeError("editor initialization failed")
+
+        def exec(self):
+            # Restart and seek events during editing must remain excluded too.
+            window._statistics_restart_attempt()
+            state.now = 90
+            state.position = 90000
+            assert totals(window)["listened_ms"] == 10000
+            assert totals(window)["plays"] == 0
+            if outcome == "exec_error":
+                raise RuntimeError("editor execution failed")
+            return 0
+
+        def deleteLater(self):
+            pass
+
+    monkeypatch.setattr("ui.lrc_editor.LrcEditorDialog", Dialog)
+    if outcome == "reject":
+        window.edit_current_lyrics()
+    else:
+        with pytest.raises(RuntimeError, match="editor .* failed"):
+            window.edit_current_lyrics()
+    assert not window._statistics_editor_active
+    assert window._statistics_timer.isActive()
+    assert get_statistics_settings() == {"enabled": True}
+    state.now += 10
+    state.position += 10000
+    assert totals(window)["listened_ms"] == 20000
+    assert totals(window)["plays"] == 0
+
+
 def test_mute_and_internal_native_muting_are_distinguished(playback):
     window, state = playback
     window.audio_output.setVolume(0)  # Processed routes mute this internally.

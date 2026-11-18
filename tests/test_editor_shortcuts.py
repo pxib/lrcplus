@@ -5,7 +5,7 @@ import pytest
 from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QDialog, QLineEdit, QMessageBox
+from PySide6.QtWidgets import QDialog, QLineEdit
 
 from lyrics.models import LyricLine
 
@@ -197,23 +197,80 @@ def test_lyrics_shortcuts_are_scoped_to_lyrics_tab_and_editor_window(editor, qap
 
 @pytest.mark.parametrize("karaoke", [False, True])
 def test_shortcut_reference_is_available_without_karaoke(make_lyrics_editor, qapp, monkeypatch, karaoke):
+    from ui.editor_shortcuts import EditorShortcutsDialog
+
     editor = make_lyrics_editor(karaoke=karaoke)
     messages = []
-    monkeypatch.setattr(QMessageBox, "information", lambda *args: messages.append(args[1:]))
+
+    def inspect(dialog):
+        rows = []
+        for index in range(dialog.tree.topLevelItemCount()):
+            group = dialog.tree.topLevelItem(index)
+            rows.extend((group.child(row).text(0), group.child(row).text(1))
+                        for row in range(group.childCount()))
+        messages.append(rows)
+        return 0
+
+    monkeypatch.setattr(EditorShortcutsDialog, "exec", inspect)
     focus_editor(editor, qapp, editor.line_list)
     assert editor.lyrics_shortcuts_button.isVisible()
     editor.lyrics_shortcuts_button.click()
-    assert messages[0][0] == "Lyrics Editor Shortcuts"
-    assert "Ctrl+Enter" in messages[0][1]
-    assert "Ctrl+S" in messages[0][1]
-    assert "Shift+click waveform" in messages[0][1]
-    assert "disabled while typing" in messages[0][1]
+    text = str(messages[0])
+    assert "Ctrl+Enter" in text
+    assert "Ctrl+S" in text
+    assert "Shift+click waveform" in text
+    assert "disabled while typing" in text
+    assert "Ctrl+wheel" in text and "Middle-button drag" in text
+    assert "Left click / drag" in text and "Right click / drag" in text
+    assert ("Ctrl+right click" in text) == karaoke
+    assert ("Alt+left / right drag" in text) == karaoke
     editor.tabs.setCurrentWidget(editor.source_editor.parentWidget())
-    assert not editor.lyrics_shortcuts_button.isVisible()
+    assert editor.lyrics_shortcuts_button.isVisible()
+    QTest.keyClick(editor.source_editor, Qt.Key.Key_F1)
+    assert len(messages) == 2
     if karaoke:
         editor.tabs.setCurrentWidget(editor.karaoke_scroll)
-        assert not editor.lyrics_shortcuts_button.isVisible()
-        assert editor.karaoke_shortcuts_button.isVisible()
+        assert editor.lyrics_shortcuts_button.isVisible()
+
+
+def test_shortcut_search_filters_actions_and_restores_groups(qapp):
+    from ui.editor_shortcuts import EditorShortcutsDialog
+
+    dialog = EditorShortcutsDialog([
+        ("Waveform", [("Ctrl+wheel", "Zoom around the cursor"), ("Home", "Fit the selected lyric")]),
+        ("Document", [("Ctrl+S", "Save")]),
+    ])
+    try:
+        dialog.search.setText("waveform ZOOM")
+        waveform = dialog.tree.topLevelItem(0)
+        document = dialog.tree.topLevelItem(1)
+        assert not waveform.isHidden()
+        assert not waveform.child(0).isHidden()
+        assert waveform.child(1).isHidden() and document.isHidden()
+        dialog.search.setText("no-such-action")
+        assert waveform.isHidden() and document.isHidden()
+        assert not dialog.empty_label.isHidden()
+        dialog.search.clear()
+        assert not waveform.isHidden() and not document.isHidden()
+        assert not waveform.child(1).isHidden()
+        assert dialog.empty_label.isHidden()
+    finally:
+        dialog.deleteLater()
+
+
+def test_f1_is_scoped_to_editor_window(editor, qapp, monkeypatch):
+    calls = []
+    monkeypatch.setattr(editor, "show_lyrics_shortcuts", lambda: calls.append("help"))
+    focus_editor(editor, qapp, editor.line_text)
+    QTest.keyClick(editor.line_text, Qt.Key.Key_F1)
+    assert calls == ["help"]
+    child = QDialog(editor)
+    try:
+        focus_editor(child, qapp, child)
+        QTest.keyClick(child, Qt.Key.Key_F1)
+        assert calls == ["help"]
+    finally:
+        child.close()
 
 
 @pytest.mark.parametrize("karaoke", [False, True])

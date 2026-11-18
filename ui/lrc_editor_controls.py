@@ -1,8 +1,52 @@
 from PySide6.QtCore import Qt, QSize, Signal, QTextBoundaryFinder
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
-from PySide6.QtWidgets import QLabel, QSlider, QSizePolicy, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSlider, QSizePolicy, QVBoxLayout, QWidget
 
 from core.fonts import content_font
+
+
+class WaveformControls(QWidget):
+    """The same visible navigation controls in both editor timelines."""
+
+    def __init__(self, waveform, *, karaoke=False, parent=None):
+        super().__init__(parent)
+        self.waveform = waveform
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        self.pan_left = self._button("←", "Pan earlier (Left arrow or mouse wheel).", lambda: waveform.pan_view(-0.12))
+        self.pan_right = self._button("→", "Pan later (Right arrow or mouse wheel).", lambda: waveform.pan_view(0.12))
+        self.zoom_out = self._button("Zoom −", "Zoom out (− or Ctrl+wheel).", lambda: waveform.zoom_view(1 / 1.2))
+        self.zoom_in = self._button("Zoom +", "Zoom in (+ or Ctrl+wheel).", lambda: waveform.zoom_view(1.2))
+        self.fit_line = self._button("Fit line", "Fit the selected lyric line (Home).", waveform.fit_selection)
+        self.all_audio = self._button("All audio", "Show the entire audio file (Ctrl+Home).", waveform.show_full_audio)
+        self.pan_left.setAccessibleName("Pan waveform earlier")
+        self.pan_right.setAccessibleName("Pan waveform later")
+        self.pan_left.setFixedWidth(32)
+        self.pan_right.setFixedWidth(32)
+        for button in (self.pan_left, self.pan_right, self.zoom_out, self.zoom_in, self.fit_line, self.all_audio):
+            row.addWidget(button)
+        row.addStretch()
+        layout.addLayout(row)
+        preview_hint = "Ctrl+right click: preview segment" if karaoke else "Shift+click: play from here"
+        self.hint = QLabel(f"Left: start · Right: end · Ctrl+click: seek · {preview_hint}")
+        self.hint.setWordWrap(True)
+        layout.addWidget(self.hint)
+
+    def _button(self, text, tooltip, callback):
+        button = QPushButton(text)
+        button.setToolTip(tooltip)
+        button.setAutoDefault(False)
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        button.setProperty("waveformNavigation", True)
+        button.clicked.connect(lambda: self._activate(callback))
+        return button
+
+    def _activate(self, callback):
+        callback()
+        self.waveform.setFocus(Qt.FocusReason.OtherFocusReason)
 
 
 class LyricLabel(QLabel):

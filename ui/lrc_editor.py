@@ -65,10 +65,12 @@ from ui.lyrics_editor_document import LyricsEditorDocumentMixin
 from ui.lyrics_editor_playback import LyricsEditorPlaybackMixin
 from ui.lyrics_editor_karaoke import LyricsEditorKaraokeMixin
 from ui.lyrics_editor_operations import LyricsEditorOperationsMixin
+from ui.lyrics_editor_preview import LyricsEditorPreviewMixin
 
 
 class LrcEditorDialog(
     LyricsEditorDocumentMixin,
+    LyricsEditorPreviewMixin,
     LyricsEditorPlaybackMixin,
     LyricsEditorKaraokeMixin,
     LyricsEditorOperationsMixin,
@@ -90,8 +92,29 @@ class LrcEditorDialog(
     is retained as an advanced escape hatch rather than being the whole editor.
     """
 
-    def __init__(self, lrc_path, parent=None):
+    def __init__(self, lrc_path=None, parent=None, *, new_document=False):
         super().__init__(parent)
+        self.player = parent
+        self.lrc_path = None
+        self.result_path = None
+        self.document_dirty = False
+        self._closed = False
+        self._choosing_document = lrc_path is None
+        if self._choosing_document:
+            self.setWindowTitle("Lyrics Editor 4.0")
+            self.resize(1100, 740)
+            self._build_document_start_page()
+            return
+        self._initialize_document(lrc_path, new_document=new_document)
+
+    def _initialize_document(self, lrc_path, *, new_document=False):
+        parent = self.player
+        if self._choosing_document:
+            self.layout().removeWidget(self.document_start_page)
+            self.layout().setContentsMargins(11, 11, 11, 11)
+            self.document_start_page.hide()
+            self.document_start_page.deleteLater()
+            self._choosing_document = False
 
         # Smooth display clock: QMediaPlayer positionChanged is coarse on some
         # backends, so interpolate only the precise time display at 30 Hz.
@@ -113,7 +136,7 @@ class LrcEditorDialog(
         self.lrc_path = Path(lrc_path)
         # This path is only the default save target when no file exists yet.
         # Keep that draft entirely in memory until the user explicitly saves.
-        self.is_new_document = not self.lrc_path.exists()
+        self.is_new_document = new_document or not self.lrc_path.exists()
         self.result_path = None if self.is_new_document else self.lrc_path
         self.attached_song_path = (
             self._read_attached_song_path(self.lrc_path)
@@ -154,6 +177,10 @@ class LrcEditorDialog(
         self._preview_segments_line_index = None
         self._waveform_drag_row = -1
         self._segment_preview_range = None
+        self._segment_preview_timer = QTimer(self)
+        self._segment_preview_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._segment_preview_timer.setSingleShot(True)
+        self._segment_preview_timer.timeout.connect(self._finish_segment_preview)
         # Cache expensive full-document language detection until lyric text changes.
         self._detected_language_cache_key = None
         self._detected_language_cache_value = None
@@ -169,7 +196,11 @@ class LrcEditorDialog(
         self._line_reading_timer.timeout.connect(
             lambda: self._refresh_auto_readings_for_line(self._current_line_index())
         )
-        self.lyrics_offset_ms = get_lrcx_offset(self.lrc_path) if self.lrc_path.suffix.lower() == ".lrcx" else 0.0
+        self.lyrics_offset_ms = (
+            get_lrcx_offset(self.lrc_path)
+            if not new_document and self.lrc_path.suffix.lower() == ".lrcx"
+            else 0.0
+        )
 
         # Model checkpoints support all editor tools; ordinary typing stores
         # only its changed line, while bulk operations keep a full snapshot.
@@ -189,10 +220,11 @@ class LrcEditorDialog(
 
 
         self._update_document_title()
-        self.resize(1180, 820)
+        self.resize(1100, 740)
 
-        self._load_document()
-        self._restore_autosave_if_available()
+        if not new_document:
+            self._load_document()
+            self._restore_autosave_if_available()
         # Catch key events from transient QTableWidget/QSpinBox editors too.
         # The filter itself is tightly scoped to this dialog's editor controls.
         QApplication.instance().installEventFilter(self)
@@ -238,9 +270,11 @@ class LrcEditorDialog(
             player.playbackStateChanged.connect(
                 self._update_precise_display_playback_state
             )
+            player.playbackRateChanged.connect(self._segment_preview_rate_changed)
             self.preview_position_changed(player.position())
             self.preview_duration_changed(player.duration())
             self.preview_playback_state_changed(player.playbackState())
+            self._update_precise_display_playback_state(player.playbackState())
 
         # QTableWidget starts editing a cell when Space is pressed. In the
         # karaoke timing grid Space is reserved for playback, so intercept it
@@ -382,9 +416,6 @@ class LrcEditorDialog(
 
     def _update_tab_specific_controls(self):
         self._update_line_selection_controls()
-        self.lyrics_shortcuts_button.setVisible(
-            self.tabs.currentWidget() is self.lyrics_page
-        )
         if not self.karaoke_enabled:
             return
         karaoke_index = self.tabs.indexOf(self.karaoke_scroll)
@@ -766,6 +797,7 @@ class LrcEditorDialog(
             self.line_time.setValue(0)
             self.line_text.clear()
             self.readings_editor.set_tokens([])
+            self._refresh_lyrics_preview()
             self._update_furigana_editor_availability(None)
             self._update_text_timing_notice(None)
             if hasattr(self, "lyrics_waveform"):
@@ -1245,6 +1277,7 @@ class LrcEditorDialog(
         self._refresh_lyrics_waveform_markers()
         self._refresh_karaoke_waveform_editor()
         self._refresh_karaoke_preview()
+        self._refresh_lyrics_preview(rebuild_segments=False)
         media = getattr(self.player, "media_player", None)
         if media is not None:
             self._update_playback_line_style(media.position())
@@ -1280,6 +1313,7 @@ class LrcEditorDialog(
         finally:
             del blocker
             self.loading = previous_loading
+        self._refresh_lyrics_preview()
 
     def furigana_changed(self, token_index=None):
         if self.loading:
@@ -1660,6 +1694,7 @@ class LrcEditorDialog(
         self._refresh_lyrics_waveform_markers()
         self._refresh_karaoke_waveform_editor()
         self._refresh_karaoke_preview()
+        self._refresh_lyrics_preview()
         self._update_save_button_state()
 
     def mark_current_line_playback_time(self):
@@ -1699,6 +1734,7 @@ class LrcEditorDialog(
                 self.line_list.scrollToItem(
                     item, QListWidget.ScrollHint.PositionAtCenter
                 )
+        self._refresh_lyrics_preview()
 
     def insert_lyric_newline(self):
         self._insert_lyric_break(r"{\n}")
@@ -1820,6 +1856,7 @@ class LrcEditorDialog(
             self._build_separator_buttons(line)
         self._refresh_ruby_preview(line)
         self._update_lyric_search()
+        self._refresh_lyrics_preview()
         # Wait for typing to settle before requesting readings for new text.
         self._line_reading_timer.start()
         if self.karaoke_enabled:
@@ -1909,6 +1946,10 @@ class LrcEditorDialog(
             event.accept()
 
     def done(self, result):
+        if self._choosing_document:
+            self._closed = True
+            super().done(result)
+            return True
         if self.translation_panel is not None and not self.translation_panel.confirm_close():
             return False
         self._closed = True
@@ -1917,15 +1958,16 @@ class LrcEditorDialog(
         if self.translation_panel is not None:
             self.translation_panel.shutdown()
         if self._segment_preview_range is not None:
+            self._cancel_segment_preview()
             media = getattr(self.player, "media_player", None)
             if media is not None:
                 media.pause()
-            self._segment_preview_range = None
         self._discard_autosave()
         self._reading_generation_epoch += 1
         self._autosave_timer.stop()
         self._line_reading_timer.stop()
         self._precise_display_timer.stop()
+        self.lyrics_renderer_preview.stop_workers()
         # The player deletes the closed dialog. Stop its decoder threads before
         # Qt destroys their parent widgets and QThread objects.
         for waveform in self.findChildren(WaveformWidget):
@@ -1938,6 +1980,7 @@ class LrcEditorDialog(
                 ("durationChanged", self.preview_duration_changed),
                 ("playbackStateChanged", self.preview_playback_state_changed),
                 ("playbackStateChanged", self._update_precise_display_playback_state),
+                ("playbackRateChanged", self._segment_preview_rate_changed),
             ):
                 try:
                     getattr(media, signal_name).disconnect(callback)

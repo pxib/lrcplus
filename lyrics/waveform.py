@@ -166,6 +166,8 @@ class WaveformWidget(QWidget):
         self.setMinimumHeight(74)
         self.setMaximumHeight(110)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName("Audio waveform")
         self._peaks = []
         self._duration_ms = 0
         self._position_ms = 0
@@ -335,44 +337,6 @@ class WaveformWidget(QWidget):
         max_pan = max(min_pan, float(self._duration_ms) - float(base_start) - span)
         pan = max(min_pan, min(max_pan, self._segment_pan_ms))
         return base_start + pan, base_start + pan + span
-
-    def wheelEvent(self, event):
-        if not self._karaoke_segments or self._duration_ms <= 0:
-            return super().wheelEvent(event)
-
-        delta = event.angleDelta().y()
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            factor = 1.25 if delta > 0 else 1 / 1.25
-            old_zoom = self._segment_zoom
-            self._segment_zoom = max(1.0, min(24.0, self._segment_zoom * factor))
-
-            # Keep the point under the cursor approximately stationary.
-            rect_width = max(1.0, self.width() - 16.0)
-            ratio = max(0.0, min(1.0, (event.position().x() - 8.0) / rect_width))
-            old_start, old_end = self._segment_viewport()
-            anchor = old_start + ratio * (old_end - old_start)
-            new_start, new_end = self._segment_viewport()
-            self._segment_pan_ms += anchor - (new_start + ratio * (new_end - new_start))
-        else:
-            # Normal wheel = horizontal timeline pan.
-            base_start = self._segment_view_start_ms
-            base_end = self._segment_view_end_ms or self._duration_ms
-            base_span = max(1.0, base_end - base_start)
-            visible_span = base_span / self._segment_zoom
-            step = max(25.0, visible_span * 0.12)
-            self._segment_pan_ms += (-step if delta > 0 else step)
-        # Keep the stored pan within the actual audio bounds.
-        base_start = float(self._segment_view_start_ms)
-        base_end = float(self._segment_view_end_ms or self._duration_ms)
-        base_span = max(1.0, base_end - base_start)
-        visible_span = min(float(self._duration_ms), max(100.0, base_span / self._segment_zoom))
-        min_pan = -base_start
-        max_pan = max(min_pan, float(self._duration_ms) - base_start - visible_span)
-        self._segment_pan_ms = max(min_pan, min(max_pan, self._segment_pan_ms))
-
-        self.update()
-        event.accept()
-
 
     def focus_karaoke_segments(self):
         """Center and zoom the waveform around the karaoke section."""
@@ -844,6 +808,69 @@ class WaveformWidget(QWidget):
         self.update()
         super().leaveEvent(event)
 
+    def _set_viewport(self, start, span):
+        if self._duration_ms <= 0:
+            return
+        span = min(float(self._duration_ms), max(1.0, span))
+        start = max(0.0, min(float(self._duration_ms) - span, start))
+        if self._karaoke_segments:
+            base_start = float(self._segment_view_start_ms)
+            base_end = float(self._segment_view_end_ms or self._duration_ms)
+            self._segment_zoom = max(1.0, base_end - base_start) / span
+            self._segment_pan_ms = start - base_start
+        else:
+            self._lyric_zoom = float(self._duration_ms) / span
+            self._lyric_pan_ms = start
+        self.update()
+
+    def zoom_view(self, factor, anchor_ratio=0.5):
+        """Zoom around a cursor or the center, retaining that audio position."""
+        if self._duration_ms <= 0 or factor <= 0:
+            return
+        start, end = self._waveform_view()
+        span = max(1.0, end - start)
+        ratio = max(0.0, min(1.0, anchor_ratio))
+        minimum = 100.0 if self._karaoke_segments else 250.0
+        new_span = min(float(self._duration_ms), max(minimum, span / factor))
+        self._set_viewport(start + ratio * (span - new_span), new_span)
+
+    def pan_view(self, fraction):
+        """Move by a fraction of the visible time range, within audio bounds."""
+        start, end = self._waveform_view()
+        self._set_viewport(start + fraction * (end - start), end - start)
+
+    def fit_selection(self):
+        """Restore the view around the selected lyric or karaoke line."""
+        if self._karaoke_segments:
+            self.focus_karaoke_segments()
+        else:
+            self._focus_lyrics_interval()
+            self.update()
+
+    def show_full_audio(self):
+        self._set_viewport(0.0, float(self._duration_ms))
+
+    def keyPressEvent(self, event):
+        if self._duration_ms > 0:
+            modifiers = event.modifiers()
+            key = event.key()
+            if key == Qt.Key.Key_Home and modifiers == Qt.KeyboardModifier.ControlModifier:
+                self.show_full_audio()
+            elif (modifiers in (Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.ShiftModifier)
+                  and key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal)):
+                self.zoom_view(1.2)
+            elif modifiers == Qt.KeyboardModifier.NoModifier and key == Qt.Key.Key_Minus:
+                self.zoom_view(1 / 1.2)
+            elif modifiers == Qt.KeyboardModifier.NoModifier and key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+                self.pan_view(-0.12 if key == Qt.Key.Key_Left else 0.12)
+            elif modifiers == Qt.KeyboardModifier.NoModifier and key == Qt.Key.Key_Home:
+                self.fit_selection()
+            else:
+                return super().keyPressEvent(event)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def wheelEvent(self, event):
         if self._duration_ms <= 0:
             event.ignore()
@@ -853,13 +880,6 @@ class WaveformWidget(QWidget):
         if steps == 0:
             event.ignore()
             return
-
-        old_start, old_end = (
-            self._segment_viewport()
-            if self._karaoke_segments
-            else self._lyrics_viewport()
-        )
-        old_span = max(1.0, old_end - old_start)
 
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             # Ctrl + wheel: zoom around the cursor.
@@ -871,40 +891,22 @@ class WaveformWidget(QWidget):
                 (cursor_x - left) / max(1.0, right - left),
             ))
 
-            focus_ms = old_start + ratio * old_span
-            zoom_factor = 1.20 ** steps
-            new_span = max(1.0, old_span / zoom_factor)
-            new_start = focus_ms - ratio * new_span
-
-            if self._karaoke_segments:
-                self._segment_zoom = max(
-                    1.0,
-                    min(100.0, self._segment_zoom * zoom_factor),
-                )
-                self._segment_pan_ms = (
-                    new_start - float(self._segment_view_start_ms)
-                )
-            else:
-                self._lyric_zoom = max(
-                    1.0,
-                    min(100.0, self._lyric_zoom * zoom_factor),
-                )
-                self._lyric_pan_ms = (
-                    new_start
-                    - float(getattr(self, "_lyric_view_start_ms", 0.0))
-                )
+            self.zoom_view(1.20 ** steps, ratio)
         else:
-            # Plain wheel: preserve normal horizontal panning.
-            pan_delta = -steps * old_span * 0.12
-            if self._karaoke_segments:
-                self._segment_pan_ms += pan_delta
-            else:
-                self._lyric_pan_ms += pan_delta
+            self.pan_view(-steps * 0.12)
 
         self.update()
         event.accept()
 
     def mousePressEvent(self, event):
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        if (event.button() == Qt.MouseButton.LeftButton
+                and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+                and self._duration_ms > 0):
+            self._playback_click_active = True
+            self.seekRequested.emit(self._ms_for_x(event.position().x()))
+            event.accept()
+            return
         # Playback must take precedence over A/B editing, including clicks on
         # a timing marker or beyond the selected lyric's boundaries.
         if (

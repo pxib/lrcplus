@@ -47,7 +47,7 @@ except Exception:
     find_reading_provider = lambda *args, **kwargs: None
 
 
-from ui.lrc_editor_controls import ClickableSlider, KaraokeSeparationWidget, LyricLabel
+from ui.lrc_editor_controls import ClickableSlider, KaraokeSeparationWidget, LyricLabel, WaveformControls
 from ui.inline_readings import InlineReadingsEditor
 from ui.content_list import configure_content_list
 from ui.content_fonts import ContentLabel
@@ -55,6 +55,16 @@ from ui.lyrics_preview import LyricsTextEdit
 
 
 class LrcEditorUiMixin:
+    def _build_document_start_page(self):
+        from ui.editor_start_page import EditorStartPage
+
+        self.document_start_page = EditorStartPage(self)
+        self.create_lrcx_button = self.document_start_page.create_button
+        self.open_lrcx_button = self.document_start_page.open_button
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.document_start_page)
+
     @property
     def share_card(self):
         """Allocate the card controls and fonts only when they are needed."""
@@ -105,7 +115,7 @@ class LrcEditorUiMixin:
         lyrics_page = QWidget()
         self.lyrics_page = lyrics_page
         lyrics_layout = QVBoxLayout(lyrics_page)
-        hint = QLabel("Select a lyric line, edit it here, or use the shared seekbar to align its timestamp.")
+        hint = QLabel("Select a lyric, edit its text, and align its timing with the timeline. Open Shortcuts for all keyboard and waveform controls.")
         hint.setWordWrap(True)
         lyrics_layout.addWidget(hint)
 
@@ -144,8 +154,7 @@ class LrcEditorUiMixin:
         self.lyrics_transport_toggle.setCheckable(True)
         self.lyrics_transport_toggle.setChecked(False)
         self.lyrics_transport_toggle.setToolTip(
-            "Toggle between the normal seekbar and the audio waveform. "
-            "Shift-click the waveform to play from the clicked position."
+            "Show waveform timing controls. Turn off to use the seekbar."
         )
         ffmpeg_available = find_ffmpeg() is not None
         self.lyrics_transport_toggle.setEnabled(ffmpeg_available)
@@ -181,13 +190,16 @@ class LrcEditorUiMixin:
             self.lyrics_seek.sizeHint().height()
         )
         lyrics_layout.addWidget(self.lyrics_transport_stack)
+        self.lyrics_waveform_controls = WaveformControls(self.lyrics_waveform)
+        self.lyrics_waveform_controls.hide()
+        lyrics_layout.addWidget(self.lyrics_waveform_controls)
 
         lyrics_transport = QHBoxLayout()
         self.lyrics_position_label = QLabel("00:00.000")
         self.lyrics_duration_label = QLabel("00:00.000")
-        self.lyrics_back_button = QPushButton("<< 5s")
+        self.lyrics_back_button = QPushButton("−5 s")
         self.lyrics_play_button = QPushButton("Play")
-        self.lyrics_forward_button = QPushButton("5s >>")
+        self.lyrics_forward_button = QPushButton("+5 s")
         self.lyrics_play_button.setToolTip("Play or pause (Space, outside text fields).")
         self.lyrics_back_button.setToolTip("Seek back 5 seconds. Use A for 1 second or Q for 100 ms.")
         self.lyrics_forward_button.setToolTip("Seek forward 5 seconds. Use D for 1 second or E for 100 ms.")
@@ -205,6 +217,8 @@ class LrcEditorUiMixin:
 
         detail = QWidget()
         detail_layout = QVBoxLayout(detail)
+        detail_layout.setContentsMargins(4, 4, 4, 4)
+        detail_layout.setSpacing(4)
         form = QFormLayout()
         self.line_time = QDoubleSpinBox()
         self.line_time.setDecimals(3)
@@ -300,6 +314,8 @@ class LrcEditorUiMixin:
         lyric_layout.addWidget(self.line_text)
         form.addRow("Lyric:", lyric_field)
         detail_layout.addLayout(form)
+        self.lyrics_live_preview_panel = self._build_lyrics_live_preview()
+        detail_layout.addWidget(self.lyrics_live_preview_panel, 1)
 
         furigana_box = QFrame()
         self.furigana_box = furigana_box
@@ -434,11 +450,11 @@ class LrcEditorUiMixin:
             # compact seekbar for ordinary playback, or a waveform for visual
             # timing work.
             karaoke_transport_controls = QHBoxLayout()
-            karaoke_transport_controls.addStretch()
+            karaoke_transport_controls.addWidget(QLabel("Timeline:"))
             self.karaoke_transport_toggle = QPushButton("Waveform")
             self.karaoke_transport_toggle.setCheckable(True)
             self.karaoke_transport_toggle.setToolTip(
-                "Toggle between the normal seekbar and the audio waveform."
+                "Show waveform timing controls. Turn off to use the seekbar."
             )
             self.karaoke_transport_toggle.setEnabled(ffmpeg_available)
             if not ffmpeg_available:
@@ -447,6 +463,7 @@ class LrcEditorUiMixin:
                 )
             self.karaoke_transport_toggle.toggled.connect(self._toggle_karaoke_transport)
             karaoke_transport_controls.addWidget(self.karaoke_transport_toggle)
+            karaoke_transport_controls.addStretch()
             karaoke_layout.addLayout(karaoke_transport_controls)
 
             self.karaoke_transport_stack = QStackedWidget()
@@ -470,13 +487,19 @@ class LrcEditorUiMixin:
                 self.karaoke_seek.sizeHint().height()
             )
             karaoke_layout.addWidget(self.karaoke_transport_stack)
+            self.karaoke_waveform_controls = WaveformControls(self.karaoke_waveform, karaoke=True)
+            self.karaoke_waveform_controls.hide()
+            karaoke_layout.addWidget(self.karaoke_waveform_controls)
 
             preview_controls = QHBoxLayout()
             self.preview_position_label = QLabel("00:00.000")
             self.preview_duration_label = QLabel("00:00.000")
-            self.preview_back_button = QPushButton("<< 5s")
+            self.preview_back_button = QPushButton("−5 s")
             self.preview_play_button = QPushButton("Play")
-            self.preview_forward_button = QPushButton("5s >>")
+            self.preview_forward_button = QPushButton("+5 s")
+            self.preview_play_button.setToolTip("Play or pause (Space, outside text fields).")
+            self.preview_back_button.setToolTip("Seek back 5 seconds. Use A for 1 second or Q for 100 ms.")
+            self.preview_forward_button.setToolTip("Seek forward 5 seconds. Use D for 1 second or E for 100 ms.")
             self.preview_back_button.clicked.connect(lambda: self.skip_preview(-5.0))
             self.preview_play_button.clicked.connect(self.toggle_preview)
             self.preview_forward_button.clicked.connect(lambda: self.skip_preview(5.0))
@@ -821,17 +844,9 @@ class LrcEditorUiMixin:
         # Document-wide cleanup actions live in Advanced > Danger.
         self.reset_karaoke_button = None
         self.lyrics_shortcuts_button = QPushButton("Shortcuts")
-        self.lyrics_shortcuts_button.setToolTip("Show lyrics editor keyboard shortcuts.")
+        self.lyrics_shortcuts_button.setToolTip("Search keyboard shortcuts and waveform controls (F1).")
         self.lyrics_shortcuts_button.clicked.connect(self.show_lyrics_shortcuts)
         self.karaoke_shortcuts_button = None
-        if self.karaoke_enabled:
-            self.karaoke_shortcuts_button = QPushButton("Shortcuts")
-            self.karaoke_shortcuts_button.setToolTip(
-                "Show karaoke keyboard shortcuts."
-            )
-            self.karaoke_shortcuts_button.clicked.connect(
-                self.show_karaoke_shortcuts
-            )
 
         self.undo_button = QPushButton("Undo")
         self.redo_button = QPushButton("Redo")
@@ -865,7 +880,7 @@ class LrcEditorUiMixin:
         buttons.addWidget(self.save_close_button)
         buttons.addWidget(cancel_button)
 
-        layout = QVBoxLayout(self)
+        layout = self.layout() or QVBoxLayout(self)
         layout.addWidget(workspace, 1)
         layout.addLayout(buttons)
 

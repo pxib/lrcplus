@@ -147,7 +147,7 @@ def test_segment_preview_plays_offset_audio_interval(editor, monkeypatch, offset
     editor.preview_position_changed(3500 + offset - 1)
     assert calls[-1] == ("play",)
     editor.preview_position_changed(3500 + offset)
-    assert calls[-1] == ("pause",)
+    assert calls[-2:] == [("pause",), ("seek", 3500 + offset)]
 
 
 @pytest.mark.parametrize("offset", [-500, 500])

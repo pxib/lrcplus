@@ -1786,16 +1786,13 @@ class Player(
             if lyrics_path is None and self.current_audio_path:
                 lyrics_path = Path(self.current_audio_path).with_suffix(".lrc")
 
-            if lyrics_path is None:
-                QMessageBox.information(
-                    self,
-                    "Edit Lyrics",
-                    "Open an audio or lyrics file first.",
-                )
-                return
-
-            dialog = LrcEditorDialog(lyrics_path, self)
+            statistics_editing = getattr(self, "_statistics_editor_active", False)
+            set_statistics_editing = getattr(self, "_set_statistics_editor_active", None)
+            if set_statistics_editing is not None:
+                set_statistics_editing(True)
+            dialog = None
             try:
+                dialog = LrcEditorDialog(lyrics_path, self)
                 # Association edits refresh through save_document; loading the
                 # editor's old file here would undo a newly selected target.
                 if (dialog.exec() == QDialog.DialogCode.Accepted
@@ -1805,7 +1802,10 @@ class Player(
                     self.load_lrc_file(str(saved_path))
                     self.current_lyrics_path = Path(saved_path)
             finally:
-                dialog.deleteLater()
+                if dialog is not None:
+                    dialog.deleteLater()
+                if set_statistics_editing is not None:
+                    set_statistics_editing(statistics_editing)
 
 
         def save_lyrics_as(self):

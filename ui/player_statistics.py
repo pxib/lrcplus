@@ -73,7 +73,9 @@ class PlayerStatisticsMixin:
 
     def _statistics_snapshot(self):
         media = self.media_player
-        audible = not getattr(self, "is_muted", False) and self.volume_slider.value() > 0
+        audible = (not getattr(self, "_statistics_editor_active", False)
+                   and not getattr(self, "is_muted", False)
+                   and self.volume_slider.value() > 0)
         duration = media.duration()
         worker = getattr(self, "_pcm_worker", None)
         progress = worker.output_progress() if worker is not None else None
@@ -106,11 +108,20 @@ class PlayerStatisticsMixin:
             return
         self._statistics_sample()
         snapshot = self._statistics_snapshot()
-        if snapshot["playing"] and self.statistics.enabled:
+        if (snapshot["playing"] and self.statistics.enabled
+                and not getattr(self, "_statistics_editor_active", False)):
             self._statistics_timer.start()
         else:
             self._statistics_timer.stop()
             self.statistics.flush()
+
+    def _set_statistics_editor_active(self, active):
+        # Credit listening up to the transition, then discard the editing
+        # interval so closing the editor cannot backfill preview playback.
+        self._statistics_checkpoint()
+        self._statistics_editor_active = bool(active)
+        self._statistics_rebase()
+        self._statistics_state_changed()
 
     def _statistics_track_started(self):
         if self._statistics_closed:

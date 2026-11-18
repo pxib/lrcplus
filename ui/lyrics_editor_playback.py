@@ -1,6 +1,7 @@
 """Playback transport, waveform editing and keyboard input for the lyrics editor."""
 
 from pathlib import Path
+import math
 import time
 from PySide6.QtCore import Qt, QSignalBlocker, QEvent
 from PySide6.QtGui import QKeySequence
@@ -58,24 +59,66 @@ class LyricsEditorPlaybackMixin:
             self.line_list.scrollToItem(self.line_list.currentItem())
 
     def show_lyrics_shortcuts(self):
-        shortcuts = "\n".join(
-            f"{sequence.replace('Return', 'Enter')}    {label}"
-            for sequence, label, _handler, _args in self._LYRICS_SHORTCUTS
-        )
-        QMessageBox.information(
-            self,
-            "Lyrics Editor Shortcuts",
-            shortcuts
-            + "\nShift+click waveform    Play from the clicked position"
-            + "\nDelete    Delete line (lyric list only)"
-            + "\n\nCtrl+S    Save\nCtrl+Z / Ctrl+Y    Undo / redo"
-            + "\nCtrl+F    Find lyrics\nF3 / Shift+F3    Next / previous match"
-            + "\n\nCtrl+B / Ctrl+I / Ctrl+U    Bold / italic / underline"
-            + "\nCtrl+Shift+X    Strikethrough (lyric text only)"
-            + "\n\nTiming and line shortcuts above apply only in the Lyrics tab."
-            + "\nSpace and Q/E/A/D/F are disabled while typing in text, reading, search, or timestamp fields."
-            + "\nHold a seek key to keep seeking; marking, adding, and moving lines require separate presses.",
-        )
+        from ui.editor_shortcuts import EditorShortcutsDialog
+
+        sections = [
+            ("Document", [
+                ("F1", "Open this shortcut and waveform reference"),
+                ("Ctrl+S", "Save and keep editing"),
+                ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
+                ("Ctrl+F", "Find lyrics"),
+                ("F3 / Shift+F3", "Next / previous search match"),
+                ("Delete", "Delete selected lines (lyric list only)"),
+                ("Ctrl+B / Ctrl+I / Ctrl+U", "Bold / italic / underline in lyric text"),
+                ("Ctrl+Shift+X", "Strikethrough in lyric text"),
+            ]),
+            ("Lyrics timing — Lyrics tab", [
+                (sequence.replace("Return", "Enter"), label)
+                for sequence, label, _handler, _args in self._LYRICS_SHORTCUTS
+            ] + [
+                ("While typing", "Space and Q/E/A/D/F are disabled while typing in text, reading, search, or timestamp fields"),
+                ("Hold a seek key", "Repeat seeking; marking, adding, and moving lines require separate presses"),
+            ]),
+            ("Waveform — navigation", [
+                ("Ctrl+left click", "Seek without changing timing or starting playback"),
+                ("Shift+click waveform", "Play continuously from the clicked position (Lyrics tab)"),
+                ("Ctrl+wheel", "Zoom around the mouse cursor"),
+                ("Mouse wheel", "Pan earlier / later"),
+                ("Middle-button drag", "Pan the timeline"),
+                ("+ / −", "Zoom in / out (waveform focused)"),
+                ("Left / Right", "Pan earlier / later (waveform focused)"),
+                ("Home", "Fit the selected lyric line (waveform focused)"),
+                ("Ctrl+Home", "Show all audio (waveform focused)"),
+            ]),
+            ("Waveform — boundaries", [
+                ("Left click / drag", "Place / move the selected lyric or segment Start boundary"),
+                ("Right click / drag", "Place / move the selected lyric or segment End boundary"),
+                ("Commit / Ctrl+Shift+Enter", "Apply provisional lyric boundaries (Lyrics tab)"),
+            ]),
+        ]
+        if self.karaoke_enabled:
+            sections.extend([
+                ("Karaoke timing — Karaoke tab", [
+                    ("Space", "Play / pause, outside text inputs"),
+                    ("Q / E", "Seek −100 / +100 ms"),
+                    ("A / D", "Seek −1 / +1 second"),
+                    ("F", "Mark the current Start / End and advance"),
+                    ("Start / End cells", "Timing letters also work in timestamp cells; other text fields keep normal typing"),
+                    ("Earlier / Later buttons", "Nudge the selected Start / End by the chosen step"),
+                    ("Preview Segment button", "Play the selected segment, then pause at its End"),
+                ]),
+                ("Waveform — karaoke segments", [
+                    ("Ctrl+right click", "Preview the clicked segment, then pause at its End"),
+                    ("Alt+left / right drag", "Move a shared boundary with its connected neighboring segment"),
+                    ("Hold Shift during a drag", "Disable snapping to adjacent segment boundaries"),
+                    ("Release mouse button", "Finish the timing edit; use Undo to restore the previous boundary"),
+                ]),
+            ])
+        dialog = EditorShortcutsDialog(sections, self)
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
 
     def _handle_lyrics_shortcut(self, watched, event):
         if (
@@ -104,12 +147,12 @@ class LyricsEditorPlaybackMixin:
         if self._segment_preview_range is not None:
             start_ms, end_ms = self._segment_preview_range
             if position_ms >= end_ms:
-                self._segment_preview_range = None
-                media = getattr(self.player, "media_player", None)
-                if media is not None:
-                    media.pause()
+                self._finish_segment_preview()
+                return
             elif position_ms < start_ms - 100:
-                self._segment_preview_range = None
+                self._cancel_segment_preview()
+            else:
+                self._schedule_segment_preview_stop(position_ms)
         # Re-anchor the smooth display clock to the authoritative media position.
         try:
             self._display_position_anchor_ms = float(position_ms)
@@ -125,6 +168,7 @@ class LyricsEditorPlaybackMixin:
             position_ms,
             rebuild_segments=False,
         )
+        self._refresh_lyrics_preview(position_ms, rebuild_segments=False)
 
         # Update immediately when the backend reports a new position. The
         # dedicated 30 Hz timer fills in the smooth intermediate timestamps.
@@ -148,7 +192,7 @@ class LyricsEditorPlaybackMixin:
         if not hasattr(self, "lyrics_transport_stack"):
             return
         self.lyrics_transport_stack.setCurrentIndex(1 if checked else 0)
-        self.lyrics_transport_toggle.setText("Seekbar" if checked else "Waveform")
+        self.lyrics_waveform_controls.setVisible(checked)
         if hasattr(self, "commit_line_timestamp_button"):
             self.commit_line_timestamp_button.setVisible(bool(checked))
 
@@ -170,7 +214,7 @@ class LyricsEditorPlaybackMixin:
         if not hasattr(self, "karaoke_transport_stack"):
             return
         self.karaoke_transport_stack.setCurrentIndex(1 if checked else 0)
-        self.karaoke_transport_toggle.setText("Seekbar" if checked else "Waveform")
+        self.karaoke_waveform_controls.setVisible(checked)
 
         if checked:
             self.karaoke_transport_stack.setFixedHeight(
@@ -388,6 +432,7 @@ class LyricsEditorPlaybackMixin:
         self._waveform_drag_row = -1
         self._refresh_karaoke_waveform_editor()
         self._refresh_karaoke_preview(rebuild_segments=True)
+        self._refresh_lyrics_preview()
 
     def _waveform_karaoke_line_boundary_changed(self, handle, value_ms):
         """Proportionally stretch/shrink all karaoke timings in the line.
@@ -544,8 +589,10 @@ class LyricsEditorPlaybackMixin:
                 self._display_position_anchor_ms = float(position_ms)
                 self._display_position_anchor_monotonic = time.monotonic()
             self._precise_display_timer.start()
+            self._schedule_segment_preview_stop(self.player.media_player.position())
         else:
             self._precise_display_timer.stop()
+            self._segment_preview_timer.stop()
 
     def _update_precise_playback_display(self):
         if (
@@ -557,11 +604,14 @@ class LyricsEditorPlaybackMixin:
         elapsed_ms = (
             time.monotonic() - self._display_position_anchor_monotonic
         ) * 1000.0
+        media = getattr(self.player, "media_player", None)
+        rate = getattr(media, "playbackRate", lambda: 1.0)()
         estimated_position_ms = max(
             0.0,
-            self._display_position_anchor_ms + elapsed_ms,
+            self._display_position_anchor_ms + elapsed_ms * rate,
         )
         self._set_precise_time_display(estimated_position_ms)
+        self._refresh_lyrics_preview(estimated_position_ms, rebuild_segments=False)
 
     def preview_duration_changed(self, duration_ms):
         seeks = [self.lyrics_seek]
@@ -592,7 +642,7 @@ class LyricsEditorPlaybackMixin:
         self.lyrics_play_button.setText(text)
 
     def toggle_preview(self):
-        self._segment_preview_range = None
+        self._cancel_segment_preview()
         if self.player is None or not hasattr(self.player, "media_player"):
             return
         media = self.player.media_player
@@ -628,20 +678,22 @@ class LyricsEditorPlaybackMixin:
         self.seek_preview(target)
 
     def show_karaoke_shortcuts(self):
-        QMessageBox.information(
-            self,
-            "Karaoke Shortcuts",
-            "Q    Seek −100 ms\n"
-            "E    Seek +100 ms\n\n"
-            "A    Seek −1 second\n"
-            "D    Seek +1 second\n\n"
-            "F    Mark Start / End\n\n"
-            "Shortcuts are disabled while typing in lyric or timestamp fields.",
-        )
+        self.show_lyrics_shortcuts()
 
     def eventFilter(self, watched, event):
         if event.type() != QEvent.Type.KeyPress:
             return super().eventFilter(watched, event)
+        if event.key() == Qt.Key.Key_Space and watched.property("waveformNavigation"):
+            # Space activates a focused navigation button through Qt. Other
+            # controls keep the editor's familiar Space-to-play behavior.
+            return super().eventFilter(watched, event)
+        if (event.key() == Qt.Key.Key_F1
+                and event.modifiers() == Qt.KeyboardModifier.NoModifier
+                and isinstance(watched, QWidget) and watched.window() is self):
+            if not event.isAutoRepeat():
+                self.show_lyrics_shortcuts()
+            event.accept()
+            return True
         source = getattr(self, "source_editor", None)
         if source is not None and (
             watched is source or (isinstance(watched, QWidget) and source.isAncestorOf(watched))
@@ -708,6 +760,8 @@ class LyricsEditorPlaybackMixin:
             self.use_playback_time()
 
     def keyPressEvent(self, event):
+        if getattr(self, "_choosing_document", False):
+            return super().keyPressEvent(event)
         if (
             event.key() == Qt.Key.Key_Space
             and event.modifiers() == Qt.KeyboardModifier.NoModifier
@@ -776,15 +830,54 @@ class LyricsEditorPlaybackMixin:
         if end_ms <= start_ms:
             return
         media_player = self.player.media_player
-        self._segment_preview_range = None
+        self._cancel_segment_preview()
         media_player.setPosition(int(start_ms))
         self._segment_preview_range = (int(start_ms), int(end_ms))
         play = getattr(media_player, "play", None)
         if callable(play):
             play()
+            self._schedule_segment_preview_stop(start_ms)
+
+    def _cancel_segment_preview(self):
+        self._segment_preview_range = None
+        self._segment_preview_timer.stop()
+
+    def _schedule_segment_preview_stop(self, position_ms):
+        self._segment_preview_timer.stop()
+        if self._segment_preview_range is None:
+            return
+        media = getattr(self.player, "media_player", None)
+        if media is None:
+            return
+        is_playing = getattr(media, "isPlaying", None)
+        if callable(is_playing) and not is_playing():
+            return
+        rate = getattr(media, "playbackRate", lambda: 1.0)()
+        remaining_ms = self._segment_preview_range[1] - position_ms
+        # Position notifications can be hundreds of milliseconds apart. A
+        # precise deadline stops even short segments between those notifications.
+        self._segment_preview_timer.start(max(0, math.ceil(remaining_ms / max(0.01, rate))))
+
+    def _segment_preview_rate_changed(self, rate):
+        media = getattr(self.player, "media_player", None)
+        if media is not None:
+            self._schedule_segment_preview_stop(media.position())
+            self._display_position_anchor_ms = float(media.position())
+            self._display_position_anchor_monotonic = time.monotonic()
+
+    def _finish_segment_preview(self):
+        if self._segment_preview_range is None:
+            return
+        end_ms = self._segment_preview_range[1]
+        self._cancel_segment_preview()
+        media = getattr(self.player, "media_player", None)
+        if media is not None:
+            media.pause()
+            media.setPosition(end_ms)
+        self.preview_position_changed(end_ms)
 
     def seek_preview(self, position_ms):
-        self._segment_preview_range = None
+        self._cancel_segment_preview()
         if self.player is not None and hasattr(self.player, "media_player"):
             self.player.media_player.setPosition(int(position_ms))
 

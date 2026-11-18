@@ -13,6 +13,24 @@ from lyrics.models import LyricLine, LyricSegment
 from ui.inline_readings import InlineReadingsEditor
 
 
+def test_replacing_visible_readings_keeps_the_panel_height(qapp):
+    widget = InlineReadingsEditor()
+    widget.set_tokens([{"text": "猫", "reading": "ねこ"}])
+    widget.show()
+    qapp.processEvents()
+    try:
+        widget.set_tokens([{"text": "犬", "reading": "いぬ"}])
+        card = widget.controls[0]["card"]
+        # The parent may measure the new row before queued Show events run.
+        assert widget.sizeHint().height() >= card.sizeHint().height()
+        assert not card.isHidden()
+        qapp.processEvents()
+        assert widget.viewport().height() >= card.height()
+    finally:
+        widget.close()
+        widget.deleteLater()
+
+
 def test_visual_edit_add_remove_and_cancel(qapp):
     widget = InlineReadingsEditor()
     widget.set_tokens([{"text": "貴方", "reading": "あなた"}, {"text": "の"},

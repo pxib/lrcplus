@@ -4,7 +4,7 @@ import math
 from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QRectF, QEasingCurve, QVariantAnimation, QTimer, QObject, Signal
-from PySide6.QtGui import QFont, QFontMetrics, QColor
+from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics, QColor
 from PySide6.QtWidgets import QWidget, QGraphicsBlurEffect
 from lyrics.furigana import (
     build_furigana_segments,
@@ -23,6 +23,7 @@ from lyrics.furigana_layout import (
 )
 from lyrics.display_layers import DisplayLayersMixin
 from lyrics.furigana_painting import FuriganaPaintingMixin
+from core.fonts import library_font
 
 _FURIGANA_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="LRCPlus-Yomi")
 
@@ -342,14 +343,20 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
         self.base_font_family = family
         self.base_font_size = size
         self.ruby_font_size = ruby_size
+        # Asking Windows for metrics of an unavailable face can initialize
+        # tens of MiB of native fallback-font caches. Keep the preference, but
+        # resolve the actual rendering face before measuring either font.
+        render_family = family
+        if family and not QFontDatabase.hasFamily(family):
+            render_family = library_font(QFont()).family()
         self.base_font = QFont()
-        if family:
-            self.base_font.setFamily(family)
+        if render_family:
+            self.base_font.setFamily(render_family)
         self.base_font.setPointSize(size)
 
         self.reading_font = QFont()
-        if family:
-            self.reading_font.setFamily(family)
+        if render_family:
+            self.reading_font.setFamily(render_family)
         self.reading_font.setPointSize(ruby_size)
         self._update_focus_effect()
         self._update_motion_margin()
@@ -812,13 +819,14 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
 
         return updated
 
-    def set_segments(self, text, segments, line_end=None, style_spans=None, is_blockquote=False, translation_lines=None):
+    def set_segments(self, text, segments, line_end=None, style_spans=None, is_blockquote=False, translation_lines=None, *, generate=True):
         """Display lyric segments while generating readings from the full lyric.
 
         Karaoke boundaries are timing metadata only.  Automatic reading
         generation always sees the complete unsplit lyric. Generated words keep
         their reading intact and carry the timing ranges that pass through them.
         Explicit LRCX ruby remains authoritative.
+        With generate=False, the caller owns warming the automatic-reading cache.
         """
         source = str(text)
         text = source.lstrip(" \t\r") if translation_lines else source.lstrip()
@@ -924,7 +932,7 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
             # generation used by set_lyric(), then rebuild this timed line from
             # the cached whole-line result.
             if (
-                text
+                generate and text
                 and self._karaoke_furigana_pending != text
             ):
                 self.loading_text = reading_key

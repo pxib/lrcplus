@@ -1,4 +1,4 @@
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QSignalBlocker, Qt
 from PySide6.QtGui import QColor, QPainter, QPalette, QPolygon
 from PySide6.QtWidgets import QAbstractSpinBox, QComboBox, QSpinBox, QToolButton
 from core.theme import build_theme_palette
@@ -114,6 +114,53 @@ class ThemedComboBox(_NativeComboBox):
             button_width,
             max(0, self.height() - 2),
         )
+
+
+class DeferredOptionsComboBox(ThemedComboBox):
+    """Enumerate system choices only when the user interacts with the field."""
+
+    def __init__(self, default_text, load_options, value="", *, selected_text=None):
+        super().__init__()
+        self._load_options = load_options
+        self._selected_text = selected_text
+        self.addItem(default_text, "")
+        self.setCurrentValue(value, selected_text)
+
+    def setCurrentValue(self, value, text=None):
+        index = self.findData(value)
+        if index < 0:
+            # Keep saved (or imported) values without enumerating the system.
+            self.addItem(text or self._selected_text or value, value)
+            index = self.count() - 1
+        self.setCurrentIndex(index)
+
+    def _ensure_options(self):
+        if self._load_options is None:
+            return
+        options = list(self._load_options())
+        value = self.currentData()
+        # Resolving display names must not be recorded as a preference edit.
+        with QSignalBlocker(self):
+            for text, data in options:
+                index = self.findData(data)
+                if index < 0:
+                    self.addItem(text, data)
+                else:
+                    self.setItemText(index, text)
+            self.setCurrentValue(value)
+        self._load_options = None
+
+    def showPopup(self):
+        self._ensure_options()
+        super().showPopup()
+
+    def focusInEvent(self, event):
+        self._ensure_options()
+        super().focusInEvent(event)
+
+    def wheelEvent(self, event):
+        self._ensure_options()
+        super().wheelEvent(event)
 
 
 # All settings combos use the painted dropdown indicator.

@@ -407,6 +407,30 @@ card's pixels after shared-cache eviction.
 The two focused suites passed 1,358 tests; the four new floating-window lifecycle
 checks also passed separately with the native Windows Qt backend.
 
+## Live editor preview and missing fonts
+
+The live preview exposed another native Windows font allocation. The saved
+`GenSenRounded2 TC` family was unavailable in the measured environment. Asking
+Qt for its metrics initialized a large system fallback cache before the preview
+painted any lyric. The shared renderer now checks availability first and uses
+the bundled font when the selected face is missing. The saved preference stays
+unchanged, and installed font selections retain their chosen face.
+
+Fresh, untraced Windows processes opened and painted the same two-line Japanese
+editor document with that missing font and Romaji enabled. First-open working
+set fell from approximately 162 MiB to 95 MiB, and private committed memory
+fell from approximately 96 MiB to 62 MiB. The preview-disabled comparison was
+approximately 94 MiB of working set. These are controlled development-process
+measurements with cached/stubbed readings, no audio, no online generation, and
+no forced collection or working-set trimming; they are not promised app totals.
+Three repeated openings, each with 2,000 position updates and 20 selection
+changes, remained around 95–97 MiB after the fix in this setup.
+
+A native Windows subprocess regression warms an ordinary editor, then opens
+another with a deliberately unavailable font and checks both memory counters.
+UI tests also verify that the bundled face is used without changing the stored
+font preference.
+
 ## Capture the actual workload
 
 From the repository root, launch the development app with:

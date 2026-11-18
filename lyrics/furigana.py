@@ -1007,7 +1007,10 @@ def analyze_lyric_words(lines):
 
 def _word_pos(word):
     value = word.get("pos") or word.get("part_of_speech") or word.get("pos1") or []
-    return re.split(r"[,\s-]+", value) if isinstance(value, str) else list(value)
+    # Providers may return either separate fields or a serialized POS tuple
+    # inside a list. Match grammatical categories consistently in both cases.
+    fields = [value] if isinstance(value, str) else value
+    return [part for field in fields for part in re.split(r"[,\s-]+", str(field)) if part]
 
 
 def _romaji_joins_previous(word, previous):
@@ -1020,6 +1023,52 @@ def _romaji_joins_previous(word, previous):
     previous_pos = _word_pos(previous)
     if "接頭辞" in previous_pos or "接尾辞" in pos:
         return True
+    # Concessive たって/だって is an inflected ending (見たって),
+    # whereas noun + だって and standalone quotation って keep their spaces.
+    if surface in {"たって", "だって"}:
+        if any(kind in previous_pos for kind in ("動詞", "形容詞", "助動詞")):
+            return True
+        if not previous_pos:
+            stem = previous_surface
+            if surface == "たって":
+                stem = katakana_to_hiragana(str(previous.get("reading_raw") or previous.get("reading") or stem))
+                return stem.endswith(tuple("いきぎしじちにびみりえけげせぜてでねべめれっく"))
+            return stem.endswith(("ん", "い"))
+    # The same ending can arrive as た + って or past-tense だ + って.
+    if surface == "って":
+        if previous_surface == "た" or (previous_surface.endswith("た") and "動詞" in previous_pos):
+            return True
+        if previous_surface == "だ" and previous.get("conjugation_type") == "助動詞-タ":
+            return True
+    # Colloquial ている/でいる and てしまう/でしまう are still verb
+    # endings. Some parsers label でん as a copula, or omit grammar entirely.
+    if surface in {"てる", "てん", "てた", "てて", "てない",
+                   "でる", "でん", "でた", "でて", "でない",
+                   "ちゃう", "ちゃっ", "ちゃった", "ちゃって",
+                   "じゃう", "じゃっ", "じゃった", "じゃって"}:
+        if previous_pos:
+            if "動詞" in previous_pos:
+                return True
+        elif previous_surface.endswith(tuple("いきぎしじちにびみりえけげせぜてでねべめれっん")):
+            return True
+    # Explanatory ん attaches to the whole predicate, not just て/で forms:
+    # しまった + ん + だ, 嬉しい + ん + だ and な + ん + だ.
+    # A provider can also return the entire ending as one token.
+    if surface in {"ん", "んだ", "んです", "んだった", "んでした", "んだろ", "んだろう", "んでしょ", "んでしょう"}:
+        if any(kind in previous_pos for kind in ("動詞", "形容詞", "助動詞")):
+            return True
+        if previous_surface in {"て", "で", "な"}:
+            return True
+        if not previous_pos and previous_surface.endswith(tuple("うくぐすつぬぶむるいたてで")):
+            return True
+    # Keep the rest of んだ/んです with ん even when split into tokens.
+    # Ordinary noun/adjectival copulas (本だ, きれいだ) stay separate.
+    if surface in {"だ", "です", "だっ", "だった", "でし", "でした", "だろ", "だろう", "でしょ", "でしょう"}:
+        if (previous_surface.endswith("ん")
+                and (previous_surface == "ん"
+                     or any(kind in previous_pos for kind in ("動詞", "形容詞", "助動詞"))
+                     or (not previous_pos and previous_surface.endswith(("てん", "でん", "たん", "るん", "ないん"))))):
+            return True
     if "助動詞" in pos:
         conjugation = str(word.get("conjugation_type", ""))
         # Copular だ/です and adverbial に remain separate words.
@@ -1033,10 +1082,12 @@ def _romaji_joins_previous(word, previous):
         # voiced で needs an onbin stem, avoiding noun + locative で.
         return surface == "て" or previous_surface.endswith(("ん", "い"))
     if not pos:
+        # A kanji-only stem such as 見 still has an inflectable kana reading.
+        stem = katakana_to_hiragana(str(previous.get("reading_raw") or previous.get("reading") or previous_surface))
         return surface in {
             "た", "たい", "たく", "たかっ", "ない", "なく", "なかっ",
             "ます", "まし", "ませ", "れる", "られる", "せる", "させる",
-        } and previous_surface.endswith(tuple("いきぎしじちにびみりえけげせぜてでねべめれっく"))
+        } and stem.endswith(tuple("いきぎしじちにびみりえけげせぜてでねべめれっく"))
     return False
 
 

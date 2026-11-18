@@ -1,6 +1,29 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [2026-11-18]
+
+### Added
+
+- Allow opening the lyrics editor without a loaded song or lyrics file. Show a themed **No songs found** welcome screen with a lyric-sheet illustration and **Create New LRCX** and **Open LRCX** action cards inside the editor; new drafts stay in memory until saved.
+- Add a **Live preview** beneath the lyrics editor's compact text box, using the player's renderer for readings, formatting, translation rows, and playback highlighting. Keep the preview on the selected line, update it after edits and Undo/Redo, and offer **Expand text** for longer passages. Reuse the editor's reading-generation results instead of starting duplicate requests.
+- Replace separate shortcut popups with a searchable **Shortcuts** reference, available with **F1** from every editor tab. Document waveform navigation, Start/End editing, segment previews, snapping, and linked boundaries alongside keyboard shortcuts.
+- Add visible pan, zoom, **Fit line**, and **All audio** controls to both editor waveforms. Support **Ctrl+left click** to seek without changing timing or starting playback, and waveform-focused **+ / −**, **Left / Right**, **Home**, and **Ctrl+Home** navigation.
+
+### Changed
+
+- Speed up opening Settings, especially on less powerful hardware, by applying the dialog theme once and loading font and audio-device choices only when their controls are used. Share font enumeration between Global and Local scopes and preserve saved and imported selections.
+- Reduce the lyrics editor's default size from 1180 × 820 to 1100 × 740 while retaining window resizing. Use consistent **Waveform** toggles, playback labels, tooltips, and inline gesture hints in Lyrics and Karaoke.
+
+### Fixed
+
+- Keep Japanese verb endings and contractions together in Romaji, including `泣いてん → naiten`, `しまったんだ → shimattanda`, `見たって → mitatte`, and `欲しいんでしょ → hoshiindesho`. Handle different parser token splits and grammar formats while preserving authored pauses, source lyrics, and karaoke timing.
+- Suppress duplicate Romaji rows for English and other Latin-script lyrics, including English rows within mixed-language lyrics. Preserve source text, translation rows, timing, and the saved Romaji preference.
+- Stop waveform segment previews with a precise deadline instead of waiting for coarse playback-position notifications. Respect playback speed and pause/resume, restore the exact segment endpoint after pausing, and cancel the preview limit when seeking or starting continuous playback.
+- Exclude lyrics-editor playback from listening statistics on native and processed audio paths. Preserve listening recorded before opening the editor and resume tracking afterward, including when the editor fails to open.
+- Keep the Readings panel visible when automatic readings arrive on first open. Measure newly created reading controls before updating the panel height so switching lines is no longer required to restore it.
+- Avoid large Windows memory spikes when a saved lyric font is unavailable. Resolve missing fonts to the bundled face before measuring them, preserving the saved preference and installed font selections.
+
 ## [2026-11-17]
 
 ### Added
