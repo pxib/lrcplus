@@ -46,6 +46,7 @@ def _check_playback(window, audio_path):
     def transport_details():
         return (f"Status={media.mediaStatus().name}, state={media.playbackState().name}, "
                 f"position={media.position()} ms, duration={media.duration()} ms, "
+                f"output unavailable={window._audio_output_unavailable}, "
                 f"error={media.errorString() or 'none'}")
 
     try:
@@ -56,11 +57,19 @@ def _check_playback(window, audio_path):
         _wait_for(lambda: abs(media.position() - 2500) <= 100,
                   "The player did not seek to the requested position.", transport_details)
         window.toggle_playback()
+        if window._audio_output_unavailable:
+            # The application's audio-device guard pauses a play attempt when
+            # the host has no output device.
+            _wait_for(lambda: media.playbackState() == QMediaPlayer.PlaybackState.PausedState,
+                      "The player did not pause with no audio output.", transport_details)
+            return "pause with no audio output"
+
         _wait_for(lambda: media.playbackState() == QMediaPlayer.PlaybackState.PlayingState,
                   "The player did not enter the playing state.", transport_details)
         window.toggle_playback()
         _wait_for(lambda: media.playbackState() == QMediaPlayer.PlaybackState.PausedState,
                   "The player did not enter the paused state.", transport_details)
+        return "play/pause"
     finally:
         media.stop()
         media.setAudioOutput(window.audio_output)
@@ -93,11 +102,11 @@ def run_release_smoke(window, directory):
     directory = Path(directory)
     report = directory / "result.txt"
     try:
-        _check_playback(window, directory / "sample.wav")
+        transport_check = _check_playback(window, directory / "sample.wav")
         _check_lyric_editor(window, directory / "sample.lrcx")
     except Exception:
         report.write_text(traceback.format_exc(), encoding="utf-8")
         return 1
-    report.write_text("Audio decoding, play/pause, seeking, and LRCX round trip passed.\n",
+    report.write_text(f"Audio decoding, seeking, {transport_check}, and LRCX round trip passed.\n",
                       encoding="utf-8")
     return 0
