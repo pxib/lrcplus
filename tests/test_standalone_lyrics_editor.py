@@ -3,7 +3,7 @@
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QDialog, QFileDialog, QLabel
+from PySide6.QtWidgets import QDialog, QFileDialog, QInputDialog, QLabel, QMessageBox
 
 from lyrics.loader import load_lyrics
 from ui.lrc_editor import LrcEditorDialog
@@ -29,6 +29,7 @@ def test_empty_editor_displays_actions_without_building_workspace(start_editor):
     assert any(label.text() == "No songs found" for label in dialog.findChildren(QLabel))
     assert dialog.create_lrcx_button.isVisible()
     assert dialog.open_lrcx_button.isVisible()
+    assert not dialog.document_start_page.recover_button.isVisible()
     assert not hasattr(dialog, "tabs")
     assert not hasattr(dialog, "_autosave_timer")
     assert dialog.lrc_path is None and dialog.result_path is None
@@ -106,6 +107,80 @@ def test_new_document_preserves_existing_file_until_save(start_editor, tmp_path,
     assert target.read_text(encoding="utf-8") == original
     assert start_editor.save_document()
     assert "Original" not in target.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("unfinished_source", [False, True])
+def test_recover_new_draft_from_start_page(start_editor, tmp_path, monkeypatch, unfinished_source):
+    target = tmp_path / "draft.lrcx"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args: (str(target), ""))
+    start_editor.create_lrcx_button.click()
+    start_editor.add_line()
+    start_editor.line_text.setPlainText("Structured edit")
+    if unfinished_source:
+        start_editor.tabs.setCurrentWidget(start_editor.source_editor.parentWidget())
+        start_editor.source_editor.setPlainText("[00:02.000]Source edit\nunfinished")
+    start_editor._autosave_if_needed()
+    recovery_path = start_editor._autosave_path
+    assert recovery_path.is_file()
+    assert not target.exists()
+
+    def choose_draft(parent, title, label, items, **kwargs):
+        assert items == [str(target)]
+        return str(target), True
+
+    monkeypatch.setattr(QInputDialog, "getItem", choose_draft)
+    recovered = LrcEditorDialog()
+    recovered.show()
+    try:
+        assert recovered.document_start_page.recover_button.isVisible()
+        recovered.document_start_page.recover_button.click()
+        assert recovered.document_dirty and recovered.is_new_document
+        assert recovered.save_button.isEnabled()
+        assert recovered.lines[0].text == "Structured edit"
+        assert not target.exists()
+        if unfinished_source:
+            assert recovered.tabs.currentWidget() is recovered.source_editor.parentWidget()
+            assert recovered.source_editor.toPlainText() == "[00:02.000]Source edit\nunfinished"
+            assert recovered._source_dirty
+            recovered.source_editor.setPlainText("[00:02.000]Source edit")
+        assert recovered.save_document()
+        assert load_lyrics(target)[0].text == ("Source edit" if unfinished_source else "Structured edit")
+        assert not recovery_path.exists()
+    finally:
+        recovered.done(QDialog.DialogCode.Rejected)
+        recovered.deleteLater()
+
+
+def test_open_drafts_for_same_target_keep_separate_recovery_copies(start_editor, tmp_path, monkeypatch):
+    target = tmp_path / "draft.lrcx"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args: (str(target), ""))
+    start_editor.create_lrcx_button.click()
+    another = LrcEditorDialog(target, new_document=True)
+    try:
+        for dialog, text in ((start_editor, "First edit"), (another, "Second edit")):
+            dialog.add_line()
+            dialog.line_text.setPlainText(text)
+            dialog._autosave_if_needed()
+        assert start_editor._autosave_path != another._autosave_path
+        assert another._autosave_path.is_file()
+    finally:
+        another.done(QDialog.DialogCode.Rejected)
+        another.deleteLater()
+    assert start_editor._autosave_path.is_file()
+    assert not target.exists()
+
+
+def test_create_can_recover_legacy_draft_sidecar(start_editor, tmp_path, monkeypatch):
+    target = tmp_path / "draft.lrcx"
+    legacy = tmp_path / ".draft.lrcx.autosave"
+    legacy.write_text("[format:LRCX]\n[00:01.000]Legacy draft\n", encoding="utf-8")
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args: (str(target), ""))
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+    start_editor.create_lrcx_button.click()
+    assert start_editor.lines[0].text == "Legacy draft"
+    assert start_editor.document_dirty and start_editor.is_new_document
+    assert not target.exists()
+    assert not legacy.exists() and start_editor._autosave_path.is_file()
 
 
 @pytest.mark.parametrize("action", ["cancel", "create", "open"])

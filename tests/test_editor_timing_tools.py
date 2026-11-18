@@ -75,7 +75,8 @@ def test_shift_undo_restores_selection_when_sidebar_is_sorted(editor):
 
 def test_failed_save_keeps_editor_open_dirty_and_recoverable(editor, monkeypatch):
     editor.document_dirty = True
-    editor._autosave_path.write_text("recoverable", encoding="utf-8")
+    editor._autosave_if_needed()
+    recovery = editor._autosave_path.read_text(encoding="utf-8")
     warnings = []
 
     def locked(*args, **kwargs):
@@ -86,7 +87,7 @@ def test_failed_save_keeps_editor_open_dirty_and_recoverable(editor, monkeypatch
     editor.save_and_close()
     assert editor.document_dirty
     assert editor.result_path is None
-    assert editor._autosave_path.read_text(encoding="utf-8") == "recoverable"
+    assert editor._autosave_path.read_text(encoding="utf-8") == recovery
     assert "Locked destination" in warnings[0]
 
 

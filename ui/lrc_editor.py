@@ -31,6 +31,7 @@ from lyrics.writer import format_timestamp
 from lyrics.timing import parse_timestamp
 from lyrics.karaoke_timing import next_lyric_start, segment_end
 from lyrics.editor_operations import correct_line_text, replace_reading_span
+from lyrics.editor_recovery import new_draft_recovery_path, recoverable_drafts
 from lyrics.reading_groups import group_reading_tokens, remap_reading_groups
 from lyrics.reading_warnings import missing_english_readings, unconverted_words_message
 from lyrics.furigana import get_cached_furigana_segments
@@ -109,7 +110,7 @@ class LrcEditorDialog(
             return
         self._initialize_document(lrc_path, new_document=new_document)
 
-    def _initialize_document(self, lrc_path, *, new_document=False):
+    def _initialize_document(self, lrc_path, *, new_document=False, draft_path=None):
         parent = self.player
         if self._choosing_document:
             self.layout().removeWidget(self.document_start_page)
@@ -136,9 +137,9 @@ class LrcEditorDialog(
         )
 
         self.lrc_path = Path(lrc_path)
-        # This path is only the default save target when no file exists yet.
-        # Keep that draft entirely in memory until the user explicitly saves.
+        # A draft has a save target but only writes to its recovery copy until Save.
         self.is_new_document = new_document or not self.lrc_path.exists()
+        self._confirm_draft_replace = draft_path is not None
         self.result_path = None if self.is_new_document else self.lrc_path
         self.attached_song_path = (
             self._read_attached_song_path(self.lrc_path)
@@ -211,21 +212,27 @@ class LrcEditorDialog(
         self._history_limit = 100
         self._history_restoring = False
 
-        # Crash recovery lives beside the lyric file but uses a hidden,
-        # separate filename so the real lyric is never touched until Save.
-        self._autosave_path = self.lrc_path.with_name(
-            f".{self.lrc_path.name}.autosave"
-        )
+        sidecar = self.lrc_path.with_name(f".{self.lrc_path.name}.autosave")
+        self._autosave_path = new_draft_recovery_path(self.lrc_path) if self.is_new_document else sidecar
         self._autosave_timer = QTimer(self)
         self._autosave_timer.setInterval(30_000)
         self._autosave_timer.timeout.connect(self._autosave_if_needed)
 
 
-        self._update_document_title()
-
-        if not new_document:
+        if self.is_new_document:
+            recovery_path = draft_path
+            if recovery_path is None:
+                drafts = recoverable_drafts(self.lrc_path)
+                if drafts:
+                    recovery_path = drafts[0][1]
+                elif not self.lrc_path.exists():
+                    recovery_path = sidecar
+        else:
             self._load_document()
-            self._restore_autosave_if_available()
+            recovery_path = sidecar
+        if recovery_path is not None:
+            self._restore_autosave_if_available(recovery_path, confirmed=draft_path is not None)
+        self._update_document_title()
         # Catch key events from transient QTableWidget/QSpinBox editors too.
         # The filter itself is tightly scoped to this dialog's editor controls.
         QApplication.instance().installEventFilter(self)
@@ -262,6 +269,7 @@ class LrcEditorDialog(
                 getattr(line, "has_karaoke", False) for line in self.lines
             )
         self._reset_history_baseline()
+        self._update_save_button_state()
         self._refresh_lyrics_waveform()
 
         if self.player is not None and hasattr(self.player, "media_player"):

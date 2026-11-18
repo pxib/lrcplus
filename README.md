@@ -1,8 +1,15 @@
-lrcplus
+# LRCPlus
 
-media player
+A Windows music player and lyrics editor for synchronized lyrics, karaoke timing, and readings such as furigana and romaji.
 
-idk
+## Play a song and edit its lyrics
+
+1. Download the Windows ZIP for your system (x64 or ARM64), extract it, and run `LRCPlus.exe`. [GitHub Releases](https://github.com/pxib/lrcplus/releases/latest)
+2. Press **Ctrl+O** to open an audio file, then choose **Play** and switch to **Lyrics**.
+3. Choose **LRC → Search Lyrics** to find matching lyrics, or press **Ctrl+L** to open a local `.lrc` or `.lrcx` file.
+4. Choose **LRC → Edit Lyrics**, select a line, and edit its text. Check **Live preview**, then save. Press **F1** in the editor for shortcuts and waveform controls.
+
+The download includes an offline manual at `docs/manual/index.html`. Open its **Editing and timing** section for a walkthrough.
 
 ## Tests
 

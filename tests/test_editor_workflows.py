@@ -256,7 +256,8 @@ def test_autosave_recovers_unfinished_source_and_last_structured_model(editor, m
 
 
 def test_legacy_lrcx_autosave_still_recovers(editor, make_lyrics_editor, monkeypatch):
-    editor._autosave_path.write_text("[format:LRCX]\n[00:07.000]Legacy\n", encoding="utf-8")
+    sidecar = editor.lrc_path.with_name(f".{editor.lrc_path.name}.autosave")
+    sidecar.write_text("[format:LRCX]\n[00:07.000]Legacy\n", encoding="utf-8")
     monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
     recovered = make_lyrics_editor(path=editor.lrc_path, populate=False)
     assert recovered.lines[0].text == "Legacy"

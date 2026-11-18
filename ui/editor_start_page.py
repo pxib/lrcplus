@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWi
 from core.fonts import library_font
 from core.settings import get_appearance_settings
 from core.theme import build_theme_palette
+from lyrics.editor_recovery import recoverable_drafts
 
 
 class _LyricIllustration(QWidget):
@@ -109,10 +110,15 @@ class EditorStartPage(QWidget):
         self.open_button.clicked.connect(editor.open_lrcx_document)
         actions.addWidget(self.open_button)
         actions.addStretch()
-        for button in (self.create_button, self.open_button):
+        self.recover_button = QPushButton("Recover Draft")
+        self.recover_button.clicked.connect(editor.recover_lrcx_draft)
+        self.recover_button.setVisible(bool(recoverable_drafts()))
+        for button in (self.create_button, self.open_button, self.recover_button):
             button.setAutoDefault(False)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
         body.addLayout(actions)
+        body.addSpacing(12)
+        body.addWidget(self.recover_button, alignment=Qt.AlignmentFlag.AlignHCenter)
         center = QHBoxLayout()
         center.addStretch()
         center.addWidget(content, 1)

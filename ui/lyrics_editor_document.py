@@ -10,10 +10,11 @@ import sys
 from dataclasses import fields
 from PySide6.QtCore import QSignalBlocker, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QFileDialog, QMessageBox, QApplication
+from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox, QApplication
 from lyrics.loader import load_lyrics, get_lyrics_generation_mode
 from lyrics.writer import format_timestamp, serialize_lrc, serialize_lrcx
 from lyrics.editor_source import effective_source_suffix, extract_metadata, parse_editor_source
+from lyrics.editor_recovery import recoverable_drafts
 from core.debug import debug_print
 from core.file_io import atomic_write_text
 from lyrics.ass_parser import parse_ass
@@ -68,6 +69,25 @@ class LyricsEditorDocumentMixin:
         )
         if path:
             self._initialize_document(Path(path))
+
+    def recover_lrcx_draft(self):
+        drafts = recoverable_drafts()
+        if not drafts:
+            QMessageBox.information(self, "Recover Draft", "No lyric drafts are available.")
+            self.document_start_page.recover_button.hide()
+            return
+        choices = {}
+        for index, (target, path) in enumerate(drafts, start=1):
+            label = str(target)
+            if label in choices:
+                label = f"{label} (copy {index})"
+            choices[label] = (target, path)
+        selected, accepted = QInputDialog.getItem(
+            self, "Recover Draft", "Choose a draft to recover", list(choices), editable=False,
+        )
+        if accepted:
+            target, path = choices[selected]
+            self._initialize_document(target, new_document=True, draft_path=path)
 
     def _document_state(self):
         return {
@@ -235,42 +255,46 @@ class LyricsEditorDocumentMixin:
             self.lines, offset_ms=self.lyrics_offset_ms,
             generation_mode=self._current_generation_mode(),
         ))
-        return json.dumps({
+        payload = {
             "format": "LRCPlusRecovery", "version": 1,
             "structured": structured,
             "source": self.source_editor.toPlainText() if self._source_dirty else None,
             "source_suffix": self._source_suffix,
-        }, ensure_ascii=False)
+        }
+        if self.is_new_document:
+            payload["draft_target"] = str(self.lrc_path.absolute())
+        return json.dumps(payload, ensure_ascii=False)
 
     def _autosave_if_needed(self):
         if not self.document_dirty:
             return
         try:
-            contents = self._autosave_payload()
-            tmp = self._autosave_path.with_suffix(self._autosave_path.suffix + ".tmp")
-            tmp.write_text(contents, encoding="utf-8")
-            os.replace(tmp, self._autosave_path)
+            atomic_write_text(self._autosave_path, self._autosave_payload())
         except Exception as error:
             debug_print(f"[Lyrics Editor] Autosave failed: {error!r}")
 
-    def _restore_autosave_if_available(self):
-        if not self._autosave_path.exists():
+    def _restore_autosave_if_available(self, path, *, confirmed=False):
+        if not path.is_file():
             return
         try:
             source_mtime = self.lrc_path.stat().st_mtime if self.lrc_path.exists() else 0
-            if self._autosave_path.stat().st_mtime <= source_mtime:
-                self._autosave_path.unlink(missing_ok=True)
+            if not self.is_new_document and path.stat().st_mtime <= source_mtime:
+                path.unlink(missing_ok=True)
                 return
-            answer = QMessageBox.question(
-                self, "Recover Unsaved Lyrics?",
-                "A newer crash-recovery copy was found for this lyric file.\n\nRestore those unsaved changes?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                self._discard_autosave()
-                return
-            contents = self._autosave_path.read_text(encoding="utf-8")
+            if not confirmed:
+                answer = QMessageBox.question(
+                    self, "Recover Unsaved Lyrics?",
+                    "A crash-recovery copy was found for this lyric file.\n\n"
+                    "Restore those unsaved changes? Choosing No discards this recovery copy.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    path.unlink(missing_ok=True)
+                    return
+            contents = path.read_text(encoding="utf-8")
+            pending_source = None
+            payload = {"format": "LRCPlusRecovery", "version": 1, "structured": contents}
             if contents.lstrip().startswith("{"):
                 payload = json.loads(contents)
                 if payload.get("format") != "LRCPlusRecovery" or payload.get("version") != 1:
@@ -280,9 +304,24 @@ class LyricsEditorDocumentMixin:
                 if recovered_source is not None:
                     if not isinstance(recovered_source, str) or suffix not in {".lrc", ".lrcx", ".txt"}:
                         raise ValueError("Invalid source recovery data")
-                    self._pending_recovered_source = (recovered_source, suffix)
+                    pending_source = (recovered_source, suffix)
                 contents = payload["structured"]
             recovery = parse_editor_source(contents, ".lrcx")
+            if path != self._autosave_path:
+                # Adopt the draft under a new recovery filename, independent
+                # of other editor sessions that may use the same target.
+                payload["draft_target"] = str(self.lrc_path.absolute())
+                try:
+                    atomic_write_text(self._autosave_path, json.dumps(payload, ensure_ascii=False))
+                except OSError as error:
+                    debug_print(f"[Lyrics Editor] Could not move recovery copy: {error!r}")
+                    self._autosave_path = path
+                else:
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError as error:
+                        debug_print(f"[Lyrics Editor] Could not remove previous recovery copy: {error!r}")
+            self._pending_recovered_source = pending_source
             self.lines = recovery.lines
             self.lyrics_offset_ms = recovery.offset_ms
             self.attached_song_path = recovery.attachment
@@ -291,7 +330,7 @@ class LyricsEditorDocumentMixin:
             self.document_dirty = True
             self.karaoke_dirty = any(line.has_karaoke for line in self.lines)
         except (OSError, ValueError, TypeError, KeyError) as error:
-            debug_print(f"[Lyrics Editor] Recovery check failed: {error!r}")
+            QMessageBox.warning(self, "Recover Unsaved Lyrics", f"Could not restore the recovery copy:\n{error}")
 
     def _discard_autosave(self):
         try:
@@ -903,6 +942,14 @@ class LyricsEditorDocumentMixin:
             target = self._choose_lrc_save(target)
             if target is None:
                 return
+        if self._confirm_draft_replace and target == self.lrc_path and target.exists():
+            answer = QMessageBox.question(
+                self, "Save Recovered Draft", f"Replace {target.name} with the recovered draft?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         try:
             mode = self._current_generation_mode()
             if target.suffix.lower() == ".lrcx":
@@ -921,6 +968,7 @@ class LyricsEditorDocumentMixin:
         self.result_path = target
         self.lrc_path = Path(target)
         self.is_new_document = False
+        self._confirm_draft_replace = False
         self._update_document_title()
         # The final save target may differ after Save As. Point the persisted
         # association at the file that actually contains [attach:...].

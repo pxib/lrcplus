@@ -44,13 +44,16 @@ __all__ = [
 
 def main() -> int:
     from ui.onboarding import needs_onboarding
-    show_onboarding = needs_onboarding()
     update_health_token = None
+    smoke_directory = None
     for argument in sys.argv[1:]:
         if argument.startswith("--lrcplus-update-health="):
             update_health_token = argument.partition("=")[2]
             sys.argv.remove(argument)
-            break
+        elif argument.startswith("--lrcplus-release-smoke="):
+            smoke_directory = Path(argument.partition("=")[2])
+            sys.argv.remove(argument)
+    show_onboarding = smoke_directory is None and needs_onboarding()
 
     app = QApplication(sys.argv)
     from core.gui_garbage_collector import install_gui_garbage_collector
@@ -87,7 +90,18 @@ def main() -> int:
             OnboardingDialog(window).run()
         show_dependency_notice(plugin_manager, window)
 
-    QTimer.singleShot(0, show_startup_dialogs)
+    if smoke_directory is None:
+        QTimer.singleShot(0, show_startup_dialogs)
+    else:
+        from core.release_smoke import run_release_smoke
+
+        def smoke_and_exit():
+            result = run_release_smoke(window, smoke_directory)
+            window.close()
+            app.exit(result)
+
+        app.setQuitOnLastWindowClosed(False)
+        QTimer.singleShot(0, smoke_and_exit)
 
     exit_code = app.exec()
     plugin_manager.unload_all()

@@ -34,3 +34,19 @@ GUI fixtures must still close their windows, stop their workers, and call
 `deleteLater()`; `processEvents()` alone does not deliver deferred deletions when
 no Qt event loop is running. This prevents retained UI trees from slowing later
 tests without reusing application state between cases.
+
+## Windows release ZIP
+
+Run these commands from the repository root in a Windows build environment:
+
+```powershell
+python -m pip install -r requirements.txt pyinstaller
+python tools/build_release.py
+python tools/smoke_release.py
+```
+
+The smoke check extracts the ZIP for the current app version and architecture,
+launches `LRCPlus.exe` with a temporary profile, verifies that a generated WAV
+decodes and seeks, then saves and reopens an LRCX file. It uses Qt's audio buffer
+output, so the check runs without physical speakers. Windows CI runs it alongside
+the exhaustive source suite.
