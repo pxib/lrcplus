@@ -1,4 +1,11 @@
-# LRCPlus
+
+lrcplus
+
+media player
+
+idk
+
+# LRCPlus (LRCプラス)
 
 A Windows music player and lyrics editor for synchronized lyrics, karaoke timing, and readings such as furigana and romaji.
 
@@ -11,13 +18,13 @@ A Windows music player and lyrics editor for synchronized lyrics, karaoke timing
 
 The download includes an offline manual at `docs/manual/index.html`. Open its **Editing and timing** section for a walkthrough.
 
-## Tests
+## Tests (診断)
 
 Run `python -m pytest -q` for routine checks, or add `--exhaustive` for every
 rendering combination and the slow integration/simulation checks used in CI.
 See the [testing guide](docs/testing.md) for focused runs and fixture cleanup.
 
-## Community wiki
+## Community wiki (公開百科事典)
 
 I have a wiki now! To get started, please refer to the [wiki](https://pxib.github.io/lrcpluswiki/) to get detailed explanations on specific topics!
 
