@@ -183,7 +183,7 @@ class LrcEditorDialog(
         self._segment_preview_timer = QTimer(self)
         self._segment_preview_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._segment_preview_timer.setSingleShot(True)
-        self._segment_preview_timer.timeout.connect(self._finish_segment_preview)
+        self._segment_preview_timer.timeout.connect(self._check_segment_preview_end)
         # Cache expensive full-document language detection until lyric text changes.
         self._detected_language_cache_key = None
         self._detected_language_cache_value = None

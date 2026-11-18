@@ -906,9 +906,22 @@ class LyricsEditorPlaybackMixin:
             return
         rate = getattr(media, "playbackRate", lambda: 1.0)()
         remaining_ms = self._segment_preview_range[1] - position_ms
-        # Position notifications can be hundreds of milliseconds apart. A
-        # precise deadline stops even short segments between those notifications.
-        self._segment_preview_timer.start(max(0, math.ceil(remaining_ms / max(0.01, rate))))
+        estimated_delay_ms = math.ceil(remaining_ms / max(0.01, rate))
+        # Poll between position notifications without spinning when the backend
+        # reports a position just short of the end.
+        self._segment_preview_timer.start(max(15, estimated_delay_ms))
+
+    def _check_segment_preview_end(self):
+        if self._segment_preview_range is None:
+            return
+        media = self.player.media_player
+        position_ms = media.position()
+        if position_ms >= self._segment_preview_range[1]:
+            self._finish_segment_preview()
+        else:
+            # A seek or decoder startup can consume the entire estimated
+            # duration of a short preview before the audio starts moving.
+            self._schedule_segment_preview_stop(position_ms)
 
     def _segment_preview_rate_changed(self, rate):
         self._sync_preview_speed(rate)

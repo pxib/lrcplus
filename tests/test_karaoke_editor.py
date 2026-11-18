@@ -217,6 +217,11 @@ def test_preview_stops_without_any_position_notifications(editor):
     expired = QSignalSpy(editor._segment_preview_timer.timeout)
     editor.play_waveform_segment(2200, 2240)
     assert expired.wait(1000)
+    assert media.playing and media.position() == 2200
+    assert editor._segment_preview_timer.isActive()
+
+    media.current_position = 2245
+    assert expired.wait(1000)
     assert not media.playing and media.pause_count == 1
     assert media.position() == 2240
     assert editor._segment_preview_range is None

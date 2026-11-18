@@ -35,6 +35,7 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 - Exclude lyrics-editor playback from listening statistics on native and processed audio paths. Preserve listening recorded before opening the editor and resume tracking afterward, including when the editor fails to open.
 - Keep the Readings panel visible when automatic readings arrive on first open. Measure newly created reading controls before updating the panel height so switching lines is no longer required to restore it.
 - Avoid large Windows memory spikes when a saved lyric font is unavailable. Resolve missing fonts to the bundled face before measuring them, preserving the saved preference and installed font selections.
+- Fixed a timing bug that could silence very short karaoke waveform previews. The editor now waits for the player to reach the segment end before pausing or looping. The saved karaoke timestamps stay the same.
 
 ## [2026-11-17]
 
