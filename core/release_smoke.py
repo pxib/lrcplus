@@ -4,48 +4,65 @@ from pathlib import Path
 from time import monotonic, sleep
 import traceback
 
-from PySide6.QtMultimedia import QAudioBufferOutput, QMediaPlayer
+from PySide6.QtCore import QUrl
+from PySide6.QtMultimedia import QAudioDecoder, QMediaPlayer
 from PySide6.QtWidgets import QApplication
 
 from ui.lrc_editor import LrcEditorDialog
 
 
-def _wait_for(condition, message):
+def _wait_for(condition, message, details):
     deadline = monotonic() + 8
-    while monotonic() < deadline:
+    while not condition():
+        if monotonic() >= deadline:
+            raise RuntimeError(f"{message} {details()}")
         QApplication.processEvents()
-        if condition():
-            return
         sleep(0.01)
-    raise RuntimeError(message)
+
+
+def _check_decoding(audio_path):
+    decoder = QAudioDecoder()
+    decoder.setSource(QUrl.fromLocalFile(str(audio_path)))
+    try:
+        decoder.start()
+        _wait_for(decoder.bufferAvailable, "The sample WAV did not produce a decoded buffer.",
+                  lambda: f"Decoder error: {decoder.errorString() or 'none'}")
+        buffer = decoder.read()
+        if not buffer.isValid() or buffer.frameCount() <= 0:
+            raise RuntimeError("The sample WAV produced an empty or invalid audio buffer.")
+    finally:
+        decoder.stop()
 
 
 def _check_playback(window, audio_path):
     if not audio_path.is_file():
         raise FileNotFoundError(audio_path)
+    _check_decoding(audio_path)
+
     media = window.media_player
-    window.load_audio(audio_path)
-    # Windows CI can lack an audio endpoint. Keep the real decoder and playback
-    # clock, and observe decoded samples through Qt's FFmpeg buffer output.
+    # Test transport commands independently of the Windows audio endpoint.
     media.setAudioOutput(None)
-    output = QAudioBufferOutput(media)
-    decoded_audio = []
-    output.audioBufferReceived.connect(lambda buffer: decoded_audio.append(buffer.isValid()))
-    media.setAudioBufferOutput(output)
+
+    def transport_details():
+        return (f"Status={media.mediaStatus().name}, state={media.playbackState().name}, "
+                f"position={media.position()} ms, duration={media.duration()} ms, "
+                f"error={media.errorString() or 'none'}")
+
     try:
+        window.load_audio(audio_path)
         _wait_for(lambda: media.isSeekable() and media.duration() >= 4000,
-                  "The sample WAV did not load as seekable audio.")
-        window.toggle_playback()
-        _wait_for(lambda: media.playbackState() == QMediaPlayer.PlaybackState.PlayingState
-                  and media.position() >= 100 and any(decoded_audio),
-                  "Playback did not advance and produce decoded audio.")
-        window.toggle_playback()
+                  "The sample WAV did not load as seekable audio.", transport_details)
         window._seek_from_waveform(2500)
         _wait_for(lambda: abs(media.position() - 2500) <= 100,
-                  "Playback did not seek to the requested position.")
+                  "The player did not seek to the requested position.", transport_details)
+        window.toggle_playback()
+        _wait_for(lambda: media.playbackState() == QMediaPlayer.PlaybackState.PlayingState,
+                  "The player did not enter the playing state.", transport_details)
+        window.toggle_playback()
+        _wait_for(lambda: media.playbackState() == QMediaPlayer.PlaybackState.PausedState,
+                  "The player did not enter the paused state.", transport_details)
     finally:
         media.stop()
-        media.setAudioBufferOutput(None)
         media.setAudioOutput(window.audio_output)
 
 
@@ -81,5 +98,6 @@ def run_release_smoke(window, directory):
     except Exception:
         report.write_text(traceback.format_exc(), encoding="utf-8")
         return 1
-    report.write_text("Playback, seeking, and LRCX round trip passed.\n", encoding="utf-8")
+    report.write_text("Audio decoding, play/pause, seeking, and LRCX round trip passed.\n",
+                      encoding="utf-8")
     return 0

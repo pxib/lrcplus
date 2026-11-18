@@ -46,7 +46,8 @@ python tools/smoke_release.py
 ```
 
 The smoke check extracts the ZIP for the current app version and architecture,
-launches `LRCPlus.exe` with a temporary profile, verifies that a generated WAV
-decodes and seeks, then saves and reopens an LRCX file. It uses Qt's audio buffer
-output, so the check runs without physical speakers. Windows CI runs it alongside
-the exhaustive source suite.
+launches `LRCPlus.exe` with a temporary profile, and verifies WAV decoding,
+seeking, play/pause state changes, and an LRCX save and reopen. It decodes the
+WAV separately with Qt's `QAudioDecoder` and checks the player's transport with
+audio output disabled, so it also runs on hosts without an audio endpoint.
+Windows CI runs it alongside the exhaustive source suite.
