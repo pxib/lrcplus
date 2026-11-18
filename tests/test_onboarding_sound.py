@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QWidget
 
 from core import settings
@@ -212,7 +212,8 @@ def test_sound_cues_keep_pause_and_text_order(wizard, sound_statement):
     assert Path(player.sources[-1].toLocalFile()).stem == "playful"
     wizard.finish_typing()
     assert player.plays == plays + 1
-    QTest.qWait(30)
+    assert wizard.script_timer.isActive()
+    assert QSignalSpy(wizard.script_timer.timeout).wait(1000)
     assert player.plays == plays + 2
     assert Path(player.sources[-1].toLocalFile()).stem == "idea"
     wizard.finish_typing()
@@ -335,7 +336,8 @@ def test_expression_changes_when_inline_sound_reaches_extended_text(wizard):
     assert wizard.expression_label.text() == "Playful"
     wizard.finish_typing()
     assert wizard.expression_label.text() == "Playful"
-    QTest.qWait(30)
+    assert wizard.script_timer.isActive()
+    assert QSignalSpy(wizard.script_timer.timeout).wait(1000)
     assert wizard.expression_label.text() == "Inspired"
     wizard.finish_typing()
     assert wizard.expression_label.text() == "Inspired"

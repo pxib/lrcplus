@@ -1,12 +1,75 @@
 """Keep UI tests headless and all preferences inside pytest's temporary folder."""
 
 import os
+from itertools import combinations
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
 collect_ignore = ["test_simple.py", "test_repetition.py"]
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--exhaustive", action="store_true",
+        help="Run all rendering combinations and expensive integration/simulation checks.",
+    )
+
+
+def _pairwise_items(items):
+    """Keep every parameter value and pair, preserving collection order."""
+    coverage = []
+    for item in items:
+        # Recent pytest versions can number every resolved fixture combination
+        # in indices. Use the actual (hashable) render options as the levels.
+        values = tuple(sorted(item.callspec.params.items()))
+        coverage.append(set(combinations(values, 2)) or {values})
+    uncovered = set().union(*coverage)
+    selected = set()
+    while uncovered:
+        best = max(range(len(items)), key=lambda index: len(coverage[index] & uncovered))
+        selected.add(best)
+        uncovered.difference_update(coverage[best])
+    return [item for index, item in enumerate(items) if index in selected]
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("exhaustive"):
+        return
+
+    matrices = {}
+    for item in items:
+        if item.get_closest_marker("render_matrix") and hasattr(item, "callspec"):
+            matrices.setdefault((item.path, item.originalname), []).append(item)
+    selected = {
+        id(item) for matrix in matrices.values() for item in _pairwise_items(matrix)
+    }
+    kept, deselected = [], []
+    for item in items:
+        if (item.get_closest_marker("exhaustive")
+                or (item.get_closest_marker("render_matrix")
+                    and hasattr(item, "callspec") and id(item) not in selected)):
+            deselected.append(item)
+        else:
+            kept.append(item)
+    if deselected:
+        items[:] = kept
+        config.hook.pytest_deselected(items=deselected)
+
+
+@pytest.fixture(autouse=True)
+def cleanup_deferred_qt_objects(monkeypatch):
+    """Dispose widgets scheduled by fixtures before the next test starts."""
+    yield
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    if QCoreApplication.instance() is not None:
+        # processEvents() alone does not deliver DeferredDelete events outside
+        # a running event loop. Retained player/editor trees made later tests
+        # progressively slower. Keep monkeypatches active during destruction.
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 @pytest.fixture(autouse=True)

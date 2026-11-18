@@ -2,7 +2,7 @@
 
 import pytest
 from PySide6.QtCore import QPoint, QPropertyAnimation, Qt
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QPushButton, QToolButton, QWidget
 
 from core import settings
@@ -64,7 +64,8 @@ def test_instant_text_preserves_inline_pause_and_event_wait(wizard):
     assert wizard.description.text() == "Before."
     assert wizard.script_timer.isActive()
     assert not wizard.typing_timer.isActive()
-    QTest.qWait(30)
+    # Timer delivery can be delayed while the suite is busy.
+    assert QSignalSpy(wizard.script_timer.timeout).wait(1000)
     assert wizard.description.text() == "Before. After."
     assert wizard.waiting_events == {"lyrics_search_started"}
     assert not wizard.next.isEnabled()

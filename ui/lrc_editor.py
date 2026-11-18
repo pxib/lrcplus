@@ -375,6 +375,10 @@ class LrcEditorDialog(
             self._ensure_translation_panel()
         self._update_tab_specific_controls()
         self._update_history_actions()
+        if hasattr(self, "preview_tools"):
+            on_karaoke = self.karaoke_enabled and self.tabs.currentWidget() is self.karaoke_scroll
+            self.preview_tools.setVisible(self.tabs.currentWidget() is self.lyrics_page or on_karaoke)
+            self.preview_selection_button.setText("Preview segment" if on_karaoke else "Preview line")
 
     def _set_share_selection_active(self, active):
         active = bool(active)
@@ -489,6 +493,7 @@ class LrcEditorDialog(
         self._update_share_selection_status()
         self._refresh_lyrics_waveform_markers()
         self._update_lyric_search()
+        self._refresh_inline_timing_issues()
 
     def _checked_share_line_indices(self):
         return {
@@ -1967,6 +1972,7 @@ class LrcEditorDialog(
         self._autosave_timer.stop()
         self._line_reading_timer.stop()
         self._precise_display_timer.stop()
+        self._timing_validation_timer.stop()
         self.lyrics_renderer_preview.stop_workers()
         # The player deletes the closed dialog. Stop its decoder threads before
         # Qt destroys their parent widgets and QThread objects.

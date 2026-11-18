@@ -30,6 +30,7 @@ def pixels(image):
     return np.frombuffer(rgba.constBits(), dtype=np.uint8).reshape(image.height(), image.width(), 4).copy()
 
 
+@pytest.mark.render_matrix
 @pytest.mark.parametrize("size", CARD_SIZES.values())
 @pytest.mark.parametrize("template", CARD_TEMPLATES)
 @pytest.mark.parametrize("placement", ["below_title", "beside_cover"])

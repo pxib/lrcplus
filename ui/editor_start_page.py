@@ -1,108 +1,38 @@
-"""A lightweight, themed welcome screen for the standalone lyrics editor."""
-
-import math
+"""A compact, themed start screen for the standalone lyrics editor."""
 
 from PySide6.QtCore import Qt, QRectF
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from core.fonts import library_font
 from core.settings import get_appearance_settings
 from core.theme import build_theme_palette
-from core.fonts import library_font
 
 
 class _LyricIllustration(QWidget):
     def __init__(self, colors, parent=None):
         super().__init__(parent)
         self.colors = colors
-        self.setFixedHeight(146)
+        self.setFixedHeight(100)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.translate(self.width() / 2, self.height() / 2)
-        accent = QColor(self.colors["accent"])
-        painter.setPen(Qt.PenStyle.NoPen)
-        # A quiet waveform frames the lyric sheet without loading audio.
-        for index in range(41):
-            height = 8 + 34 * abs(math.sin(index * 0.73)) * (1 - abs(index - 20) / 26)
-            tint = QColor(accent)
-            tint.setAlpha(35 if abs(index - 20) < 9 else 85)
-            painter.setBrush(tint)
-            painter.drawRoundedRect(QRectF((index - 20) * 9 - 2, -height / 2, 4, height), 2, 2)
-        painter.rotate(-6)
-        shadow = QColor(self.colors["text"])
-        shadow.setAlpha(10)
-        painter.setBrush(shadow)
-        painter.drawRoundedRect(QRectF(-66, -59, 140, 124), 14, 14)
         painter.setBrush(QColor(self.colors["surface"]))
         painter.setPen(QPen(QColor(self.colors["border"]), 1))
-        painter.drawRoundedRect(QRectF(-70, -64, 140, 124), 14, 14)
-        painter.setPen(accent)
+        painter.drawRoundedRect(QRectF(-29, -37, 58, 74), 8, 8)
+        painter.setPen(QColor(self.colors["accent"]))
         font = QFont(self.font())
-        font.setPixelSize(11)
+        font.setPixelSize(9)
         font.setBold(True)
         painter.setFont(font)
-        painter.drawText(QRectF(-51, -47, 100, 16), ".LRCX")
+        painter.drawText(QRectF(-19, -24, 40, 14), ".LRCX")
         painter.setPen(Qt.PenStyle.NoPen)
-        for index, width in enumerate((74, 94, 62)):
-            y = -14 + index * 20
-            painter.setBrush(accent if index == 0 else QColor(self.colors["raised"]))
-            painter.drawRoundedRect(QRectF(-51, y, width, 5), 2.5, 2.5)
-        painter.end()
-
-
-class _DocumentAction(QPushButton):
-    def __init__(self, title, description, symbol, colors, *, primary=False, parent=None):
-        super().__init__(title, parent)
-        self.colors = colors
-        self.primary = primary
-        self.setAccessibleName(title)
-        self.setAccessibleDescription(description)
-        self.setAutoDefault(False)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumWidth(220)
-        self.setMinimumHeight(136)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 17, 22, 19)
-        layout.setSpacing(8)
-        top = QHBoxLayout()
-        icon = QLabel(symbol)
-        icon.setStyleSheet(f"color: {colors['accent']}; font-size: 25px; font-weight: 600;")
-        top.addWidget(icon)
-        top.addStretch()
-        arrow = QLabel("→")
-        arrow.setStyleSheet(f"color: {colors['muted']}; font-size: 18px;")
-        top.addWidget(arrow)
-        layout.addLayout(top)
-        heading = QLabel(title)
-        heading.setStyleSheet(f"color: {colors['text']}; font-size: 16px; font-weight: 600;")
-        layout.addWidget(heading)
-        caption = QLabel(description)
-        caption.setWordWrap(True)
-        caption.setStyleSheet(f"color: {colors['muted']}; font-size: 12px;")
-        layout.addWidget(caption)
-        for label in self.findChildren(QLabel):
-            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        hovered = self.underMouse()
-        fill = "accent_soft" if self.primary else "surface"
-        if self.isDown():
-            fill = "pressed"
-        elif hovered:
-            fill = "accent_soft"
-        border = "accent" if hovered or self.hasFocus() or self.primary else "border"
-        painter.setBrush(QColor(self.colors[fill]))
-        painter.setPen(QPen(QColor(self.colors[border]), 2 if self.hasFocus() else 1))
-        painter.drawRoundedRect(QRectF(self.rect()).adjusted(2, 2, -2, -2), 14, 14)
-        if self.hasFocus():
-            painter.setPen(QPen(QColor(self.colors["accent"]), 1, Qt.PenStyle.DotLine))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(QRectF(self.rect()).adjusted(6, 6, -6, -6), 10, 10)
-        painter.end()
+        for index, width in enumerate((30, 38, 24)):
+            color = "accent" if index == 0 else "raised"
+            painter.setBrush(QColor(self.colors[color]))
+            painter.drawRoundedRect(QRectF(-19, -1 + index * 10, width, 3), 1.5, 1.5)
 
 
 class EditorStartPage(QWidget):
@@ -120,72 +50,72 @@ class EditorStartPage(QWidget):
         )
         colors = self.colors
         self.setObjectName("editorStartPage")
-        self.setStyleSheet("QWidget#editorStartPage QLabel { background: transparent; }")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.setStyleSheet(f"""
+            QWidget#editorStartPage {{ background: {colors['window']}; }}
+            QWidget#editorStartPage QLabel {{ background: transparent; }}
+            QWidget#editorStartPage QPushButton {{
+                color: {colors['text']}; background: {colors['surface']};
+                border: 2px solid {colors['border']}; border-radius: 8px;
+                padding: 10px 18px; font-size: 13px; font-weight: 500;
+            }}
+            QWidget#editorStartPage QPushButton:hover {{
+                background: {colors['raised_hover']}; border-color: {colors['accent']};
+            }}
+            QWidget#editorStartPage QPushButton:pressed {{ background: {colors['pressed']}; }}
+            QWidget#editorStartPage QPushButton:focus {{ border-color: {colors['accent']}; }}
+            QWidget#editorStartPage QPushButton#newLrcx {{
+                color: {colors['accent_text']}; background: {colors['accent']};
+                border-color: {colors['accent']};
+            }}
+            QWidget#editorStartPage QPushButton#newLrcx:hover {{
+                background: {colors['accent_hover']}; border-color: {colors['accent_hover']};
+            }}
+            QWidget#editorStartPage QPushButton#newLrcx:pressed {{
+                background: {colors['accent_hover']};
+            }}
+            QWidget#editorStartPage QPushButton#newLrcx:focus {{
+                border-color: {colors['text']};
+            }}
+        """)
         root = QVBoxLayout(self)
-        root.setContentsMargins(32, 24, 32, 24)
-        root.setSpacing(0)
-        header = QHBoxLayout()
-        brand = QLabel("LRCPlus  /  LYRICS EDITOR")
-        brand.setStyleSheet(f"color: {colors['muted']}; font-size: 11px; font-weight: 600; letter-spacing: 1px;")
-        header.addWidget(brand)
-        header.addStretch()
-        version = QLabel("4.0")
-        version.setStyleSheet(f"color: {colors['muted']}; font-size: 11px;")
-        header.addWidget(version)
-        root.addLayout(header)
-        root.addStretch(1)
-
+        root.setContentsMargins(24, 24, 24, 24)
+        root.addStretch()
         content = QWidget()
-        content.setMaximumWidth(720)
+        content.setMaximumWidth(480)
         body = QVBoxLayout(content)
-        body.setContentsMargins(0, 12, 0, 12)
+        body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
         body.addWidget(_LyricIllustration(colors))
         heading = QLabel("No songs found")
         heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        heading.setStyleSheet(f"color: {colors['text']}; font-size: 32px; font-weight: 700;")
+        heading.setStyleSheet(f"color: {colors['text']}; font-size: 26px; font-weight: 600;")
         body.addWidget(heading)
-        body.addSpacing(12)
-        subtitle = QLabel("Every song starts with a line.")
+        body.addSpacing(10)
+        subtitle = QLabel("Create or open an LRCX. No audio required.")
+        subtitle.setWordWrap(True)
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setStyleSheet(f"color: {colors['muted']}; font-size: 15px;")
+        subtitle.setStyleSheet(f"color: {colors['muted']}; font-size: 13px;")
         body.addWidget(subtitle)
-        body.addSpacing(30)
-        actions = QHBoxLayout()
-        actions.setSpacing(16)
-        self.create_button = _DocumentAction(
-            "Create New LRCX", "Start with a blank lyric document.", "＋", colors,
-            primary=True,
-        )
-        self.create_button.clicked.connect(editor.create_new_lrcx)
-        actions.addWidget(self.create_button, 1)
-        self.open_button = _DocumentAction(
-            "Open LRCX", "Pick up where you left off.", "≡", colors,
-        )
-        self.open_button.clicked.connect(editor.open_lrcx_document)
-        actions.addWidget(self.open_button, 1)
-        body.addLayout(actions)
         body.addSpacing(24)
-        note = QLabel("No audio needed. Write now, add your song later.")
-        note.setWordWrap(True)
-        note.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        note.setStyleSheet(f"color: {colors['muted']}; font-size: 12px;")
-        body.addWidget(note)
+        actions = QHBoxLayout()
+        actions.setSpacing(12)
+        actions.addStretch()
+        self.create_button = QPushButton("Create New LRCX")
+        self.create_button.setObjectName("newLrcx")
+        self.create_button.clicked.connect(editor.create_new_lrcx)
+        actions.addWidget(self.create_button)
+        self.open_button = QPushButton("Open LRCX")
+        self.open_button.clicked.connect(editor.open_lrcx_document)
+        actions.addWidget(self.open_button)
+        actions.addStretch()
+        for button in (self.create_button, self.open_button):
+            button.setAutoDefault(False)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+        body.addLayout(actions)
         center = QHBoxLayout()
         center.addStretch()
         center.addWidget(content, 1)
         center.addStretch()
         root.addLayout(center)
-        root.addStretch(1)
-        footer = QLabel("LYRICS  ·  TIMING  ·  READINGS")
-        footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        footer.setStyleSheet(f"color: {colors['muted']}; font-size: 10px; letter-spacing: 1px;")
-        root.addWidget(footer)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        gradient = QLinearGradient(0, 0, self.width(), self.height())
-        gradient.setColorAt(0, QColor(self.colors["window"]))
-        gradient.setColorAt(1, QColor(self.colors["surface_alt"]))
-        painter.fillRect(self.rect(), gradient)
-        painter.end()
+        root.addStretch()

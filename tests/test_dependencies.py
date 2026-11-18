@@ -69,6 +69,7 @@ def offline_manager(tmp_path, monkeypatch):
     return manager
 
 
+@pytest.mark.exhaustive
 def test_explicit_supporting_requirements_are_installed(offline_manager):
     plugin = _plugin("lp-test-undeclared")
     plugin["dependencies"][0]["requires"] = ["lp-test-support>=1,<2"]
@@ -78,6 +79,7 @@ def test_explicit_supporting_requirements_are_installed(offline_manager):
     offline_manager.check("lp-test-undeclared")
 
 
+@pytest.mark.exhaustive
 def test_optional_extras_install_without_putting_extras_in_pip_constraints(offline_manager):
     plugin = _plugin("lp-test-extra", requirement="lp-test-extra[default]>=1")
     offline_manager.configure([plugin])
@@ -109,6 +111,7 @@ def test_install_remove_preserves_shared_dependencies_and_requires_restart(offli
     assert manager.status("lp-test-beta")["state"] == "missing"
 
 
+@pytest.mark.exhaustive
 @pytest.mark.parametrize("name, message", [
     ("lp-test-broken", "Import check failed"),
     ("lp-test-conflict", "Dependency helper exited"),
@@ -384,6 +387,7 @@ def test_dependency_job_reports_import_failure_and_restores_controls(qapp, monke
         qapp.processEvents()
 
 
+@pytest.mark.exhaustive
 def test_mecab_engine_and_dictionary_install_together(offline_manager):
     manager = offline_manager
     manager.base_paths = []
@@ -514,6 +518,7 @@ def test_dependency_notice_dont_show_again_survives_changed_errors(qapp, monkeyp
         qapp.processEvents()
 
 
+@pytest.mark.exhaustive
 def test_cancelled_library_install_rolls_back_before_activation(offline_manager, monkeypatch):
     from core.dependency_tasks import DependencyCancelled, cancellation_scope
 
@@ -597,6 +602,7 @@ def test_cancel_button_stops_current_install_and_remaining_batch(qapp, monkeypat
         qapp.processEvents()
 
 
+@pytest.mark.exhaustive
 def test_verbose_library_install_reports_resolution_checks_and_activation(offline_manager):
     from core.dependency_tasks import diagnostic_scope
 

@@ -5,7 +5,7 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 
 ### Added
 
-- Allow opening the lyrics editor without a loaded song or lyrics file. Show a themed **No songs found** welcome screen with a lyric-sheet illustration and **Create New LRCX** and **Open LRCX** action cards inside the editor; new drafts stay in memory until saved.
+- Allow opening the lyrics editor without a loaded song or lyrics file. Show a compact, themed **No songs found** welcome screen with a small lyric-sheet icon and **Create New LRCX** and **Open LRCX** buttons inside the editor; new drafts stay in memory until saved.
 - Add a **Live preview** beneath the lyrics editor's compact text box, using the player's renderer for readings, formatting, translation rows, and playback highlighting. Keep the preview on the selected line, update it after edits and Undo/Redo, and offer **Expand text** for longer passages. Reuse the editor's reading-generation results instead of starting duplicate requests.
 - Replace separate shortcut popups with a searchable **Shortcuts** reference, available with **F1** from every editor tab. Document waveform navigation, Start/End editing, segment previews, snapping, and linked boundaries alongside keyboard shortcuts.
 - Add visible pan, zoom, **Fit line**, and **All audio** controls to both editor waveforms. Support **Ctrl+left click** to seek without changing timing or starting playback, and waveform-focused **+ / −**, **Left / Right**, **Home**, and **Ctrl+Home** navigation.

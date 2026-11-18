@@ -394,6 +394,7 @@ class Player(
             )
             QTimer.singleShot(
                 0,
+                self,
                 lambda: self._warn_if_high_volume(
                     self.volume_slider.value()
                 ),

@@ -110,12 +110,15 @@ def test_layer_changes_refresh_paused_floating_lyrics_and_resize_readings(
 
 
 def test_layered_floating_lyrics_keep_long_lines_panning(qapp, monkeypatch):
-    monkeypatch.setattr("lyrics.furigana_widget.get_cached_furigana_segments", lambda _: None)
+    # Latin-only lyrics intentionally suppress the duplicate romaji layer.
+    text = "長い歌詞を表示しています "
+    monkeypatch.setattr("lyrics.furigana_widget.get_cached_furigana_segments",
+                        lambda _: [{"text": text, "reading": "ながいかしをひょうじしています"}] * 10)
     window = FloatingLyricsWindow(dict(FloatingLyricsPlugin.DEFAULTS, window_width=350))
     try:
         window.set_lyric_layers(["romaji", "lyrics", "translation", "furigana"],
                                True, True, False, False)
-        window.lyric_widget.set_lyric("A long lyric that needs to pan " * 10, generate=False)
+        window.lyric_widget.set_lyric(text * 10, generate=False)
         window.show()
         qapp.processEvents()
         widget = window.lyric_widget

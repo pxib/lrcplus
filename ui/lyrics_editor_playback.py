@@ -614,6 +614,7 @@ class LyricsEditorPlaybackMixin:
         self._refresh_lyrics_preview(estimated_position_ms, rebuild_segments=False)
 
     def preview_duration_changed(self, duration_ms):
+        self._schedule_timing_validation()
         seeks = [self.lyrics_seek]
         if self.karaoke_enabled:
             seeks.insert(0, self.karaoke_seek)
@@ -823,12 +824,62 @@ class LyricsEditorPlaybackMixin:
 
         super().keyPressEvent(event)
 
+    def preview_selected_timing(self):
+        self.preview_status.clear()
+        if not self._commit_pending_source():
+            return
+        if self._karaoke_shortcut_active():
+            self.preview_karaoke_segment()
+            return
+        _, line = self._current_line()
+        media = getattr(self.player, "media_player", None)
+        if line is None or media is None:
+            self.preview_status.setText("Load a song and select a lyric to preview.")
+            return
+        end = line.end if line.end is not None else next_lyric_start(self.lines, line)
+        if end is None and media.duration() > 0:
+            end = self._audio_to_lyric_seconds(media.duration())
+        if end is None or end <= line.start:
+            self.preview_status.setText("Set an end time or a later lyric to preview this line.")
+            return
+        self.play_waveform_segment(self._lyric_to_audio_ms(line.start), self._lyric_to_audio_ms(end))
+
+    def _sync_preview_speed(self, rate):
+        if not hasattr(self, "preview_speed"):
+            return
+        blocker = QSignalBlocker(self.preview_speed)
+        index = self.preview_speed.findData(rate)
+        if index < 0:
+            self.preview_speed.addItem(f"{rate:g}×", rate)
+            index = self.preview_speed.count() - 1
+        self.preview_speed.setCurrentIndex(index)
+        del blocker
+
+    def change_preview_speed(self, _index):
+        change_speed = getattr(self.player, "handle_speed_change", None)
+        if callable(change_speed):
+            # The controller also updates PCM processing, pitch compensation,
+            # gapless routing and queued audio when the playback rate changes.
+            change_speed(round(self.preview_speed.currentData() * 100))
+
     def play_waveform_segment(self, start_ms, end_ms):
-        """Seek to a clicked waveform segment and start playback."""
+        """Preview a bounded range with optional padding and repetition."""
         if self.player is None or not hasattr(self.player, "media_player"):
             return
         if end_ms <= start_ms:
             return
+        start_ms = max(0, int(start_ms) - round(self.preview_lead_in.value() * 1000))
+        end_ms = int(end_ms) + round(self.preview_lead_out.value() * 1000)
+        duration = self.player.media_player.duration()
+        if duration > 0:
+            end_ms = min(end_ms, duration)
+        if end_ms <= start_ms:
+            self.preview_status.setText("This selection is outside the audio duration.")
+            return
+        self.preview_status.clear()
+        self._start_segment_preview(start_ms, end_ms)
+
+    def _start_segment_preview(self, start_ms, end_ms):
         media_player = self.player.media_player
         self._cancel_segment_preview()
         media_player.setPosition(int(start_ms))
@@ -859,6 +910,7 @@ class LyricsEditorPlaybackMixin:
         self._segment_preview_timer.start(max(0, math.ceil(remaining_ms / max(0.01, rate))))
 
     def _segment_preview_rate_changed(self, rate):
+        self._sync_preview_speed(rate)
         media = getattr(self.player, "media_player", None)
         if media is not None:
             self._schedule_segment_preview_stop(media.position())
@@ -868,7 +920,10 @@ class LyricsEditorPlaybackMixin:
     def _finish_segment_preview(self):
         if self._segment_preview_range is None:
             return
-        end_ms = self._segment_preview_range[1]
+        start_ms, end_ms = self._segment_preview_range
+        if self.preview_loop.isChecked() and not self._closed:
+            self._start_segment_preview(start_ms, end_ms)
+            return
         self._cancel_segment_preview()
         media = getattr(self.player, "media_player", None)
         if media is not None:

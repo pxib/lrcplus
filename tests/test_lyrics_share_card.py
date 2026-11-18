@@ -12,6 +12,7 @@ from ui.lyrics_share_card import CARD_SIZES, CARD_THEMES, CARD_TEMPLATES, CardSt
 from ui.lyrics_card_renderer import card_background, theme_colors
 
 
+@pytest.mark.render_matrix
 @pytest.mark.parametrize("size", CARD_SIZES.values())
 @pytest.mark.parametrize("theme", CARD_THEMES)
 @pytest.mark.parametrize("template", CARD_TEMPLATES)
@@ -268,6 +269,7 @@ def test_image_fill_crops_without_stretching_and_supports_zoom_blur_and_dim(qapp
     assert card_background(seam, colors) != card_background(replace(seam, image_blur=40), colors)
 
 
+@pytest.mark.render_matrix
 @pytest.mark.parametrize("template", CARD_TEMPLATES)
 @pytest.mark.parametrize("size", CARD_SIZES.values())
 @pytest.mark.parametrize("position", [0, 100])
@@ -531,6 +533,7 @@ def test_shadow_color_opacity_and_zero_opacity_rendering(qapp):
     assert invisible == render_lyric_card("Shadow 夜の歌", replace(style, shadow_enabled=False))
 
 
+@pytest.mark.render_matrix
 @pytest.mark.parametrize("template", CARD_TEMPLATES)
 @pytest.mark.parametrize("position", [0, 100])
 @pytest.mark.parametrize("offset", [-40, 40])

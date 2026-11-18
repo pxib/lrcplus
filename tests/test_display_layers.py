@@ -46,6 +46,7 @@ def test_latin_lyrics_have_no_romaji_layer(qapp, floating, direction, text):
         assert "".join(p["text"] for p in widget._prepare_segments()) == "uta"
     finally:
         widget.close()
+        widget.deleteLater()
 
 
 def test_english_row_is_not_duplicated_in_mixed_lyrics(qapp):
@@ -67,6 +68,7 @@ def test_english_row_is_not_duplicated_in_mixed_lyrics(qapp):
         assert [(p["start"], p["end"]) for p in english] == [(1, 2), (2, 3)]
     finally:
         widget.close()
+        widget.deleteLater()
 
 
 @pytest.mark.parametrize("order", list(permutations(LYRIC_LAYER_ORDER)))
@@ -91,6 +93,7 @@ def test_order_controls_text_and_baselines_without_changing_timing(qapp, order):
         assert widget.sizeHint().height() > max(p["base_y"] for p in prepared)
     finally:
         widget.close()
+        widget.deleteLater()
 
 
 @pytest.mark.parametrize("layer", LYRIC_LAYER_ORDER)
@@ -104,6 +107,7 @@ def test_layers_can_render_alone_and_all_can_be_hidden(qapp, layer):
         assert widget.sizeHint().height() == 1
     finally:
         widget.close()
+        widget.deleteLater()
 
 
 @pytest.mark.parametrize("floating", [False, True])
@@ -132,6 +136,7 @@ def test_music_notes_stay_in_lyrics_without_duplicate_reading_rows(qapp, floatin
         assert pieces[0]["text"] == note
     finally:
         widget.close()
+        widget.deleteLater()
 
 
 def test_vertical_layers_use_separate_columns(qapp):
@@ -148,6 +153,7 @@ def test_vertical_layers_use_separate_columns(qapp):
         assert widget.sizeHint().width() >= bounds[-1][1]
     finally:
         widget.close()
+        widget.deleteLater()
 
 
 @pytest.mark.parametrize("floating", [False, True])
@@ -197,6 +203,7 @@ def test_furigana_stays_on_its_word_with_romaji_and_wrapping(qapp, floating, abo
         assert not widget.grab().isNull()
     finally:
         widget.close()
+        widget.deleteLater()
 
 
 def test_layer_settings_restore_both_readings_after_legacy_setters(qapp):
@@ -211,6 +218,7 @@ def test_layer_settings_restore_both_readings_after_legacy_setters(qapp):
         assert {p["display_layer"] for p in widget._prepare_segments()} == {"lyrics", "romaji", "translation"}
     finally:
         widget.close()
+        widget.deleteLater()
 
 
 def test_long_reading_rows_wrap_inside_the_widget(qapp):
@@ -226,6 +234,7 @@ def test_long_reading_rows_wrap_inside_the_widget(qapp):
             assert len({p["base_y"] for p in pieces if p["display_layer"] == layer}) > 1
     finally:
         widget.close()
+        widget.deleteLater()
 
 
 def test_settings_order_and_independent_toggles_survive_round_trip(qapp):
@@ -246,6 +255,7 @@ def test_settings_order_and_independent_toggles_survive_round_trip(qapp):
         assert order.item(0).checkState() == Qt.CheckState.Checked
     finally:
         dialog.close()
+        dialog.deleteLater()
 
 
 def test_legacy_romaji_replacement_migrates_and_invalid_order_is_repaired():
@@ -272,6 +282,7 @@ def test_settings_keep_the_last_visible_layer_checked(qapp):
         assert not dialog.global_controls["show_ruby"].isChecked()
     finally:
         dialog.close()
+        dialog.deleteLater()
 
 
 def test_empty_saved_layers_fall_back_to_lyrics_including_file_overrides(tmp_path):
@@ -296,6 +307,7 @@ def test_local_layer_toggles_restore_lyrics_if_the_last_layer_is_disabled(qapp):
         assert override.isChecked() and editor.isChecked()
     finally:
         dialog.close()
+        dialog.deleteLater()
 
 
 @pytest.mark.parametrize("direction", ["horizontal", "vertical"])
@@ -331,3 +343,4 @@ def test_scrolling_rows_keep_layers_after_seek_and_recreation(qapp, monkeypatch,
     finally:
         widget.clear()
         widget.close()
+        widget.deleteLater()

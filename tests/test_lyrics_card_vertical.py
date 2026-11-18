@@ -112,6 +112,7 @@ def test_effects_never_change_vertical_fitting_or_positions(qapp):
                             shadow_offset_y=40, stroke_enabled=True, stroke_width=12)) == baseline
 
 
+@pytest.mark.render_matrix
 @pytest.mark.parametrize("mode", ["vertical_rl", "vertical_lr"])
 @pytest.mark.parametrize("template", CARD_TEMPLATES)
 @pytest.mark.parametrize("size", CARD_SIZES.values())

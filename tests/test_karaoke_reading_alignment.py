@@ -1,8 +1,9 @@
 """Reading boundaries and karaoke wipes stay aligned with their base text."""
 
 import pytest
-from PySide6.QtGui import QImage, QLinearGradient, QPainter
+from PySide6.QtGui import QFontMetrics, QImage, QLinearGradient, QPainter
 
+from core.fonts import library_font
 from core.settings import KARAOKE_DEFAULTS, apply_karaoke_settings
 from lyrics.furigana import split_reading_by_text_ranges, token_to_furigana_segments
 from lyrics.furigana_widget import FuriganaWidget
@@ -113,33 +114,66 @@ def test_automatic_reading_ignores_separation_but_retains_each_clock(qapp, monke
         row.deleteLater()
 
 
-def test_one_timing_chunk_still_sweeps_across_several_automatic_words(qapp, monkeypatch):
+@pytest.fixture
+def rendered_karaoke(qapp):
+    row = FuriganaWidget()
+    row.resize(700, 200)
+    row.set_font(library_font(qapp.font()).family(), 36, 18)
+    row.set_focus_transition(False)
+    row.set_colors("#ffffff", "#ff0000")
+    row.setStyleSheet("background-color: #000000;")
+    apply_karaoke_settings(row, dict(KARAOKE_DEFAULTS, sweep_style="classic",
+                                    sweep_delay_ms=0, sweep_delay_percent=0,
+                                    word_lift=False, line_entrance=False))
+    yield row
+    row.close()
+    row.deleteLater()
+
+
+def base_ink_colors(row, position):
+    """Observe the visible wipe rather than the shared chunk's private clock."""
+    import numpy as np
+
+    row.set_karaoke_position(position)
+    image = QImage(row.size(), QImage.Format.Format_RGBA8888)
+    image.fill(0)
+    row.render(image)
+    pixels = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(image.height(), image.width(), 4)
+    metrics = QFontMetrics(row.base_font)
+    colors = []
+    for piece in row._prepare_segments():
+        left, top = int(piece["x"]), int(piece["base_y"] - metrics.ascent())
+        ink = pixels[top:top + metrics.height(), left:left + int(piece["width"])]
+        red, green, blue = (ink[:, :, index] for index in range(3))
+        colors.append((bool(((red > 100) & (green < 40) & (blue < 40)).any()),
+                       bool(((red > 100) & (green > 100) & (blue > 100)).any())))
+    return colors
+
+
+def test_one_timing_chunk_still_sweeps_across_several_automatic_words(rendered_karaoke, monkeypatch):
     monkeypatch.setattr("lyrics.furigana_widget.get_cached_furigana_segments", lambda text: [
         {"text": "女子", "reading": "じょし"}, {"text": "力", "reading": "りょく"},
     ])
-    row = FuriganaWidget()
-    try:
-        apply_karaoke_settings(row, dict(KARAOKE_DEFAULTS, sweep_delay_percent=0))
-        row.set_segments("女子力", [LyricSegment(0, "女子力", end=3)], line_end=3)
-        for position, expected in [(1, [.5, 0]), (2, [1, 0]), (2.5, [1, .5]), (3, [1, 1])]:
-            row.set_karaoke_position(position)
-            assert [row._segment_progress(piece, row.segments) for piece in row.segments] == pytest.approx(expected)
-    finally:
-        row.deleteLater()
+    row = rendered_karaoke
+    row.set_segments("女子力", [LyricSegment(0, "女子力", end=3)], line_end=3)
+    pending, partial, complete = (False, True), (True, True), (True, False)
+    for position, expected in [(0, [pending, pending]), (.75, [partial, pending]),
+                               (2.4, [complete, partial]), (3, [complete, complete]),
+                               (.75, [partial, pending])]:
+        assert base_ink_colors(row, position) == expected
 
 
-def test_bare_kana_keeps_its_portion_of_the_clock_after_automatic_ruby(qapp, monkeypatch):
+def test_bare_kana_keeps_its_portion_of_the_clock_after_automatic_ruby(rendered_karaoke, monkeypatch):
     monkeypatch.setattr("lyrics.furigana_widget.get_cached_furigana_segments", lambda text: [
         {"text": "歌", "reading": "うた"}, {"text": "う", "reading": None},
     ])
-    row = FuriganaWidget()
-    try:
-        apply_karaoke_settings(row, dict(KARAOKE_DEFAULTS, sweep_delay_percent=0))
-        row.set_segments("歌う", [LyricSegment(0, "歌う", end=2)], line_end=2)
-        row.set_karaoke_position(1)
-        assert [row._segment_progress(piece, row.segments) for piece in row.segments] == [1, 0]
-    finally:
-        row.deleteLater()
+    row = rendered_karaoke
+    row.set_segments("歌う", [LyricSegment(0, "歌う", end=2)], line_end=2)
+    pending, partial, complete = (False, True), (True, True), (True, False)
+    for position, expected in [(0, [pending, pending]), (.5, [partial, pending]),
+                               (1, [complete, pending]), (1.5, [complete, partial]),
+                               (2, [complete, complete])]:
+        assert base_ink_colors(row, position) == expected
 
 
 @pytest.mark.parametrize("reading", ["じょ", "じょしりょく"])

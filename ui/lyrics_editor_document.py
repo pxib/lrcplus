@@ -545,6 +545,7 @@ class LyricsEditorDocumentMixin:
         self.document_dirty = True
         self._update_save_button_state()
         self._update_document_title()
+        self._schedule_timing_validation()
 
     def _source_text_changed(self):
         if self.loading or getattr(self, "_syncing_source", False):

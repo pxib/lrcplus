@@ -1,12 +1,27 @@
 """Closing must cancel playback before backend EOF and slow UI cleanup."""
 
 from types import SimpleNamespace
+import sys
 
 import pytest
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtMultimedia import QMediaPlayer
 
 from ui.main_window import Player
+
+
+def test_deleting_player_cancels_queued_startup_volume_warning(qapp, monkeypatch):
+    warnings, errors = [], []
+    monkeypatch.setattr(Player, "_warn_if_high_volume", lambda self, value: warnings.append(value))
+    monkeypatch.setattr(sys, "excepthook", lambda *args: errors.append(args[1]))
+    player = Player()
+    player.close()
+    player.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qapp.processEvents()
+    assert warnings == []
+    assert errors == []
 
 
 @pytest.fixture

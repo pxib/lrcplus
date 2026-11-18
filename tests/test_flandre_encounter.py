@@ -29,6 +29,7 @@ def test_sequence_has_eight_nonspells_then_consecutive_last_three_spells():
     assert all(p.english and p.japanese for p in SPELLS)
 
 
+@pytest.mark.exhaustive
 @pytest.mark.parametrize("phase", PHASES, ids=lambda p: p.id)
 @pytest.mark.parametrize("difficulty", DanmakuGame.DIFFICULTIES)
 def test_each_phase_runs_its_full_timer_with_bounded_projectiles_and_terminates(phase, difficulty):

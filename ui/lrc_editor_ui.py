@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QSplitter, QTabWidget, QTextEdit, QVBoxLayout,
     QWidget, QTableWidget, QTableWidgetItem, QHeaderView, QSlider, QComboBox,
     QCheckBox, QScrollArea, QSizePolicy, QApplication, QMenu,
-    QDialogButtonBox, QStackedWidget,
+    QDialogButtonBox, QStackedWidget, QToolButton, QWidgetAction,
 )
 
 from lyrics.loader import load_lyrics, get_lyrics_generation_mode
@@ -115,10 +115,6 @@ class LrcEditorUiMixin:
         lyrics_page = QWidget()
         self.lyrics_page = lyrics_page
         lyrics_layout = QVBoxLayout(lyrics_page)
-        hint = QLabel("Select a lyric, edit its text, and align its timing with the timeline. Open Shortcuts for all keyboard and waveform controls.")
-        hint.setWordWrap(True)
-        lyrics_layout.addWidget(hint)
-
         offset_row = QHBoxLayout()
         offset_row.addWidget(QLabel("Lyrics offset:"))
         self.lyrics_offset = QDoubleSpinBox()
@@ -136,20 +132,17 @@ class LrcEditorUiMixin:
         reset_offset.clicked.connect(lambda: self.lyrics_offset.setValue(0))
         offset_row.addWidget(reset_offset)
 
-        self.shift_timing_button = QPushButton("Shift Timing...")
-        self.shift_timing_button.setToolTip("Shift all lines or a source-order range, including karaoke timing.")
-        self.shift_timing_button.clicked.connect(self.show_timing_shift_dialog)
-        offset_row.addWidget(self.shift_timing_button)
-        self.validate_timing_button = QPushButton("Validate Timing")
-        self.validate_timing_button.clicked.connect(self.show_timing_validation)
-        offset_row.addWidget(self.validate_timing_button)
+        timing_tools = QPushButton("Timing tools")
+        timing_menu = QMenu(timing_tools)
+        timing_menu.addAction("Shift Timing…", self.show_timing_shift_dialog)
+        timing_menu.addAction("Validate Timing…", self.show_timing_validation)
+        timing_tools.setMenu(timing_menu)
+        offset_row.addWidget(timing_tools)
         offset_row.addStretch()
-        lyrics_layout.addLayout(offset_row)
 
         # Precision transport: keep the familiar seekbar, but let the editor
         # switch to a waveform when timing lyrics.
-        transport_mode_row = QHBoxLayout()
-        transport_mode_row.addWidget(QLabel("Timeline:"))
+        transport_mode_row = offset_row
         self.lyrics_transport_toggle = QPushButton("Waveform")
         self.lyrics_transport_toggle.setCheckable(True)
         self.lyrics_transport_toggle.setChecked(False)
@@ -256,14 +249,14 @@ class LrcEditorUiMixin:
         self.text_timing_notice.setWordWrap(True)
         self.text_timing_notice.setStyleSheet("color: #d89b35;")
         self.text_timing_notice.hide()
-        self.insert_newline_button = QPushButton(r"Insert Newline {\n}")
+        self.insert_newline_button = QPushButton("Newline")
         self.insert_newline_button.setAutoDefault(False)
         self.insert_newline_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.insert_newline_button.setToolTip(
             "Insert a line break at the lyric cursor, keeping the same lyric timestamp."
         )
         self.insert_newline_button.clicked.connect(self.insert_lyric_newline)
-        self.insert_translation_button = QPushButton(r"Insert Translation {\nt}")
+        self.insert_translation_button = QPushButton("Translation")
         self.insert_translation_button.setAutoDefault(False)
         self.insert_translation_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.insert_translation_button.setToolTip(
@@ -282,9 +275,12 @@ class LrcEditorUiMixin:
             ("Underline", "<u>", "</u>", "Ctrl+U"),
         ):
             button = QPushButton(label)
+            button.setAccessibleName(label)
+            button.setText({"Bold": "B", "Italic": "I", "Strikethrough": "S", "Underline": "U"}[label])
+            button.setFixedWidth(30)
             button.setAutoDefault(False)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            button.setToolTip(f"Wrap the selected lyric text in {marker} ({key}).")
+            button.setToolTip(f"{label}: wrap the selected lyric text in {marker} ({key}).")
             font = button.font()
             font.setBold(marker == "**")
             font.setItalic(marker == "*")
@@ -321,12 +317,25 @@ class LrcEditorUiMixin:
         self.furigana_box = furigana_box
         furigana_box.setFrameShape(QFrame.Shape.StyledPanel)
         furigana_layout = QVBoxLayout(furigana_box)
-        furigana_layout.addWidget(QLabel("Readings · click a reading or + to edit; right-click words to combine or split"))
+        self.readings_toggle = QToolButton()
+        self.readings_toggle.setText("Readings")
+        self.readings_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.readings_toggle.setCheckable(True)
+        self.readings_toggle.setChecked(True)
+        self.readings_toggle.setArrowType(Qt.ArrowType.DownArrow)
+        self.readings_toggle.setToolTip("Show or hide reading controls.")
+        furigana_layout.addWidget(self.readings_toggle)
+        self.readings_body = QWidget()
+        readings_body_layout = QVBoxLayout(self.readings_body)
+        readings_body_layout.setContentsMargins(0, 0, 0, 0)
+        readings_hint = QLabel("Click a reading or + to edit; right-click words to combine or split.")
+        readings_hint.setWordWrap(True)
+        readings_body_layout.addWidget(readings_hint)
         self.readings_editor = InlineReadingsEditor()
         self.readings_editor.readingChanged.connect(self.furigana_changed)
         self.readings_editor.combineRequested.connect(self.combine_reading)
         self.readings_editor.splitRequested.connect(self.split_reading)
-        furigana_layout.addWidget(self.readings_editor)
+        readings_body_layout.addWidget(self.readings_editor)
         furigana_buttons = QHBoxLayout()
         reset_furigana = QPushButton("Reset Readings")
         self.reset_furigana_button = reset_furigana
@@ -334,7 +343,11 @@ class LrcEditorUiMixin:
         reset_furigana.clicked.connect(self.reset_all_furigana)
         furigana_buttons.addWidget(reset_furigana)
         furigana_buttons.addStretch()
-        furigana_layout.addLayout(furigana_buttons)
+        readings_body_layout.addLayout(furigana_buttons)
+        furigana_layout.addWidget(self.readings_body)
+        self.readings_toggle.toggled.connect(self.readings_body.setVisible)
+        self.readings_toggle.toggled.connect(lambda expanded: self.readings_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow))
         detail_layout.addWidget(furigana_box)
 
         line_buttons = QHBoxLayout()
@@ -345,17 +358,9 @@ class LrcEditorUiMixin:
         self.delete_line_button = delete_button
         delete_button.setToolTip("Delete the selected lyric (Delete while the lyric list has focus).")
         delete_button.clicked.connect(self.delete_line)
-        up_button = QPushButton("Move Up")
-        up_button.setToolTip("Move the selected lyric up in source order (Alt+Shift+Up).")
-        up_button.clicked.connect(lambda: self.move_line(-1))
-        down_button = QPushButton("Move Down")
-        down_button.setToolTip("Move the selected lyric down in source order (Alt+Shift+Down).")
-        down_button.clicked.connect(lambda: self.move_line(1))
-        for button in (add_button, delete_button, up_button, down_button):
+        for button in (add_button, delete_button):
             line_buttons.addWidget(button)
-        line_buttons.addStretch()
-        detail_layout.addLayout(line_buttons)
-        surgery_buttons = QHBoxLayout()
+        surgery_buttons = line_buttons
         self.split_line_button = QPushButton("Split at Cursor…")
         self.split_line_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.split_line_button.setToolTip("Split the current lyric at the text cursor, keeping word timing and readings.")
@@ -365,6 +370,12 @@ class LrcEditorUiMixin:
         self.merge_lines_button.clicked.connect(self.merge_selected_lines)
         surgery_buttons.addWidget(self.split_line_button)
         surgery_buttons.addWidget(self.merge_lines_button)
+        move_button = QPushButton("Move")
+        move_menu = QMenu(move_button)
+        move_menu.addAction("Move Up", lambda: self.move_line(-1))
+        move_menu.addAction("Move Down", lambda: self.move_line(1))
+        move_button.setMenu(move_menu)
+        surgery_buttons.addWidget(move_button)
         surgery_buttons.addStretch()
         detail_layout.addLayout(surgery_buttons)
         detail_layout.addWidget(self.text_timing_notice)
@@ -797,6 +808,7 @@ class LrcEditorUiMixin:
         )
         self.go_to_current_lyric_button.clicked.connect(self.go_to_current_lyric)
         line_list_layout.addWidget(self.go_to_current_lyric_button)
+        self._build_inline_timing_issues(line_list_layout)
 
         workspace = QSplitter(Qt.Orientation.Horizontal)
         workspace.addWidget(line_list_panel)
@@ -882,8 +894,54 @@ class LrcEditorUiMixin:
 
         layout = self.layout() or QVBoxLayout(self)
         layout.addWidget(workspace, 1)
+        self.preview_tools = self._build_preview_tools()
+        layout.addWidget(self.preview_tools)
         layout.addLayout(buttons)
 
         workspace.setSizes([250, 900, 360])
         self._tab_changed(self.tabs.currentIndex())
+
+    def _build_preview_tools(self):
+        tools = QWidget()
+        row = QHBoxLayout(tools)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.preview_selection_button = QPushButton("Preview line")
+        self.preview_selection_button.setToolTip("Play the selected lyric or karaoke segment with the preview options below.")
+        self.preview_selection_button.clicked.connect(self.preview_selected_timing)
+        row.addWidget(self.preview_selection_button)
+        self.preview_loop = QCheckBox("Loop")
+        self.preview_loop.setToolTip("Repeat a line, karaoke segment, or clicked waveform segment until you pause or seek.")
+        row.addWidget(self.preview_loop)
+        row.addWidget(QLabel("Speed:"))
+        self.preview_speed = QComboBox()
+        self.preview_speed.setAccessibleName("Preview playback speed")
+        for rate in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0):
+            self.preview_speed.addItem(f"{rate:g}×", rate)
+        media = getattr(self.player, "media_player", None)
+        self._sync_preview_speed(getattr(media, "playbackRate", lambda: 1.0)())
+        self.preview_speed.currentIndexChanged.connect(self.change_preview_speed)
+        self.preview_speed.setEnabled(callable(getattr(self.player, "handle_speed_change", None)))
+        row.addWidget(self.preview_speed)
+        options = QPushButton("Preview options")
+        menu = QMenu(options)
+        padding = QWidget()
+        form = QFormLayout(padding)
+        for name, label in (("preview_lead_in", "Lead-in:"), ("preview_lead_out", "Lead-out:")):
+            field = QDoubleSpinBox()
+            field.setRange(0, 5)
+            field.setDecimals(1)
+            field.setSingleStep(0.1)
+            field.setSuffix(" s")
+            field.setAccessibleName(label.rstrip(":"))
+            setattr(self, name, field)
+            form.addRow(label, field)
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(padding)
+        menu.addAction(action)
+        options.setMenu(menu)
+        row.addWidget(options)
+        self.preview_status = QLabel()
+        self.preview_status.setWordWrap(True)
+        row.addWidget(self.preview_status, 1)
+        return tools
 

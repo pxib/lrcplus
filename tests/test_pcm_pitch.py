@@ -259,6 +259,41 @@ def playback(monkeypatch):
     return Playback()
 
 
+@pytest.mark.parametrize("linked,pitch,expected_shift", [
+    (False, 0, 12), (False, 5, 17), (True, 0, 0),
+])
+def test_editor_speed_uses_controller_pitch_and_pcm_pipeline(
+    editor, playback, linked, pitch, expected_shift,
+):
+    playback.pitch_linked_to_speed = linked
+    playback.pitch_semitones = pitch
+    playback._pcm_pending.extend(b"stale audio")
+    rates, compensation = [], []
+    playback.media_player.setPlaybackRate = rates.append
+    playback.media_player.setPitchCompensation = compensation.append
+    output = playback._pcm_buffer_output
+    editor.player = playback
+    editor.preview_speed.setEnabled(True)
+
+    editor.preview_speed.setCurrentIndex(editor.preview_speed.findData(0.5))
+
+    assert rates == [0.5]
+    assert compensation == [not linked]
+    assert playback.playback_speed == 0.5
+    assert playback.playback_settings["speed_percent"] == 50
+    assert playback._pcm_rate_active()
+    assert playback._pcm_pitch_shift() == expected_shift
+    assert not playback._pcm_pending
+    assert playback._pcm_buffer_output is output
+
+    editor.preview_speed.setCurrentIndex(editor.preview_speed.findData(1.0))
+    assert rates == [0.5, 1.0]
+    assert playback.playback_speed == 1.0
+    assert not playback._pcm_rate_active()
+    assert playback._pcm_pitch_shift() == (0 if linked else pitch)
+    assert playback._pcm_buffer_output is output
+
+
 def test_processing_failure_during_tail_does_not_leave_track_advance_pending(playback, monkeypatch):
     ended = []
     playback._pcm_end_pending = True

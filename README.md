@@ -4,6 +4,12 @@ media player
 
 idk
 
+## Tests
+
+Run `python -m pytest -q` for routine checks, or add `--exhaustive` for every
+rendering combination and the slow integration/simulation checks used in CI.
+See the [testing guide](docs/testing.md) for focused runs and fixture cleanup.
+
 ## Community wiki
 
 I have a wiki now! To get started, please refer to the [wiki](https://pxib.github.io/lrcpluswiki/) to get detailed explanations on specific topics!

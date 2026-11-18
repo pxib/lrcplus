@@ -10,6 +10,7 @@ from ui.lyrics_card_renderer import CARD_TEMPLATES, CardStyle, render_lyric_card
 from ui.lyrics_card_text import CardLyrics
 
 
+@pytest.mark.render_matrix
 @pytest.mark.parametrize("template", CARD_TEMPLATES)
 @pytest.mark.parametrize("placement", ["below_title", "beside_cover"])
 @pytest.mark.parametrize("with_readings", [False, True])

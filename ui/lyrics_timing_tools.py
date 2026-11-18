@@ -1,15 +1,89 @@
 """Batch timing and validation tools for the structured lyrics editor."""
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSignalBlocker, QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QFormLayout, QLabel, QListWidget,
-    QListWidgetItem, QMessageBox, QPushButton, QSpinBox, QVBoxLayout,
+    QListWidgetItem, QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QStyle,
 )
 
 from lyrics.timing import shift_timing, validate_timing
 
 
 class LyricsTimingToolsMixin:
+    def _build_inline_timing_issues(self, layout):
+        self.timing_issues_toggle = QPushButton("Timing: no issues")
+        self.timing_issues_toggle.setCheckable(True)
+        self.timing_issues_toggle.setChecked(True)
+        self.timing_issues_toggle.setToolTip("Show or hide timing issues. Overlaps may be intentional.")
+        layout.addWidget(self.timing_issues_toggle)
+        self.timing_issues_list = QListWidget()
+        self.timing_issues_list.setAccessibleName("Timing issues; select an issue to edit its lyric")
+        self.timing_issues_list.setWordWrap(True)
+        self.timing_issues_list.setMaximumHeight(130)
+        self.timing_issues_list.itemClicked.connect(self._go_to_timing_issue)
+        self.timing_issues_list.itemActivated.connect(self._go_to_timing_issue)
+        layout.addWidget(self.timing_issues_list)
+        self.timing_issues_toggle.toggled.connect(lambda expanded: self.timing_issues_list.setVisible(
+            expanded and self.timing_issues_list.count() > 0))
+        self._timing_validation_timer = QTimer(self)
+        self._timing_validation_timer.setSingleShot(True)
+        self._timing_validation_timer.setInterval(200)
+        self._timing_validation_timer.timeout.connect(self._refresh_inline_timing_issues)
+
+    def _schedule_timing_validation(self):
+        timer = getattr(self, "_timing_validation_timer", None)
+        if timer is not None and not self._closed:
+            timer.start()
+
+    def _refresh_inline_timing_issues(self):
+        if self._closed:
+            return
+        self._timing_validation_timer.stop()
+        media = getattr(self.player, "media_player", None)
+        pending = self._source_dirty
+        plain_text = self._source_suffix == ".txt"
+        issues = [] if pending or plain_text else validate_timing(
+            self.lines, duration_ms=getattr(media, "duration", lambda: None)(),
+            offset_ms=self.lyrics_offset_ms)
+        by_line = {}
+        for issue in issues:
+            by_line.setdefault(issue.line_index, []).append(issue.message)
+        warning = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
+        blocker = QSignalBlocker(self.line_list)
+        for row in range(self.line_list.count()):
+            item = self.line_list.item(row)
+            messages = by_line.get(item.data(Qt.ItemDataRole.UserRole), [])
+            item.setIcon(warning if messages else QIcon())
+            item.setToolTip("\n".join(messages))
+        del blocker
+        # Keep keyboard focus and selection stable across a live refresh.
+        current = self.timing_issues_list.currentItem()
+        selected = current.data(Qt.ItemDataRole.UserRole) if current else None
+        self.timing_issues_list.clear()
+        for issue in issues:
+            item = QListWidgetItem(f"Line {issue.line_index + 1}: {issue.message}")
+            item.setData(Qt.ItemDataRole.UserRole, issue.line_index)
+            item.setToolTip(item.text())
+            self.timing_issues_list.addItem(item)
+            if issue.line_index == selected:
+                self.timing_issues_list.setCurrentItem(item)
+        message = f"Timing issues ({len(issues)})" if issues else "Timing: no issues"
+        if pending:
+            message = "Timing: source edits pending"
+        elif plain_text:
+            message = "Timing: plain text"
+        self.timing_issues_toggle.setText(message)
+        self.timing_issues_toggle.setEnabled(bool(issues))
+        self.timing_issues_list.setVisible(bool(issues) and self.timing_issues_toggle.isChecked())
+
+    def _go_to_timing_issue(self, item):
+        if not self._commit_pending_source():
+            return
+        index = item.data(Qt.ItemDataRole.UserRole)
+        self.tabs.setCurrentWidget(self.lyrics_page)
+        self._select_line_index(index)
+
     def _prepare_timing_tools(self):
         if self._source_dirty:
             self.reload_model_from_source()
