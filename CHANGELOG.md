@@ -9,14 +9,25 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 - Add a **Live preview** beneath the lyrics editor's compact text box, using the player's renderer for readings, formatting, translation rows, and playback highlighting. Keep the preview on the selected line, update it after edits and Undo/Redo, and offer **Expand text** for longer passages. Reuse the editor's reading-generation results instead of starting duplicate requests.
 - Replace separate shortcut popups with a searchable **Shortcuts** reference, available with **F1** from every editor tab. Document waveform navigation, Start/End editing, segment previews, snapping, and linked boundaries alongside keyboard shortcuts.
 - Add visible pan, zoom, **Fit line**, and **All audio** controls to both editor waveforms. Support **Ctrl+left click** to seek without changing timing or starting playback, and waveform-focused **+ / −**, **Left / Right**, **Home**, and **Ctrl+Home** navigation.
+- Add line and karaoke-segment preview controls with optional looping, playback speed, and adjustable lead-in/out. Keep preview ranges within the audio duration and stop looping when pausing, seeking, or closing the editor.
+- Show live timing-warning badges beside affected lyrics and a clickable issue list. Update warnings after edits and Undo/Redo, including when the sidebar is sorted.
+- Add collapsible **Find & Replace** options that appear only after entering a search. Support match highlighting, case sensitivity, Unicode matching, and selected-line or whole-document scope. Preview replacements before applying them, preserve timing and unaffected readings and formatting, and undo each replacement batch in one step.
+- Remember the editor's window size and sidebar and Karaoke Preview widths across sessions, retaining panel widths when tabs temporarily hide them. Fit restored window dimensions to the available screen.
+- Upgrade the **Source** tab with line numbers, syntax highlighting, current-line highlighting, line/column tracking, error underlines, and a clickable issue list. Share validation between live feedback and applying source edits, with colors that adapt to light and dark themes.
+- Add **Ctrl+mouse wheel** zoom to Source, scaling text, syntax fonts, and line numbers together from 6 to 40 points without changing lyric content or Undo history.
 
 ### Changed
 
+- Compact the Lyrics formatting toolbar, make **Readings** collapsible, group timing and movement actions into menus, and combine line-editing actions into one row.
+- Build the editor's Source document when opened and release its clean text/layout after leaving. Omit regenerable source text from Undo checkpoints, stop hidden Lyrics/Karaoke preview updates, reuse editor-generated readings in Karaoke, and release hidden waveform images while preserving decoded peaks and drafts.
+- Reduce library, lyrics, and Undo memory with compact model storage. Bound reading and lyric-search cache payloads, expire bounded Discord lookup caches, and stream settings saves to avoid keeping a second serialized library in memory.
+- Release cached readings, library covers, track metadata, and lyric-search data after ten minutes without use, checking once a minute on the GUI thread. Preserve readings for the loaded song and visible editor, and covers currently visible in the library.
 - Speed up opening Settings, especially on less powerful hardware, by applying the dialog theme once and loading font and audio-device choices only when their controls are used. Share font enumeration between Global and Local scopes and preserve saved and imported selections.
 - Reduce the lyrics editor's default size from 1180 × 820 to 1100 × 740 while retaining window resizing. Use consistent **Waveform** toggles, playback labels, tooltips, and inline gesture hints in Lyrics and Karaoke.
 
 ### Fixed
 
+- Route editor playback-speed changes through the main player's audio controller so speed, pitch compensation, processed audio, and queued buffers stay synchronized.
 - Keep Japanese verb endings and contractions together in Romaji, including `泣いてん → naiten`, `しまったんだ → shimattanda`, `見たって → mitatte`, and `欲しいんでしょ → hoshiindesho`. Handle different parser token splits and grammar formats while preserving authored pauses, source lyrics, and karaoke timing.
 - Suppress duplicate Romaji rows for English and other Latin-script lyrics, including English rows within mixed-language lyrics. Preserve source text, translation rows, timing, and the saved Romaji preference.
 - Stop waveform segment previews with a precise deadline instead of waiting for coarse playback-position notifications. Respect playback speed and pause/resume, restore the exact segment endpoint after pausing, and cancel the preview limit when seeking or starting continuous playback.

@@ -88,6 +88,9 @@ class LyricsEditorPreviewMixin:
         preview = getattr(self, "lyrics_renderer_preview", None)
         if preview is None:
             return
+        if self.tabs.currentWidget() is not self.lyrics_page:
+            self._lyrics_preview_line_index = None
+            return
         index, line = self._current_line()
         if line is None or not line.text:
             if preview.lyric:

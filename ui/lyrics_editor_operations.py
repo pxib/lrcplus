@@ -98,6 +98,7 @@ class LyricsEditorOperationsMixin:
         on_lyrics = self.tabs.currentWidget() is self.lyrics_page
         on_karaoke = self.karaoke_enabled and self.tabs.currentWidget() is self.karaoke_scroll
         self.bulk_line_controls.setVisible(count > 1 and (on_lyrics or on_karaoke))
+        self._update_lyric_search()
         if hasattr(self, "split_line_button"):
             self.split_line_button.setEnabled(current is not None and count <= 1)
             self.delete_line_button.setText("Delete Selected…" if count > 1 else "Delete Line")

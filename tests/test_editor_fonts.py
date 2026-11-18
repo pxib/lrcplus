@@ -83,6 +83,7 @@ def test_korean_karaoke_controls_and_authored_readings_keep_covering_fonts(edito
             if item.text():
                 assert glyph_families(item.text(), item.font()) == {"Malgun Gothic"}
 
+    editor.tabs.setCurrentWidget(editor.karaoke_scroll)
     editor._refresh_karaoke_preview()
     preview = editor.karaoke_renderer_preview
     glyph_families(KOREAN, preview.base_font)
@@ -115,6 +116,7 @@ def test_karaoke_preview_restores_chosen_font_for_covered_text(editor):
     chosen = QFont("Yu Gothic UI", 27)
     chosen.setItalic(True)
     editor._karaoke_preview_fonts = chosen, QFont(chosen)
+    editor.tabs.setCurrentWidget(editor.karaoke_scroll)
     line = editor.lines[0]
     line.text = KOREAN
     editor._refresh_karaoke_preview()

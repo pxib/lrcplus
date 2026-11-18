@@ -5,6 +5,7 @@ import sys
 import time
 import uuid
 from copy import deepcopy
+from itertools import islice
 from pathlib import Path
 
 from core.factory_defaults import FACTORY_DEFAULTS
@@ -390,6 +391,35 @@ def save_karaoke_settings(values):
     save_all_settings(payload)
 
 
+def get_editor_layout_settings(payload=None):
+    """Read only the lyrics editor's window dimensions and panel widths."""
+    payload = load_all_settings() if payload is None else payload
+    values = payload.get("lyrics_editor_layout", {})
+    if not isinstance(values, dict):
+        values = {}
+    size = values.get("window_size")
+    if not (isinstance(size, (list, tuple)) and len(size) == 2
+            and all(type(value) is int and 0 < value <= 32767 for value in size)):
+        size = None
+    panels = {"sidebar": 250, "karaoke_preview": 360}
+    stored = values.get("panel_widths", {})
+    if isinstance(stored, dict):
+        for name in panels:
+            width = stored.get(name)
+            if type(width) is int and 0 <= width <= 32767:
+                panels[name] = width
+    return {"window_size": list(size) if size is not None else None,
+            "panel_widths": panels}
+
+
+def save_editor_layout_settings(window_size, panel_widths):
+    payload = load_all_settings()
+    payload["lyrics_editor_layout"] = get_editor_layout_settings({
+        "lyrics_editor_layout": {"window_size": window_size, "panel_widths": panel_widths},
+    })
+    save_all_settings(payload)
+
+
 def get_startup_settings(payload=None):
     payload = load_all_settings() if payload is None else payload
     values = payload.get("startup", {})
@@ -646,10 +676,13 @@ def save_all_settings(payload):
     )
     try:
         SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temp_path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        # Stream large library payloads instead of retaining the JSON encoder's
+        # chunks, a joined Unicode string, and its encoded bytes at once.
+        with temp_path.open("w", encoding="utf-8") as handle:
+            encoded = iter(json.JSONEncoder(indent=2, ensure_ascii=False).iterencode(payload))
+            # Batch tiny encoder fragments to avoid a text I/O call per field.
+            while chunks := tuple(islice(encoded, 4096)):
+                handle.write("".join(chunks))
 
         last_error = None
         for attempt in range(5):

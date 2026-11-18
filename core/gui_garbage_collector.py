@@ -19,6 +19,7 @@ class GuiGarbageCollector(QObject):
         super().__init__(app)
         gc.disable()
         self._last_full_collection = monotonic()
+        self._last_cache_cleanup = self._last_full_collection
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._collect)
@@ -27,6 +28,10 @@ class GuiGarbageCollector(QObject):
     @Slot()
     def _collect(self):
         now = monotonic()
+        if now - self._last_cache_cleanup >= 60:
+            from core.cache_cleanup import clear_idle_caches
+            clear_idle_caches(self.parent())
+            self._last_cache_cleanup = now
         if now - self._last_full_collection >= 30:
             # Periodically reclaim older cycles even on Python versions whose
             # young-generation collection no longer promotes through gen 1.

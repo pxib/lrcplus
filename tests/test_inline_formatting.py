@@ -149,6 +149,7 @@ def test_editor_formatting_preserves_karaoke_and_undo(editor, marker, closing, f
     assert editor.lines[0].segments == before
     assert editor.lines[0].has_karaoke
     assert editor.lines[0].style_spans == [(0, 5, *flags)]
+    editor.tabs.setCurrentWidget(editor.karaoke_scroll)
     assert editor.karaoke_renderer_preview.style_spans == editor.lines[0].style_spans
     assert "Text formatting" in editor._lrcx_only_features()
     editor.undo()

@@ -623,19 +623,41 @@ class LrcEditorUiMixin:
         # ----------------------------- Source --------------------------
         source_page = QWidget()
         source_layout = QVBoxLayout(source_page)
-        source_layout.addWidget(QLabel("Edit raw syntax here. Source edits are applied when leaving this tab or saving."))
+        source_hint = QLabel("Edit LRC/LRCX source. Changes apply when you leave this tab or save.")
+        source_hint.setWordWrap(True)
+        source_layout.addWidget(source_hint)
+        source_header = QHBoxLayout()
         self.source_format_label = QLabel()
-        source_layout.addWidget(self.source_format_label)
-        self.source_editor = LyricsTextEdit()
-        self.source_editor.setAcceptRichText(False)
-        self.source_editor.textChanged.connect(self._source_text_changed)
+        source_header.addWidget(self.source_format_label)
+        self.source_diagnostics_label = QLabel("No source issues")
+        source_header.addWidget(self.source_diagnostics_label)
+        source_header.addStretch()
+        self.source_position_label = QLabel("Ln 1, Col 1")
+        source_header.addWidget(self.source_position_label)
+        source_layout.addLayout(source_header)
+        from ui.source_editor import SourceTextEdit
+        self.source_editor = SourceTextEdit(suffix=self._source_suffix)
+        self.source_editor.sourceTextChanged.connect(self._source_text_changed)
         self.source_editor.undoAvailable.connect(self._update_history_actions)
         self.source_editor.redoAvailable.connect(self._update_history_actions)
+        self.source_editor.cursorPositionChanged.connect(self._source_cursor_moved)
+        self.source_editor.diagnosticsChanged.connect(self._update_source_diagnostics)
         source_layout.addWidget(self.source_editor, 1)
+        self.source_issues_list = QListWidget()
+        self.source_issues_list.setAccessibleName("Source issues; select an issue to jump to its location")
+        self.source_issues_list.setWordWrap(True)
+        self.source_issues_list.itemClicked.connect(
+            lambda item: self.source_editor.go_to_issue(item.data(Qt.ItemDataRole.UserRole)))
+        self.source_issues_list.itemActivated.connect(
+            lambda item: self.source_editor.go_to_issue(item.data(Qt.ItemDataRole.UserRole)))
+        self.source_issues_list.hide()
+        source_layout.addWidget(self.source_issues_list)
         source_buttons = QHBoxLayout()
-        sync_source = QPushButton("Refresh Source")
+        sync_source = QPushButton("Refresh from lyrics")
+        sync_source.setToolTip("Regenerate source from the structured lyrics.")
         sync_source.clicked.connect(self.sync_source_from_model)
-        reload_source = QPushButton("Reload from Source")
+        reload_source = QPushButton("Apply source")
+        reload_source.setToolTip("Validate and apply source edits to the structured lyrics.")
         reload_source.clicked.connect(self.reload_model_from_source)
         open_source_file = QPushButton("Open File")
         open_source_file.setToolTip("Open this lyrics file with your system's default application.")
@@ -647,17 +669,14 @@ class LrcEditorUiMixin:
         source_buttons.addWidget(reload_source)
         source_buttons.addWidget(open_source_file)
         source_buttons.addWidget(open_source_folder)
-        source_buttons.addStretch()
-        source_layout.addLayout(source_buttons)
-        source_tools = QHBoxLayout()
         import_ass = QPushButton("Import ASS…")
         import_ass.setToolTip(
             "Import ASS/SSA Dialogue lines and convert \\k, \\K, \\kf and \\ko karaoke timing into LRCX."
         )
         import_ass.clicked.connect(self.import_ass)
-        source_tools.addWidget(import_ass)
-        source_tools.addStretch()
-        source_layout.addLayout(source_tools)
+        source_buttons.addStretch()
+        source_buttons.addWidget(import_ass)
+        source_layout.addLayout(source_buttons)
         self.tabs.addTab(source_page, "Source")
 
         # ----------------------------- Share --------------------------
@@ -774,7 +793,9 @@ class LrcEditorUiMixin:
         self.tabs.addTab(advanced_page, "Advanced")
         self._update_song_association_ui()
         self.tabs.currentChanged.connect(self._tab_changed)
-        self.sync_source_from_model()
+        # Source is serialized when opened. A hidden QTextDocument and its
+        # syntax runs otherwise duplicate the complete structured document.
+        self.source_format_label.setText(f"{self._source_suffix[1:].upper()} source")
 
         # Main editor workspace. The karaoke renderer lives in its own
         # inspector panel on the right instead of consuming vertical space in
@@ -811,6 +832,8 @@ class LrcEditorUiMixin:
         self._build_inline_timing_issues(line_list_layout)
 
         workspace = QSplitter(Qt.Orientation.Horizontal)
+        self.workspace_splitter = workspace
+        workspace.splitterMoved.connect(self._remember_editor_panel_widths)
         workspace.addWidget(line_list_panel)
         workspace.addWidget(self.tabs)
         workspace.setStretchFactor(1, 1)
@@ -900,6 +923,26 @@ class LrcEditorUiMixin:
 
         workspace.setSizes([250, 900, 360])
         self._tab_changed(self.tabs.currentIndex())
+
+    def _source_cursor_moved(self):
+        cursor = self.source_editor.textCursor()
+        prefix = cursor.block().text().encode("utf-16-le")[:cursor.positionInBlock() * 2]
+        column = len(prefix.decode("utf-16-le", errors="ignore")) + 1
+        self.source_position_label.setText(f"Ln {cursor.blockNumber() + 1}, Col {column}")
+
+    def _update_source_diagnostics(self, issues):
+        if not hasattr(self, "source_issues_list"):
+            return
+        self.source_issues_list.clear()
+        for issue in issues:
+            item = QListWidgetItem(f"Line {issue.line_number}: {issue.message}")
+            item.setData(Qt.ItemDataRole.UserRole, issue)
+            self.source_issues_list.addItem(item)
+        self.source_issues_list.setFixedHeight(min(120, max(48, len(issues) * self.fontMetrics().lineSpacing() + 16)))
+        self.source_issues_list.setVisible(bool(issues))
+        self.source_diagnostics_label.setText(f"{len(issues)} source issue(s)" if issues else "No source issues")
+        self.source_diagnostics_label.setStyleSheet(
+            f"color: {self.source_editor._error_color().name()};" if issues else "")
 
     def _build_preview_tools(self):
         tools = QWidget()

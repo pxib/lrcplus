@@ -68,6 +68,7 @@ class LyricsEditorPlaybackMixin:
                 ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
                 ("Ctrl+F", "Find lyrics"),
                 ("F3 / Shift+F3", "Next / previous search match"),
+                ("Ctrl+wheel", "Zoom source text (Source tab)"),
                 ("Delete", "Delete selected lines (lyric list only)"),
                 ("Ctrl+B / Ctrl+I / Ctrl+U", "Bold / italic / underline in lyric text"),
                 ("Ctrl+Shift+X", "Strikethrough in lyric text"),

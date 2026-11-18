@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import MISSING, dataclass, asdict, fields
 from pathlib import Path
 from typing import Iterable
 import os
-from collections import OrderedDict
+from core.idle_cache import IdleCache
 
 try:
     from mutagen import File as MutagenFile
@@ -16,7 +16,7 @@ SUPPORTED_EXTENSIONS = {
 }
 
 
-@dataclass
+@dataclass(slots=True)
 class LibraryTrack:
     path: str
     title: str
@@ -41,13 +41,16 @@ class LibraryTrack:
 
     @classmethod
     def from_dict(cls, data):
-        values = {field: data.get(field, getattr(cls, field, None)) for field in cls.__dataclass_fields__}
+        values = {
+            field.name: data.get(field.name, field.default if field.default is not MISSING else None)
+            for field in fields(cls)
+        }
         return cls(**values)
 
 
 # Reuse metadata during repeated rescans when the file is unchanged.
-_TRACK_CACHE: OrderedDict[str, tuple[int, int, LibraryTrack]] = OrderedDict()
 _TRACK_CACHE_LIMIT = 5000
+_TRACK_CACHE = IdleCache(_TRACK_CACHE_LIMIT)
 
 
 def _first(tags, *keys):
@@ -73,7 +76,6 @@ def read_track(path: str | Path) -> LibraryTrack:
     resolved = str(path.resolve())
     cached = _TRACK_CACHE.get(resolved)
     if cached is not None and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
-        _TRACK_CACHE.move_to_end(resolved)
         return cached[2]
     title = path.stem
     artist = album = album_artist = date = track_number = disc_number = ''
@@ -109,9 +111,6 @@ def read_track(path: str | Path) -> LibraryTrack:
         bitrate=bitrate, file_size=stat.st_size, modified=stat.st_mtime,
     )
     _TRACK_CACHE[resolved] = (stat.st_mtime_ns, stat.st_size, track)
-    _TRACK_CACHE.move_to_end(resolved)
-    while len(_TRACK_CACHE) > _TRACK_CACHE_LIMIT:
-        _TRACK_CACHE.popitem(last=False)
     return track
 
 

@@ -1,9 +1,24 @@
 from dataclasses import dataclass, field
+from copy import deepcopy
 from typing import Optional
 
 
-@dataclass
-class LyricSegment:
+class _LyricModel:
+    __slots__ = ()
+
+    def __deepcopy__(self, memo):
+        # Default slot copying builds a temporary attribute dictionary for every
+        # segment. Copy directly for document Undo while preserving shared lists
+        # and segments through the usual deepcopy memo.
+        result = object.__new__(type(self))
+        memo[id(self)] = result
+        for name in self.__dataclass_fields__:
+            setattr(result, name, deepcopy(getattr(self, name), memo))
+        return result
+
+
+@dataclass(slots=True)
+class LyricSegment(_LyricModel):
     start: float
     text: str
     ruby: Optional[str] = None
@@ -23,8 +38,8 @@ class LyricSegment:
     needs_timing_review: bool = field(default=False, compare=False, metadata={"editor_only": True})
 
 
-@dataclass
-class LyricLine:
+@dataclass(slots=True)
+class LyricLine(_LyricModel):
     start: float
     text: str
     segments: list[LyricSegment] = field(default_factory=list)

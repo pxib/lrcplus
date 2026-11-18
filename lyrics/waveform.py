@@ -219,6 +219,7 @@ class WaveformWidget(QWidget):
         self._waveform_bars = []
 
     def load_audio(self, path):
+        self._clear_waveform_cache()
         self._peaks = []
         self._duration_ms = 0
         self._position_ms = 0
@@ -253,11 +254,19 @@ class WaveformWidget(QWidget):
             self._start_audio_worker()
 
     def hideEvent(self, event):
+        self._clear_waveform_cache()
         if self._defer_hidden_load and self._worker is not None:
             self._audio_load_pending = True
             self._stop_worker(wait=False)
             self._loading = False
         super().hideEvent(event)
+
+    def _clear_waveform_cache(self):
+        # Peaks and viewport state are small and reusable. Release the native
+        # image and bar geometry until this waveform is painted again.
+        self._waveform_cache_key = None
+        self._waveform_cache_gray = QPixmap()
+        self._waveform_bars = []
 
     def set_duration(self, duration_ms):
         self._duration_ms = max(0, int(duration_ms))

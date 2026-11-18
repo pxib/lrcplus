@@ -7,7 +7,7 @@ resolvable number readings instead of requiring a 248 MB local dictionary.
 import re
 import threading
 import unicodedata
-from collections import OrderedDict
+from core.idle_cache import IdleCache
 import json
 import math
 from core.http_client import requests
@@ -123,9 +123,10 @@ YOMI_URL = "https://yomi.onrender.com/analyze"
 YOMI_TIMEOUT = (5.0, 30.0)
 YOMI_RETRIES = 2
 
-_YOMI_CACHE = OrderedDict()
 _YOMI_CACHE_LIMIT = 1000
 _CACHE_LOCK = threading.Lock()
+_YOMI_CACHE = IdleCache(_YOMI_CACHE_LIMIT, max_bytes=8 * 1024 * 1024,
+                        expiration_lock=_CACHE_LOCK)
 
 # Several lyric widgets/workers can request analyses at once. Serializing the
 # remote calls prevents a newly opened lyric file from hammering the small API
@@ -621,9 +622,10 @@ def build_pinyin_segments_batch(texts):
     return result
 
 
-_SEGMENT_CACHE = OrderedDict()
 _SEGMENT_CACHE_LIMIT = 2000
 _SEGMENT_CACHE_LOCK = threading.Lock()
+_SEGMENT_CACHE = IdleCache(_SEGMENT_CACHE_LIMIT, max_bytes=12 * 1024 * 1024,
+                           expiration_lock=_SEGMENT_CACHE_LOCK)
 
 def _segment_cache_key(text, mode=None):
     """Cache automatic readings by parser, mode, and Auto language context.
@@ -739,13 +741,16 @@ def _with_dictionary_readings(text, segments):
 
 def _cache_furigana_segments(text, segments):
     text = str(text or "")
+    raw = [dict(segment) for segment in segments]
     if text:
         with _SEGMENT_CACHE_LOCK:
             key = _segment_cache_key(text)
-            _SEGMENT_CACHE[key] = [dict(segment) for segment in segments]
-            _SEGMENT_CACHE.move_to_end(key)
+            _SEGMENT_CACHE[key] = raw
+            if key in _SEGMENT_CACHE:
+                _SEGMENT_CACHE.move_to_end(key)
             while len(_SEGMENT_CACHE) > _SEGMENT_CACHE_LIMIT:
                 _SEGMENT_CACHE.popitem(last=False)
+    return raw
 
 def _fallback(text):
     return [{"text": str(text), "reading": None}] if text else []
@@ -820,7 +825,8 @@ def yomi_analyze(text):
 
                 with _CACHE_LOCK:
                     _YOMI_CACHE[text] = words
-                    _YOMI_CACHE.move_to_end(text)
+                    if text in _YOMI_CACHE:
+                        _YOMI_CACHE.move_to_end(text)
                     while len(_YOMI_CACHE) > _YOMI_CACHE_LIMIT:
                         _YOMI_CACHE.popitem(last=False)
 
@@ -1404,10 +1410,10 @@ def build_furigana_segments(text, progress_callback=None, should_continue=None, 
             if row in translations:
                 segments.append({"text": value, "reading": None})
             elif value:
-                build_furigana_segments(value, should_continue=should_continue, force=force)
-                segments.extend(_get_raw_cached_furigana_segments(value) or _fallback(value))
-        _cache_furigana_segments(text, segments)
-        return get_cached_furigana_segments(text)
+                generated = build_furigana_segments(value, should_continue=should_continue, force=force)
+                segments.extend(_get_raw_cached_furigana_segments(value) or generated)
+        raw = _cache_furigana_segments(text, segments)
+        return _with_dictionary_readings(text, [dict(part) for part in raw])
 
     mode = get_reading_mode()
     language = detect_lyrics_language(text)
@@ -1443,8 +1449,10 @@ def build_furigana_segments(text, progress_callback=None, should_continue=None, 
         else:
             segments = _fallback(text)
 
-    _cache_furigana_segments(text, segments)
-    segments = get_cached_furigana_segments(text)
+    raw = _cache_furigana_segments(text, segments)
+    # A result can exceed the cache budget. Return it directly rather than
+    # relying on retention, and keep the cached dictionaries private.
+    segments = _with_dictionary_readings(text, [dict(part) for part in raw])
     if progress_callback:
         progress_callback(segments)
     return segments

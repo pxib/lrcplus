@@ -14,6 +14,116 @@ by 200–500 KB every three seconds.
 
 ## Changes
 
+### Periodic cache cleanup
+
+The GUI checks memory caches once a minute and releases entries unused for ten
+minutes. This covers automatic readings, Yomi responses, library cover
+thumbnails, track metadata, lyric-folder indexes, and cached lyric-search text.
+Existing size limits still apply. Accessing an entry refreshes its idle time;
+evicted entries are rebuilt when requested again.
+
+Readings for the loaded song and visible lyrics editors are protected, including
+translation-aware cache keys and prefetched lines that have not been displayed.
+Library thumbnails currently in the viewport are also protected. Leaving the
+library or closing the editor makes those entries eligible for later cleanup.
+The sweep runs on the GUI thread and coordinates with reading-worker locks.
+
+This releases application-held cache references. Shared objects still used by a
+view, Python/Qt allocators, imported libraries, and native font/audio resources
+can remain allocated, so working-set memory need not return to its startup level.
+Image-card buffers continue to use their existing cleanup when leaving the card
+workspace or closing the editor. Saved files and disk caches are unaffected.
+
+### Compact models, cache budgets, and settings saves
+
+Library tracks, lyric lines, and lyric segments now use slotted dataclasses to
+avoid a separate attribute dictionary for every object. Lyric copying writes
+directly into the new object, avoiding temporary state dictionaries during Undo
+snapshots while preserving shared references and independently copied lists.
+Library deserialization still applies field defaults to older saved records.
+Code extending these models should keep extra metadata separately rather than
+adding arbitrary instance attributes.
+
+Entry counts alone do not bound large lyric documents. IdleCache now also
+supports estimated Python payload budgets: 16 MiB for lyric-search text, 12 MiB
+for generated reading segments, and 8 MiB for Yomi results. Insertion evicts the
+least recently used entries until both limits are met. An individual oversized
+result is returned normally without being cached. Accounting covers nested
+lists, tuples, dictionaries, and strings; it is measured on insertion and does
+not represent native allocations or the entire process footprint. Cached values
+must be replaced rather than enlarged in place.
+
+Discord metadata and resolved-cover caches now retain at most 1,024 and 2,048
+entries respectively and participate in the existing idle sweep. Negative lookup
+results remain cached too. Persistent upload URLs still use their existing disk
+cache and expiry handling.
+
+Settings saves stream JSON in small batches to their unique temporary file,
+keeping existing atomic replacement, Windows lock retries, Unicode output, and
+legacy migration.
+Serialization failures remove the incomplete temporary file and preserve the
+previous preferences.
+
+Controlled Python 3.14 tracemalloc probes, comparing this follow-up with the
+preceding working tree, measured:
+
+| Synthetic workload | Before | After |
+| --- | ---: | ---: |
+| 10,000 LibraryTrack objects, retained Python storage | 2.27 MiB | 1.81 MiB |
+| 1,000 lyric lines with 10,000 segments, retained storage | 2.80 MiB | 2.30 MiB |
+| Ten complete copies of that lyric document, retained storage | 35.17 MiB | 22.75 MiB |
+| Same copy workload, peak traced allocations | 40.67 MiB | 25.12 MiB |
+| Saving a 10,000-track settings payload, peak traced allocations | 5.65 MiB | 0.44 MiB |
+
+Each segment included a ruby span; metadata strings were shared where possible.
+Payload construction preceded tracing for the settings-save measurement. These
+are isolated Python allocation measurements, not native working-set totals or
+predictions for a packaged app. The copy workload also became faster in the
+traced probe; streamed settings serialization trades some CPU time for its lower
+allocation peak. Functional checks cover copied fields and aliases, legacy
+defaults, byte-budget eviction, oversized results, concurrent cache sweeps,
+Unicode persistence, failed writes, and lock retries.
+
+The routine suite passed 4,625 tests with 15 skipped and 379 deselected, plus
+47 subtests. After the final cache/serialization follow-ups, all 262 focused
+reading, cache, model, settings, and artwork checks passed.
+
+### Editor tab follow-up
+
+Source now builds its text document and syntax runs when opened. Leaving Source
+commits valid pending edits and clears its regenerable Qt document; invalid
+drafts keep the user in Source and retain their exact text. Reopening rebuilds
+the current model, metadata, offset, and generation mode. Clean Undo checkpoints
+omit serialized source text and regenerate it when restored into Source; pending
+raw drafts remain part of history and crash recovery.
+
+The Lyrics and Karaoke previews clear their displayed content when their tab
+is left and skip hidden playback/selection updates. Returning rebuilds the latest
+selected line and timing. Karaoke uses the editor's generated readings instead
+of starting a second generation job, and both previews stop workers on close.
+Waveforms release their image and bar geometry on hiding or changing tracks,
+while retaining their small peak array and viewport state for repainting.
+
+Translations already creates its workspace and individual provider panels on
+first use. Visited providers retain unapplied drafts when hidden, including when
+closing is cancelled. Generation and Advanced contain configuration/action
+controls; they do not need a second full document or a running idle decoder.
+Share continues to use the image-buffer cleanup described below.
+
+A native Windows Qt probe used 1,000 synthetic lyric lines and approximately
+121,000 source characters. Source held one empty Qt block before opening, 1,004
+blocks while active, and one after leaving. A controlled comparison of 100
+line-edit checkpoints retained 11.65 MiB when including clean source text and
+0.12 MiB with source regeneration. Those numbers describe this checkpoint
+workload, not total editor RAM; Qt/font allocations and allocator reuse can keep
+the native working set above its opening value after buffers are released.
+
+All 692 focused editor, karaoke, waveform, translation, formatting, and import
+checks passed with six native-font checks skipped in the offscreen run. A separate
+native Windows run passed all 57 font, tab-memory, preview, and karaoke-save checks.
+
+### Editor image buffers
+
 - The editor now imports and constructs the image-card workspace on first use.
   Opening the editor, sharing text, or closing the editor does not allocate its
   font picker and card controls.

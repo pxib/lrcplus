@@ -12,6 +12,7 @@ import re
 import unicodedata
 
 from core.http_client import requests
+from core.idle_cache import IdleCache
 from PIL import Image, ImageOps
 
 from lyrics.furigana import detect_lyrics_collection_language, get_reading_mode
@@ -115,6 +116,7 @@ _CANTONESE_MARKERS = frozenset_CANTONESE_MARKERS = frozenset(
     "𨳊㞗閪"
     )
 TEMPLATE_KEYS = ("details_template", "state_template", "large_text_template")
+_CACHE_MISS = object()
 
 
 class DiscordRpcPlugin:
@@ -145,9 +147,9 @@ class DiscordRpcPlugin:
         self._placeholder_easter_egg_track = None
         self._classical_chinese_easter_egg = None
 
-        # Per-session caches. No repeated lookups or uploads for the same file.
-        self._metadata_cache = {}
-        self._cover_cache = {}
+        # Reuse recent lookups without retaining every track played in a session.
+        self._metadata_cache = IdleCache(1024)
+        self._cover_cache = IdleCache(2048)
         self._cover_jobs = set()
         self._cover_lock = threading.Lock()
         self._cover_pending = None
@@ -469,8 +471,9 @@ class DiscordRpcPlugin:
 
     def _local_metadata(self, path: Path):
         key = self._file_key(path)
-        if key in self._metadata_cache:
-            return self._metadata_cache[key]
+        cached = self._metadata_cache.get(key, _CACHE_MISS)
+        if cached is not _CACHE_MISS:
+            return cached
 
         metadata = {
             "title": path.stem,
@@ -667,8 +670,9 @@ class DiscordRpcPlugin:
         key = self._file_key(path)
         cache_key = f"mb:{key}"
 
-        if cache_key in self._cover_cache:
-            return self._cover_cache[cache_key]
+        cached = self._cover_cache.get(cache_key, _CACHE_MISS)
+        if cached is not _CACHE_MISS:
+            return cached
 
         release_id, release_title = self._find_musicbrainz_release(metadata)
         if not release_id:
@@ -877,8 +881,9 @@ class DiscordRpcPlugin:
     def _upload_embedded_cover(self, path: Path):
         # Retain the legacy cache keys for both hosts and existing saved URLs.
         key = f"litterbox:{self._file_key(path)}"
-        if key in self._cover_cache:
-            return self._cover_cache[key]
+        cached = self._cover_cache.get(key, _CACHE_MISS)
+        if cached is not _CACHE_MISS:
+            return cached
 
         persistent_key = self._persistent_litterbox_key(path)
         cached = self._persistent_cover_cache.get(persistent_key)

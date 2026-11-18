@@ -67,3 +67,17 @@ def test_installation_rejects_worker_thread(qapp):
     with ThreadPoolExecutor(max_workers=1) as executor:
         with pytest.raises(RuntimeError, match="GUI thread"):
             executor.submit(GuiGarbageCollector, qapp).result()
+
+
+def test_idle_cache_sweep_runs_once_per_minute_on_gui_thread(collector, monkeypatch, qapp):
+    calls = []
+    now = collector._last_cache_cleanup
+    monkeypatch.setattr("core.gui_garbage_collector.monotonic", lambda: now)
+    monkeypatch.setattr("core.cache_cleanup.clear_idle_caches",
+                        lambda app: calls.append((app, threading.get_ident())))
+    collector._collect()
+    assert not calls
+    now += 60
+    collector._collect()
+    collector._collect()
+    assert calls == [(qapp, threading.get_ident())]

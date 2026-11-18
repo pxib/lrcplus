@@ -18,6 +18,28 @@ def cover_bytes(size=(128, 64), *, mode="RGB", format="PNG", **kwargs):
     return output.getvalue()
 
 
+def test_session_caches_are_bounded_and_expire_without_releasing_recent_results(monkeypatch):
+    import core.idle_cache as caches
+
+    clock = [0.0]
+    monkeypatch.setattr(caches, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(DiscordRpcPlugin, "_load_persistent_cover_cache", lambda self: {})
+    plugin = DiscordRpcPlugin()
+    for index in range(3000):
+        plugin._metadata_cache[index] = {"title": str(index)}
+        plugin._cover_cache[index] = f"https://example.com/{index}.png"
+    assert len(plugin._metadata_cache) <= 1024
+    assert len(plugin._cover_cache) <= 2048
+    clock[0] = 599
+    recent = plugin._cover_cache[2999]
+    clock[0] = 600
+    plugin._metadata_cache.expire()
+    plugin._cover_cache.expire()
+    assert not plugin._metadata_cache
+    assert list(plugin._cover_cache) == [2999]
+    assert plugin._cover_cache[2999] == recent
+
+
 @pytest.mark.parametrize("unload", [False, True])
 def test_cover_work_has_one_worker_and_only_the_latest_pending_track(tmp_path, monkeypatch, unload):
     monkeypatch.setattr(DiscordRpcPlugin, "_load_persistent_cover_cache", lambda self: {})

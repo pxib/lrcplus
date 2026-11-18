@@ -266,6 +266,7 @@ def test_plain_txt_source_does_not_gain_synthetic_timestamp_text(tmp_path, make_
     path = tmp_path / "plain.txt"
     path.write_text("First\nSecond\n", encoding="utf-8")
     editor = make_lyrics_editor(path=path, populate=False, karaoke=False)
+    editor.tabs.setCurrentWidget(editor.source_editor.parentWidget())
     assert editor.source_editor.toPlainText() == "First\nSecond\n"
     editor.source_editor.setPlainText("Changed\nSecond\n")
     assert editor.reload_model_from_source()

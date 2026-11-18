@@ -66,9 +66,11 @@ from ui.lyrics_editor_playback import LyricsEditorPlaybackMixin
 from ui.lyrics_editor_karaoke import LyricsEditorKaraokeMixin
 from ui.lyrics_editor_operations import LyricsEditorOperationsMixin
 from ui.lyrics_editor_preview import LyricsEditorPreviewMixin
+from ui.lyrics_editor_layout import LyricsEditorLayoutMixin
 
 
 class LrcEditorDialog(
+    LyricsEditorLayoutMixin,
     LyricsEditorDocumentMixin,
     LyricsEditorPreviewMixin,
     LyricsEditorPlaybackMixin,
@@ -100,9 +102,9 @@ class LrcEditorDialog(
         self.document_dirty = False
         self._closed = False
         self._choosing_document = lrc_path is None
+        self._initialize_editor_layout()
         if self._choosing_document:
             self.setWindowTitle("Lyrics Editor 4.0")
-            self.resize(1100, 740)
             self._build_document_start_page()
             return
         self._initialize_document(lrc_path, new_document=new_document)
@@ -220,7 +222,6 @@ class LrcEditorDialog(
 
 
         self._update_document_title()
-        self.resize(1100, 740)
 
         if not new_document:
             self._load_document()
@@ -238,6 +239,7 @@ class LrcEditorDialog(
             self.source_editor.setPlainText(text)
             del blocker
             self._source_suffix = suffix
+            self.source_editor.set_source_format(suffix)
             self._source_dirty = True
             self.source_format_label.setText(f"{suffix[1:].upper()} source")
             self.tabs.setCurrentWidget(self.source_editor.parentWidget())
@@ -355,6 +357,13 @@ class LrcEditorDialog(
                 return
         elif index == source_index and not self._source_dirty:
             self.sync_source_from_model()
+        if index != source_index and not self.source_editor.document().isEmpty():
+            # Pending edits have been committed above. The model and document
+            # history now own the content; release hidden Qt blocks/syntax runs.
+            blocker = QSignalBlocker(self.source_editor)
+            self.source_editor.clear()
+            del blocker
+        self._remember_editor_panel_widths()
         # parentWidget() is the source page in this layout.
         # Source and Translations have their own document navigation.
         full_width = index == source_index or (
@@ -374,11 +383,20 @@ class LrcEditorDialog(
         if on_translations:
             self._ensure_translation_panel()
         self._update_tab_specific_controls()
+        preview = self.lyrics_renderer_preview
+        if self.tabs.currentWidget() is self.lyrics_page:
+            self._refresh_lyrics_preview()
+        else:
+            preview.stop_workers()
+            if preview.lyric:
+                preview.set_lyric("", generate=False)
+            self._lyrics_preview_line_index = None
         self._update_history_actions()
         if hasattr(self, "preview_tools"):
             on_karaoke = self.karaoke_enabled and self.tabs.currentWidget() is self.karaoke_scroll
             self.preview_tools.setVisible(self.tabs.currentWidget() is self.lyrics_page or on_karaoke)
             self.preview_selection_button.setText("Preview segment" if on_karaoke else "Preview line")
+        self._restore_editor_panel_widths()
 
     def _set_share_selection_active(self, active):
         active = bool(active)
@@ -436,6 +454,11 @@ class LrcEditorDialog(
             self.karaoke_preview_panel.setVisible(on_karaoke_tab)
             if on_karaoke_tab:
                 self._refresh_karaoke_preview()
+            else:
+                self.karaoke_renderer_preview.stop_workers()
+                if self.karaoke_renderer_preview.lyric:
+                    self.karaoke_renderer_preview.set_lyric("", generate=False)
+                self._preview_segments_line_index = None
 
     def _populate_lines(self, preserve_line_index=None, selected_line_indices=None):
         """Refresh the sidebar as a view of canonical document order.
@@ -1952,11 +1975,13 @@ class LrcEditorDialog(
 
     def done(self, result):
         if self._choosing_document:
+            self._save_editor_layout()
             self._closed = True
             super().done(result)
             return True
         if self.translation_panel is not None and not self.translation_panel.confirm_close():
             return False
+        self._save_editor_layout()
         self._closed = True
         if self._share_card is not None:
             self._share_card.shutdown()
@@ -1973,7 +1998,10 @@ class LrcEditorDialog(
         self._line_reading_timer.stop()
         self._precise_display_timer.stop()
         self._timing_validation_timer.stop()
+        self.source_editor.shutdown()
         self.lyrics_renderer_preview.stop_workers()
+        if hasattr(self, "karaoke_renderer_preview"):
+            self.karaoke_renderer_preview.stop_workers()
         # The player deletes the closed dialog. Stop its decoder threads before
         # Qt destroys their parent widgets and QThread objects.
         for waveform in self.findChildren(WaveformWidget):

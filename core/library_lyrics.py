@@ -1,6 +1,6 @@
 """Search local lyric text without generating readings or touching Qt widgets."""
 
-from collections import OrderedDict
+from core.idle_cache import IdleCache
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -54,7 +54,7 @@ def _first_match(source, normalized, query):
 
 
 class _SearchResolver(LyricsSearchMixin):
-    _lyrics_folder_index_cache = {}
+    _lyrics_folder_index_cache = IdleCache()
 
     def __init__(self):
         self._folders = {}
@@ -71,7 +71,7 @@ class LibraryLyricsIndex:
     """Bounded text cache; used sequentially by the library's background job."""
 
     def __init__(self):
-        self._texts = OrderedDict()
+        self._texts = IdleCache(5000, max_bytes=16 * 1024 * 1024)
 
     def invalidate(self):
         # A rescan must also notice edits to [attach:] tags inside lyric files.
@@ -83,14 +83,10 @@ class LibraryLyricsIndex:
         signature = (stamp.st_mtime_ns, stamp.st_size)
         cached = self._texts.get(path)
         if cached is not None and cached[0] == signature:
-            self._texts.move_to_end(path)
             return cached[1]
         source = "\n".join(line.text for line in load_lyrics(path))
         text = source, normalize_lyric_query(source)
         self._texts[path] = (signature, text)
-        self._texts.move_to_end(path)
-        while len(self._texts) > 5000:
-            self._texts.popitem(last=False)
         return text
 
     def search(self, paths, query, cancel, current_lyrics=None):

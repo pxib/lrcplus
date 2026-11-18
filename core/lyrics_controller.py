@@ -39,6 +39,7 @@ from core.settings import (
 
 
 from core.lyrics_search import LyricsSearchMixin
+from core.idle_cache import IdleCache
 
 class _FuriganaProgressBridge(QObject):
     progress = Signal(int, int, int)
@@ -79,7 +80,7 @@ _FURIGANA_PREFETCH_EXECUTOR = ThreadPoolExecutor(
 class LyricsController(LyricsSearchMixin):
     # Lyrics files are indexed once per search folder instead of recursively
     # walking and reopening the entire collection for every track change.
-    _lyrics_folder_index_cache = {}
+    _lyrics_folder_index_cache = IdleCache()
 
     def _refresh_current_lyric_furigana(self):
         """Refresh cached furigana without discarding karaoke timing."""

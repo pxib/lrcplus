@@ -13,7 +13,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QApplication
 from lyrics.loader import load_lyrics, get_lyrics_generation_mode
 from lyrics.writer import format_timestamp, serialize_lrc, serialize_lrcx
-from lyrics.editor_source import extract_metadata, parse_editor_source
+from lyrics.editor_source import effective_source_suffix, extract_metadata, parse_editor_source
 from core.debug import debug_print
 from core.file_io import atomic_write_text
 from lyrics.ass_parser import parse_ass
@@ -88,7 +88,9 @@ class LyricsEditorDocumentMixin:
             "karaoke_dirty": bool(self.karaoke_dirty),
             "selected_line": self._current_line_index(),
             "selected_lines": self._selected_line_indices(),
-            "source": self.source_editor.toPlainText() if hasattr(self, "source_editor") else "",
+            # Clean source can be regenerated from these model fields. Retain
+            # raw text only for unapplied edits, including invalid drafts.
+            "source": self.source_editor.toPlainText() if self._source_dirty else None,
             "source_dirty": bool(self._source_dirty),
             "attached_song_path": self.attached_song_path,
             "source_suffix": self._source_suffix,
@@ -111,13 +113,18 @@ class LyricsEditorDocumentMixin:
             self.attached_song_path = state.get("attached_song_path")
             self._document_metadata = list(state.get("metadata", []))
             self._source_suffix = state.get("source_suffix", self._source_suffix)
+            self.source_editor.set_source_format(self._source_suffix)
             self.source_format_label.setText(f"{self._source_suffix[1:].upper()} source")
             self._apply_generation_mode(state.get("generation_mode"))
             if self._saved_document_state is not None:
                 self.document_dirty = self._source_dirty or self._document_state() != self._saved_document_state
             if hasattr(self, "source_editor"):
                 blocker = QSignalBlocker(self.source_editor)
-                self.source_editor.setPlainText(state.get("source", ""))
+                source = state.get("source")
+                if source is None:
+                    source = (self._serialise_with_attachment(self._serialized_for_current_format())
+                              if self.tabs.currentWidget() is self.source_editor.parentWidget() else "")
+                self.source_editor.setPlainText(source)
                 del blocker
             if hasattr(self, "lyrics_offset"):
                 self.lyrics_offset.setValue(self.lyrics_offset_ms)
@@ -693,6 +700,7 @@ class LyricsEditorDocumentMixin:
             self.source_editor.setPlainText(self._serialise_with_attachment(contents))
             del blocker
             self._source_dirty = False
+            self.source_editor.set_source_format(self._source_suffix)
             self.source_format_label.setText(f"{self._source_suffix[1:].upper()} source")
         finally:
             self._syncing_source = False
@@ -704,16 +712,17 @@ class LyricsEditorDocumentMixin:
         return not self._source_dirty
 
     def reload_model_from_source(self):
+        if not self._source_dirty:
+            self.sync_source_from_model()
         text = self.source_editor.toPlainText()
-        suffix = self._source_suffix
-        if suffix == ".lrc" and (
-            re.search(r"(?mi)^\[format:LRCX\]", text)
-            or re.search(r"<\d+:\d+(?:\.\d+)?>|\{[^{}|]+\|[^{}]+\}", text)
-        ):
-            suffix = ".lrcx"
+        suffix = effective_source_suffix(text, self._source_suffix)
         try:
             parsed = parse_editor_source(text, suffix)
         except (OSError, ValueError) as error:
+            self.source_editor.set_source_format(suffix)
+            self.source_editor.refresh_diagnostics()
+            if self.source_editor.diagnostics:
+                self.source_editor.go_to_issue(self.source_editor.diagnostics[0])
             QMessageBox.warning(self, "Reload Source", f"Could not parse source:\n{error}")
             return False
         self._push_undo_state()
@@ -724,6 +733,7 @@ class LyricsEditorDocumentMixin:
         self._document_metadata = parsed.metadata
         self._apply_generation_mode(parsed.generation_mode or "auto")
         self._source_suffix = suffix
+        self.source_editor.set_source_format(suffix)
         self._source_dirty = False
         self.source_editor.document().clearUndoRedoStacks()
         blocker = QSignalBlocker(self.lyrics_offset)

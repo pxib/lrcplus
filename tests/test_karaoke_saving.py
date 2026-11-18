@@ -104,6 +104,7 @@ def test_retiming_next_line_preserves_end_semantics(tmp_path, make_lyrics_editor
 
 @pytest.mark.parametrize("offset", [-500, 500])
 def test_offset_applies_to_preview_markers_stamping_and_nudging(editor, monkeypatch, offset):
+    editor.tabs.setCurrentWidget(editor.karaoke_scroll)
     positions = []
     monkeypatch.setattr(editor.karaoke_renderer_preview, "set_karaoke_position", positions.append)
     editor.lyrics_offset.setValue(offset)

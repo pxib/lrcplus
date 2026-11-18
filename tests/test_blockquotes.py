@@ -73,6 +73,7 @@ def test_quote_button_preserves_selection_readings_and_karaoke(make_lyrics_edito
     assert line.segments == before
     assert "Blockquotes" in editor._lrcx_only_features()
     if karaoke:
+        editor.tabs.setCurrentWidget(editor.karaoke_scroll)
         assert editor.karaoke_renderer_preview.is_blockquote
     editor.undo()
     assert not editor.lines[0].is_blockquote

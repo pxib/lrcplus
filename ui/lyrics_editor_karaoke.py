@@ -709,6 +709,9 @@ class LyricsEditorKaraokeMixin:
     def _refresh_karaoke_preview(self, position_ms=None, rebuild_segments=True):
         if not self.karaoke_enabled or not hasattr(self, "karaoke_renderer_preview"):
             return
+        if self.tabs.currentWidget() is not self.karaoke_scroll:
+            self._preview_segments_line_index = None
+            return
 
         index, line = self._current_line()
         if line is None:
@@ -752,6 +755,7 @@ class LyricsEditorKaraokeMixin:
                 style_spans=line.style_spans,
                 is_blockquote=line.is_blockquote,
                 translation_lines=line.translation_lines,
+                generate=False,
             )
             self._preview_segments_line_index = index
             if line_changed:

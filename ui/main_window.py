@@ -3,7 +3,7 @@
 from pathlib import Path
 import math
 import random
-from collections import OrderedDict
+from core.idle_cache import IdleCache
 from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -209,7 +209,7 @@ class Player(
             self._close_after_library_scan = False
             # Artwork stays in memory only. Covers are always read from the song
             # files themselves and are not written into the library settings.
-            self._library_cover_cache = OrderedDict()
+            self._library_cover_cache = IdleCache()
             self._library_cover_cache_limit = 150
             self._library_cover_load_pending = False
 
