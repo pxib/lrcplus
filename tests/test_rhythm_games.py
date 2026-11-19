@@ -1,5 +1,6 @@
 from math import atan2, cos, hypot, sin, tau
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -10,11 +11,12 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QMainWindow, QMenu, QStackedWidget, QWidget
 
 from core.plugin_manager import PluginManager
+from core.rhythm_analysis import AudioRhythm, analyze_audio_rhythm
 from lyrics.models import LyricLine, LyricSegment
 from plugins.community.rhythm_games import plugin as rhythm_games
 from plugins.community.rhythm_games.plugin import (
-    Judgement, Note, Passage, RhythmBoard, RhythmDialog, Round, full_song_passage,
-    generate_circle_centers, lyric_passages,
+    Judgement, Note, Passage, RhythmBoard, RhythmDialog, Round, apply_audio_rhythm,
+    circle_patterns, full_song_passage, generate_circle_centers, lyric_passages,
 )
 
 
@@ -59,6 +61,74 @@ def test_sustained_lyrics_make_room_for_overlapping_lines_and_audio_end():
     assert first.notes == (Note(1100, "Sustain", end_ms=2150), Note(2300, "now", end_ms=3000))
     assert second.notes == (Note(1500, "Quick"),)
     assert full_song_passage((first, second)).notes == (Note(1100, "Sustain"), *second.notes, first.notes[-1])
+
+
+def test_audio_analysis_reads_a_local_click_track(tmp_path):
+    track = tmp_path / "clicks.wav"
+    track.write_bytes(rhythm_games.demo_wave())
+    cancelled = Event()
+    rhythm = analyze_audio_rhythm(track, cancelled)
+    assert rhythm.accents_ms
+    assert all(0 <= time < rhythm_games.DEMO.notes[-1].finish_ms + 750 for time in rhythm.accents_ms)
+
+    cancelled.set()
+    assert analyze_audio_rhythm(track, cancelled) == AudioRhythm()
+
+
+def test_beat_accent_can_open_a_new_pattern_and_widen_its_entry_jump():
+    notes = tuple(Note(time, str(time)) for time in (1000, 1300, 1600, 1900, 2200, 2500))
+    passage = Passage("Lyrics", notes)
+    accented = apply_audio_rhythm(passage, AudioRhythm((1885,), (1910,)))
+    assert tuple(note.time_ms for note in accented.notes) == tuple(note.time_ms for note in notes)
+    assert list(map(len, circle_patterns(notes))) == [6]
+    assert list(map(len, circle_patterns(accented.notes))) == [3, 3]
+
+    field = QRectF(44, 44, 424, 296)
+    centers = generate_circle_centers(accented.notes, field, 36.5)
+    jump = centers[3] - centers[2]
+    assert hypot(jump.x(), jump.y()) == pytest.approx(90 * 1.16)
+
+
+def test_repeated_beat_patterns_can_keep_their_direction():
+    notes = tuple(Note(time, str(time)) for time in (1000, 1300, 1600, 2550, 2850, 3150))
+    passage = apply_audio_rhythm(Passage("Lyrics", notes), AudioRhythm((1000, 2550)))
+    centers = generate_circle_centers(passage.notes, QRectF(44, 44, 424, 296), 36.5)
+    turns = []
+    for index in (0, 3):
+        a, b = centers[index + 1] - centers[index], centers[index + 2] - centers[index + 1]
+        turns.append(a.x() * b.y() - a.y() * b.x())
+    assert abs(turns[0]) > 0
+    assert turns[0] == pytest.approx(turns[1])
+
+
+@pytest.mark.parametrize("rhythm", [AudioRhythm((2000,), (2000,)), None])
+def test_song_round_waits_for_rhythm_analysis_and_uses_fallback_on_error(qapp, monkeypatch, rhythm):
+    host = QMainWindow()
+    host.media_player = SimpleNamespace(playbackState=lambda: QMediaPlayer.PlaybackState.StoppedState)
+    host.volume_slider = SimpleNamespace(value=lambda: 25)
+    api = SimpleNamespace(get_current_track=lambda: "song.mp3", get_position=lambda: 2000,
+                          get_setting=lambda _key, default: default, pause=Mock())
+    passage = Passage("Lyrics", (Note(2000, "one"), Note(2400, "two")))
+    dialog = RhythmDialog(host, api, (passage,))
+    host.audio_output = dialog.output
+    load = Mock()
+    monkeypatch.setattr(dialog.player, "setSource", load)
+    job = dialog._rhythm_job = Mock()
+    try:
+        dialog._start_round()
+        assert dialog.round is None and not dialog.start.isEnabled()
+        assert not api.pause.called and not load.called
+
+        dialog._rhythm_ready(rhythm)
+        job.close.assert_called_once()
+        api.pause.assert_called_once()
+        assert load.call_args.args[0].toLocalFile() == "song.mp3"
+        assert dialog.round.notes[0].accented == (rhythm is not None)
+        assert tuple(note.time_ms for note in dialog.round.notes) == (2000, 2400)
+    finally:
+        dialog.reject()
+        host.deleteLater()
+        qapp.processEvents()
 
 
 @pytest.mark.parametrize("selection,start_ms,end_signal", [(0, 0, True), (0, 0, False), (1, 800, False)])

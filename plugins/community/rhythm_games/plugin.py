@@ -8,6 +8,7 @@ from io import BytesIO
 from itertools import pairwise
 from math import atan2, cos, exp, floor, hypot, pi, sin, sqrt, tau
 from pathlib import Path
+from threading import Event
 from time import monotonic
 import wave
 
@@ -18,6 +19,9 @@ from PySide6.QtWidgets import (
     QComboBox, QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QSpinBox,
     QVBoxLayout, QWidget,
 )
+
+from core.background_job import BackgroundJob
+from core.rhythm_analysis import analyze_audio_rhythm
 
 
 # The default chart uses AR5, OD5 and CS4 on a 512×384 playfield.
@@ -62,6 +66,8 @@ class Note:
     end_ms: int | None = None
     spinner: bool = False
     spans: int = 1
+    on_beat: bool = False
+    accented: bool = False
 
     @property
     def finish_ms(self):
@@ -178,6 +184,14 @@ def full_song_passage(passages):
     return Passage("Full song", notes, full_song=True)
 
 
+def apply_audio_rhythm(passage, rhythm):
+    notes = tuple(
+        replace(note, on_beat=rhythm.on_beat(note.time_ms), accented=rhythm.accented(note.time_ms))
+        for note in passage.notes
+    )
+    return replace(passage, notes=notes)
+
+
 def circle_patterns(notes):
     """Read short, regular runs from the authored timestamps."""
     start = 0
@@ -192,6 +206,9 @@ def circle_patterns(notes):
             while end < len(notes) and notes[end].end_ms is None:
                 gap = notes[end].time_ms - notes[end - 1].time_ms
                 if not low <= gap < high or abs(gap - first_gap) > tolerance:
+                    break
+                if (gap >= FAST_CIRCLE_GAP_MS and end - start >= 3
+                        and notes[end].on_beat and notes[end].accented):
                     break
                 end += 1
 
@@ -301,7 +318,7 @@ def slider_endpoint(note, index, center, field):
     return center
 
 
-def pattern_layouts(pattern, index, origin, gap, recent, field, radius):
+def pattern_layouts(pattern, index, origin, gap, recent, field, radius, motif_bend=None):
     """Score orientations by crowding and how far fitting changes the intended entry."""
     min_spacing = radius * 2 + 10
     if gap is None:
@@ -311,11 +328,14 @@ def pattern_layouts(pattern, index, origin, gap, recent, field, radius):
         clearance = radius * 0.6
     else:
         distance = jump_distance(gap, radius)
+        if pattern[0].accented:
+            emphasis = 1.16 if pattern[0].on_beat else 1.08
+            distance = min(MAX_JUMP_PX, distance * emphasis)
         clearance = min_spacing
 
     simultaneous = tuple(point for time, point in recent
                          if pattern[0].time_ms - time <= LEAD_IN_MS + HIT_WINDOW_MS)
-    preferred_bend = 1 if index % 2 == 0 else -1
+    preferred_bend = motif_bend if motif_bend is not None else (1 if index % 2 == 0 else -1)
     rotates = len(pattern) > 3 or (len(pattern) == 3
                                   and pattern[1].time_ms - pattern[0].time_ms >= FAST_CIRCLE_GAP_MS)
     bends = (preferred_bend, -preferred_bend) if rotates else (preferred_bend,)
@@ -330,7 +350,17 @@ def pattern_layouts(pattern, index, origin, gap, recent, field, radius):
                            for point in candidate for other in simultaneous), default=clearance)
             drift = hypot(candidate[0].x() - anchor.x(), candidate[0].y() - anchor.y())
             cost = max(0, clearance - nearest) + drift
-            yield cost, candidate
+            if motif_bend is not None and bend != motif_bend:
+                cost += 5
+            yield cost, candidate, bend
+
+
+def beat_pattern(pattern):
+    """Recognize repeated timing and beat accents within a small tolerance."""
+    if len(pattern) < 3 or not any(note.on_beat for note in pattern):
+        return None
+    start = pattern[0].time_ms
+    return tuple((round((note.time_ms - start) / 25), note.on_beat) for note in pattern)
 
 
 def generate_circle_centers(notes, field, radius):
@@ -339,6 +369,7 @@ def generate_circle_centers(notes, field, radius):
     recent = deque()
     origin = field.center()
     previous = None
+    motifs = {}
     for pattern, following in pairwise((*circle_patterns(notes), ())):
         first, last = pattern[0], pattern[-1]
         while recent and first.time_ms - recent[0][0] > LEAD_IN_MS + HIT_WINDOW_MS:
@@ -351,10 +382,11 @@ def generate_circle_centers(notes, field, radius):
 
         index = len(centers)
         gap = None if previous is None else first.time_ms - previous.finish_ms
-        layouts = pattern_layouts(pattern, index, origin, gap, recent, field, radius)
+        motif, following_motif = beat_pattern(pattern), beat_pattern(following)
+        layouts = pattern_layouts(pattern, index, origin, gap, recent, field, radius, motifs.get(motif))
         choices = nsmallest(LOOKAHEAD_CHOICES, layouts, key=lambda layout: layout[0])
         best_cost = float("inf")
-        for cost, candidate in choices:
+        for cost, candidate, bend in choices:
             exit_point = candidate[-1]
             if last.slider and last.spans % 2:
                 exit_point = slider_endpoint(last, index, exit_point, field)
@@ -364,11 +396,14 @@ def generate_circle_centers(notes, field, radius):
                     obstacles = (*recent, *((note.time_ms, point) for note, point in zip(pattern, candidate)))
                     next_choices = pattern_layouts(
                         following, index + len(pattern), exit_point, next_gap, obstacles, field, radius,
+                        bend if motif is not None and motif == following_motif else motifs.get(following_motif),
                     )
-                    cost += 0.6 * min(next_cost for next_cost, _ in next_choices)
+                    cost += 0.6 * min(next_cost for next_cost, _, _ in next_choices)
             if cost < best_cost:
-                best_cost, best, best_exit = cost, candidate, exit_point
+                best_cost, best, best_exit, best_bend = cost, candidate, exit_point, bend
 
+        if motif is not None:
+            motifs.setdefault(motif, best_bend)
         recent.extend((note.time_ms, point) for note, point in zip(pattern, best))
         centers.extend(best)
         origin = best_exit
@@ -938,6 +973,9 @@ class RhythmDialog(QDialog):
         self.preroll_until = None
         self.resume_main = False
         self.main_paused = False
+        self._rhythm_job = None
+        self._rhythm_cancelled = Event()
+        self._waiting_for_rhythm = False
         self.setWindowTitle("Rhythm Games")
         self.setModal(True)
         self.resize(760, 520)
@@ -1010,7 +1048,33 @@ class RhythmDialog(QDialog):
         self.passage.currentIndexChanged.connect(self._select_passage)
         self._show_passage()
 
+    def analyze_track(self):
+        job = self._rhythm_job = BackgroundJob(self, "rhythm-analysis")
+        job.finished.connect(self._rhythm_ready)
+        job.failed.connect(lambda _message: self._rhythm_ready(None))
+        job.start(analyze_audio_rhythm, self.track_path, self._rhythm_cancelled)
+
+    def _rhythm_ready(self, rhythm):
+        if self._rhythm_job is None:
+            return
+        self._rhythm_job.close()
+        self._rhythm_job.deleteLater()
+        self._rhythm_job = None
+        if rhythm is not None and (rhythm.beats_ms or rhythm.accents_ms):
+            self.passages = tuple(
+                passage if passage is DEMO else apply_audio_rhythm(passage, rhythm)
+                for passage in self.passages
+            )
+        if self._waiting_for_rhythm:
+            self._waiting_for_rhythm = False
+            self._start_round()
+        elif self.round is None and self._selected_passage() is not DEMO:
+            self._show_passage()
+
     def _select_passage(self):
+        if self._waiting_for_rhythm:
+            self._waiting_for_rhythm = False
+            self.start.setEnabled(True)
         self._show_passage()
         self.start.setText("Start")
         self.status.setText(HOW_TO_PLAY)
@@ -1030,6 +1094,12 @@ class RhythmDialog(QDialog):
     def _start_round(self):
         if self.pending_start or self.round is not None:
             return
+        passage = self._selected_passage()
+        if passage is not DEMO and self._rhythm_job is not None:
+            self._waiting_for_rhythm = True
+            self.start.setEnabled(False)
+            self.status.setText("Analyzing rhythm…")
+            return
         if not self.main_paused:
             self.resume_main = self.host.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
             self.api.pause()
@@ -1041,7 +1111,6 @@ class RhythmDialog(QDialog):
         self.hit_sound.stop()
         self.hit_sound.setAudioDevice(device)
         self.hit_sound.setVolume(volume * HIT_SOUND_GAIN)
-        passage = self._selected_passage()
         self.round = Round(passage.notes)
         self.board.clear_feedback()
         self._show_passage()
@@ -1224,6 +1293,11 @@ class RhythmDialog(QDialog):
             self.board.unsetCursor()
 
     def _release_audio(self, _result):
+        self._rhythm_cancelled.set()
+        self._waiting_for_rhythm = False
+        if self._rhythm_job is not None:
+            self._rhythm_job.close()
+            self._rhythm_job = None
         self.timer.stop()
         self.hit_sound.stop()
         self.board.clear_feedback()
@@ -1268,6 +1342,8 @@ class RhythmGamesPlugin:
             ))
         self.dialog = RhythmDialog(self.window, self.api, passages)
         self.dialog.finished.connect(self._close_game)
+        if passages:
+            self.dialog.analyze_track()
         self.dialog.open()
 
     def _close_game(self, _result):

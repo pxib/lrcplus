@@ -76,8 +76,8 @@ a = Analysis(
 
     datas=datas,
 
-    # Translation panels are created by plugins loaded from real files.
-    hiddenimports=["ui.translation_panel", "PySide6.QtNetwork"],
+    # These modules are used by plugins loaded from real files.
+    hiddenimports=["ui.translation_panel", "PySide6.QtNetwork", "core.rhythm_analysis"],
 
     hookspath=[str(PROJECT_ROOT / "tools" / "pyinstaller-hooks")],
     hooksconfig=[],
