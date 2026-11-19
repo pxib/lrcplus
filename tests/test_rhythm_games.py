@@ -1,9 +1,13 @@
+from array import array
+from dataclasses import replace
 from math import atan2, cos, hypot, sin, tau
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
+import wave
 
+import numpy as np
 import pytest
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtMultimedia import QMediaPlayer
@@ -11,18 +15,18 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QMainWindow, QMenu, QStackedWidget, QWidget
 
 from core.plugin_manager import PluginManager
-from core.rhythm_analysis import AudioRhythm, analyze_audio_rhythm
+from core.rhythm_analysis import AudioRhythm, analyze_audio_rhythm, beat_grid
+from core.rhythm_melody import MelodyNote
 from lyrics.models import LyricLine, LyricSegment
 from plugins.community.rhythm_games import plugin as rhythm_games
 from plugins.community.rhythm_games.plugin import (
-    Judgement, Note, Passage, RhythmBoard, RhythmDialog, Round, apply_audio_rhythm,
+    Judgement, Note, Passage, RhythmBoard, RhythmDialog, Round, apply_audio_rhythm, audio_beat_passage,
     circle_patterns, full_song_passage, generate_circle_centers, lyric_passages,
 )
 
 
 def test_chart_uses_authored_timing_without_adding_translation_targets():
     lines = [
-        LyricLine(0, "Plain LRC"),
         LyricLine(1, "歌を歌う\nSing a song", [
             LyricSegment(1, "歌", ruby="うた"),
             LyricSegment(1, "を"),
@@ -36,6 +40,172 @@ def test_chart_uses_authored_timing_without_adding_translation_targets():
     assert passage.notes == (Note(1250, "歌 を", "うた"), Note(1750, "歌う", "うた"))
     assert passage.label == "0:01  歌を歌う"
     assert list(lyric_passages(lines, 250, 1250)) == []
+
+
+def test_line_timed_lyrics_use_beats_between_boundaries_and_keep_whole_captions():
+    lines = (
+        LyricLine(4, "Next line", end=4.8),
+        LyricLine(1, "Whole line\nTranslation", translation_lines=[1]),
+        LyricLine(2.8, ""),
+        LyricLine(5.5, "Last line"),
+    )
+    second, first, last = lyric_passages(lines, 100, 5700)
+    assert (first.line_end_ms, second.line_end_ms, last.line_end_ms) == (2900, 4900, 5700)
+    rhythm = AudioRhythm((1250, 1300, 1420, 1510, 2600, 2750, 5690), (4350,))
+    first, second, last = (apply_audio_rhythm(passage, rhythm) for passage in (first, second, last))
+
+    assert [note.time_ms for note in first.notes] == [1100, 1300, 1510, 2600]
+    assert {note.text for note in first.notes} == {"Whole line"}
+    assert [note.time_ms for note in second.notes] == [4100, 4350]
+    assert [note.time_ms for note in last.notes] == [5600]
+
+
+def test_generated_taps_leave_room_for_authored_sliders_in_mixed_full_song():
+    slider = Note(1500, "Authored", end_ms=2300)
+    karaoke = Passage("Karaoke", (slider, Note(2800, "Also authored")))
+    line = Passage("Line", tuple(Note(time, "Plain line") for time in (1000, 1450, 1800, 2450, 2600)),
+                   line_end_ms=2800)
+    full = full_song_passage((line, karaoke))
+    assert full.notes == (Note(1000, "Plain line"), slider, Note(2600, "Plain line"), karaoke.notes[-1])
+
+
+def test_audio_only_chart_uses_onsets_when_beats_are_unavailable():
+    chart = audio_beat_passage(AudioRhythm(accents_ms=(1600,), onsets_ms=(1000, 1100, 1600, 2300)), 2200)
+    assert chart.full_song and chart.label == "Audio beats"
+    assert [(note.time_ms, note.text) for note in chart.notes] == [(1000, ""), (1600, "")]
+    assert audio_beat_passage(AudioRhythm(), 2200) is None
+
+
+def test_audio_chart_snaps_supported_quarter_beats_and_triplets():
+    rhythm = AudioRhythm(
+        beats_ms=(1000, 1800, 2600, 3400),
+        onsets_ms=(1208, 1390, 1610, 2058, 2334, 2810, 3210),
+    )
+    chart = audio_beat_passage(rhythm, 3800)
+    assert [note.time_ms for note in chart.notes] == [1000, 1200, 1400, 1600, 1800, 2067, 2333, 2600, 3400]
+
+
+def test_melody_cues_snap_to_the_beat_grid_and_to_slider_tails():
+    rhythm = AudioRhythm(
+        beats_ms=(1000, 1500, 2000, 2500, 3000),
+        onsets_ms=(1082,),
+        melody_notes=(MelodyNote(1124, 1340, 64), MelodyNote(1504, 2020, 66), MelodyNote(2251, 2450, 69)),
+    )
+    chart = audio_beat_passage(rhythm, 3400)
+    assert [(note.time_ms, note.finish_ms) for note in chart.notes] == [
+        (1000, 1000), (1125, 1125), (1500, 2000), (2250, 2250), (2500, 2500), (3000, 3000),
+    ]
+
+
+@pytest.mark.parametrize(("period", "pitch_offsets", "fill"), [
+    (500, (125, 250, 375), 250),
+    (320, (160,), None),
+    (320, (80, 160, 240), 80),
+])
+def test_melody_only_fills_leave_a_longer_gap_in_each_beat(period, pitch_offsets, fill):
+    beats = tuple(1000 + beat * period for beat in range(9))
+    melody = tuple(MelodyNote(start + offset, start + offset + 120, 63 + index)
+                   for start in beats[:-1] for index, offset in enumerate(pitch_offsets))
+    rhythm = AudioRhythm(beats_ms=beats, onsets_ms=beats, melody_notes=melody)
+    chart = audio_beat_passage(rhythm, beats[-1] + 100)
+    extra = () if fill is None else tuple(start + fill for start in beats[:-1])
+    assert [note.time_ms for note in chart.notes] == sorted((*beats, *extra))
+
+
+def test_melody_leaves_attack_supported_triplets_in_place():
+    rhythm = AudioRhythm(
+        beats_ms=(1000, 1500, 2000, 2500),
+        onsets_ms=(1167, 1333),
+        melody_notes=(MelodyNote(1125, 1245, 63), MelodyNote(1250, 1370, 66), MelodyNote(1375, 1495, 69)),
+    )
+    chart = audio_beat_passage(rhythm, 3000)
+    assert [note.time_ms for note in chart.notes] == [1000, 1167, 1333, 1500, 2000, 2500]
+
+
+def test_off_grid_melody_alone_keeps_fast_runs_from_forming():
+    notes = tuple(MelodyNote(time, time + 150, 60 + index) for index, time in enumerate(range(1000, 2300, 185)))
+    chart = audio_beat_passage(AudioRhythm(melody_notes=notes), 3000)
+    assert [note.time_ms for note in chart.notes] == [note.start_ms for note in notes[::2]]
+
+
+def test_audio_chart_keeps_bursts_across_jitter_missing_beats_and_tempo_changes():
+    rhythm = AudioRhythm(
+        beats_ms=(1000, 1508, 1996, 2500, 3500, 4000, 4330, 4660, 4990),
+        onsets_ms=(1126, 1249, 1380, 3108, 3246, 3377, 4110, 4221),
+    )
+    chart = audio_beat_passage(rhythm, 5200)
+
+    assert [note.time_ms for note in chart.notes] == [
+        1000, 1125, 1250, 1375, 1500, 2000, 2500, 3000, 3125, 3250, 3375, 3500,
+        4000, 4110, 4220, 4330, 4660, 4990,
+    ]
+    assert [note.beat_length_ms for note in chart.notes if note.time_ms in (3500, 4000)] == [500, 330]
+    assert next(note for note in chart.notes if note.time_ms == 3000).on_beat
+
+
+def test_grid_splits_a_modest_tempo_change_before_beats_drift():
+    beats = (*range(1000, 5000, 500), *range(5000, 9501, 450))
+    grid = beat_grid(beats)
+    assert grid.beat_length(2000) == 500
+    assert grid.beat_length(8000) == 450
+    assert max(abs(a - b) for a, b in zip(beats, grid.beats_ms, strict=True)) <= 42
+
+
+def test_audio_chart_maps_sustains_and_leaves_silent_sections_empty():
+    rhythm = AudioRhythm(
+        beats_ms=tuple(range(1000, 8500, 500)),
+        onsets_ms=(1000, 2300, 3000, 7000),
+        sustained_ms=((1000, 2030), (3000, 6110)),
+        silence_ms=((2450, 2950), (6200, 6950), (7450, 8500)),
+    )
+    chart = audio_beat_passage(rhythm, 8500)
+    slider, spinner, final = chart.notes
+    assert (slider.time_ms, slider.end_ms, slider.spans) == (1000, 2000, 2)
+    assert spinner.spinner and (spinner.time_ms, spinner.end_ms) == (3000, 6000)
+    assert final.time_ms == 7000
+
+
+def test_audio_chart_uses_onsets_in_beat_gaps_without_displacing_detected_beats():
+    rhythm = AudioRhythm(
+        beats_ms=(1500, 2000, 2500, 4200, 4700, 5200),
+        onsets_ms=(250, 600, 1350, 1751, 2243, 2620, 2800, 3100, 4070, 4440, 5450, 5850),
+    )
+    chart = audio_beat_passage(rhythm, 5700)
+    assert [note.time_ms for note in chart.notes] == [
+        250, 600, 1500, 1750, 2000, 2250, 2500, 2800, 3100, 4200, 4450, 4700, 5200, 5450,
+    ]
+
+
+def test_line_chart_uses_the_song_grid_within_its_own_boundaries():
+    line, = lyric_passages([LyricLine(2.1, "A whole line", end=3.35)], 0, 4500)
+    rhythm = AudioRhythm(beats_ms=(2000, 2500, 3000, 3500), onsets_ms=(2243, 2745, 3260))
+    passage = apply_audio_rhythm(line, rhythm)
+    assert [(note.time_ms, note.text) for note in passage.notes] == [
+        (2100, "A whole line"), (2500, "A whole line"), (2750, "A whole line"), (3000, "A whole line"),
+    ]
+
+
+def test_sustained_line_slider_absorbs_beat_taps_and_leaves_room_for_the_next_attack():
+    line, = lyric_passages([LyricLine(1, "Hold the line", end=3.1)], 0, 4000)
+    rhythm = AudioRhythm(beats_ms=(1000, 1500, 2000, 2500, 3000), onsets_ms=(1005, 2490),
+                         sustained_ms=((1005, 2420),))
+    generated = apply_audio_rhythm(line, rhythm)
+    assert [(note.time_ms, note.finish_ms, note.text) for note in generated.notes] == [
+        (1000, 2250, "Hold the line"), (2500, 2500, "Hold the line"),
+    ]
+
+    karaoke = Passage("Karaoke", (Note(1000, "Authored tap"),))
+    full = full_song_passage((karaoke, generated))
+    assert not full.notes[0].slider
+    assert full.notes[0].text == "Authored tap / Hold the line"
+
+
+@pytest.mark.parametrize(("line_end", "tail"), [(1.6, 1450), (1.5, None)])
+def test_line_slider_respects_the_next_lyric_boundary(line_end, tail):
+    line, = lyric_passages([LyricLine(1, "Line", end=line_end)], 0, 3000)
+    rhythm = AudioRhythm(onsets_ms=(1000,), sustained_ms=((1000, 2050),))
+    note, = apply_audio_rhythm(line, rhythm).notes
+    assert note.end_ms == tail
 
 
 def test_full_song_chart_sorts_all_passages_and_combines_simultaneous_lines():
@@ -69,10 +239,78 @@ def test_audio_analysis_reads_a_local_click_track(tmp_path):
     cancelled = Event()
     rhythm = analyze_audio_rhythm(track, cancelled)
     assert rhythm.accents_ms
+    assert set(rhythm.accents_ms) <= set(rhythm.onsets_ms)
     assert all(0 <= time < rhythm_games.DEMO.notes[-1].finish_ms + 750 for time in rhythm.accents_ms)
+    chart = audio_beat_passage(rhythm, 15000)
+    assert all(any(abs(note.time_ms - beat) < 30 for note in chart.notes) for beat in (1000, 1500, 2000, 2500))
 
     cancelled.set()
     assert analyze_audio_rhythm(track, cancelled) == AudioRhythm()
+
+
+@pytest.mark.parametrize(("tone_seconds", "spinner"), [(0.95, False), (3.5, True)])
+def test_audio_analysis_distinguishes_a_held_tone_from_short_attacks(tmp_path, tone_seconds, spinner):
+    track = tmp_path / "held-tone.wav"
+    rate = 22050
+    final_attack = 1.2 + tone_seconds + 0.5
+    track_seconds = final_attack + 0.8
+    samples = array("h", [0]) * round(track_seconds * rate)
+    for start, duration, frequency in ((0.45, 0.06, 720), (1.2, tone_seconds, 470), (final_attack, 0.065, 690)):
+        first = round(start * rate)
+        for index in range(round(duration * rate)):
+            samples[first + index] = round(12000 * sin(tau * frequency * index / rate))
+    with wave.open(str(track), "wb") as audio:
+        audio.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+        audio.writeframes(samples.tobytes())
+
+    rhythm = analyze_audio_rhythm(track, Event())
+    (start, end), = rhythm.sustained_ms
+    assert 1100 <= start <= 1250
+    assert end - start == pytest.approx(tone_seconds * 1000, abs=75)
+    first, sustained, final = audio_beat_passage(rhythm, round(track_seconds * 1000)).notes
+    assert first.end_ms is None and final.end_ms is None
+    assert sustained.finish_ms == pytest.approx(end, abs=35)
+    assert sustained.spinner is spinner and sustained.slider is not spinner
+
+
+@pytest.mark.parametrize("stereo", [False, True])
+def test_audio_chart_follows_a_quieter_melody_in_a_mix(tmp_path, stereo):
+    rate = 22050
+    foreground = np.zeros(round(4.2 * rate))
+    background = np.zeros_like(foreground)
+
+    def add_tone(samples, start, end, midi, level):
+        first, last = round(start * rate), round(end * rate)
+        frames = np.arange(last - first)
+        envelope = np.minimum(1, np.minimum(frames, frames[::-1]) / 100)
+        phase = tau * (440 * 2 ** ((midi - 69) / 12)) * frames / rate
+        samples[first:last] += level * envelope * (np.sin(phase) + 0.22 * np.sin(2 * phase) + 0.12 * np.sin(3 * phase))
+
+    add_tone(foreground, 0.2, 3.8, 74, 0.33)
+    backing = ((0.625, 1.125, 63), (1.125, 1.75, 67), (1.75, 2.375, 65), (2.375, 3.25, 69))
+    for start, end, midi in backing:
+        add_tone(background, start, end, midi, 0.025 if stereo else 0.065)
+    rng = np.random.default_rng(37)
+    for start in np.arange(0.5, 4, 0.5):
+        first, size = round(start * rate), round(0.052 * rate)
+        foreground[first:first + size] += 0.18 * rng.uniform(-1, 1, size) * np.linspace(1, 0, size)
+
+    samples = np.column_stack((foreground + background, foreground)) if stereo else foreground + background
+
+    track = tmp_path / "backing-melody.wav"
+    with wave.open(str(track), "wb") as audio:
+        audio.setparams((2 if stereo else 1, 2, rate, 0, "NONE", ""))
+        audio.writeframes((samples * 32767).astype("<i2").tobytes())
+
+    rhythm = analyze_audio_rhythm(track, Event())
+    chart = audio_beat_passage(rhythm, 4200)
+    baseline = audio_beat_passage(replace(rhythm, melody_notes=()), 4200)
+    assert [note.midi_note for note in rhythm.melody_notes] == [74, *(midi for _, _, midi in backing)]
+    for note, (start, end, _) in zip(rhythm.melody_notes[1:], backing, strict=True):
+        assert note.start_ms == pytest.approx(start * 1000, abs=25)
+        assert note.end_ms == pytest.approx(end * 1000, abs=25)
+        assert any(abs(target.time_ms - note.start_ms) <= 25 for target in chart.notes)
+    assert not any(abs(note.time_ms - 1125) <= 25 for note in baseline.notes)
 
 
 def test_beat_accent_can_open_a_new_pattern_and_widen_its_entry_jump():
@@ -101,7 +339,7 @@ def test_repeated_beat_patterns_can_keep_their_direction():
     assert turns[0] == pytest.approx(turns[1])
 
 
-@pytest.mark.parametrize("rhythm", [AudioRhythm((2000,), (2000,)), None])
+@pytest.mark.parametrize("rhythm", [AudioRhythm((1000, 2000, 3600), (2000,)), None])
 def test_song_round_waits_for_rhythm_analysis_and_uses_fallback_on_error(qapp, monkeypatch, rhythm):
     host = QMainWindow()
     host.media_player = SimpleNamespace(playbackState=lambda: QMediaPlayer.PlaybackState.StoppedState)
@@ -125,6 +363,42 @@ def test_song_round_waits_for_rhythm_analysis_and_uses_fallback_on_error(qapp, m
         assert load.call_args.args[0].toLocalFile() == "song.mp3"
         assert dialog.round.notes[0].accented == (rhythm is not None)
         assert tuple(note.time_ms for note in dialog.round.notes) == (2000, 2400)
+        assert tuple(note.time_ms for note in dialog.passages[0].notes) == (
+            (1000, 2000, 2400, 3600) if rhythm is not None else (2000, 2400)
+        )
+    finally:
+        dialog.reject()
+        host.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("rhythm", [
+    AudioRhythm((2000, 2400)),
+    AudioRhythm(melody_notes=(MelodyNote(2000, 2190, 63), MelodyNote(2400, 2580, 67))),
+    None,
+])
+def test_audio_only_start_uses_detected_beats_or_returns_to_demo(qapp, monkeypatch, rhythm):
+    host = QMainWindow()
+    host.media_player = SimpleNamespace(playbackState=lambda: QMediaPlayer.PlaybackState.StoppedState)
+    host.volume_slider = SimpleNamespace(value=lambda: 25)
+    api = SimpleNamespace(get_current_track=lambda: "song.mp3", get_position=lambda: 2000,
+                          get_setting=lambda _key, default: default, pause=Mock())
+    dialog = RhythmDialog(host, api, (), audio_only=True, duration_ms=3000)
+    host.audio_output = dialog.output
+    monkeypatch.setattr(dialog.player, "setSource", Mock())
+    dialog._rhythm_job = Mock()
+    try:
+        assert dialog.passage.currentText() == "Audio beats"
+        dialog.start.click()
+        assert dialog.round is None and not dialog.start.isEnabled()
+        dialog._rhythm_ready(rhythm)
+        if rhythm is None:
+            assert dialog.passage.currentText() == "Demo" and dialog.start.isEnabled()
+            assert dialog.round is None and not api.pause.called
+        else:
+            assert dialog._selected_passage().full_song
+            assert [note.time_ms for note in dialog.round.notes] == [2000, 2400]
+            api.pause.assert_called_once()
     finally:
         dialog.reject()
         host.deleteLater()
@@ -224,7 +498,7 @@ def test_circle_generation_scales_jumps_with_timing_and_keeps_targets_in_bounds(
             assert hypot(delta.x(), delta.y()) >= 79.99
 
 
-def test_regular_fast_notes_follow_short_arcs_without_leaving_the_field():
+def test_continuous_short_groups_follow_a_shallow_arc_then_a_line():
     notes = tuple(Note(time, str(time)) for time in range(1000, 2125, 125))
     field = QRectF(44, 44, 424, 296)
     radius = 36.5
@@ -233,12 +507,15 @@ def test_regular_fast_notes_follow_short_arcs_without_leaving_the_field():
     assert all(field.contains(center) for center in centers)
     assert centers == generate_circle_centers(notes, field, radius)
 
-    for start, stop in ((0, 5), (5, 9)):
-        steps = [b - a for a, b in zip(centers[start:stop - 1], centers[start + 1:stop])]
+    turns = []
+    for group in (centers[:5], centers[5:]):
+        steps = [b - a for a, b in zip(group, group[1:])]
         assert all(hypot(step.x(), step.y()) == pytest.approx(33.75) for step in steps)
-        turns = [a.x() * b.y() - a.y() * b.x() for a, b in zip(steps, steps[1:])]
-        assert abs(turns[0]) > 0
-        assert turns == pytest.approx([turns[0]] * len(turns))
+        turns.append([atan2(a.x() * b.y() - a.y() * b.x(), QPointF.dotProduct(a, b))
+                      for a, b in zip(steps, steps[1:])])
+    assert abs(sum(turns[0])) == pytest.approx(tau / 8)
+    assert turns[0] == pytest.approx([turns[0][0]] * 3)
+    assert turns[1] == pytest.approx([0, 0])
 
 
 def test_four_regular_jumps_form_a_square():
@@ -261,18 +538,82 @@ def test_very_fast_run_alternates_turn_direction():
     assert abs(turns[0]) == pytest.approx(tau / 4)
 
 
-def test_long_fast_run_can_spiral_before_a_shorter_arc():
-    notes = tuple(Note(time, str(time)) for time in range(1000, 3000, 125))
+def test_demo_has_a_spiral_to_practice():
+    notes = rhythm_games.DEMO.notes
     field = QRectF(44, 44, 424, 296)
     centers = generate_circle_centers(notes, field, 36.5)
-    assert len(centers) == len(notes)
-    assert all(field.contains(point) for point in centers)
-
-    steps = [b - a for a, b in zip(centers[:11], centers[1:12])]
+    (spiral,) = (pattern for pattern, shape, _ in rhythm_games.plan_circle_patterns(notes, 36.5) if shape == "spiral")
+    start = notes.index(spiral[0])
+    points = centers[start:start + len(spiral)]
+    steps = [b - a for a, b in zip(points, points[1:])]
     turns = [abs(atan2(a.x() * b.y() - a.y() * b.x(), QPointF.dotProduct(a, b)))
              for a, b in zip(steps, steps[1:])]
     assert all(a > b > 0 for a, b in zip(turns, turns[1:]))
     assert all(32 < hypot(step.x(), step.y()) < 35.5 for step in steps)
+
+
+@pytest.mark.parametrize("rest_ms", [0, 8000])
+def test_generated_long_streams_stay_open_even_after_a_rest(rest_ms):
+    notes = tuple(Note(1000 + stream * (1750 + rest_ms) + step * 125, "", beat_length_ms=500)
+                  for stream in range(4) for step in range(14))
+    field = QRectF(44, 44, 424, 296)
+    placements = tuple(rhythm_games.plan_circle_patterns(notes, 36.5))
+    shapes = ("zigzag_stream", "s_curve", "line", "zigzag_stream")
+    expected_sizes = (14,) if rest_ms else (4, 4, 3, 3)
+    assert [(len(pattern), shape) for pattern, shape, _ in placements] == [
+        (size, shape) for shape in shapes for size in expected_sizes
+    ]
+    assert tuple(note for pattern, _, _ in placements for note in pattern) == notes
+
+    centers = generate_circle_centers(notes, field, 36.5)
+    assert all(field.contains(point) for point in centers)
+    start = 0
+    for pattern, _, _ in placements:
+        end = start + len(pattern)
+        stream = centers[start:end]
+        heading = stream[1] - stream[0]
+        assert all(QPointF.dotProduct(heading, b - a) > 0 for a, b in zip(stream, stream[1:]))
+        start = end
+
+
+@pytest.mark.parametrize("interval", [100, 125, 150, 166])
+def test_connected_fast_groups_continue_forward_and_avoid_the_earlier_path(interval):
+    field = QRectF(44, 44, 424, 296)
+    radius = 36.5
+    notes = tuple(Note(1000 + step * interval, "", beat_length_ms=500) for step in range(56))
+    centers = generate_circle_centers(notes, field, radius)
+    assert len(centers) == len(notes) and all(field.contains(point) for point in centers)
+    groups = [pattern for pattern, _, _ in rhythm_games.plan_circle_patterns(notes, radius)]
+    start = len(groups[0])
+    for previous, following in zip(groups, groups[1:]):
+        incoming = centers[start - 1] - centers[start - min(5, len(previous))]
+        entry = centers[start] - centers[start - 1]
+        assert QPointF.dotProduct(incoming, entry) > 0
+        assert hypot(entry.x(), entry.y()) >= radius * 0.45
+        end = start + len(following)
+        older = centers[max(0, start - 9):start - 2]
+        assert all(hypot(point.x() - other.x(), point.y() - other.y()) >= radius * 1.25
+                   for point in centers[start:end] for other in older)
+        start = end
+
+
+def test_zigzag_stream_fits_a_straight_cursor_path_and_spaces_out_accented_steps():
+    notes = tuple(Note(1000 + step * 125, "", beat_length_ms=500, accented=step in (4, 8)) for step in range(14))
+    radius = 36.5
+    stream = generate_circle_centers(notes, QRectF(44, 44, 424, 296), radius)
+    direction = stream[-1] - stream[0]
+    length = hypot(direction.x(), direction.y())
+    lane_offsets = []
+    for point in stream[1:-1]:
+        delta = point - stream[0]
+        lane_offsets.append((direction.x() * delta.y() - direction.y() * delta.x()) / length)
+    assert max(abs(offset) for offset in lane_offsets) < radius / 2
+    assert all(before * after < 0 for before, after in zip(lane_offsets, lane_offsets[1:]))
+
+    steps = [b - a for a, b in zip(stream, stream[1:])]
+    distances = [hypot(step.x(), step.y()) for step in steps]
+    assert distances[3] == pytest.approx(distances[7])
+    assert distances[3] > 1.15 * distances[2]
 
 
 def test_regular_jumps_form_a_triangle_and_a_back_and_forth_pattern():
@@ -300,6 +641,36 @@ def test_lookahead_keeps_the_intended_jump_into_the_next_pattern():
     assert hypot(delta.x(), delta.y()) == pytest.approx(rhythm_games.MAX_JUMP_PX)
 
 
+@pytest.mark.parametrize("interval", [125, 250])
+def test_repeated_demanding_groups_switch_to_shorter_gentler_patterns(interval):
+    phrase_length = 4 * interval + 550
+    notes = tuple(Note(1000 + phrase * phrase_length + step * interval, "", beat_length_ms=500)
+                  for phrase in range(4) for step in range(5))
+    field = QRectF(44, 44, 424, 296)
+    centers = generate_circle_centers(notes, field, 36.5)
+    assert centers == generate_circle_centers(notes, field, 36.5)
+    assert len(centers) == len(notes) and all(field.contains(point) for point in centers)
+
+    distances, turns = [], []
+    for phrase in range(4):
+        points = centers[phrase * 5:phrase * 5 + 5]
+        steps = [b - a for a, b in zip(points, points[1:])]
+        distances.append(hypot(steps[0].x(), steps[0].y()))
+        turns.append(max(abs(atan2(a.x() * b.y() - a.y() * b.x(), QPointF.dotProduct(a, b)))
+                         for a, b in zip(steps, steps[1:])))
+    assert turns[0] == pytest.approx(turns[1])
+    assert turns[2] < turns[0] * 0.5
+    assert distances[2] < min(distances[0], distances[1])
+    assert turns[3] != pytest.approx(turns[2])
+
+
+def test_chains_of_wide_jumps_shorten_periodically_and_reset_at_a_rest():
+    notes = tuple(Note(time, "", beat_length_ms=500) for time in (1000, 1500, 2000, 2500, 3000, 3800, 4300, 4800, 5300))
+    centers = generate_circle_centers(notes, QRectF(44, 44, 424, 296), 36.5)
+    jumps = [b - a for a, b in zip(centers, centers[1:])]
+    assert [hypot(jump.x(), jump.y()) for jump in jumps] == pytest.approx([150, 150, 120, 150, 180, 150, 150, 120])
+
+
 @pytest.mark.parametrize("spans", [1, 2])
 def test_circle_after_slider_is_placed_from_the_visual_tail(qapp, spans):
     board = RhythmBoard(None)
@@ -314,6 +685,51 @@ def test_circle_after_slider_is_placed_from_the_visual_tail(qapp, spans):
             assert hypot((after - head).x(), (after - head).y()) > 90 * board._scale
         else:
             assert head == tail
+    finally:
+        board.deleteLater()
+
+
+def test_curved_repeat_slider_follows_the_track_at_constant_speed(qapp):
+    board = RhythmBoard(None)
+    slider = Note(1000, "slide", end_ms=2600, spans=2, beat_length_ms=400)
+    try:
+        board.set_frame((slider,), 0, 1000)
+        start, _, middle, _, end = [board.slider_ball(0, time) for time in range(1000, 1801, 200)]
+        assert hypot(*(middle - (start + end) / 2).toTuple()) > 15 * board._scale
+        assert board.slider_ball(0, 2200) == middle
+        assert board.slider_ball(0, 2600) == start
+
+        path = board._slider_paths[0]
+        quarter_points = [path.at(fraction / 4) for fraction in range(5)]
+        distances = [hypot(*(b - a).toTuple()) for a, b in zip(quarter_points, quarter_points[1:])]
+        assert distances == pytest.approx([path.distances[-1] / 4] * 4, rel=0.02)
+        assert slider.slider_checkpoints() == ((1400, 10), (1800, 30), (2200, 10), (2600, 30))
+        round_ = Round((slider,))
+        assert round_.tap(1000, 0) == (None, True)
+        for time_ms, _ in slider.slider_checkpoints():
+            judgements = round_.advance(time_ms, lambda _: True)
+        assert judgements == [Judgement(0, 300)]
+    finally:
+        board.deleteLater()
+
+
+def test_long_straight_slider_fits_from_the_middle_of_the_field():
+    field = QRectF(44, 44, 424, 296)
+    center = field.center()
+    control, end = rhythm_games.slider_curve(Note(1000, "", end_ms=2500), 1, center, field)
+    assert field.contains(control) and field.contains(end)
+    assert hypot(*(end - center).toTuple()) > 150
+
+
+def test_next_circle_stays_clear_of_a_long_slider_body(qapp):
+    board = RhythmBoard(None)
+    slider = Note(1000, "slide", end_ms=2450, beat_length_ms=500)
+    try:
+        board.set_frame((slider, Note(2700, "tap", beat_length_ms=500)), 0, 1000)
+        next_center = board.target_center(1)
+        clearance = min(hypot(*(board.slider_ball(0, time_ms) - next_center).toTuple())
+                        for time_ms in range(slider.time_ms, slider.end_ms + 1, 25))
+        assert clearance > 2 * board.target_radius
     finally:
         board.deleteLater()
 

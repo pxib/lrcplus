@@ -1,6 +1,6 @@
 {
   "name": "Rhythm Games",
   "version": "0.1.0",
-  "description": "Play circles and sliders on word-timed lyrics, or try the demo with all three target types.",
+  "description": "Play charts from karaoke timing, timed lyric lines, or detected audio beats.",
   "api_version": 3
 }

@@ -1,19 +1,21 @@
-"""A circular-target rhythm game using the timing of the current song's lyrics."""
+"""A circular-target rhythm game with charts mapped from audio and lyric timing."""
 
 from array import array
+from bisect import bisect_left, bisect_right
 from collections import deque
 from dataclasses import dataclass, replace
 from heapq import nsmallest
 from io import BytesIO
-from itertools import pairwise
-from math import atan2, cos, exp, floor, hypot, pi, sin, sqrt, tau
+from itertools import accumulate, cycle, pairwise
+from math import asinh, atan2, cos, exp, floor, hypot, pi, sin, sqrt, tau
+from operator import attrgetter
 from pathlib import Path
 from threading import Event
 from time import monotonic
 import wave
 
 from PySide6.QtCore import QBuffer, QIODevice, QPointF, QRectF, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QCursor, QKeySequence, QPainter, QPen, QShortcut
+from PySide6.QtGui import QColor, QCursor, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QSoundEffect
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QSpinBox,
@@ -21,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.background_job import BackgroundJob
-from core.rhythm_analysis import analyze_audio_rhythm
+from core.rhythm_analysis import BeatGrid, analyze_audio_rhythm, beat_grid
 
 
 # The default chart uses AR5, OD5 and CS4 on a 512×384 playfield.
@@ -39,6 +41,11 @@ HIT_WINDOW_MS = HIT_WINDOWS[-1][1] - 0.5
 EARLY_MISS_MS = 400
 MIN_SLIDER_MS = 425
 MAX_SLIDER_MS = 1600
+GENERATED_TAP_GAP_MS = 180
+MIN_BURST_GAP_MS = 75
+SUBDIVISION_TOLERANCE_MS = 42
+MIN_SPINNER_MS = 2400
+MAX_INFERRED_LINE_MS = 8000
 SLIDER_FOLLOW_SCALE = 2.1
 HIT_ANIMATION_SECONDS = 0.22
 MISS_ANIMATION_SECONDS = 0.36
@@ -46,10 +53,23 @@ FAST_CIRCLE_GAP_MS = 200
 WIGGLE_GAP_MS = 105
 REGULAR_JUMP_GAP_MS = 420
 MAX_PATTERN_NOTES = 7
-MIN_SPIRAL_NOTES = 10
-MAX_SPIRAL_NOTES = 14
+MIN_LONG_STREAM_NOTES = 10
+MAX_LONG_STREAM_NOTES = 14
+STREAM_SEGMENT_NOTES = 4
 LOOKAHEAD_CHOICES = 3
+VARIED_LOOKAHEAD_CHOICES = 8
 MAX_JUMP_PX = 180
+PATTERN_REST_MS = 650
+PATTERN_HISTORY_MS = 6000
+RELIEF_SPACING = 0.8
+PATTERN_ALTERNATIVES = {
+    "arc": ("line", "s_curve"),
+    "wiggle": ("line", "arc"),
+    "triangle": ("arc", "s_curve"),
+    "square": ("arc", "s_curve"),
+    "zigzag": ("s_curve", "arc"),
+}
+SLIDER_DISTANCE_PER_BEAT = 135
 HIT_SOUND_PATH = Path(__file__).resolve().parents[3] / "assets" / "rhythm" / "hit.wav"
 HIT_SOUND_GAIN = 0.5
 HOW_TO_PLAY = (
@@ -68,6 +88,7 @@ class Note:
     spans: int = 1
     on_beat: bool = False
     accented: bool = False
+    beat_length_ms: int | None = None
 
     @property
     def finish_ms(self):
@@ -84,8 +105,12 @@ class Note:
     def slider_checkpoints(self):
         span_ms = (self.end_ms - self.time_ms) / self.spans
         checkpoints = []
+        tick_ms = self.beat_length_ms
         for span in range(self.spans):
-            if span_ms >= 500:
+            if tick_ms:
+                for tick in range(tick_ms, int(span_ms - 35), tick_ms):
+                    checkpoints.append((self.time_ms + span_ms * span + tick, 10))
+            elif span_ms >= 500:
                 checkpoints.append((self.time_ms + span_ms * (span + 0.5), 10))
             checkpoints.append((self.time_ms + span_ms * (span + 1), 30))
         return tuple(checkpoints)
@@ -96,6 +121,7 @@ class Passage:
     label: str
     notes: tuple[Note, ...]
     full_song: bool = False
+    line_end_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -125,20 +151,40 @@ DEMO = Passage("Demo", (
 
 
 def fit_sliders(notes):
-    """Leave the next lyric's entire hit window free after a sustained lyric."""
+    """Keep sustained objects clear of the next object."""
     for index, note in enumerate(notes):
-        if note.end_ms is not None:
+        if note.slider:
             end_ms = min(note.end_ms, note.time_ms + MAX_SLIDER_MS)
             if index + 1 < len(notes):
-                end_ms = min(end_ms, notes[index + 1].time_ms - HIT_WINDOWS[-1][1])
-            note = replace(note, end_ms=end_ms if end_ms - note.time_ms >= MIN_SLIDER_MS else None)
+                end_ms = min(end_ms, notes[index + 1].time_ms - slider_release_gap(note.beat_length_ms))
+            minimum = max(250, note.beat_length_ms / 2) if note.beat_length_ms else MIN_SLIDER_MS
+            note = replace(note, end_ms=end_ms if end_ms - note.time_ms >= minimum else None,
+                           spans=note.spans if end_ms == note.end_ms else 1)
         yield note
 
 
 def lyric_passages(lines, file_offset_ms, duration_ms):
-    """Use authored karaoke chunks and combine chunks that start together."""
-    for line in lines:
+    """Create passages from karaoke chunks or from timed lyric lines."""
+    lines = tuple(lines)
+    starts = [round(line.start * 1000 + file_offset_ms) for line in lines]
+    boundaries = sorted(set(starts))
+    for line, line_start in zip(lines, starts):
+        line_text = " / ".join(row.strip() for index, row in enumerate(line.text.splitlines())
+                               if index not in line.translation_lines and row.strip())
         if not line.has_karaoke:
+            if (line_start < 0 or (duration_ms and line_start >= duration_ms)
+                    or not any(c.isalnum() for c in line_text)):
+                continue
+            end = (round(line.end * 1000 + file_offset_ms) if line.end is not None and line.end > line.start
+                   else line_start + MAX_INFERRED_LINE_MS)
+            next_index = bisect_right(boundaries, line_start)
+            if next_index < len(boundaries):
+                end = min(end, boundaries[next_index])
+            if duration_ms:
+                end = min(end, duration_ms)
+            timestamp = line_start // 1000
+            yield Passage(f"{timestamp // 60}:{timestamp % 60:02d}  {line_text}",
+                          (Note(line_start, line_text),), line_end_ms=end)
             continue
         chunks = {}
         for segment in line.segments:
@@ -163,48 +209,288 @@ def lyric_passages(lines, file_offset_ms, duration_ms):
         ]))
         if notes:
             start = notes[0].time_ms // 1000
-            text = " / ".join(row for index, row in enumerate(line.text.splitlines())
-                              if index not in line.translation_lines)
-            yield Passage(f"{start // 60}:{start % 60:02d}  {text}", notes)
+            yield Passage(f"{start // 60}:{start % 60:02d}  {line_text}", notes)
 
 
 def full_song_passage(passages):
     """Build one chronological chart, with one target at each timestamp."""
+    passages = tuple(passages)
+    authored = {}
+    for passage in passages:
+        if passage.line_end_ms is None:
+            for note in passage.notes:
+                authored[note.time_ms] = max(authored.get(note.time_ms, note.time_ms), note.finish_ms)
+    starts = sorted(authored)
+    # A word-timed slider can extend past more than one later lyric timestamp.
+    ends = []
+    for start in starts:
+        ends.append(max(authored[start], ends[-1] if ends else start))
+
     by_time = {}
     for passage in passages:
         for note in passage.notes:
+            finish = note.finish_ms
+            if passage.line_end_ms is not None:
+                if note.time_ms in authored:
+                    finish = note.time_ms
+                else:
+                    index = bisect_left(starts, note.time_ms + GENERATED_TAP_GAP_MS) - 1
+                    if index >= 0 and ends[index] > note.time_ms - GENERATED_TAP_GAP_MS:
+                        continue
             simultaneous = by_time.setdefault(note.time_ms, {})
             key = note.text, note.reading
-            simultaneous[key] = max(simultaneous.get(key, note.time_ms), note.finish_ms)
+            if key not in simultaneous or finish > simultaneous[key].finish_ms:
+                simultaneous[key] = note if finish == note.finish_ms else replace(note, end_ms=None, spans=1)
     notes = tuple(fit_sliders([
-        Note(time_ms, " / ".join(text for text, _ in simultaneous),
-             " / ".join(reading for _, reading in simultaneous if reading), max(simultaneous.values()))
-        for time_ms, simultaneous in sorted(by_time.items())
+        replace(max(simultaneous.values(), key=lambda note: note.finish_ms),
+                text=" / ".join(text for text, _ in simultaneous),
+                reading=" / ".join(reading for _, reading in simultaneous if reading))
+        for _, simultaneous in sorted(by_time.items())
     ]))
     return Passage("Full song", notes, full_song=True)
 
 
-def apply_audio_rhythm(passage, rhythm):
-    notes = tuple(
-        replace(note, on_beat=rhythm.on_beat(note.time_ms), accented=rhythm.accented(note.time_ms))
-        for note in passage.notes
+def events_between(events, start, end):
+    return events[bisect_left(events, start):bisect_left(events, end)]
+
+
+def spaced_taps(candidates, reserved, gap=GENERATED_TAP_GAP_MS):
+    additions = []
+    for time_ms in candidates:
+        neighbor = bisect_right(reserved, time_ms - gap)
+        if neighbor < len(reserved) and reserved[neighbor] < time_ms + gap:
+            continue
+        if not additions or time_ms - additions[-1] >= gap:
+            additions.append(time_ms)
+    return additions
+
+
+def subdivision_matches(start, end, cues):
+    length = end - start
+    tolerance = min(SUBDIVISION_TOLERANCE_MS, length / 12)
+    for divisor in (2, 3, 4):
+        if length < divisor * MIN_BURST_GAP_MS:
+            continue
+        matched = []
+        for step in range(1, divisor):
+            tick = start + round(length * step / divisor)
+            near = events_between(cues, tick - tolerance, tick + tolerance + 1)
+            if near:
+                matched.append((step, tick, min(abs(tick - time_ms) for time_ms in near)))
+        if matched:
+            yield divisor, matched
+
+
+def beat_subdivisions(start, end, attacks, rhythm):
+    """Pick a single subdivision per beat from the attacks it explains."""
+    best, best_score = (), (0, 0)
+    for divisor, matched in subdivision_matches(start, end, attacks):
+        emphasized = sum(rhythm.accented(tick) for _, tick, _ in matched)
+        if divisor != 2 and len(matched) == 1 and not emphasized:
+            continue
+        if divisor == 4 and len(matched) == 2 and matched[-1][0] - matched[0][0] == 2:
+            if emphasized < 2:
+                continue
+        score = (len(matched), -sum(error for _, _, error in matched))
+        if score > best_score:
+            best, best_score = tuple(tick for _, tick, _ in matched), score
+    return best
+
+
+def melody_subdivision(start, end, cues):
+    """Fill an empty beat interval with one pitched cue and room for a longer gap."""
+    matches = (
+        (divisor != 2, error, divisor, tick)
+        for divisor, matched in subdivision_matches(start, end, cues)
+        for _, tick, error in matched
+        if max(tick - start, end - tick) >= FAST_CIRCLE_GAP_MS
     )
+    best = min(matches, default=None)
+    return (best[-1],) if best is not None else ()
+
+
+@dataclass(frozen=True)
+class ChartTiming:
+    grid: BeatGrid
+    beats: tuple[int, ...]
+    subdivisions: tuple[int, ...]
+    off_grid: tuple[int, ...]
+    attacks: tuple[int, ...]
+    melody: tuple[int, ...]
+
+    @classmethod
+    def from_audio(cls, rhythm):
+        grid = beat_grid(rhythm.beats_ms)
+        attacks = tuple(sorted(set(rhythm.onsets_ms or rhythm.accents_ms) | {start for start, _ in rhythm.sustained_ms}))
+        melody = set()
+        for time in {note.start_ms for note in rhythm.melody_notes}:
+            if grid.interval_at(time) is None:
+                nearby = events_between(attacks, time - 45, time + 46)
+                time = min(nearby, key=lambda attack: (abs(attack - time), attack), default=time)
+            melody.add(time)
+        melody = tuple(sorted(melody))
+        beats = tuple(time for time in grid.beats_ms if not rhythm.silent(time) or rhythm.has_onset(time)
+                      or events_between(melody, time - 45, time + 46))
+        subdivisions = []
+        for start, end in grid.intervals:
+            ticks = beat_subdivisions(start, end, events_between(attacks, start + 1, end), rhythm)
+            subdivisions.extend(ticks or melody_subdivision(start, end, events_between(melody, start + 1, end)))
+        off_grid = tuple(time for time in attacks if grid.interval_at(time) is None)
+        return cls(grid, beats, tuple(subdivisions), off_grid, attacks, melody)
+
+    def taps(self, start, end):
+        beats = []
+        for time_ms in events_between(self.beats, start, end):
+            if not beats or time_ms - beats[-1] >= GENERATED_TAP_GAP_MS:
+                beats.append(time_ms)
+        snapped = sorted((*beats, *events_between(self.subdivisions, start, end)))
+        melodic = (time for time in events_between(self.melody, start, end) if self.grid.interval_at(time) is None)
+        preferred = sorted((*snapped, *spaced_taps(melodic, snapped, FAST_CIRCLE_GAP_MS)))
+        return sorted((*preferred, *spaced_taps(events_between(self.off_grid, start, end), preferred)))
+
+    def slider_tail(self, desired, earliest, limit):
+        interval = self.grid.interval_at(desired) or self.grid.interval_at(desired, 45)
+        if interval:
+            start, end = interval
+            candidates = (start, round((start + end) / 2), end)
+            nearby = [tick for tick in candidates if earliest <= tick <= limit]
+            if nearby:
+                tail = min(nearby, key=lambda tick: (abs(tick - desired), tick))
+                if abs(tail - desired) <= (end - start) / 4:
+                    return tail
+        return desired
+
+
+def slider_release_gap(beat_length_ms):
+    if beat_length_ms:
+        return min(HIT_WINDOWS[-1][1], max(MIN_BURST_GAP_MS, round(beat_length_ms / 4)))
+    return HIT_WINDOWS[-1][1]
+
+
+def next_attack_after(attacks, cutoff):
+    index = bisect_right(attacks, cutoff)
+    return attacks[index] if index < len(attacks) else float("inf")
+
+
+def infer_sustained_objects(notes, rhythm, timing, end_ms, *, spinners=False):
+    """Cover held sounds while keeping the next independent attack playable."""
+    played_attacks = ()
+    if timing.melody:
+        played_attacks = tuple(note.time_ms for note in notes if any(
+            events_between(cues, note.time_ms - SUBDIVISION_TOLERANCE_MS, note.time_ms + SUBDIVISION_TOLERANCE_MS + 1)
+            for cues in (timing.attacks, timing.melody)
+        ))
+    free_at = 0
+    for index, note in enumerate(notes):
+        if note.time_ms < free_at:
+            continue
+        audio_end = rhythm.sustained_end(note.time_ms)
+        end = audio_end if audio_end is not None else rhythm.held_melody_end(note.time_ms)
+        if end is None:
+            yield note
+            continue
+
+        beat = note.beat_length_ms
+        cutoff = note.time_ms + 70
+        next_attack = next_attack_after(played_attacks, cutoff)
+        if audio_end is not None:
+            next_attack = min(next_attack, next_attack_after(timing.attacks, cutoff))
+        following = bisect_left(notes, next_attack - SUBDIVISION_TOLERANCE_MS, index + 1,
+                                key=attrgetter("time_ms"))
+        if following < len(notes):
+            next_attack = min(next_attack, notes[following].time_ms)
+
+        spin_gap = beat or 500
+        spin_minimum = note.time_ms + max(MIN_SPINNER_MS, 3 * spin_gap)
+        spin_limit = min(end_ms, next_attack) - spin_gap
+        if spinners and audio_end is not None and min(end, spin_limit) >= spin_minimum:
+            tail = timing.slider_tail(min(end, spin_limit), spin_minimum, min(end + 25, spin_limit))
+            free_at = tail + spin_gap
+            yield replace(note, end_ms=tail, spinner=True)
+            continue
+
+        gap = slider_release_gap(beat)
+        earliest = note.time_ms + (max(250, beat / 2) if beat else MIN_SLIDER_MS)
+        limit = min(next_attack - gap, end_ms - gap, note.time_ms + MAX_SLIDER_MS)
+        desired = min(end, limit)
+        if desired < earliest:
+            yield note
+            continue
+
+        tail = timing.slider_tail(desired, earliest, min(limit, end + 25))
+        spans = 1
+        if beat and note.on_beat:
+            duration_beats = (tail - note.time_ms) / beat
+            if duration_beats >= 2 - 0.02 and abs(duration_beats - round(duration_beats)) <= 0.02:
+                spans = 2
+        free_at = tail + gap
+        yield replace(note, end_ms=tail, spans=spans)
+
+
+def mark_rhythm(note, rhythm, timing):
+    index = bisect_left(timing.beats, note.time_ms)
+    on_grid_beat = index < len(timing.beats) and timing.beats[index] == note.time_ms
+    return replace(note, on_beat=on_grid_beat or rhythm.on_beat(note.time_ms),
+                   accented=rhythm.accented(note.time_ms), beat_length_ms=timing.grid.beat_length(note.time_ms))
+
+
+def audio_notes(rhythm, timing, start, end):
+    notes = tuple(mark_rhythm(Note(time_ms, ""), rhythm, timing) for time_ms in timing.taps(start, end))
+    return tuple(infer_sustained_objects(notes, rhythm, timing, end, spinners=True))
+
+
+def audio_beat_passage(rhythm, duration_ms):
+    notes = audio_notes(rhythm, ChartTiming.from_audio(rhythm), 0, duration_ms or float("inf"))
+    return Passage("Audio beats", notes, full_song=True) if notes else None
+
+
+def apply_audio_rhythm(passage, rhythm, timing=None):
+    timing = timing or ChartTiming.from_audio(rhythm)
+    notes = passage.notes
+    if passage.line_end_ms is not None:
+        anchor = notes[0]
+        notes = (anchor, *(Note(time_ms, anchor.text) for time_ms in timing.taps(
+            anchor.time_ms + GENERATED_TAP_GAP_MS, passage.line_end_ms - GENERATED_TAP_GAP_MS + 1,
+        )))
+    notes = tuple(mark_rhythm(note, rhythm, timing) for note in notes)
+    if passage.line_end_ms is not None:
+        notes = tuple(infer_sustained_objects(notes, rhythm, timing, passage.line_end_ms))
     return replace(passage, notes=notes)
 
 
+def map_song(passages, rhythm, duration_ms):
+    timing = ChartTiming.from_audio(rhythm)
+    passages = tuple(apply_audio_rhythm(passage, rhythm, timing) for passage in passages)
+    full_song = full_song_passage(passages)
+    occupied = sorted((passage.notes[0].time_ms,
+                       max(passage.notes[-1].finish_ms, passage.line_end_ms or 0)) for passage in passages)
+    notes = list(full_song.notes)
+    cursor = 0
+    for start, end in occupied:
+        if start - GENERATED_TAP_GAP_MS >= cursor:
+            notes.extend(audio_notes(rhythm, timing, cursor, start - GENERATED_TAP_GAP_MS + 1))
+        cursor = max(cursor, end + GENERATED_TAP_GAP_MS)
+    notes.extend(audio_notes(rhythm, timing, cursor, duration_ms or float("inf")))
+    return replace(full_song, notes=tuple(sorted(notes, key=lambda note: note.time_ms))), *passages
+
+
+def distance_snap_gap(note, gap):
+    return gap * 500 / note.beat_length_ms if note.beat_length_ms else gap
+
+
 def circle_patterns(notes):
-    """Read short, regular runs from the authored timestamps."""
+    """Group regular jumps, bursts, and streams using the local beat length."""
     start = 0
     while start < len(notes):
         end = start + 1
         first_gap = float("inf")
         if notes[start].end_ms is None and end < len(notes):
-            first_gap = notes[end].time_ms - notes[start].time_ms
+            first_gap = distance_snap_gap(notes[start], notes[end].time_ms - notes[start].time_ms)
             low, high = ((0, FAST_CIRCLE_GAP_MS) if first_gap < FAST_CIRCLE_GAP_MS
                          else (FAST_CIRCLE_GAP_MS, REGULAR_JUMP_GAP_MS))
             tolerance = max(30, first_gap * 0.25)
             while end < len(notes) and notes[end].end_ms is None:
-                gap = notes[end].time_ms - notes[end - 1].time_ms
+                gap = distance_snap_gap(notes[end - 1], notes[end].time_ms - notes[end - 1].time_ms)
                 if not low <= gap < high or abs(gap - first_gap) > tolerance:
                     break
                 if (gap >= FAST_CIRCLE_GAP_MS and end - start >= 3
@@ -213,14 +499,15 @@ def circle_patterns(notes):
                 end += 1
 
         pattern_limit = MAX_PATTERN_NOTES
-        run_gap = (notes[end - 1].time_ms - notes[start].time_ms) / max(1, end - start - 1)
+        run_gap = distance_snap_gap(notes[start], (notes[end - 1].time_ms - notes[start].time_ms)
+                                    / max(1, end - start - 1))
         if WIGGLE_GAP_MS < run_gap < FAST_CIRCLE_GAP_MS:
-            while end - start > MAX_SPIRAL_NOTES:
-                size = min(MAX_SPIRAL_NOTES, end - start - 4)
+            while end - start > MAX_LONG_STREAM_NOTES:
+                size = min(MAX_LONG_STREAM_NOTES, end - start - 4)
                 yield notes[start:start + size]
                 start += size
-            if end - start >= MIN_SPIRAL_NOTES:
-                pattern_limit = MAX_SPIRAL_NOTES
+            if end - start >= MIN_LONG_STREAM_NOTES:
+                pattern_limit = MAX_LONG_STREAM_NOTES
 
         # Divide the remaining notes evenly to avoid a single tap at the end of a run.
         run_length = end - start
@@ -242,7 +529,96 @@ def stream_spacing(gap, radius):
     return max(radius * 0.65, min(radius * 1.25, gap * 0.27))
 
 
-def spiral_offsets(pattern, radius, angle, bend):
+def fast_circle_join(previous, following):
+    return (previous is not None and previous.end_ms is None and following.end_ms is None
+            and distance_snap_gap(following, following.time_ms - previous.time_ms) < FAST_CIRCLE_GAP_MS)
+
+
+def is_fast_stream(pattern, shape):
+    return len(pattern) >= 2 and shape not in ("stack", "spiral") and fast_circle_join(pattern[-2], pattern[-1])
+
+
+def default_pattern_shape(pattern):
+    count = len(pattern)
+    if count < 2:
+        return "single"
+    first_gap = distance_snap_gap(pattern[0], pattern[1].time_ms - pattern[0].time_ms)
+    if first_gap < FAST_CIRCLE_GAP_MS:
+        if count <= 3 and pattern[0].beat_length_ms is None:
+            return "stack"
+        if count >= MIN_LONG_STREAM_NOTES:
+            return "long_stream"
+        average_gap = (pattern[-1].time_ms - pattern[0].time_ms) / (count - 1)
+        return "wiggle" if distance_snap_gap(pattern[0], average_gap) <= WIGGLE_GAP_MS else "arc"
+    return {3: "triangle", 4: "square"}.get(count, "zigzag")
+
+
+def demanding_pattern(pattern, shape, gap, radius):
+    if pattern[0].end_ms is not None or shape == "stack":
+        return False
+    if len(pattern) > 1:
+        average_gap = (pattern[-1].time_ms - pattern[0].time_ms) / (len(pattern) - 1)
+        return average_gap < REGULAR_JUMP_GAP_MS
+    return (gap is not None and FAST_CIRCLE_GAP_MS <= gap <= PATTERN_REST_MS
+            and jump_distance(distance_snap_gap(pattern[0], gap), radius) >= 3.5 * radius)
+
+
+def plan_circle_patterns(notes, radius):
+    """Vary recurring shapes and ease spacing during chains of demanding patterns."""
+    vary = notes is not DEMO.notes
+    long_stream_shapes = cycle(("zigzag_stream", "s_curve", "line"))
+    recent_shapes = deque(maxlen=4)
+    consecutive = 0
+    previous = None
+    previous_shape = None
+    for pattern, following in pairwise((*circle_patterns(notes), ())):
+        first, last = pattern[0], pattern[-1]
+        gap = first.time_ms - previous.finish_ms if previous is not None else None
+        while recent_shapes and first.time_ms - recent_shapes[0][0] >= PATTERN_HISTORY_MS:
+            recent_shapes.popleft()
+        if previous is not None and previous.spinner:
+            recent_shapes.clear()
+        if gap is not None and (previous.spinner or gap >= max(PATTERN_REST_MS, first.beat_length_ms or 0)):
+            consecutive = 0
+        shape = default_pattern_shape(pattern)
+        long_stream = shape == "long_stream"
+        if long_stream:
+            shape = next(long_stream_shapes) if vary else "spiral"
+        spacing = 1.0
+        if vary and demanding_pattern(pattern, shape, gap, radius):
+            alternatives = PATTERN_ALTERNATIVES.get(shape)
+            if len(pattern) > 2 and alternatives:
+                shapes = tuple(old_shape for _, old_shape in recent_shapes)
+                if shapes.count(shape) >= 2:
+                    shape = min(alternatives, key=shapes.count)
+                if shape == previous_shape == "arc" and fast_circle_join(previous, first):
+                    # Break up consecutive curved groups within a fast stream.
+                    shape = "line"
+                recent_shapes.append((first.time_ms, shape))
+            if consecutive == 2:
+                spacing = RELIEF_SPACING
+                consecutive = 0
+            else:
+                consecutive += 1
+        else:
+            consecutive = 0
+        if (vary and len(pattern) >= 6 and is_fast_stream(pattern, shape)
+                and (fast_circle_join(previous, first) or following and fast_circle_join(last, following[0]))):
+            # Shorter groups leave room to turn before reaching the edge of the field.
+            groups = (len(pattern) + STREAM_SEGMENT_NOTES - 1) // STREAM_SEGMENT_NOTES
+            start = 0
+            length, extra = divmod(len(pattern), groups)
+            for index in range(groups):
+                end = start + length + (index < extra)
+                yield pattern[start:end], shape, spacing
+                start = end
+        else:
+            yield pattern, shape, spacing
+        previous = last
+        previous_shape = shape
+
+
+def spiral_offsets(pattern, radius, angle, bend, spacing_scale):
     # Begin tangent to the entry direction, and make each step widen the curve.
     angle -= bend * tau / 4
     orbit = radius * 1.35
@@ -250,48 +626,62 @@ def spiral_offsets(pattern, radius, angle, bend):
     offsets = [QPointF()]
     for previous, note in pairwise(pattern):
         next_orbit = orbit + radius * 0.12
-        spacing = stream_spacing(note.time_ms - previous.time_ms, radius)
+        spacing = stream_spacing(distance_snap_gap(previous, note.time_ms - previous.time_ms), radius) * spacing_scale
         angle += bend * spacing / ((orbit + next_orbit) / 2)
         orbit = next_orbit
         offsets.append(QPointF(cos(angle), sin(angle)) * orbit - start)
     return offsets
 
 
-def pattern_offsets(pattern, radius, angle, bend):
+def pattern_offsets(pattern, radius, angle, bend, shape, spacing_scale):
     count = len(pattern)
-    if count == 1:
+    if shape == "single":
         return [QPointF()]
-    first_gap = pattern[1].time_ms - pattern[0].time_ms
-    fast = first_gap < FAST_CIRCLE_GAP_MS
-    if fast and count <= 3:
+    if shape == "stack":
         # osu! scales each step in a stack to a tenth of the hit-circle radius.
         return [QPointF(radius * 0.1, radius * 0.1) * index for index in range(count)]
-    if fast and count >= MIN_SPIRAL_NOTES:
-        return spiral_offsets(pattern, radius, angle, bend)
+    if shape == "spiral":
+        return spiral_offsets(pattern, radius, angle, bend, spacing_scale)
 
     offsets = [QPointF()]
     heading = QPointF(cos(angle), sin(angle))
     normal = QPointF(-heading.y(), heading.x()) * bend
-    average_gap = (pattern[-1].time_ms - pattern[0].time_ms) / (count - 1)
-    wiggle = average_gap <= WIGGLE_GAP_MS
+    first_gap = distance_snap_gap(pattern[0], pattern[1].time_ms - pattern[0].time_ms)
+    fast = first_gap < FAST_CIRCLE_GAP_MS
+    average_gap = distance_snap_gap(pattern[0], (pattern[-1].time_ms - pattern[0].time_ms) / (count - 1))
+    variable_spacing = (fast and shape in ("zigzag_stream", "s_curve", "line")
+                        and 0 < sum(note.accented for note in pattern[1:]) < count - 1)
     for index, (previous, note) in enumerate(pairwise(pattern)):
-        gap = note.time_ms - previous.time_ms
+        gap = distance_snap_gap(previous, note.time_ms - previous.time_ms)
         if fast:
-            turn = index * tau / 18
-            if wiggle:
-                turn = tau / 8 if index % 2 == 0 else -tau / 8
-            direction = angle + bend * turn
-            step = QPointF(cos(direction), sin(direction)) * stream_spacing(gap, radius)
-        elif count in (3, 4):
-            direction = angle + bend * index * tau / count
-            spacing = jump_distance(average_gap if count == 4 else gap, radius)
-            step = QPointF(cos(direction), sin(direction)) * spacing
+            spacing = stream_spacing(gap, radius) * spacing_scale
+            if variable_spacing:
+                spacing *= 1.12 if note.accented else 0.92
         else:
+            spacing = max(2 * radius, jump_distance(average_gap if shape == "square" else gap, radius) * spacing_scale)
+        if shape == "zigzag_stream":
+            # Keep both rows of circles within reach of the same straight cursor path.
+            lateral = radius * 0.36
+            forward = sqrt((spacing * 0.88) ** 2 - lateral ** 2)
+            step = heading * forward + normal * (lateral if index % 2 == 0 else -lateral)
+        elif shape == "zigzag":
             # Offset each return so the two columns of the zigzag stay readable.
             lateral = radius * 0.55
-            spacing = jump_distance(gap, radius)
             across = sqrt(spacing * spacing - lateral * lateral)
             step = heading * (across if index % 2 == 0 else -across) + normal * lateral
+        else:
+            if shape == "wiggle":
+                turn = tau / 8 if index % 2 == 0 else -tau / 8
+            elif shape in ("triangle", "square"):
+                turn = index * tau / count
+            elif shape == "arc":
+                turn = index * min(tau / 18, tau / (8 * max(1, count - 2)))
+            elif shape == "s_curve":
+                turn = sin(index * tau / max(3, count - 1)) * tau / 12
+            else:
+                turn = 0
+            direction = angle + bend * turn
+            step = QPointF(cos(direction), sin(direction)) * spacing
         offsets.append(offsets[-1] + step)
     return offsets
 
@@ -305,62 +695,150 @@ def fit_pattern(offsets, anchor, field):
     left, right = field.left() - min_x * scale, field.right() - max_x * scale
     top, bottom = field.top() - min_y * scale, field.bottom() - max_y * scale
     origin = QPointF(min(right, max(left, anchor.x())), min(bottom, max(top, anchor.y())))
-    return tuple(origin + point * scale for point in offsets)
+    # The transformed extrema can round just past a playfield edge.
+    points = (origin + point * scale for point in offsets)
+    return tuple(
+        point if field.contains(point) else QPointF(
+            min(field.right(), max(field.left(), point.x())),
+            min(field.bottom(), max(field.top(), point.y())),
+        )
+        for point in points
+    )
 
 
-def slider_endpoint(note, index, center, field):
-    distance = min(160, (note.end_ms - note.time_ms) / note.spans * 0.27)
-    for step in range(8):
-        angle = (index * 3 + step) * tau / 8
-        endpoint = center + QPointF(cos(angle), sin(angle)) * distance
-        if field.contains(endpoint):
-            return endpoint
-    return center
+def slider_curve(note, index, center, field):
+    """Fit a line or a quadratic curve of the intended travel length."""
+    beats = (note.end_ms - note.time_ms) / (note.spans * (note.beat_length_ms or 500))
+    distance = min(220, beats * SLIDER_DISTANCE_PER_BEAT)
+    bend = (0.32 if index % 2 == 0 else -0.32) if distance >= 95 and index % 3 != 1 else 0
+    for scale in (1, 0.85, 0.7):
+        for shape in (bend, -bend, 0) if bend else (0,):
+            slope = 2 * shape
+            length_scale = (sqrt(1 + slope * slope) + asinh(slope) / slope) / 2 if slope else 1
+            chord = distance * scale / length_scale
+            for step in range(8):
+                angle = (index * 3 + step) * tau / 8
+                heading = QPointF(cos(angle), sin(angle))
+                normal = QPointF(-heading.y(), heading.x())
+                end = center + heading * chord
+                control = center + (heading * 0.5 + normal * shape) * chord
+                if field.contains(end) and field.contains(control):
+                    return control, end
+    return center, center
 
 
-def pattern_layouts(pattern, index, origin, gap, recent, field, radius, motif_bend=None):
-    """Score orientations by crowding and how far fitting changes the intended entry."""
+def quadratic_point(start, control, end, t):
+    return start * ((1 - t) ** 2) + control * (2 * t * (1 - t)) + end * (t * t)
+
+
+@dataclass(frozen=True)
+class SliderPath:
+    points: tuple[QPointF, ...]
+    distances: tuple[float, ...]
+
+    @classmethod
+    def from_curve(cls, start, control, end):
+        if control == (start + end) * 0.5:
+            points = start, end
+        else:
+            points = tuple(quadratic_point(start, control, end, step / 24) for step in range(25))
+        distances = tuple(accumulate((hypot(b.x() - a.x(), b.y() - a.y()) for a, b in pairwise(points)), initial=0.0))
+        return cls(points, distances)
+
+    def at(self, progress):
+        distance = self.distances[-1] * progress
+        index = bisect_right(self.distances, distance)
+        if index >= len(self.points):
+            return self.points[-1]
+        before, after = self.points[index - 1:index + 1]
+        fraction = (distance - self.distances[index - 1]) / (self.distances[index] - self.distances[index - 1])
+        return before + (after - before) * fraction
+
+
+def turn_cost(heading, movement):
+    length = hypot(movement.x(), movement.y())
+    alignment = QPointF.dotProduct(heading, movement) / length if length else 0
+    return max(0, cos(tau / 8) - alignment)
+
+
+def nearest_distance(points, obstacles):
+    return min((hypot(point.x() - other.x(), point.y() - other.y())
+                for point in points for other in obstacles), default=float("inf"))
+
+
+def pattern_layouts(pattern, index, origin, gap, recent, field, radius, motif_bend=None, *, shape, spacing, incoming=None):
+    """Score crowding, entry spacing, and turns between fast groups."""
     min_spacing = radius * 2 + 10
+    if gap is not None:
+        gap = distance_snap_gap(pattern[0], gap)
     if gap is None:
         distance = clearance = 0
     elif gap < FAST_CIRCLE_GAP_MS:
-        distance = max(radius * 0.7, gap * 0.22)
+        distance = max(radius * 0.7, gap * 0.22) * spacing
         clearance = radius * 0.6
     else:
         distance = jump_distance(gap, radius)
         if pattern[0].accented:
             emphasis = 1.16 if pattern[0].on_beat else 1.08
             distance = min(MAX_JUMP_PX, distance * emphasis)
-        clearance = min_spacing
+        distance = max(2 * radius, distance * spacing)
+        clearance = max(2 * radius, min_spacing * spacing)
 
     simultaneous = tuple(point for time, point in recent
                          if pattern[0].time_ms - time <= LEAD_IN_MS + HIT_WINDOW_MS)
+    if gap is None or gap >= FAST_CIRCLE_GAP_MS or pattern[0].end_ms is not None:
+        incoming = None
+    direction = None
+    if incoming is not None:
+        magnitude = hypot(incoming.x(), incoming.y())
+        if magnitude:
+            direction = atan2(incoming.y(), incoming.x())
+            incoming = incoming / magnitude
+        else:
+            incoming = None
+    connected = incoming is not None
+    # The nearest two preceding circles are part of the stream join.
+    older, adjacent = (simultaneous[:-2], simultaneous[-2:]) if connected else ((), simultaneous)
+    keeps_streaming = connected and is_fast_stream(pattern, shape)
     preferred_bend = motif_bend if motif_bend is not None else (1 if index % 2 == 0 else -1)
     rotates = len(pattern) > 3 or (len(pattern) == 3
-                                  and pattern[1].time_ms - pattern[0].time_ms >= FAST_CIRCLE_GAP_MS)
+                                  and distance_snap_gap(pattern[0], pattern[1].time_ms - pattern[0].time_ms)
+                                  >= FAST_CIRCLE_GAP_MS)
     bends = (preferred_bend, -preferred_bend) if rotates else (preferred_bend,)
     directions = 1 if gap is None and not rotates else 8
     for step in range(directions):
-        angle = (index * 3 + step) * tau / 8
-        anchor = origin + QPointF(cos(angle), sin(angle)) * distance
+        if direction is None:
+            angle = entry_angle = (index * 3 + step) * tau / 8
+        else:
+            turn = ((step + 4) % 8 - 4) * tau / 8
+            angle = direction + turn
+            entry_angle = direction + turn * 0.5 if abs(turn) <= tau / 4 else angle
+        anchor = origin + QPointF(cos(entry_angle), sin(entry_angle)) * distance
         for bend in bends:
-            offsets = pattern_offsets(pattern, radius, angle, bend)
+            offsets = pattern_offsets(pattern, radius, angle, bend, shape, spacing)
             candidate = fit_pattern(offsets, anchor, field)
-            nearest = min((hypot(point.x() - other.x(), point.y() - other.y())
-                           for point in candidate for other in simultaneous), default=clearance)
+            old_distance = nearest_distance(candidate, older) if older else float("inf")
+            nearest = min(old_distance, nearest_distance(candidate, adjacent))
             drift = hypot(candidate[0].x() - anchor.x(), candidate[0].y() - anchor.y())
             cost = max(0, clearance - nearest) + drift
+            if connected:
+                cost += 1.8 * radius * turn_cost(incoming, candidate[0] - origin)
+                if keeps_streaming:
+                    opening = candidate[min(4, len(candidate) - 1)] - candidate[0]
+                    cost += radius * turn_cost(incoming, opening)
+                cost += max(0, radius * 1.25 - old_distance)
             if motif_bend is not None and bend != motif_bend:
                 cost += 5
             yield cost, candidate, bend
 
 
-def beat_pattern(pattern):
+def beat_pattern(pattern, shape):
     """Recognize repeated timing and beat accents within a small tolerance."""
     if len(pattern) < 3 or not any(note.on_beat for note in pattern):
         return None
     start = pattern[0].time_ms
-    return tuple((round((note.time_ms - start) / 25), note.on_beat) for note in pattern)
+    return shape, tuple((round(distance_snap_gap(pattern[0], note.time_ms - start) / 25), note.on_beat, note.accented)
+                        for note in pattern)
 
 
 def generate_circle_centers(notes, field, radius):
@@ -369,8 +847,10 @@ def generate_circle_centers(notes, field, radius):
     recent = deque()
     origin = field.center()
     previous = None
+    incoming = None
     motifs = {}
-    for pattern, following in pairwise((*circle_patterns(notes), ())):
+    planned = (*plan_circle_patterns(notes, radius), ((), "single", 1.0))
+    for (pattern, shape, spacing), (following, next_shape, next_spacing) in pairwise(planned):
         first, last = pattern[0], pattern[-1]
         while recent and first.time_ms - recent[0][0] > LEAD_IN_MS + HIT_WINDOW_MS:
             recent.popleft()
@@ -378,35 +858,53 @@ def generate_circle_centers(notes, field, radius):
             origin = field.center()
             centers.append(origin)
             previous = last
+            incoming = None
             continue
 
         index = len(centers)
         gap = None if previous is None else first.time_ms - previous.finish_ms
-        motif, following_motif = beat_pattern(pattern), beat_pattern(following)
-        layouts = pattern_layouts(pattern, index, origin, gap, recent, field, radius, motifs.get(motif))
-        choices = nsmallest(LOOKAHEAD_CHOICES, layouts, key=lambda layout: layout[0])
+        motif, following_motif = beat_pattern(pattern, shape), beat_pattern(following, next_shape)
+        layouts = pattern_layouts(pattern, index, origin, gap, recent, field, radius, motifs.get(motif),
+                                  shape=shape, spacing=spacing, incoming=incoming)
+        next_gap = following[0].time_ms - last.finish_ms if following else float("inf")
+        look_ahead = next_gap < LEAD_IN_MS and not following[0].spinner
+        fast_stream = notes is not DEMO.notes and is_fast_stream(pattern, shape)
+        continuous = look_ahead and fast_stream and fast_circle_join(last, following[0])
+        # Try more placements when the next group needs room for its entry or direction.
+        extended = look_ahead and (continuous or next_shape != default_pattern_shape(following))
+        choice_count = VARIED_LOOKAHEAD_CHOICES if extended else LOOKAHEAD_CHOICES
+        choices = nsmallest(choice_count, layouts, key=lambda layout: layout[0])
         best_cost = float("inf")
         for cost, candidate, bend in choices:
             exit_point = candidate[-1]
-            if last.slider and last.spans % 2:
-                exit_point = slider_endpoint(last, index, exit_point, field)
-            if following and not following[0].spinner:
-                next_gap = following[0].time_ms - last.finish_ms
-                if next_gap < LEAD_IN_MS:
-                    obstacles = (*recent, *((note.time_ms, point) for note, point in zip(pattern, candidate)))
-                    next_choices = pattern_layouts(
-                        following, index + len(pattern), exit_point, next_gap, obstacles, field, radius,
-                        bend if motif is not None and motif == following_motif else motifs.get(following_motif),
-                    )
-                    cost += 0.6 * min(next_cost for next_cost, _, _ in next_choices)
+            outgoing = exit_point - candidate[max(0, len(candidate) - 5)] if fast_stream else None
+            track = ()
+            if last.slider:
+                control, end = slider_curve(last, index, exit_point, field)
+                track = tuple((last.finish_ms, quadratic_point(exit_point, control, end, step / 5))
+                              for step in range(1, 6))
+                if last.spans % 2:
+                    exit_point = end
+            if look_ahead:
+                obstacles = (*recent, *((note.time_ms, point) for note, point in zip(pattern, candidate)), *track)
+                next_choices = pattern_layouts(
+                    following, index + len(pattern), exit_point, next_gap, obstacles, field, radius,
+                    bend if motif is not None and motif == following_motif else motifs.get(following_motif),
+                    shape=next_shape, spacing=next_spacing, incoming=outgoing,
+                )
+                cost += 0.6 * min(next_cost for next_cost, _, _ in next_choices)
             if cost < best_cost:
                 best_cost, best, best_exit, best_bend = cost, candidate, exit_point, bend
+                best_track = track
+                best_heading = outgoing
 
         if motif is not None:
             motifs.setdefault(motif, best_bend)
         recent.extend((note.time_ms, point) for note, point in zip(pattern, best))
+        recent.extend(best_track)
         centers.extend(best)
         origin = best_exit
+        incoming = best_heading
         previous = last
     return centers
 
@@ -634,21 +1132,30 @@ class RhythmBoard(QWidget):
         if self._layout_notes is not self.notes:
             field = QRectF(radius + 8, radius + 8, 512 - 2 * (radius + 8), 384 - 2 * (radius + 8))
             self._logical_centers = generate_circle_centers(self.notes, field, radius)
-            self._logical_slider_ends = {
-                index: slider_endpoint(note, index, center, field)
+            self._slider_paths = {
+                index: SliderPath.from_curve(center, *slider_curve(note, index, center, field))
                 for index, (note, center) in enumerate(zip(self.notes, self._logical_centers)) if note.slider
             }
             self._layout_notes = self.notes
         origin = self._field.topLeft()
         self._centers = [origin + center * self._scale for center in self._logical_centers]
-        self._slider_ends = {index: origin + end * self._scale for index, end in self._logical_slider_ends.items()}
+        self._slider_tracks = {}
+        for index, path in self._slider_paths.items():
+            track = QPainterPath(self._centers[index])
+            for point in path.points[1:]:
+                track.lineTo(origin + point * self._scale)
+            self._slider_tracks[index] = track
 
     def _number_targets(self):
         self._labels = []
         color_index, number = -1, 0
         previous = None
         for note in self.notes:
-            if previous is None or previous.spinner or note.time_ms - previous.finish_ms >= 1500 or number == 8:
+            gap = note.time_ms - previous.finish_ms if previous is not None else float("inf")
+            beat = note.beat_length_ms
+            phrase = beat and (gap >= 2 * beat or (number >= 4 and gap >= beat / 2 and note.on_beat and note.accented))
+            if (previous is None or previous.spinner or note.spinner or gap >= 1500 or phrase
+                    or (number >= 8 and distance_snap_gap(note, gap) >= FAST_CIRCLE_GAP_MS) or number == 12):
                 color_index += 1
                 number = 0
             number += 1
@@ -735,8 +1242,8 @@ class RhythmBoard(QWidget):
         return self._centers[index]
 
     def slider_ball(self, index, position_ms):
-        start = self.target_center(index)
-        return start + (self._slider_ends[index] - start) * self.notes[index].slider_progress(position_ms)
+        progress = self.notes[index].slider_progress(position_ms)
+        return self._field.topLeft() + self._slider_paths[index].at(progress) * self._scale
 
     def tracks_slider(self, index, point, time_ms):
         delta = point - self.slider_ball(index, time_ms)
@@ -865,12 +1372,12 @@ class RhythmBoard(QWidget):
 
     def _draw_slider(self, painter, index, color, opacity):
         note = self.notes[index]
-        center, end = self.target_center(index), self._slider_ends[index]
         radius = self.target_radius
         painter.setOpacity(opacity)
         for width, stroke in ((2 * radius, QColor("#f5f2eb")), (2 * radius - 5, color.darker(155))):
-            painter.setPen(QPen(stroke, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            painter.drawLine(center, end)
+            painter.setPen(QPen(stroke, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                                Qt.PenJoinStyle.RoundJoin))
+            painter.drawPath(self._slider_tracks[index])
 
         active = self.round is not None and index == self.first
         collected = self.round.next_checkpoint if active else 0
@@ -883,9 +1390,11 @@ class RhythmBoard(QWidget):
         if note.spans > 1:
             span = int(note.spans * max(0, self.position_ms - note.time_ms) / (note.end_ms - note.time_ms))
             if span < note.spans - 1:
-                tip, origin = (end, center) if span % 2 == 0 else (center, end)
-                delta = origin - tip
-                direction = delta * (radius / hypot(delta.x(), delta.y()))
+                path = self._slider_paths[index]
+                tip, inner = (path.points[-1], path.points[-2]) if span % 2 == 0 else path.points[:2]
+                delta = inner - tip
+                direction = delta * (radius / max(1e-9, hypot(delta.x(), delta.y())))
+                tip = self._field.topLeft() + tip * self._scale
                 normal = QPointF(-direction.y(), direction.x())
                 painter.setPen(QPen(QColor("#ffffff"), 2.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
                 for side in (-1, 1):
@@ -903,10 +1412,8 @@ class RhythmBoard(QWidget):
             painter.drawEllipse(ball, radius * 0.53, radius * 0.53)
 
     def _draw_spinner(self, painter, index, color):
-        if self.position_ms < self.notes[index].time_ms:
-            return
         note = self.notes[index]
-        remaining = (note.end_ms - self.position_ms) / (note.end_ms - note.time_ms)
+        remaining = min(1, (note.end_ms - self.position_ms) / (note.end_ms - note.time_ms))
         center, radius = self.target_center(index), self._field.height() * 0.27
         progress = self.round.spinner_progress if self.round is not None and index == self.first else 0
         ring = QRectF(center.x() - radius, center.y() - radius, 2 * radius, 2 * radius)
@@ -941,10 +1448,13 @@ class RhythmBoard(QWidget):
             opacity = min(1, (self.position_ms - preview_start) / min(FADE_IN_MS, lead_ms / 3))
             if index in self._dense_indices and index > self.first:
                 opacity *= 0.72 if index == self.first + 1 else 0.45
-            if note.spinner:
-                self._draw_spinner(painter, index, color)
-                continue
             painter.save()
+            if note.spinner:
+                if index == self.first:
+                    painter.setOpacity(opacity)
+                    self._draw_spinner(painter, index, color)
+                painter.restore()
+                continue
             painter.setOpacity(opacity)
             if note.slider:
                 self._draw_slider(painter, index, color, opacity)
@@ -959,12 +1469,19 @@ class RhythmBoard(QWidget):
 
 
 class RhythmDialog(QDialog):
-    def __init__(self, host, api, passages):
+    def __init__(self, host, api, passages, *, audio_only=False, duration_ms=0):
         super().__init__(host)
         self.api = api
         self.host = host
         self.track_path = api.get_current_track()
-        self.passages = (full_song_passage(passages), *passages, DEMO) if passages else (DEMO,)
+        if passages:
+            self.passages = (full_song_passage(passages), *passages, DEMO)
+        elif audio_only:
+            self.passages = (Passage("Audio beats", (), full_song=True), DEMO)
+        else:
+            self.passages = (DEMO,)
+        self._audio_only = audio_only
+        self._duration_ms = duration_ms
         self.round = None
         self.pending_start = False
         self.source_ready = False
@@ -1053,6 +1570,8 @@ class RhythmDialog(QDialog):
         job.finished.connect(self._rhythm_ready)
         job.failed.connect(lambda _message: self._rhythm_ready(None))
         job.start(analyze_audio_rhythm, self.track_path, self._rhythm_cancelled)
+        if self._audio_only:
+            self.status.setText("Analyzing rhythm…")
 
     def _rhythm_ready(self, rhythm):
         if self._rhythm_job is None:
@@ -1060,16 +1579,31 @@ class RhythmDialog(QDialog):
         self._rhythm_job.close()
         self._rhythm_job.deleteLater()
         self._rhythm_job = None
-        if rhythm is not None and (rhythm.beats_ms or rhythm.accents_ms):
-            self.passages = tuple(
-                passage if passage is DEMO else apply_audio_rhythm(passage, rhythm)
-                for passage in self.passages
-            )
+        if self._audio_only:
+            chart = audio_beat_passage(rhythm, self._duration_ms) if rhythm is not None else None
+            if chart is None:
+                showing_audio = self._selected_passage() is not DEMO
+                self.passages = (DEMO,)
+                blocked = self.passage.blockSignals(True)
+                self.passage.removeItem(0)
+                self.passage.blockSignals(blocked)
+                if showing_audio:
+                    self._waiting_for_rhythm = False
+                    self._set_controls_running(False)
+                    self._show_passage()
+                    self.status.setText("No beat cues found. Try the demo.")
+                return
+            self.passages = (chart, DEMO)
+        elif rhythm is not None and (rhythm.beats_ms or rhythm.onsets_ms or rhythm.accents_ms
+                                     or rhythm.sustained_ms or rhythm.melody_notes):
+            self.passages = (*map_song(self.passages[1:-1], rhythm, self._duration_ms), DEMO)
         if self._waiting_for_rhythm:
             self._waiting_for_rhythm = False
             self._start_round()
         elif self.round is None and self._selected_passage() is not DEMO:
             self._show_passage()
+            if self._audio_only:
+                self.status.setText(HOW_TO_PLAY)
 
     def _select_passage(self):
         if self._waiting_for_rhythm:
@@ -1077,19 +1611,20 @@ class RhythmDialog(QDialog):
             self.start.setEnabled(True)
         self._show_passage()
         self.start.setText("Start")
-        self.status.setText(HOW_TO_PLAY)
+        self.status.setText(HOW_TO_PLAY if self._selected_passage().notes else "Analyzing rhythm…")
 
     def _selected_passage(self):
         return self.passages[self.passage.currentIndex()]
 
     def _show_passage(self):
         passage = self._selected_passage()
-        self.board.set_frame(passage.notes, 0, passage.notes[0].time_ms - LEAD_IN_MS + FADE_IN_MS)
+        position = passage.notes[0].time_ms - LEAD_IN_MS + FADE_IN_MS if passage.notes else 0
+        self.board.set_frame(passage.notes, 0, position)
         self.caption.clear()
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
         self.progress.setVisible(passage.full_song)
-        self.score.setText(f"{len(passage.notes)} targets")
+        self.score.setText(f"{len(passage.notes)} targets" if passage.notes else "")
 
     def _start_round(self):
         if self.pending_start or self.round is not None:
@@ -1099,6 +1634,8 @@ class RhythmDialog(QDialog):
             self._waiting_for_rhythm = True
             self.start.setEnabled(False)
             self.status.setText("Analyzing rhythm…")
+            return
+        if not passage.notes:
             return
         if not self.main_paused:
             self.resume_main = self.host.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
@@ -1334,15 +1871,18 @@ class RhythmGamesPlugin:
             return
         path = self.api.get_current_track()
         passages = ()
-        if path and Path(path).is_file():
+        has_audio = bool(path and Path(path).is_file())
+        duration_ms = self.api.get_duration() if has_audio else 0
+        if has_audio and not getattr(self.window, "plain_lyrics_mode", False):
             passages = tuple(lyric_passages(
-                self.window.lyric_lines,
+                getattr(self.window, "lyric_lines", ()),
                 getattr(self.window, "lyrics_offset_seconds", 0) * 1000,
-                self.api.get_duration(),
+                duration_ms,
             ))
-        self.dialog = RhythmDialog(self.window, self.api, passages)
+        self.dialog = RhythmDialog(self.window, self.api, passages,
+                                   audio_only=has_audio and not passages, duration_ms=duration_ms)
         self.dialog.finished.connect(self._close_game)
-        if passages:
+        if has_audio:
             self.dialog.analyze_track()
         self.dialog.open()
 
