@@ -23,7 +23,7 @@ class KaraokeEditorToolsMixin:
             button.clicked.connect(lambda _checked=False, direction=direction: self.nudge_karaoke_boundary(direction))
             row.addWidget(button)
         self.preview_karaoke_segment_button = QPushButton("Preview Segment")
-        self.preview_karaoke_segment_button.setToolTip("Play from the selected segment's start to its end, then pause.")
+        self.preview_karaoke_segment_button.setToolTip("Play the selected segment. Very short segments include extra audio context.")
         self.preview_karaoke_segment_button.clicked.connect(self.preview_karaoke_segment)
         row.addWidget(self.preview_karaoke_segment_button)
         layout.addLayout(row)
@@ -61,7 +61,7 @@ class KaraokeEditorToolsMixin:
         if end is None or end <= start:
             self.karaoke_hint.setText("Set an End timestamp after this segment's Start to preview it.")
             return
-        self.play_waveform_segment(
+        self.play_karaoke_waveform_segment(
             max(0, self._lyric_to_audio_ms(start)),
             self._lyric_to_audio_ms(end),
         )

@@ -974,6 +974,8 @@ class AudioController:
             )
             if abs(previous_speed - self.playback_speed) >= 0.001:
                 self._flush_pcm_output()
+                if getattr(self, "_device_lyric_delay_ms", 0) and self.lyrics:
+                    self._refresh_playback_lyric_timing()
             self._configure_pcm_volume(self.volume_slider.value())
 
 

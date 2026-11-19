@@ -106,10 +106,10 @@ class LyricsEditorPlaybackMixin:
                     ("F", "Mark the current Start / End and advance"),
                     ("Start / End cells", "Timing letters also work in timestamp cells; other text fields keep normal typing"),
                     ("Earlier / Later buttons", "Nudge the selected Start / End by the chosen step"),
-                    ("Preview Segment button", "Play the selected segment, then pause at its End"),
+                    ("Preview Segment button", "Play the selected segment with extra context if it is very short"),
                 ]),
                 ("Waveform — karaoke segments", [
-                    ("Ctrl+right click", "Preview the clicked segment, then pause at its End"),
+                    ("Ctrl+right click", "Preview the clicked segment with extra context if it is very short"),
                     ("Alt+left / right drag", "Move a shared boundary with its connected neighboring segment"),
                     ("Hold Shift during a drag", "Disable snapping to adjacent segment boundaries"),
                     ("Release mouse button", "Finish the timing edit; use Undo to restore the previous boundary"),
@@ -863,7 +863,10 @@ class LyricsEditorPlaybackMixin:
             # gapless routing and queued audio when the playback rate changes.
             change_speed(round(self.preview_speed.currentData() * 100))
 
-    def play_waveform_segment(self, start_ms, end_ms):
+    def play_karaoke_waveform_segment(self, start_ms, end_ms):
+        self.play_waveform_segment(start_ms, end_ms, minimum_playback_ms=250)
+
+    def play_waveform_segment(self, start_ms, end_ms, *, minimum_playback_ms=0):
         """Preview a bounded range with optional padding and repetition."""
         if self.player is None or not hasattr(self.player, "media_player"):
             return
@@ -871,20 +874,34 @@ class LyricsEditorPlaybackMixin:
             return
         start_ms = max(0, int(start_ms) - round(self.preview_lead_in.value() * 1000))
         end_ms = int(end_ms) + round(self.preview_lead_out.value() * 1000)
-        duration = self.player.media_player.duration()
+        media = self.player.media_player
+        duration = media.duration()
         if duration > 0:
             end_ms = min(end_ms, duration)
         if end_ms <= start_ms:
             self.preview_status.setText("This selection is outside the audio duration.")
             return
+        pause_ms = end_ms
+        if minimum_playback_ms:
+            rate = getattr(media, "playbackRate", lambda: 1.0)()
+            minimum_span_ms = math.ceil(minimum_playback_ms * rate)
+            missing_ms = minimum_span_ms - (end_ms - start_ms)
+            if missing_ms > 0:
+                # Allow the output buffer to play the selection before pausing.
+                start_ms = max(0, start_ms - missing_ms // 2)
+                end_ms = start_ms + minimum_span_ms
+                if duration > 0 and end_ms > duration:
+                    end_ms = duration
+                    start_ms = max(0, end_ms - minimum_span_ms)
         self.preview_status.clear()
-        self._start_segment_preview(start_ms, end_ms)
+        self._start_segment_preview(start_ms, end_ms, pause_ms)
 
-    def _start_segment_preview(self, start_ms, end_ms):
+    def _start_segment_preview(self, start_ms, end_ms, pause_ms):
         media_player = self.player.media_player
         self._cancel_segment_preview()
         media_player.setPosition(int(start_ms))
         self._segment_preview_range = (int(start_ms), int(end_ms))
+        self._segment_preview_pause_ms = pause_ms
         play = getattr(media_player, "play", None)
         if callable(play):
             play()
@@ -892,6 +909,7 @@ class LyricsEditorPlaybackMixin:
 
     def _cancel_segment_preview(self):
         self._segment_preview_range = None
+        self._segment_preview_pause_ms = None
         self._segment_preview_timer.stop()
 
     def _schedule_segment_preview_stop(self, position_ms):
@@ -935,15 +953,16 @@ class LyricsEditorPlaybackMixin:
         if self._segment_preview_range is None:
             return
         start_ms, end_ms = self._segment_preview_range
+        pause_ms = self._segment_preview_pause_ms
         if self.preview_loop.isChecked() and not self._closed:
-            self._start_segment_preview(start_ms, end_ms)
+            self._start_segment_preview(start_ms, end_ms, pause_ms)
             return
         self._cancel_segment_preview()
         media = getattr(self.player, "media_player", None)
         if media is not None:
             media.pause()
-            media.setPosition(end_ms)
-        self.preview_position_changed(end_ms)
+            media.setPosition(pause_ms)
+        self.preview_position_changed(pause_ms)
 
     def seek_preview(self, position_ms):
         self._cancel_segment_preview()

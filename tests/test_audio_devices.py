@@ -6,6 +6,7 @@ from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QMainWindow, QPushButton
 
 from core.audio_controller import AudioController
+from core.lyrics_controller import LyricsController, playback_lyric_position
 from ui import audio_devices
 from ui.audio_devices import AudioDeviceControllerMixin
 
@@ -137,6 +138,35 @@ def test_reapplying_same_device_preserves_processed_audio(playback):
     assert playback.flushes == flushes
     assert playback.configurations == configurations
     assert playback.pending == expected
+
+
+def test_lyric_delay_follows_default_output_and_refreshes_paused_lyrics(playback):
+    playback.set_state(PAUSED)
+    playback.playback_settings.update(
+        output_device="",
+        device_lyric_delays_ms={"Headphones".encode().hex(): 150},
+    )
+    playback.lyrics = [(0, "Line")]
+    playback.lyrics_offset_seconds = 0.5
+    playback.playback_speed = 2.0
+    playback.media_player.position = lambda: 6000
+    positions = []
+    events = []
+    playback.update_lyrics = lambda ms: positions.append(playback_lyric_position(playback, ms / 1000))
+    playback.plugin_manager = SimpleNamespace(emit=events.append)
+    playback._refresh_playback_lyric_timing = lambda: LyricsController._refresh_playback_lyric_timing(playback)
+
+    flushes = playback.flushes
+    playback._apply_output_device(playback.playback_settings)
+    assert playback.flushes == flushes
+    assert positions == pytest.approx([5.2])
+
+    playback.change_devices(["Headphones", "Speakers"], default="Speakers")
+    playback.change_devices(["Headphones", "Speakers"], default="Headphones")
+    assert playback.device.name == "Headphones"
+    assert playback.state == PAUSED
+    assert positions == pytest.approx([5.2, 5.5, 5.2])
+    assert events == ["lyric_timing_changed"] * 3
 
 
 @pytest.mark.parametrize("action", ["continue", "ok", "close"])

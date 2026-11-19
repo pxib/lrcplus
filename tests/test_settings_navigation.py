@@ -91,3 +91,49 @@ def test_lyric_sections_keep_global_and_local_values_when_switching(qapp):
         dialog.close()
         dialog.deleteLater()
         qapp.processEvents()
+
+
+def test_local_lyric_overrides_preserve_types_and_match_global_ranges(qapp):
+    from PySide6.QtWidgets import QCheckBox, QComboBox, QSlider
+    from core.settings import get_global_lyrics_settings
+
+    overrides = {
+        "vertical_padding": 140,
+        "limited_reading_rendering": True,
+        "limited_reading_range": 12,
+        "fade_in_readings": False,
+        "highlight_animation_out_duration": 650,
+        "continuous_scroll_duration_based": False,
+        "continuous_scroll_nudge_current": False,
+        "scroll_animation_easing": "out_expo",
+        "scroll_behavior": "focus_current",
+    }
+    values = get_global_lyrics_settings({})
+    dialog = SettingsDialog([], values, local_overrides=overrides, current_file="song.lrcx")
+    try:
+        assert dialog.get_local_lyrics_overrides() == overrides
+        for key in ("vertical_padding", "limited_reading_range", "highlight_animation_out_duration"):
+            global_slider = dialog.global_controls[key]
+            _, local_slider = dialog.local_controls[key]
+            assert isinstance(local_slider, QSlider)
+            assert local_slider.minimum() == global_slider.minimum()
+            assert local_slider.maximum() == global_slider.maximum()
+        for key in ("fade_in_readings", "continuous_scroll_duration_based", "continuous_scroll_nudge_current"):
+            _, local_toggle = dialog.local_controls[key]
+            assert isinstance(local_toggle, QCheckBox)
+            local_toggle.setChecked(True)
+        for key in ("scroll_animation_easing", "scroll_behavior"):
+            _, local_combo = dialog.local_controls[key]
+            assert isinstance(local_combo, QComboBox)
+            assert local_combo.currentData() == overrides[key]
+        assert dialog.get_local_lyrics_overrides() == dict(
+            overrides,
+            fade_in_readings=True,
+            continuous_scroll_duration_based=True,
+            continuous_scroll_nudge_current=True,
+        )
+        assert dialog.get_global_lyrics_settings() == values
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()

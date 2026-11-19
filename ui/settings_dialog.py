@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QDateTime, QLocale, QPoint, Qt, QUrl, Signal
+from PySide6.QtCore import QDateTime, QLocale, QPoint, QSignalBlocker, Qt, QUrl, Signal
 from PySide6.QtMultimedia import QMediaDevices
 from PySide6.QtGui import QColor, QDesktopServices, QFontDatabase, QPainter, QPolygon
 from PySide6.QtWidgets import (
@@ -31,9 +31,10 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QMessageBox,
 )
+from core.lyrics_settings import LYRICS_DEFAULTS
 from core.settings import (
-    APPEARANCE_DEFAULTS, KARAOKE_SWEEP_STYLES, get_appearance_settings,
-    get_karaoke_settings, get_startup_settings, get_statistics_settings,
+    APPEARANCE_DEFAULTS, KARAOKE_SWEEP_STYLES, MAX_DEVICE_LYRIC_DELAY_MS,
+    get_appearance_settings, get_karaoke_settings, get_startup_settings, get_statistics_settings,
     get_update_settings,
 )
 from core.theme import build_theme_palette, normalize_theme_overrides, THEME_COLOR_FIELDS
@@ -41,6 +42,9 @@ from ui.dependency_settings import DependencyManagerWidget
 from ui.about_tab import AboutTab
 from ui.settings_search import SettingsSearch
 from ui.lyric_layers import LyricLayerOrder
+from ui.lyric_settings_fields import (
+    LOCAL_LYRIC_KEYS, LYRIC_FIELDS, LYRIC_KEYS, LYRIC_SECTIONS,
+)
 from ui.settings_transfer import SettingsTransferMixin
 from ui.settings_debug import SettingsDebugMixin
 from ui.settings_controls import (
@@ -52,44 +56,6 @@ from ui.settings_controls import (
     _ComboDropButton,
     SETTINGS_DIALOG_STYLE,
     _apply_settings_dialog_style,
-)
-
-
-LYRIC_KEYS = (
-    "lyric_layer_order", "show_lyrics", "show_translation",
-    "scrolling_lyrics",
-    "lyrics_direction",
-    "lyrics_padding",
-    "vertical_padding",
-    "show_ruby",
-    "show_romaji",
-    "all_romaji",
-    "ruby_position",
-    "furigana_parser",
-    "mecab_parse_mode",
-    "limited_reading_rendering",
-    "limited_reading_range",
-    "fade_in_readings",
-    "ruby_padding",
-    "ruby_font_size",
-    "font_family",
-    "font_size",
-    "lyrics_alignment",
-    "focus_transition",
-    "highlight_current",
-    "highlight_animation",
-    "highlight_animation_duration",
-    "highlight_animation_out_duration",
-    "highlight_animation_easing",
-    "highlight_color",
-    "lyrics_color",
-    "scrolling_mode",
-    "continuous_scroll_speed",
-    "continuous_scroll_duration_based",
-    "continuous_scroll_nudge_current",
-    "scroll_animation_speed",
-    "scroll_animation_easing",
-    "scroll_behavior",
 )
 
 
@@ -201,34 +167,6 @@ def apply_theme_preset(appearance, preset):
     result.update(theme_preset_name=preset["name"], theme_mode=mode,
                   theme_color=accent.name(), theme_overrides=overrides)
     return result
-
-# Shared by global controls and per-file overrides so both scopes stay organized.
-LYRIC_SECTIONS = {
-    "Display": (
-        "scrolling_lyrics", "lyrics_direction", "lyrics_alignment",
-        "lyrics_padding", "vertical_padding", "focus_transition",
-    ),
-    "Readings": (
-        "lyric_layer_order", "show_lyrics", "show_translation",
-        "show_ruby", "show_romaji", "all_romaji", "ruby_position",
-        "furigana_parser", "mecab_parse_mode", "limited_reading_rendering",
-        "limited_reading_range", "fade_in_readings", "ruby_padding", "ruby_font_size",
-    ),
-    "Typography": ("font_family", "font_size", "lyrics_color"),
-    "Highlighting": (
-        "highlight_current", "highlight_color", "highlight_animation",
-        "highlight_animation_duration", "highlight_animation_out_duration",
-        "highlight_animation_easing",
-    ),
-    "Scrolling": (
-        "scrolling_mode", "continuous_scroll_duration_based", "continuous_scroll_speed",
-        "continuous_scroll_nudge_current", "scroll_animation_speed",
-        "scroll_animation_easing", "scroll_behavior",
-    ),
-}
-
-# Parser selection is an application-wide engine choice, not a per-file lyric override.
-LOCAL_LYRIC_KEYS = tuple(key for key in LYRIC_KEYS if key not in {"furigana_parser", "mecab_parse_mode", "all_romaji", "ruby_position"})
 
 
 class PluginSettingsDialog(QDialog):
@@ -370,6 +308,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             self.theme_color = APPEARANCE_DEFAULTS["theme_color"]
         self.theme_color = QColor(self.theme_color).name()
         self.playback_settings = dict(playback_settings or {})
+        self._device_lyric_delays = dict(self.playback_settings.get("device_lyric_delays_ms", {}))
         self.karaoke_settings = get_karaoke_settings({"karaoke": karaoke_settings or {}})
         self.local_overrides = dict(local_overrides or {})
         self.current_file = current_file
@@ -1109,13 +1048,6 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         }
         for name, label in labels.items():
             getattr(self, name).setProperty("settingsLabel", label)
-        for key, widget in self.global_controls.items():
-            if key in LYRIC_KEYS:
-                widget.setProperty("settingsKeywords", key)
-        for key, (override, widget) in self.local_controls.items():
-            widget.setProperty("settingsLabel", self._local_setting_name(key))
-            widget.setProperty("settingsKeywords", key)
-            widget.setProperty("settingsFocusWidget", override)
         for key, widget in self.karaoke_controls.items():
             widget.setProperty("settingsKeywords", key)
         conditional = {
@@ -1211,10 +1143,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
 
     def _create_global_lyrics_controls(self, layout):
         sections = self._create_lyric_sections(layout)
-        controls = self._create_lyrics_controls(
-            self.global_lyrics, layout, include_playback=False,
-            section_layouts=sections,
-        )
+        controls = self._create_lyrics_controls(self.global_lyrics, sections)
         self._create_placeholder_controls(sections["Display"])
         self._add_section_heading(sections["Readings"], "Personal reading dictionaries")
         dictionary_hint = QLabel("Reuse your word readings across songs. Manage named dictionaries, enable or disable them, "
@@ -1351,10 +1280,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         duration_based = controls.get("continuous_scroll_duration_based")
         duration_enabled = bool(duration_based and duration_based.isChecked())
         speed_enabled = scrolling and continuous and not duration_enabled
-        for key in ("continuous_scroll_speed", "continuous_scroll_speed_label", "continuous_scroll_speed_value"):
-            widget = controls.get(key)
-            if widget is not None:
-                widget.setEnabled(speed_enabled)
+        controls["continuous_scroll_speed_row"].setEnabled(speed_enabled)
 
         # Automatic/timestamp-following settings use the same category style.
         automatic_group = controls.get("automatic_group")
@@ -1523,12 +1449,16 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         layout = sections["Audio"]
         self._add_section_heading(layout, "Output")
         current_device = str(self.playback_settings.get("output_device", "") or "")
-        self.output_device_combo = DeferredOptionsComboBox(
-            "System Default",
-            lambda: [
+
+        def output_choices():
+            return [
                 (device.description().strip() or "Unnamed output", bytes(device.id()).hex())
                 for device in QMediaDevices.audioOutputs()
-            ],
+            ]
+
+        self.output_device_combo = DeferredOptionsComboBox(
+            "System Default",
+            output_choices,
             current_device,
             selected_text="Saved output device",
         )
@@ -1537,235 +1467,160 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             "Choose which Windows audio output device LRCPlus uses for playback."
         )
 
-    def _create_lyrics_controls(
-        self, values, layout, include_playback=False, section_layouts=None
-    ):
+        active_device = getattr(self.parent(), "_active_output_device_id", current_device)
+        active_name = getattr(self.parent(), "_active_output_device_name", "")
+        self.lyric_delay_device_combo = DeferredOptionsComboBox(
+            "Choose a device", output_choices, active_device,
+            selected_text=active_name or "Saved output device",
+        )
+        self._add_labeled(layout, "Device to calibrate:", self.lyric_delay_device_combo)
+        self.lyric_delay_device_combo.setToolTip(
+            "Choose the physical audio output whose lyric delay you want to adjust."
+        )
+        self.lyric_delay_spin = ThemedSpinBox()
+        self.lyric_delay_spin.setRange(-MAX_DEVICE_LYRIC_DELAY_MS, MAX_DEVICE_LYRIC_DELAY_MS)
+        self.lyric_delay_spin.setSuffix(" ms")
+        self.lyric_delay_spin.setSingleStep(10)
+        self.lyric_delay_spin.setToolTip(
+            "Positive values show lyrics later. Negative values show them earlier. "
+            "Set to 0 ms to clear this device's delay."
+        )
+        self._add_labeled(layout, "Lyric delay:", self.lyric_delay_spin)
+        self.lyric_delay_device_combo.currentIndexChanged.connect(self._show_device_lyric_delay)
+        self.lyric_delay_spin.valueChanged.connect(self._edit_device_lyric_delay)
+        self._show_device_lyric_delay()
+
+    def _show_device_lyric_delay(self):
+        device_id = self.lyric_delay_device_combo.currentData()
+        with QSignalBlocker(self.lyric_delay_spin):
+            self.lyric_delay_spin.setValue(self._device_lyric_delays.get(device_id, 0))
+        self.lyric_delay_spin.setEnabled(bool(device_id))
+
+    def _edit_device_lyric_delay(self, delay):
+        device_id = self.lyric_delay_device_combo.currentData()
+        if device_id:
+            if delay:
+                self._device_lyric_delays[device_id] = delay
+            else:
+                self._device_lyric_delays.pop(device_id, None)
+
+    def _create_lyrics_controls(self, values, sections):
         controls = {}
-        sections = section_layouts if section_layouts is not None else self._create_lyric_sections(layout)
+
+        def add(key, layout):
+            field = LYRIC_FIELDS[key]
+            value = values.get(key, LYRICS_DEFAULTS[key])
+            editor = self._create_lyric_editor(field, value)
+            controls[key] = editor
+            if field.kind == "checkbox":
+                editor.setText(field.label)
+                layout.addWidget(editor)
+            elif field.kind == "slider":
+                row_widget = QWidget()
+                row = QHBoxLayout(row_widget)
+                row.setContentsMargins(0, 0, 0, 0)
+                row.addWidget(QLabel(f"{field.label}:"))
+                row.addWidget(editor, 1)
+                row.addWidget(self._slider_readout(editor, field.unit))
+                layout.addWidget(row_widget)
+                if key == "continuous_scroll_speed":
+                    controls["continuous_scroll_speed_row"] = row_widget
+            elif field.kind == "layers":
+                layout.addWidget(editor)
+            else:
+                self._add_labeled(layout, f"{field.label}:", editor)
+            return editor
 
         layout = sections["Display"]
         self._add_section_heading(layout, "Display")
-        display = QComboBox()
-        display.addItem("Compact", False)
-        display.addItem("Scrolling", True)
-        display.setCurrentIndex(
-            display.findData(bool(values.get("scrolling_lyrics", False)))
-        )
-        controls["scrolling_lyrics"] = display
-        self._add_labeled(layout, "Display mode:", display)
+        display = add("scrolling_lyrics", layout)
+        direction = add("lyrics_direction", layout)
+        alignment = add("lyrics_alignment", layout)
 
-        direction = QComboBox()
-        direction.addItem("Horizontal", "horizontal")
-        direction.addItem("Vertical", "vertical")
-        direction.addItem("Auto (CJK-aware)", "auto")
-        direction.setCurrentIndex(
-            max(0, direction.findData(values.get("lyrics_direction", "horizontal")))
-        )
-        controls["lyrics_direction"] = direction
-        self._add_labeled(layout, "Direction:", direction)
-
-        alignment = QComboBox()
-        alignment.addItem("Left", "left")
-        alignment.addItem("Center", "center")
-        alignment.addItem("Right", "right")
-        alignment.setCurrentIndex(
-            max(0, alignment.findData(values.get("lyrics_alignment", "center")))
-        )
-        controls["lyrics_alignment"] = alignment
-
-        def sync_vertical_alignment(*_):
+        def sync_vertical_alignment():
             vertical = direction.currentData() == "vertical"
-            center_index = alignment.findData("center")
-            item = alignment.model().item(center_index) if center_index >= 0 else None
-            if item is not None:
-                item.setEnabled(not vertical)
+            alignment.model().item(alignment.findData("center")).setEnabled(not vertical)
             if vertical and alignment.currentData() == "center":
-                left_index = alignment.findData("left")
-                if left_index >= 0:
-                    alignment.setCurrentIndex(left_index)
+                alignment.setCurrentIndex(alignment.findData("left"))
 
         direction.currentIndexChanged.connect(sync_vertical_alignment)
         sync_vertical_alignment()
-        self._add_labeled(layout, "Lyric alignment:", alignment)
+        add("lyrics_padding", layout)
+        add("vertical_padding", layout)
 
-        lyrics_padding = self._add_slider(
-            layout, "Lyrics padding:",
-            values.get("lyrics_padding", 8), 0, 24, "px"
-        )
-        controls["lyrics_padding"] = lyrics_padding
-
-
-        vertical_padding = self._add_slider(
-            layout, "Vertical padding:",
-            values.get("vertical_padding", 0), 0, 200, "px"
-        )
-        vertical_padding.setToolTip(
-            "Adds top and bottom padding when lyrics use Vertical direction."
-        )
-        controls["vertical_padding"] = vertical_padding
+        rendering_group = QGroupBox("Rendering")
+        add("focus_transition", QVBoxLayout(rendering_group))
+        layout.addWidget(rendering_group)
 
         layout = sections["Readings"]
         self._add_section_heading(layout, "Lyric layers")
         note = QLabel("Drag layers to change their display order, or use Move up / Move down. Keep at least one layer checked.")
         note.setWordWrap(True)
         layout.addWidget(note)
-        order = LyricLayerOrder(values.get("lyric_layer_order"))
-        controls["lyric_layer_order"] = order
-        order.setProperty("settingsLabel", "Lyric layer order and visibility")
-        order.setToolTip("Layers render in this order. Furigana stays attached to its words: place it before Lyrics for above, or after Lyrics for below. Translation uses translations saved in the lyric file.")
-        layout.addWidget(order)
+        order = add("lyric_layer_order", layout)
+        order.setToolTip(
+            "Layers render in this order. Furigana stays attached to its words: place it "
+            "before Lyrics for above, or after Lyrics for below. Translation uses translations "
+            "saved in the lyric file."
+        )
         moves = QHBoxLayout()
         for title, delta in (("Move up", -1), ("Move down", 1)):
             button = QPushButton(title)
             button.clicked.connect(lambda _checked=False, delta=delta: order.move_current(delta))
             moves.addWidget(button)
         layout.addLayout(moves)
-        for key, title, default in (
-            ("show_lyrics", "Lyrics", True), ("show_romaji", "Romaji", False),
-            ("show_translation", "Translation", True), ("show_ruby", "Furigana", True),
-        ):
-            checkbox = QCheckBox(title)
-            checkbox.setChecked(bool(values.get(key, default)))
-            controls[key] = checkbox
-            layout.addWidget(checkbox)
+        layers = {
+            "lyrics": "show_lyrics", "romaji": "show_romaji",
+            "translation": "show_translation", "furigana": "show_ruby",
+        }
+        visibility = {}
+        for layer, key in layers.items():
+            checkbox = add(key, layout)
             checkbox.hide()
             checkbox.setProperty("settingsSearchSkip", True)
-        order.bind_visibility({
-            "lyrics": controls["show_lyrics"], "romaji": controls["show_romaji"],
-            "translation": controls["show_translation"], "furigana": controls["show_ruby"],
-        })
+            visibility[layer] = checkbox
+        order.bind_visibility(visibility)
+
         # Keep legacy settings readable by older plugins and preference presets.
-        all_romaji = QCheckBox()
-        all_romaji.setChecked(False)
-        controls["all_romaji"] = all_romaji
-        layout.addWidget(all_romaji)
-        all_romaji.hide()
+        for key in ("all_romaji", "ruby_position"):
+            editor = self._create_lyric_editor(
+                LYRIC_FIELDS[key], False if key == "all_romaji" else values.get(key, LYRICS_DEFAULTS[key])
+            )
+            controls[key] = editor
+            layout.addWidget(editor)
+            editor.hide()
+            editor.setProperty("settingsSearchSkip", True)
 
-        ruby_position = QComboBox()
-        ruby_position.addItem("Above lyrics", "above")
-        ruby_position.addItem("Below lyrics", "below")
-        ruby_position.setCurrentIndex(max(0, ruby_position.findData(values.get("ruby_position", "above"))))
-        controls["ruby_position"] = ruby_position
-        layout.addWidget(ruby_position)
-        ruby_position.hide()
-        ruby_position.setProperty("settingsSearchSkip", True)
+        parser = add("furigana_parser", layout)
+        mecab_parse_mode = add("mecab_parse_mode", layout)
 
-        parser = QComboBox()
-        parser.addItem("Yomi (online, recommended)", "yomi")
-        parser.addItem("MeCab (local, optional)", "mecab_local")
-        parser.setToolTip(
-            "Choose the automatic Japanese parser. Local MeCab requires "
-            "fugashi and a dictionary installed separately."
-        )
-        parser.setCurrentIndex(max(0, parser.findData(
-            values.get("furigana_parser", "yomi")
-        )))
-        controls["furigana_parser"] = parser
-        self._add_labeled(layout, "Automatic parser:", parser)
-
-        mecab_parse_mode = QComboBox()
-        mecab_parse_mode.addItem("Batch parsing (faster)", "batch")
-        mecab_parse_mode.addItem("Individual lines (more accurate)", "line")
-        mecab_parse_mode.setToolTip(
-            "Controls how local MeCab analyzes Japanese lyrics. Batch parsing "
-            "is faster but surrounding lines can occasionally affect tokenization. "
-            "Individual-line parsing isolates each lyric line for more consistent readings."
-        )
-        mecab_parse_mode.setCurrentIndex(max(0, mecab_parse_mode.findData(
-            values.get("mecab_parse_mode", "batch")
-        )))
-        controls["mecab_parse_mode"] = mecab_parse_mode
-
-        def update_mecab_parse_mode_enabled(*_args):
+        def sync_mecab_mode():
             mecab_parse_mode.setEnabled(parser.currentData() == "mecab_local")
 
-        update_mecab_parse_mode_enabled()
-        parser.currentIndexChanged.connect(update_mecab_parse_mode_enabled)
+        parser.currentIndexChanged.connect(sync_mecab_mode)
+        sync_mecab_mode()
 
-        self._add_labeled(layout, "MeCab parsing:", mecab_parse_mode)
+        limited_rendering = add("limited_reading_rendering", layout)
+        reading_range = add("limited_reading_range", layout)
+        fade_readings = add("fade_in_readings", layout)
 
-        limited_rendering = QCheckBox("Limited reading rendering")
-        limited_rendering.setChecked(bool(values.get("limited_reading_rendering", False)))
-        limited_rendering.setToolTip(
-            "Only render furigana/pinyin for lyrics near the current line. "
-            "This can improve performance on long lyrics."
-        )
-        controls["limited_reading_rendering"] = limited_rendering
-        layout.addWidget(limited_rendering)
-
-        reading_range = self._add_slider(
-            layout, "Nearby lyrics:",
-            values.get("limited_reading_range", 10), 5, 15, " lines"
-        )
-        controls["limited_reading_range"] = reading_range
-
-        # Keep the range control explicitly synchronized with the checkbox.
-        # Using stateChanged here is more robust than relying on the overloaded
-        # toggled signal when this dialog is rebuilt/restored by Qt.
-        def _sync_limited_reading_range(state):
+        def sync_limited_readings(state):
             reading_range.setEnabled(bool(state))
-
-        limited_rendering.stateChanged.connect(_sync_limited_reading_range)
-        _sync_limited_reading_range(limited_rendering.checkState())
-
-        fade_readings = QCheckBox("Fade readings")
-        fade_readings.setChecked(bool(values.get("fade_in_readings", True)))
-        fade_readings.setToolTip(
-            "Smoothly fade furigana or pinyin in and out as they enter or leave the rendered range."
-        )
-        controls["fade_in_readings"] = fade_readings
-        layout.addWidget(fade_readings)
-
-        # Fading only has an effect when readings are rendered on demand.
-        def _sync_fade_readings(state):
             fade_readings.setEnabled(bool(state))
 
-        limited_rendering.stateChanged.connect(_sync_fade_readings)
-        _sync_fade_readings(limited_rendering.checkState())
-
-        ruby_padding = self._add_slider(
-            layout, "Layer spacing:",
-            values.get("ruby_padding", 2), 0, 18, "px"
-        )
-        controls["ruby_padding"] = ruby_padding
-
-        ruby_font_size = ThemedSpinBox()
-        ruby_font_size.setRange(6, 72)
-        ruby_font_size.setValue(int(values.get("ruby_font_size", 18)))
-        ruby_font_size.setSuffix(" pt")
-        controls["ruby_font_size"] = ruby_font_size
-        self._add_labeled(layout, "Furigana font size:", ruby_font_size)
+        limited_rendering.stateChanged.connect(sync_limited_readings)
+        sync_limited_readings(limited_rendering.checkState())
+        add("ruby_padding", layout)
+        add("ruby_font_size", layout)
 
         layout = sections["Typography"]
         self._add_section_heading(layout, "Typography")
-        font_family = DeferredOptionsComboBox(
-            "System default", self._font_options, values.get("font_family", "")
-        )
-        controls["font_family"] = font_family
-        self._add_labeled(layout, "Font family:", font_family)
-
-        font_size = ThemedSpinBox()
-        font_size.setRange(10, 96)
-        font_size.setValue(int(values.get("font_size", 32)))
-        font_size.setSuffix(" pt")
-        controls["font_size"] = font_size
-        self._add_labeled(layout, "Font size:", font_size)
-
-        rendering_group = QGroupBox("Rendering")
-        rendering_layout = QVBoxLayout(rendering_group)
-        focus = QCheckBox("Focus transition")
-        focus.setChecked(bool(values.get("focus_transition", True)))
-        focus.setToolTip("Bring the current line into focus while gently blurring and dimming surrounding lyrics.")
-        controls["focus_transition"] = focus
-        rendering_layout.addWidget(focus)
-        sections["Display"].addWidget(rendering_group)
+        for key in LYRIC_SECTIONS["Typography"]:
+            add(key, layout)
 
         layout = sections["Highlighting"]
         self._add_section_heading(layout, "Highlighting")
-        highlight_current = QCheckBox("Highlight current lyric")
-        highlight_current.setChecked(bool(values.get("highlight_current", True)))
-        controls["highlight_current"] = highlight_current
-        layout.addWidget(highlight_current)
+        add("highlight_current", layout)
         if self.plugin_manager is not None and "karaoke" in self.plugin_manager.plugins:
             karaoke_notice = QLabel(
                 "Note: Current lyric highlighting is automatically ignored "
@@ -1775,115 +1630,20 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             muted_color = build_theme_palette(
                 self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides
             )["muted"]
-            karaoke_notice.setStyleSheet(
-                f"color: {muted_color}; font-style: italic;"
-            )
+            karaoke_notice.setStyleSheet(f"color: {muted_color}; font-style: italic;")
             layout.addWidget(karaoke_notice)
 
-        highlight_animation = QComboBox()
-        highlight_animation.addItem("None", "none")
-        highlight_animation.addItem("Fade", "fade")
-        highlight_animation.addItem("Pop", "pop")
-        highlight_animation.addItem("Scale", "scale")
-        highlight_animation.addItem("Slide", "slide")
-        highlight_animation.setCurrentIndex(
-            max(
-                0,
-                highlight_animation.findData(
-                    values.get("highlight_animation", "none")
-                ),
-            )
-        )
-        controls["highlight_animation"] = highlight_animation
-        self._add_labeled(
-            layout,
-            "Highlight animation:",
-            highlight_animation,
-        )
-
-        highlight_duration = self._add_slider(
-            layout,
-            "Animation in duration:",
-            values.get("highlight_animation_duration", 300),
-            0,
-            2000,
-            "ms",
-        )
-        controls["highlight_animation_duration"] = highlight_duration
-
-        highlight_out_duration = self._add_slider(
-            layout,
-            "Animation out duration:",
-            values.get("highlight_animation_out_duration", 300),
-            0,
-            2000,
-            "ms",
-        )
-        controls["highlight_animation_out_duration"] = (
-            highlight_out_duration
-        )
-
-        highlight_easing = QComboBox()
-        for text, data in (
-            ("Linear", "linear"),
-            ("In Quad", "in_quad"),
-            ("Out Quad", "out_quad"),
-            ("In-Out Quad", "in_out_quad"),
-            ("In Cubic", "in_cubic"),
-            ("Out Cubic", "out_cubic"),
-            ("In-Out Cubic", "in_out_cubic"),
-            ("Out Back", "out_back"),
-            ("Out Bounce", "out_bounce"),
+        for key in (
+            "highlight_animation", "highlight_animation_duration",
+            "highlight_animation_out_duration", "highlight_animation_easing", "highlight_color",
         ):
-            highlight_easing.addItem(text, data)
-        easing_index = highlight_easing.findData(
-            values.get("highlight_animation_easing", "out_cubic")
-        )
-        highlight_easing.setCurrentIndex(
-            easing_index if easing_index >= 0 else 0
-        )
-        controls["highlight_animation_easing"] = highlight_easing
-        self._add_labeled(
-            layout,
-            "Highlight animation easing:",
-            highlight_easing,
-        )
-
-        highlight_color = self._add_color_button(
-            layout, "Current lyric color:",
-            values.get("highlight_color", "#ffaa00")
-        )
-        controls["highlight_color"] = highlight_color
-
-        lyrics_color = self._add_color_button(
-            sections["Typography"], "Lyrics color:",
-            values.get("lyrics_color", "#ffffff")
-        )
-        controls["lyrics_color"] = lyrics_color
+            add(key, layout)
 
         layout = sections["Scrolling"]
         self._add_section_heading(layout, "Scrolling")
-        scrolling_mode = QComboBox()
-        scrolling_mode.addItem("Automatic (timestamp-driven)", "automatic")
-        scrolling_mode.addItem("Continuous (independent of timestamps)", "continuous")
-        scrolling_mode.setCurrentIndex(
-            max(0, scrolling_mode.findData(
-                values.get("scrolling_mode", "automatic")
-            ))
-        )
-        controls["scrolling_mode"] = scrolling_mode
-        self._add_labeled(layout, "Scrolling mode:", scrolling_mode)
-
-        current_suffix = ""
-        if self.current_file:
-            try:
-                current_suffix = str(self.current_file).lower().rsplit(".", 1)[-1]
-            except Exception:
-                current_suffix = ""
-        if current_suffix == "txt":
-            continuous_index = scrolling_mode.findData("continuous")
-            if continuous_index >= 0:
-                scrolling_mode.setCurrentIndex(continuous_index)
+        scrolling_mode = add("scrolling_mode", layout)
+        if self.current_file and Path(self.current_file).suffix.lower() == ".txt":
+            scrolling_mode.setCurrentIndex(scrolling_mode.findData("continuous"))
             scrolling_mode.setProperty("_forced_continuous", True)
             scrolling_mode.setEnabled(False)
             txt_notice = QLabel(
@@ -1896,33 +1656,9 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         continuous_group = QGroupBox("Continuous scrolling settings")
         continuous_layout = QVBoxLayout(continuous_group)
         continuous_layout.setContentsMargins(12, 16, 12, 10)
-
-        duration_based = QCheckBox("Calculate speed based on song duration")
-        duration_based.setChecked(bool(values.get("continuous_scroll_duration_based", True)))
-        controls["continuous_scroll_duration_based"] = duration_based
-        continuous_layout.addWidget(duration_based)
-
-        speed_row = QHBoxLayout()
-        speed_label = QLabel("Continuous scroll speed:")
-        continuous_speed = QSlider(Qt.Orientation.Horizontal)
-        continuous_speed.setRange(1, 500)
-        continuous_speed.setValue(max(1, min(500, int(values.get("continuous_scroll_speed", 35)))))
-        speed_value = QLabel(f"{continuous_speed.value()} px/s")
-        speed_value.setFixedWidth(55)
-        continuous_speed.valueChanged.connect(lambda v: speed_value.setText(f"{v} px/s"))
-        speed_row.addWidget(speed_label)
-        speed_row.addWidget(continuous_speed, 1)
-        speed_row.addWidget(speed_value)
-        continuous_layout.addLayout(speed_row)
-        continuous_speed.setProperty("settingsLabel", "Continuous scroll speed")
-        controls["continuous_scroll_speed"] = continuous_speed
-        controls["continuous_scroll_speed_label"] = speed_label
-        controls["continuous_scroll_speed_value"] = speed_value
-
-        nudge_current = QCheckBox("Nudge to the center of current lyric when out of view")
-        nudge_current.setChecked(bool(values.get("continuous_scroll_nudge_current", True)))
-        controls["continuous_scroll_nudge_current"] = nudge_current
-        continuous_layout.addWidget(nudge_current)
+        duration_based = add("continuous_scroll_duration_based", continuous_layout)
+        add("continuous_scroll_speed", continuous_layout)
+        add("continuous_scroll_nudge_current", continuous_layout)
         layout.addWidget(continuous_group)
         controls["continuous_group"] = continuous_group
 
@@ -1931,49 +1667,13 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         automatic_layout.setContentsMargins(12, 16, 12, 10)
         layout.addWidget(automatic_group)
         controls["automatic_group"] = automatic_group
+        for key in ("scroll_animation_speed", "scroll_animation_easing", "scroll_behavior"):
+            add(key, automatic_layout)
 
-        animation = self._add_slider(
-            automatic_layout, "Scroll animation speed:",
-            values.get("scroll_animation_speed", 300), 0, 1000, "ms"
-        )
-        controls["scroll_animation_speed"] = animation
-
-        easing = QComboBox()
-        for label, value in (
-            ("Linear", "linear"),
-            ("In / Out Quad", "in_out_quad"),
-            ("Out Cubic", "out_cubic"),
-            ("Out Quart", "out_quart"),
-            ("Out Expo", "out_expo"),
-        ):
-            easing.addItem(label, value)
-        easing.setCurrentIndex(max(0, easing.findData(values.get("scroll_animation_easing", "out_cubic"))))
-        controls["scroll_animation_easing"] = easing
-        self._add_labeled(automatic_layout, "Scroll easing:", easing)
-
-        behavior = QComboBox()
-        behavior.addItem("Center current lyric", "center")
-        behavior.addItem("Focus on current lyric", "focus_current")
-        behavior.addItem("Keep current lyric visible", "ensure_visible")
-        behavior.addItem("Do not auto-scroll", "off")
-        behavior.setCurrentIndex(
-            max(0, behavior.findData(values.get("scroll_behavior", "center")))
-        )
-        controls["scroll_behavior"] = behavior
-        self._add_labeled(automatic_layout, "Scrolling behavior:", behavior)
-
-        display.currentIndexChanged.connect(
-            lambda *_: self._update_compact_lyrics_controls(controls)
-        )
-        scrolling_mode.currentIndexChanged.connect(
-            lambda *_: self._update_compact_lyrics_controls(controls)
-        )
-        duration_based.toggled.connect(
-            lambda *_: self._update_compact_lyrics_controls(controls)
-        )
+        display.currentIndexChanged.connect(lambda: self._update_compact_lyrics_controls(controls))
+        scrolling_mode.currentIndexChanged.connect(lambda: self._update_compact_lyrics_controls(controls))
+        duration_based.toggled.connect(lambda: self._update_compact_lyrics_controls(controls))
         self._update_compact_lyrics_controls(controls)
-
-
         return controls
 
     def get_disabled_plugins(self):
@@ -2012,36 +1712,31 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         slider.setValue(
             max(minimum, min(maximum, int(value)))
         )
-        label = QLabel(f"{slider.value()} {suffix}")
-        label.setFixedWidth(55)
-        slider.valueChanged.connect(
-            lambda current, label=label, suffix=suffix:
-            label.setText(f"{current} {suffix}")
-        )
         row.addWidget(slider, 1)
-        row.addWidget(label)
+        row.addWidget(self._slider_readout(slider, suffix))
         layout.addLayout(row)
         return slider
 
-    def _add_color_button(self, layout, title, value):
+    def _slider_readout(self, slider, unit):
+        label = QLabel(f"{slider.value()} {unit}")
+        label.setFixedWidth(55)
+        slider.valueChanged.connect(lambda value: label.setText(f"{value} {unit}"))
+        return label
+
+    def _create_color_button(self, value):
         button = QPushButton()
-        button.setText(str(value))
-        button.setStyleSheet(
-            f"QPushButton {{ text-align: left; background: {value}; }}"
-        )
+
+        def set_color(color):
+            button.setText(str(color))
+            button.setStyleSheet(f"QPushButton {{ text-align: left; background: {color}; }}")
 
         def choose():
             color = QColorDialog.getColor()
-            if not color.isValid():
-                return
-            hex_color = color.name()
-            button.setText(hex_color)
-            button.setStyleSheet(
-                f"QPushButton {{ text-align: left; background: {hex_color}; }}"
-            )
+            if color.isValid():
+                set_color(color.name())
 
+        set_color(value)
         button.clicked.connect(choose)
-        self._add_labeled(layout, title, button)
         return button
 
     def _update_theme_color_button(self):
@@ -2332,26 +2027,6 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             self, self.theme_mode, self.theme_color, self.theme_surface, self.theme_overrides
         )
 
-    def _local_setting_name(self, key):
-        names = {
-            "scrolling_lyrics": "Display mode:", "lyrics_direction": "Lyrics direction:",
-            "lyrics_padding": "Lyrics padding:", "vertical_padding": "Vertical padding:", "show_ruby": "Show furigana:", "show_romaji": "Show romaji:",
-            "ruby_padding": "Layer spacing:", "ruby_font_size": "Furigana font size:",
-            "font_family": "Font family:", "font_size": "Font size:",
-            "lyrics_alignment": "Lyrics alignment:", "highlight_current": "Highlight current lyric:",
-            "highlight_animation": "Highlight animation:",
-            "highlight_animation_duration": "Animation in duration:",
-            "highlight_animation_out_duration": "Animation out duration:",
-            "highlight_animation_easing": "Highlight animation easing:",
-            "highlight_color": "Current lyric color:", "lyrics_color": "Lyrics color:",
-            "scrolling_mode": "Scrolling mode:", "continuous_scroll_speed": "Continuous scroll speed:",
-            "continuous_scroll_duration_based": "Calculate speed based on song duration:",
-            "continuous_scroll_nudge_current": "Nudge current lyric into view:",
-            "scroll_animation_speed": "Scroll animation speed:",
-            "scroll_animation_easing": "Scroll easing:", "scroll_behavior": "Scrolling behavior:",
-        }
-        return names.get(key, key.replace("_", " ").capitalize() + ":")
-
     def _create_local_controls(self, global_values, overrides, layout):
         controls = {}
 
@@ -2379,17 +2054,20 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
                 notice.setStyleSheet("color: palette(mid); font-style: italic;")
                 grid.addWidget(notice, row_index, 0, 1, 4)
                 row_index += 1
-            setting_name = QLabel(self._local_setting_name(key))
+            field = LYRIC_FIELDS[key]
+            title = field.local_label or field.label
+            setting_name = QLabel(f"{title}:")
             setting_name.setMinimumWidth(185)
             grid.addWidget(setting_name, row_index, 0)
 
             enabled = QCheckBox("Override")
             enabled.setChecked(key in overrides)
 
-            value = overrides.get(key, global_values.get(key))
-
-            editor = self._editor_for_key(key, value)
-            label = self._editor_label(key, editor)
+            value = overrides.get(key, global_values.get(key, LYRICS_DEFAULTS[key]))
+            editor = self._create_lyric_editor(field, value)
+            editor.setProperty("settingsLabel", title)
+            editor.setProperty("settingsKeywords", f"{key} {field.label}")
+            editor.setProperty("settingsFocusWidget", enabled)
 
             def sync(state, widget=editor):
                 widget.setEnabled(bool(state))
@@ -2399,8 +2077,8 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
 
             grid.addWidget(enabled, row_index, 1)
             grid.addWidget(editor, row_index, 2)
-            if label is not None:
-                grid.addWidget(label, row_index, 3)
+            if field.kind == "slider":
+                grid.addWidget(self._slider_readout(editor, field.unit), row_index, 3)
             controls[key] = (enabled, editor)
 
         visibility_keys = ("show_lyrics", "show_romaji", "show_translation", "show_ruby")
@@ -2428,187 +2106,57 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             self._font_choices = [(family, family) for family in QFontDatabase.families()]
         return self._font_choices
 
-    def _editor_for_key(self, key, value):
-        if key == "lyric_layer_order":
-            return LyricLayerOrder(value)
-        if key == "scrolling_lyrics":
+    def _create_lyric_editor(self, field, value):
+        kind = field.kind
+        if kind == "layers":
+            editor = LyricLayerOrder(value)
+        elif kind == "choice":
             editor = QComboBox()
-            editor.addItem("Compact", False)
-            editor.addItem("Scrolling", True)
-            editor.setCurrentIndex(editor.findData(bool(value)))
-            return editor
-        if key == "scrolling_mode":
-            editor = QComboBox()
-            editor.addItem("Automatic (timestamp-driven)", "automatic")
-            editor.addItem("Continuous (independent of timestamps)", "continuous")
-            index = editor.findData(str(value).lower())
-            editor.setCurrentIndex(index if index >= 0 else 0)
-            return editor
-        if key == "continuous_scroll_speed":
-            editor = QSlider(Qt.Orientation.Horizontal)
-            editor.setRange(1, 500)
-            editor.setValue(max(1, min(500, int(value))))
-            return editor
-        if key == "lyrics_direction":
-            editor = QComboBox()
-            for text, data in (
-                ("Horizontal", "horizontal"),
-                ("Vertical", "vertical"),
-                ("Auto (CJK-aware)", "auto"),
-            ):
-                editor.addItem(text, data)
+            for title, data in field.choices:
+                editor.addItem(title, data)
+            default = LYRICS_DEFAULTS[field.key]
+            if isinstance(default, bool):
+                value = bool(value)
+            elif isinstance(value, str):
+                value = value.lower()
             index = editor.findData(value)
-            editor.setCurrentIndex(index if index >= 0 else 0)
-            return editor
-        if key == "lyrics_alignment":
-            editor = QComboBox()
-            for text, data in (("Left","left"),("Center","center"),("Right","right")):
-                editor.addItem(text, data)
-            index = editor.findData(value)
-            editor.setCurrentIndex(index if index >= 0 else 1)
-            return editor
-        if key in {"show_lyrics", "show_translation", "show_ruby", "show_romaji", "all_romaji", "highlight_current", "focus_transition"}:
+            if index < 0:
+                index = editor.findData(default)
+            editor.setCurrentIndex(index)
+        elif kind == "checkbox":
             editor = QCheckBox()
             editor.setChecked(bool(value))
-            return editor
-        if key in {"font_family"}:
-            return DeferredOptionsComboBox("System default", self._font_options, value)
-        if key in {"font_size", "ruby_font_size"}:
+        elif kind == "font":
+            editor = DeferredOptionsComboBox("System default", self._font_options, value)
+        elif kind == "slider":
+            editor = QSlider(Qt.Orientation.Horizontal)
+            editor.setRange(*field.bounds)
+            editor.setValue(int(value))
+        elif kind == "spinbox":
             editor = ThemedSpinBox()
-            if key == "ruby_font_size":
-                editor.setRange(6, 72)
-            else:
-                editor.setRange(10, 96)
+            editor.setRange(*field.bounds)
             editor.setValue(int(value))
-            editor.setSuffix(" pt")
-            return editor
-        if key in {"lyrics_padding", "vertical_padding"}:
-            editor = QSlider(Qt.Orientation.Horizontal)
-            editor.setRange(0, 24)
-            editor.setValue(int(value))
-            return editor
-        if key in {"ruby_padding"}:
-            editor = QSlider(Qt.Orientation.Horizontal)
-            editor.setRange(0, 18)
-            editor.setValue(int(value))
-            return editor
-        if key in {"scroll_animation_speed"}:
-            editor = QSlider(Qt.Orientation.Horizontal)
-            editor.setRange(0, 1000)
-            editor.setValue(int(value))
-            return editor
-        if key == "highlight_animation_easing":
-            editor = QComboBox()
-            for text, data in (
-                ("Linear", "linear"),
-                ("In Quad", "in_quad"),
-                ("Out Quad", "out_quad"),
-                ("In-Out Quad", "in_out_quad"),
-                ("In Cubic", "in_cubic"),
-                ("Out Cubic", "out_cubic"),
-                ("In-Out Cubic", "in_out_cubic"),
-                ("Out Back", "out_back"),
-                ("Out Bounce", "out_bounce"),
-            ):
-                editor.addItem(text, data)
-            index = editor.findData(value)
-            editor.setCurrentIndex(index if index >= 0 else 0)
-            return editor
-        if key == "highlight_animation":
-            editor = QComboBox()
-            for text, data in (
-                ("None", "none"),
-                ("Fade", "fade"),
-                ("Pop", "pop"),
-                ("Scale", "scale"),
-                ("Slide", "slide"),
-            ):
-                editor.addItem(text, data)
-            index = editor.findData(value)
-            editor.setCurrentIndex(index if index >= 0 else 0)
-            return editor
-        if key in {"highlight_animation_duration"}:
-            editor = QSlider(Qt.Orientation.Horizontal)
-            editor.setRange(0, 2000)
-            editor.setValue(int(value))
-            return editor
-        if key in {"highlight_color", "lyrics_color"}:
-            editor = QPushButton(str(value))
-            def choose():
-                color = QColorDialog.getColor()
-                if color.isValid():
-                    color_name = color.name()
-                    editor.setText(color_name)
-                    editor.setStyleSheet(
-                        f"QPushButton {{ text-align: left; background: {color_name}; }}"
-                    )
-            editor.clicked.connect(choose)
-            editor.setStyleSheet(
-                f"QPushButton {{ text-align: left; background: {value}; }}"
-            )
-            return editor
-        if key == "scroll_behavior":
-            editor = QComboBox()
-            for text, data in (
-                ("Center current lyric", "center"),
-                ("Keep current lyric visible", "ensure_visible"),
-                ("Do not auto-scroll", "off"),
-            ):
-                editor.addItem(text, data)
-            index = editor.findData(value)
-            editor.setCurrentIndex(index if index >= 0 else 0)
-            return editor
-        return QLineEdit(str(value))
+            editor.setSuffix(f" {field.unit}")
+        elif kind == "color":
+            editor = self._create_color_button(value)
+        else:
+            raise ValueError(f"Unknown lyric settings control: {kind}")
 
-    def _editor_label(self, key, editor):
-        if key in {"lyrics_padding", "vertical_padding", "ruby_padding", "continuous_scroll_speed"}:
-            label = QLabel("0 px/s" if key == "continuous_scroll_speed" else "0 px")
-            label.setFixedWidth(45)
-            slider = editor
-            suffix = "px/s" if key == "continuous_scroll_speed" else "px"
-            label.setText(f"{slider.value()} {suffix}")
-            slider.valueChanged.connect(
-                lambda v, label=label, suffix=suffix: label.setText(f"{v} {suffix}")
-            )
-            return label
-        if (
-            key in {
-                "scroll_animation_speed",
-                "highlight_animation_duration",
-                "highlight_animation_out_duration",
-            }
-            and isinstance(editor, QSlider)
-        ):
-            label = QLabel(f"{editor.value()} ms")
-            label.setFixedWidth(55)
-            editor.valueChanged.connect(
-                lambda v, label=label: label.setText(f"{v} ms")
-            )
-            return label
-        return None
+        editor.setProperty("settingsLabel", field.label)
+        editor.setProperty("settingsKeywords", field.key)
+        if field.tooltip:
+            editor.setToolTip(field.tooltip)
+        return editor
 
-    def _read_value(self, key, control):
-        if key == "scrolling_lyrics":
+    def _read_lyric_value(self, key, control):
+        kind = LYRIC_FIELDS[key].kind
+        if kind in {"choice", "font"}:
             return control.currentData()
-        if key in {"show_lyrics", "show_translation", "show_ruby", "show_romaji", "all_romaji", "highlight_current", "continuous_scroll_duration_based", "continuous_scroll_nudge_current", "limited_reading_rendering", "fade_in_readings", "focus_transition"}:
+        if kind == "checkbox":
             return control.isChecked()
-        if key in {
-            "lyrics_direction",
-            "scrolling_mode",
-            "furigana_parser",
-            "mecab_parse_mode",
-            "lyrics_alignment",
-            "ruby_position",
-            "scroll_animation_easing",
-            "scroll_behavior",
-            "font_family",
-            "highlight_animation",
-            "highlight_animation_easing",
-        }:
-            return control.currentData()
-        if key in {"highlight_color", "lyrics_color"}:
+        if kind == "color":
             return control.text().strip()
-        return control.value() if hasattr(control, "value") else control.currentText()
+        return control.value()
 
     def get_startup_settings(self):
         return {
@@ -2713,6 +2261,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             "replaygain_preamp": self.replaygain_preamp.value(),
             "replaygain_prevent_clipping": self.replaygain_clipping.isChecked(),
             "output_device": self.output_device_combo.currentData(),
+            "device_lyric_delays_ms": dict(self._device_lyric_delays),
             "show_waveform": self.show_waveform_checkbox.isChecked(),
             "volume": self.playback_settings.get("volume", 80),
             "pitch_mode": self.playback_settings.get("pitch_mode", "Semitones"),
@@ -2809,7 +2358,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
 
     def get_global_lyrics_settings(self):
         return {
-            key: self._read_value(key, self.global_controls[key])
+            key: self._read_lyric_value(key, self.global_controls[key])
             for key in LYRIC_KEYS
         }
 
@@ -2817,7 +2366,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         overrides = {}
         for key, (enabled, editor) in self.local_controls.items():
             if enabled.isChecked():
-                overrides[key] = self._read_value(key, editor)
+                overrides[key] = self._read_lyric_value(key, editor)
         return overrides
 
     def add_folder(self):

@@ -489,7 +489,7 @@ class LrcEditorUiMixin:
 
             self.karaoke_waveform = WaveformWidget(defer_hidden_load=True)
             self.karaoke_waveform.seekRequested.connect(self.seek_preview)
-            self.karaoke_waveform.segmentPlayRequested.connect(self.play_waveform_segment)
+            self.karaoke_waveform.segmentPlayRequested.connect(self.play_karaoke_waveform_segment)
             self.karaoke_waveform.karaokeTimingRequested.connect(self._waveform_karaoke_timing_changed)
             self.karaoke_waveform.karaokeTimingFinished.connect(self._waveform_karaoke_timing_finished)
             self.karaoke_waveform.lyricTimingRequested.connect(self._waveform_karaoke_line_boundary_changed)

@@ -180,6 +180,7 @@ class LrcEditorDialog(
         self._preview_segments_line_index = None
         self._waveform_drag_row = -1
         self._segment_preview_range = None
+        self._segment_preview_pause_ms = None
         self._segment_preview_timer = QTimer(self)
         self._segment_preview_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._segment_preview_timer.setSingleShot(True)

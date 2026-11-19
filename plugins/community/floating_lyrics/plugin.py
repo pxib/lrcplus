@@ -667,6 +667,7 @@ class FloatingLyricsPlugin:
 
         context.api.on("app_ready", self.on_app_ready)
         context.api.on("position_changed", self.on_position_changed)
+        context.api.on("lyric_timing_changed", self.refresh)
         context.api.on("track_changed", self.on_track_changed)
         context.api.on("lyrics_settings_changed", self.on_lyrics_settings_changed)
         context.api.on("playback_state_changed", self.on_playback_state_changed)

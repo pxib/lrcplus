@@ -85,6 +85,46 @@ def test_preview_button_uses_segment_on_karaoke_tab(editor):
     assert editor._segment_preview_range == (2200, 3500)
 
 
+@pytest.mark.parametrize("entry_point", ["waveform", "button"])
+def test_short_karaoke_preview_adds_context_without_editing_timing(editor, entry_point):
+    media = attach_media(editor)
+    segment = editor.lines[0].segments[0]
+    segment.end = 2.24
+
+    if entry_point == "waveform":
+        editor.karaoke_waveform.segmentPlayRequested.emit(2200, 2240)
+    else:
+        editor.preview_karaoke_segment_button.click()
+
+    assert media.playing and media.position() == 2095
+    assert editor._segment_preview_range == (2095, 2345)
+    editor.preview_position_changed(2240)
+    assert media.playing
+    editor.preview_position_changed(2345)
+    assert not media.playing and media.position() == 2240
+    assert (segment.start, segment.end) == (2.2, 2.24)
+    assert not editor.document_dirty
+
+
+@pytest.mark.parametrize(
+    "start, end, rate, lead_in, expected",
+    [
+        (0, 40, 1.0, 0, (0, 250)),
+        (20, 60, 2.0, 0, (0, 500)),
+        (9950, 10020, 1.0, 0, (9750, 10000)),
+        (2200, 2240, 1.0, 0.5, (1700, 2240)),
+    ],
+)
+def test_short_karaoke_preview_respects_speed_padding_and_audio_bounds(
+    editor, start, end, rate, lead_in, expected
+):
+    media = attach_media(editor)
+    media.rate = rate
+    editor.preview_lead_in.setValue(lead_in)
+    editor.karaoke_waveform.segmentPlayRequested.emit(start, end)
+    assert editor._segment_preview_range == expected
+
+
 def test_preview_speed_updates_player_and_tracks_external_changes(editor):
     media = attach_media(editor)
 

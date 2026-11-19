@@ -85,7 +85,8 @@ class AudioDeviceDisconnectedDialog(QDialog):
 class AudioDeviceControllerMixin:
     def _apply_output_device(self, settings):
         """Apply a preferred output, temporarily falling back to the default."""
-        device_id = str((settings or {}).get("output_device", "") or "")
+        settings = settings or {}
+        device_id = str(settings.get("output_device", "") or "")
         devices = QMediaDevices.audioOutputs()
         selected = next((device for device in devices if _device_id(device) == device_id),
                         _default_output(devices))
@@ -93,19 +94,25 @@ class AudioDeviceControllerMixin:
         # before delivering the notification that the old device disappeared.
         selected_id = _device_id(selected)
         self._active_output_device_id = selected_id
+        self._active_output_device_name = selected.description().strip()
         self._audio_output_unavailable = selected.isNull()
         # Settings are applied as a group, so an appearance-only change also
         # reaches this method. Replacing the same device flushes the processed
         # PCM route and loses its pitch-shifted output state.
-        if selected_id == _device_id(self.audio_output.device()):
-            return
-        if hasattr(self, "volume_slider"):
-            self._flush_pcm_output()
-        self.audio_output.setDevice(selected)
-        if hasattr(self, "volume_slider"):
-            # Pitch and speed processing also use a device-specific PCM sink,
-            # including when the volume is at or below 100%.
-            self._configure_pcm_volume(self.volume_slider.value(), refresh_format=True)
+        if selected_id != _device_id(self.audio_output.device()):
+            if hasattr(self, "volume_slider"):
+                self._flush_pcm_output()
+            self.audio_output.setDevice(selected)
+            if hasattr(self, "volume_slider"):
+                # Pitch and speed processing also use a device-specific PCM sink,
+                # including when the volume is at or below 100%.
+                self._configure_pcm_volume(self.volume_slider.value(), refresh_format=True)
+
+        delay = settings.get("device_lyric_delays_ms", {}).get(selected_id, 0)
+        previous_delay = getattr(self, "_device_lyric_delay_ms", 0)
+        self._device_lyric_delay_ms = delay
+        if delay != previous_delay and getattr(self, "lyrics", None):
+            self._refresh_playback_lyric_timing()
 
     def _watch_audio_devices(self):
         self._audio_device_dialog = None
@@ -167,7 +174,7 @@ class AudioDeviceControllerMixin:
             # A temporary default fallback must not erase the preferred device.
             self.playback_settings["output_device"] = device_id
             save_playback_settings(self.playback_settings)
-        self._apply_output_device({"output_device": device_id})
+        self._apply_output_device({**self.playback_settings, "output_device": device_id})
         dialog.deleteLater()
         if (result == dialog.CONTINUE and not self._audio_output_unavailable
                 and self.current_audio_path):

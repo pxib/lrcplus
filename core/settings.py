@@ -85,6 +85,8 @@ STATISTICS_DEFAULTS = {
     **FACTORY_DEFAULTS.get("listening_statistics", {}),
 }
 
+MAX_DEVICE_LYRIC_DELAY_MS = 2000
+
 PLAYBACK_DEFAULTS = {
     "precise_timestamp_fps": 30,
     "play_mode": "library",
@@ -99,6 +101,7 @@ PLAYBACK_DEFAULTS = {
     "replaygain_preamp": 0,
     "replaygain_prevent_clipping": True,
     "output_device": "",
+    "device_lyric_delays_ms": {},
     "volume": 80,
     "high_volume_warning_shown": False,
     "show_waveform": True,
@@ -208,6 +211,12 @@ def get_playback_settings(payload=None):
         speed_percent = int(values.get("speed_percent", PLAYBACK_DEFAULTS["speed_percent"]))
     except (TypeError, ValueError):
         speed_percent = PLAYBACK_DEFAULTS["speed_percent"]
+    delays = values.get("device_lyric_delays_ms")
+    device_lyric_delays = {
+        device_id: max(-MAX_DEVICE_LYRIC_DELAY_MS, min(delay, MAX_DEVICE_LYRIC_DELAY_MS))
+        for device_id, delay in delays.items()
+        if isinstance(device_id, str) and device_id and type(delay) is int and delay
+    } if isinstance(delays, dict) else {}
     return {
         "precise_timestamp_fps": _safe_fps(
             values.get("precise_timestamp_fps",
@@ -226,6 +235,7 @@ def get_playback_settings(payload=None):
         "replaygain_preamp": replaygain_preamp,
         "replaygain_prevent_clipping": bool(values.get("replaygain_prevent_clipping", True)),
         "output_device": str(values.get("output_device", PLAYBACK_DEFAULTS["output_device"]) or ""),
+        "device_lyric_delays_ms": device_lyric_delays,
         "volume": max(0, min(300, volume)),
         "high_volume_warning_shown": bool(
             values.get(

@@ -6,6 +6,7 @@ from PySide6.QtCore import QEvent, QObject, QTimer, Qt
 from PySide6.QtMultimedia import QMediaPlayer
 
 from core.settings import get_karaoke_settings, apply_karaoke_settings
+from core.lyrics_controller import playback_lyric_position
 
 
 class _DisplayVisibilityFilter(QObject):
@@ -40,6 +41,7 @@ class KaraokePlugin:
         self.connected = False
         context.on("app_ready", self.on_app_ready)
         context.on("track_changed", self.on_track_changed)
+        context.on("lyric_timing_changed", self.update_karaoke_position)
         context.on("karaoke_settings_changed", self.on_karaoke_settings_changed)
         context.on("karaoke_display_created", self.register_display)
         context.on("karaoke_display_removed", self.unregister_display)
@@ -216,9 +218,7 @@ class KaraokePlugin:
             self._clear_karaoke_position()
             return
         # Segment timestamps use the same offset lyric clock as line selection.
-        position = self._estimated_position_seconds() - getattr(
-            self.window, "lyrics_offset_seconds", 0.0
-        )
+        position = playback_lyric_position(self.window, self._estimated_position_seconds())
         for widget in widgets:
             widget.set_karaoke_position(position)
 

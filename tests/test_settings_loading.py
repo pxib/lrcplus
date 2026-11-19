@@ -109,3 +109,48 @@ def test_audio_choices_resolve_saved_name_without_changing_selection(qapp, monke
         dialog.close()
         dialog.deleteLater()
         qapp.processEvents()
+
+
+def test_lyric_delay_settings_use_physical_outputs_and_keep_separate_drafts(qapp, monkeypatch):
+    from PySide6.QtWidgets import QWidget
+
+    from core.settings_transfer import get_factory_settings, normalize_transfer_settings
+
+    def output(name, device_id):
+        return SimpleNamespace(description=lambda: name, id=lambda: bytes.fromhex(device_id))
+
+    monkeypatch.setattr("ui.settings_dialog.QMediaDevices.audioOutputs",
+                        lambda: [output("Headphones", "ab"), output("Speakers", "cd")])
+    parent = QWidget()
+    parent._active_output_device_id = "ab"
+    parent._active_output_device_name = "Headphones"
+    dialog = SettingsDialog([], {}, parent=parent, playback_settings={
+        "output_device": "", "device_lyric_delays_ms": {"ab": 150},
+    })
+    try:
+        devices = dialog.lyric_delay_device_combo
+        delay = dialog.lyric_delay_spin
+        assert devices.currentText() == "Headphones"
+        assert delay.value() == 150
+        devices.showPopup()
+        devices.hidePopup()
+        devices.setCurrentIndex(devices.findData("cd"))
+        assert delay.value() == 0
+        delay.setValue(-60)
+        assert dialog.get_playback_settings()["output_device"] == ""
+        assert dialog.get_playback_settings()["device_lyric_delays_ms"] == {"ab": 150, "cd": -60}
+
+        incoming = normalize_transfer_settings({"playback": {
+            "device_lyric_delays_ms": {"ab": 325, "cd": 0, "bad": True},
+        }})
+        dialog._load_imported_settings(incoming)
+        assert delay.value() == 0
+        devices.setCurrentIndex(devices.findData("ab"))
+        assert delay.value() == 325
+        dialog._load_imported_settings(get_factory_settings())
+        assert delay.value() == 0
+        assert dialog.get_playback_settings()["device_lyric_delays_ms"] == {}
+    finally:
+        dialog.close()
+        parent.deleteLater()
+        qapp.processEvents()

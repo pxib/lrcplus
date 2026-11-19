@@ -42,6 +42,7 @@ def get_factory_candidate(payload):
     defaults["appearance"].pop("custom_background_folders", None)
     # Device IDs are specific to the computer used to choose the defaults.
     defaults["playback"]["output_device"] = ""
+    defaults["playback"]["device_lyric_delays_ms"] = {}
     return defaults
 
 

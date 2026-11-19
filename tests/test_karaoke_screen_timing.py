@@ -64,6 +64,18 @@ def test_sweep_preserves_negative_lyric_time_before_delayed_start(screen):
     assert screen.screen.current_lyric.karaoke_position == -2.5
 
 
+def test_device_delay_advances_lyrics_without_changing_pitch_time(screen):
+    screen.window.lyrics_offset_seconds = 0.25
+    screen.window._device_lyric_delay_ms = -500
+    screen.window.playback_speed = 1.5
+    screen.window.media_player.position = lambda: 12000
+    screen.refresh_pitch_position()
+
+    assert screen.screen.current_lyric.karaoke_position == pytest.approx(12.5)
+    assert screen.screen.next_lyric.karaoke_position == pytest.approx(12.5)
+    assert screen.screen.pitch_lane.position_seconds == 12
+
+
 @pytest.mark.parametrize("offset", [4.0, -4.0, 0.0])
 @pytest.mark.parametrize("lyric_time,top,bottom", [
     (15.9, 0, 1),

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.settings import get_karaoke_settings, apply_karaoke_settings, get_effective_lyrics_settings
+from core.lyrics_controller import playback_lyric_position
 from core.pitch_detector import PitchDetector
 from lyrics.widgets import FuriganaWidget
 from ui.artwork_background import ArtworkBackgroundWidget
@@ -640,9 +641,7 @@ class KaraokeScreenPlugin(QObject):
         position_seconds = self._estimated_position_seconds()
         position_ms = position_seconds * 1000.0
         self.screen.pitch_lane.set_position(position_ms)
-        lyric_position = position_seconds - getattr(
-            self.window, "lyrics_offset_seconds", 0.0
-        )
+        lyric_position = playback_lyric_position(self.window, position_seconds)
         self.screen.current_lyric.set_karaoke_position(lyric_position)
         self.screen.next_lyric.set_karaoke_position(lyric_position)
 
@@ -671,8 +670,8 @@ class KaraokeScreenPlugin(QObject):
                 )
             page_slot = (current_slot // 2) * 2
             # Pair lookahead compares against unshifted lyric timestamps.
-            position_ms = self.context.api.get_position() - 1000.0 * getattr(
-                self.window, "lyrics_offset_seconds", 0.0
+            position_ms = 1000.0 * playback_lyric_position(
+                self.window, self.context.api.get_position() / 1000.0
             )
             if page_slot > 0:
                 previous_bottom = visible_indices[page_slot - 1]

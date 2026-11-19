@@ -189,6 +189,9 @@ class SettingsTransferMixin:
                 values = normalize(payload)
                 for key, name in controls.items():
                     self._set_imported_control(getattr(self, name), values[key])
+        if "device_lyric_delays_ms" in incoming.get("playback", {}):
+            self._device_lyric_delays = settings.get_playback_settings(payload)["device_lyric_delays_ms"]
+            self._show_device_lyric_delay()
         if "appearance" in incoming:
             self.appearance_settings = values = settings.get_appearance_settings(payload)
             for key in ("theme_mode", "theme_color", "theme_surface", "theme_overrides", "theme_preset_name", "custom_themes"):

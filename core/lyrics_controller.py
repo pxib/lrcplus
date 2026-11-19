@@ -41,6 +41,17 @@ from core.settings import (
 from core.lyrics_search import LyricsSearchMixin
 from core.idle_cache import IdleCache
 
+
+def playback_lyric_position(window, position_seconds):
+    """Convert the media clock to the display clock for timed lyrics."""
+    file_offset = getattr(window, "lyrics_offset_seconds", 0.0)
+    # Device latency is measured in wall-clock milliseconds. At 2x, the
+    # media clock travels twice that distance during the same delay.
+    device_offset = (getattr(window, "_device_lyric_delay_ms", 0)
+                     * getattr(window, "playback_speed", 1.0) / 1000.0)
+    return position_seconds - (file_offset + device_offset)
+
+
 class _FuriganaProgressBridge(QObject):
     progress = Signal(int, int, int)
     finished = Signal(int)
@@ -702,6 +713,11 @@ class LyricsController(LyricsSearchMixin):
             karaoke_lines = sum(bool(line.has_karaoke) for line in self.lyric_lines)
             print(f"[LRCX] Ready: {segment_count} content segments; {karaoke_lines} karaoke lines")
 
+    def _refresh_playback_lyric_timing(self):
+        self.update_lyrics(self.media_player.position())
+        if getattr(self, "plugin_manager", None) is not None:
+            self.plugin_manager.emit("lyric_timing_changed")
+
     def update_lyrics(self, position_ms):
         if not self.lyrics:
             return
@@ -714,7 +730,7 @@ class LyricsController(LyricsSearchMixin):
         if getattr(self, "plain_lyrics_mode", False):
             return
 
-        position = (position_ms / 1000.0) - getattr(self, "lyrics_offset_seconds", 0.0)
+        position = playback_lyric_position(self, position_ms / 1000.0)
         timeline_index = bisect_right(
             self.lyric_times,
             position,
