@@ -19,6 +19,7 @@ class MelodyNote:
     start_ms: int
     end_ms: int
     midi_note: int
+    strength: float = 0.0
 
 
 class MelodyAnalyzer:
@@ -106,7 +107,8 @@ class MelodyAnalyzer:
                 note_start = max(0, round((start + audible[0] - 0.5) * self.frame_ms))
                 note_end = min(track_ms, round((start + audible[-1] + 0.5) * self.frame_ms))
                 if note_end - note_start >= MIN_NOTE_MS:
-                    notes.append(MelodyNote(note_start, note_end, midi))
+                    strength = float(np.median(segment[audible]))
+                    notes.append(MelodyNote(note_start, note_end, midi, strength))
         return tuple(sorted(notes, key=lambda note: (note.start_ms, note.midi_note)))
 
 

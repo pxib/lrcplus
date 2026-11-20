@@ -72,8 +72,11 @@ waiting for an earlier track to enter playback are retained until imported.
 Closing the import window leaves downloads running. Exiting LRCPlus or
 disabling the plugin stops workers and saves unfinished items. Reopen
 **Downloads** and select **Start / Resume** after restarting; interrupted tracks
-restart rather than resuming partial files. Enqueuing new tracks also starts
-waiting items. Existing audio is reused when possible; **Download again**
+restart from the beginning. New tracks start automatically when the queue
+is running. While the queue is paused, new
+tracks wait for **Start / Resume**. Adding tracks keeps you on **Search /
+Import**. Select **View downloads** to see their progress. Existing audio is
+reused when possible; **Download again**
 explicitly creates another copy. Duplicate queued tracks are skipped.
 
 A selected subtitle language is applied to each track when available; missing

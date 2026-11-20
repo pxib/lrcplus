@@ -101,11 +101,15 @@ class FuriganaPaintingMixin:
                           vertical_piece_sweep, metrics, *, reading=False):
         if progress <= 0.0:
             return text_color_pen(normal)
+        mora_cues = segment.get("mora_cues")
+        if mora_cues and reading:
+            progress = self._mora_reading_progress(segment, progress, metrics)
         vertical = segment.get("reading_vertical") if reading else segment.get("_vertical")
-        if segment.get("_vertical"):
+        if segment.get("_vertical") and not (mora_cues and reading):
             start, end = vertical_piece_sweep.get(id(segment), (0.0, 1.0))
             progress = (min(1.0, progress) - start) / max(1e-9, end - start)
-        progress = eased_progress(progress, self.karaoke_sweep_easing)
+        if not mora_cues:
+            progress = eased_progress(progress, self.karaoke_sweep_easing)
         if vertical:
             if reading:
                 left = float(segment.get("reading_y", 0)) - metrics.ascent()
@@ -122,14 +126,14 @@ class FuriganaPaintingMixin:
             else:
                 left = float(segment.get("karaoke_x", segment["x"]))
                 extent = float(segment.get("karaoke_width", segment["width"]))
-            if reading:
-                # Map the base glyphs' sweep onto their reading. Sharing the
-                # same screen X left short ruby waiting, or long ruby finishing
-                # late, even though both belong to the same timed syllable.
+            base_is_unsplit = not (segment.get("_visual_split") or segment.get("_mora_style_split"))
+            if reading or (mora_cues and base_is_unsplit):
                 base_width = float(segment.get("base_width", segment["width"]))
-                base_left = float(segment["x"]) + (float(segment["width"]) - base_width) / 2
-                progress = (left + extent * progress - base_left) / max(1e-9, base_width)
-                extent = float(segment.get("_display_reading_width", segment.get("reading_width", 0)))
+                if reading and not mora_cues:
+                    # Map the ordinary base sweep onto the reading's width.
+                    base_left = float(segment["x"]) + (float(segment["width"]) - base_width) / 2
+                    progress = (left + extent * progress - base_left) / max(1e-9, base_width)
+                extent = float(segment["_display_reading_width"]) if reading else base_width
                 left = float(segment["x"]) + (float(segment["width"]) - extent) / 2
         return sweep_effect_pen(
             self.karaoke_sweep_style, normal, self.highlight_color,
@@ -137,6 +141,24 @@ class FuriganaPaintingMixin:
             softness=self.karaoke_softness, glow_intensity=self.karaoke_glow_intensity,
             glow_radius=self.karaoke_glow_radius, shimmer_width=self.karaoke_shimmer_width,
         )
+
+    def _mora_reading_progress(self, segment, progress, metrics):
+        reading = segment["mora_reading"]
+        boundaries = tuple(dict.fromkeys((0, *(offset for offset, _ in segment["mora_cues"]), len(reading))))
+        scaled = progress * (len(boundaries) - 1)
+        index = min(int(scaled), len(boundaries) - 2)
+        first, last = boundaries[index:index + 2]
+        fraction = scaled - index
+        displayed = segment["_display_reading"]
+        offset = segment.get("_mora_reading_offset", 0)
+        if segment.get("reading_vertical"):
+            position = first + (last - first) * fraction
+            return (position - offset - segment["_vertical_reading_offset"]) / max(1, len(displayed))
+        if displayed != segment.get("reading"):
+            return progress
+        first_width = metrics.horizontalAdvance(displayed[:max(0, first - offset)])
+        last_width = metrics.horizontalAdvance(displayed[:max(0, last - offset)])
+        return (first_width + (last_width - first_width) * fraction) / max(1, segment["_display_reading_width"])
 
     def paintEvent(self, event):
         # In Slide mode, upcoming lyrics do not exist visually until their
@@ -425,7 +447,9 @@ class FuriganaPaintingMixin:
 
                 painter.setPen(self._karaoke_text_pen(
                     segment, progress, normal_pen, timing_spans,
-                    vertical_piece_sweep, reading_metrics, reading=True,
+                    vertical_piece_sweep,
+                    QFontMetrics(painter.font()) if segment.get("mora_cues") else reading_metrics,
+                    reading=True,
                 ))
                 if segment.get("reading_vertical"):
                     reading_x = segment.get("reading_x", reading_x)

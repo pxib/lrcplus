@@ -42,7 +42,9 @@ def test_synclrc_preview_cache_and_import(qapp, monkeypatch, tmp_path, kind, fet
             time.sleep(.005)
         assert use.isEnabled()
         table = dialog.findChild(QTableWidget)
-        assert table.item(0, 3).text() == {"karaoke": "Words", "synced": "Lines", "plain": "Plain"}[kind]
+        assert table.item(0, 3).text() == {
+            "karaoke": "Word-synced", "synced": "Line-synced", "plain": "Plain text"
+        }[kind]
         assert table.item(0, 4).text() == "3:06"
         assert "Hello" in dialog.findChild(QTextEdit).toPlainText()
         provider.setCurrentText("LRCLIB")

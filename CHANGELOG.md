@@ -1,6 +1,22 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [2026-11-20]
+
+### Added
+
+- Add live connection and activity status to Discord Rich Presence settings. Show when Discord is unavailable, when activity was sent, and when playback settings hide it. **Check connection** tests Discord without publishing an activity, and playback retries after a connection failure.
+- Add per audio device delay.
+
+### Changed
+
+- Show the loaded track's title, artist, and duration in Lyrics Search. Prefer results with the same title and artist and a duration within three seconds. Label results **Word-synced**, **Line-synced**, or **Plain text**, and offer **Search title only**, **Try another source**, or **Retry** when appropriate.
+- Keep yt-dlp Audio Import on **Search / Import** after adding tracks. Confirm how many were added, offer **View downloads**, and show the active and waiting count on the Downloads tab. Tracks added to a paused queue wait for **Start / Resume**.
+
+### Fixed
+
+- Make double-clicking a Lyrics Search result focus the preview. Show the destination filename before applying lyrics, and distinguish overwriting an existing file from saving a new one.
+
 ## [2026-11-18]
 
 ### Added

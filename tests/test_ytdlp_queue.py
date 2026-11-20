@@ -235,13 +235,52 @@ def test_closing_dialog_keeps_queue_running_and_settings_are_frozen(queue, qapp,
     dialog.search_results.selectAll()
     dialog._enqueue_selected()
     assert len(queue.items) == 2
+    assert dialog.tabs.currentIndex() == 0
+    assert dialog.tabs.tabText(1) == "Downloads (2)"
+    assert dialog.status.text() == "Added 2 tracks to downloads."
+    qapp.processEvents()
     assert len(queue.jobs) == 2
     dialog.codec.setCurrentIndex(1)
     assert queue.items[0]["request"]["codec"] == "m4a"
+    dialog.view_downloads_button.click()
     assert dialog.tabs.currentIndex() == 1
     dialog.close()
     assert len(queue.jobs) == 2
     assert not any(job.stopped for job in queue.jobs.values())
+    dialog.deleteLater()
+
+
+def test_adding_tracks_from_multiple_searches_respects_pause(queue, qapp, tmp_path):
+    dialog = ImportDialog(queue.api, dict(DEFAULTS, download_folder=str(tmp_path)), download_queue=queue)
+    dialog.tabs.setCurrentWidget(dialog.queue_view)
+    dialog.queue_view.run.click()
+    assert queue.paused
+    dialog.tabs.setCurrentIndex(0)
+
+    for index, query in enumerate(("first search", "second search"), 1):
+        dialog.url.setText(query)
+        dialog._succeeded("search", {"results": [
+            {"url": f"https://example.com/{index}", "title": query},
+        ]})
+        dialog.search_results.item(0).setSelected(True)
+        dialog._enqueue_selected()
+        qapp.processEvents()
+        assert queue.paused and not queue.jobs
+        assert [item["state"] for item in queue.items] == ["waiting"] * index
+        assert dialog.tabs.currentIndex() == 0
+        assert dialog.tabs.tabText(1) == f"Downloads ({index})"
+        assert "Added 1 track" in dialog.status.text()
+        assert "queue is paused" in dialog.status.text()
+
+    dialog.view_downloads_button.click()
+    assert dialog.tabs.currentWidget() is dialog.queue_view
+    dialog.queue_view.run.click()
+    assert not queue.paused
+    assert len(queue.jobs) == 2
+    for job in list(queue.jobs.values()):
+        job.fail("offline")
+    assert dialog.tabs.tabText(1) == "Downloads"
+    dialog.close()
     dialog.deleteLater()
 
 
@@ -267,6 +306,8 @@ def test_batch_dialog_validates_before_enqueuing(queue, qapp, tmp_path):
     dialog._paste_batch()
     assert len(queue.items) == 2
     assert queue.api.settings["concurrent_downloads"] == 4
+    assert dialog.tabs.currentIndex() == 0
+    qapp.processEvents()
     assert len(queue.jobs) == 2
     dialog.close()
     dialog.deleteLater()

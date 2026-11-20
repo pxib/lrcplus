@@ -624,11 +624,16 @@ class FuriganaLayoutMixin:
                 split_reading_by_text_ranges(text, reading, ranges)
                 if reading else [None] * len(ranges)
             )
+            reading_offset = 0
             for (start, end), part_reading in zip(ranges, readings):
                 piece = dict(segment)
                 piece["text"] = text[start:end]
                 piece["translation"] = row in self.translation_lines
                 piece["reading"] = part_reading
+                if segment.get("mora_cues") and len(ranges) > 1:
+                    piece["_mora_style_split"] = True
+                    piece["_mora_reading_offset"] = reading_offset
+                    reading_offset += len(part_reading or "")
                 piece["_reading_group"] = reading_group
                 piece["_romaji_word_start"] = bool(segment.get("_romaji_word_start", False)) and start == 0
                 piece["bold"], piece["italic"], piece["strike"], piece["underline"] = style_at(self.style_spans, offset + start)
@@ -821,7 +826,9 @@ class FuriganaLayoutMixin:
                 if end is None:
                     end = piece.get("line_end", self.karaoke_line_end)
                 starts.append(start)
-                ends.append(float(end) if end is not None and float(end) > start else start + 1.0)
+                cues = piece.get("mora_cues")
+                fallback_end = start + (cues[-1][1] if cues else 0) + 1.0
+                ends.append(float(end) if end is not None and float(end) > start else fallback_end)
             self._karaoke_static_bounds = (
                 self.segments, self.karaoke_line_end,
                 min(starts) if starts else None, max(ends) if ends else None,
@@ -1081,6 +1088,7 @@ class FuriganaLayoutMixin:
                         if local_index == 0 and chunk_reading:
                             piece["reading"] = chunk_reading
                             piece["reading_vertical"] = True
+                            piece["_vertical_reading_offset"] = r0
                             piece["reading_width"] = ruby_lane_width
                             piece["reading_y"] = (
                                 chunk_start_y + reading_metrics.ascent()

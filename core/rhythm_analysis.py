@@ -3,17 +3,28 @@
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
-from dataclasses import dataclass
-from itertools import pairwise
+from dataclasses import astuple, dataclass
+from hashlib import sha256
+from itertools import islice, pairwise
+import json
+from math import isfinite, sqrt
 from operator import attrgetter
+import os
+from pathlib import Path
 from statistics import median
 from typing import TYPE_CHECKING
+
+from core.file_io import atomic_write_text
+from core.settings import get_app_data_dir
 
 if TYPE_CHECKING:
     from core.rhythm_melody import MelodyNote
 
 
 BEAT_FIT_TOLERANCE_MS = 42
+# Bump when audio extraction or the serialized result format changes.
+ANALYSIS_VERSION = 1
+ANALYSIS_CACHE_TRACKS = 128
 
 
 @dataclass(frozen=True)
@@ -50,10 +61,109 @@ class AudioRhythm:
         return None
 
     def held_melody_end(self, time_ms):
+        """Choose the pitch belonging to this onset before using its duration."""
         by_start = attrgetter("start_ms")
         begin = bisect_left(self.melody_notes, time_ms - 50, key=by_start)
         stop = bisect_right(self.melody_notes, time_ms + 50, lo=begin, key=by_start)
-        return max((note.end_ms for note in self.melody_notes[begin:stop]), default=None)
+        if begin == stop:
+            return None
+        if stop - begin == 1:
+            return self.melody_notes[begin].end_ms
+
+        candidates = self.melody_notes[begin:stop]
+        strongest = max(note.strength for note in candidates)
+        context_start = bisect_left(self.melody_notes, time_ms - 800, hi=begin, key=by_start)
+        preceding = self.melody_notes[context_start:begin]
+
+        def rank(note):
+            continuity = max((
+                max(0, 1 - abs(note.start_ms - prior.end_ms) / 250)
+                * max(0, 1 - abs(note.midi_note - prior.midi_note) / 12)
+                for prior in preceding
+            ), default=0)
+            strength = sqrt(note.strength / strongest) if strongest else 1
+            timing = 1 - abs(time_ms - note.start_ms) / 50
+            return 0.45 * strength + 0.45 * continuity + 0.10 * timing, -note.end_ms
+
+        return max(candidates, key=rank).end_ms
+
+
+def _track_signature(path):
+    stat = path.stat()
+    return [ANALYSIS_VERSION, stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size]
+
+
+def _valid_timeline(events):
+    return (isinstance(events, list) and all(type(time) is int and time >= 0 for time in events)
+            and all(first <= second for first, second in pairwise(events)))
+
+
+def _read_rhythm(payload):
+    from core.rhythm_melody import MelodyNote
+
+    beats, accents, onsets, sustained, silence, melody = payload
+    for times in (beats, accents, onsets):
+        if not _valid_timeline(times):
+            raise ValueError("Invalid rhythm events")
+    for spans, width in ((sustained, 2), (silence, 2), (melody, 4)):
+        if not isinstance(spans, list) or any(not isinstance(span, list) or len(span) != width for span in spans):
+            raise ValueError("Invalid rhythm spans")
+        if not _valid_timeline([span[0] for span in spans]):
+            raise ValueError("Unordered rhythm spans")
+        if any(type(span[1]) is not int or span[1] <= span[0] for span in spans):
+            raise ValueError("Invalid rhythm spans")
+    if any(type(pitch) is not int or not 0 <= pitch <= 127 or not isfinite(strength) or strength < 0
+           for _, _, pitch, strength in melody):
+        raise ValueError("Invalid melody notes")
+    return AudioRhythm(tuple(beats), tuple(accents), tuple(onsets), tuple(tuple(span) for span in sustained),
+                       tuple(tuple(span) for span in silence), tuple(MelodyNote(*note) for note in melody))
+
+
+def _trim_analysis_cache(directory):
+    entries = []
+    for path in directory.glob("*.json"):
+        try:
+            entries.append((path.stat().st_mtime_ns, path))
+        except OSError:
+            continue
+    entries.sort(reverse=True)
+    for _, path in islice(entries, ANALYSIS_CACHE_TRACKS, None):
+        path.unlink(missing_ok=True)
+
+
+def load_audio_rhythm(path, cancelled):
+    """Reuse completed analysis for an unchanged local audio file."""
+    if cancelled.is_set():
+        return AudioRhythm()
+    try:
+        track = Path(path).resolve(strict=True)
+        signature = _track_signature(track)
+    except OSError:
+        return analyze_audio_rhythm(path, cancelled)
+
+    key = sha256(os.fsencode(os.path.normcase(track))).hexdigest()
+    entry = get_app_data_dir() / "cache" / "rhythm" / f"{key}.json"
+    try:
+        stored_signature, payload = json.loads(entry.read_text(encoding="utf-8"))
+        if stored_signature == signature:
+            rhythm = _read_rhythm(payload)
+            signature = _track_signature(track)
+            if stored_signature == signature:
+                return AudioRhythm() if cancelled.is_set() else rhythm
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        pass
+
+    rhythm = analyze_audio_rhythm(track, cancelled)
+    if cancelled.is_set():
+        return AudioRhythm()
+    try:
+        payload = json.dumps((signature, astuple(rhythm)), separators=(",", ":"))
+        if _track_signature(track) == signature and not cancelled.is_set():
+            atomic_write_text(entry, payload)
+            _trim_analysis_cache(entry.parent)
+    except OSError:
+        pass
+    return AudioRhythm() if cancelled.is_set() else rhythm
 
 
 @dataclass(frozen=True)

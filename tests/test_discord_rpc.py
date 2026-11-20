@@ -203,6 +203,95 @@ def test_settings_preview_save_reload_and_reset(qapp, plugin, monkeypatch):
         qapp.processEvents()
 
 
+def test_connection_check_and_playback_status(qapp, plugin, monkeypatch):
+    from PySide6.QtTest import QTest
+
+    calls = []
+    discord_open = False
+
+    class FakePresence:
+        def __init__(self, _client_id):
+            pass
+
+        def connect(self):
+            calls.append("connect")
+            if not discord_open:
+                raise OSError("Discord is closed")
+
+        def update(self, **values):
+            if not discord_open:
+                raise OSError("Discord was closed during playback")
+            calls.append(("update", values["details"]))
+
+        def clear(self):
+            calls.append("clear")
+
+        def close(self):
+            calls.append("close")
+
+    def wait_for_status(text):
+        for _ in range(100):
+            if text in widget.connection_status.text() and not plugin._rpc_worker_active:
+                return
+            QTest.qWait(25)
+        assert False, widget.connection_status.text()
+
+    monkeypatch.delattr(plugin, "_schedule_rpc_task")
+    monkeypatch.setattr(rpc_module, "Presence", FakePresence)
+    monkeypatch.setattr(plugin, "_start_cover_resolution", lambda *args: pytest.fail("Unexpected artwork lookup"))
+    path = plugin.window.current_audio_path
+    plugin.window.current_audio_path = None
+    plugin.update_presence()
+    widget = plugin.create_settings_widget(None)
+    try:
+        assert widget.connection_status.text() == "Connection unchecked"
+        widget.check_connection.click()
+        wait_for_status("Waiting for Discord")
+        assert calls == ["connect", "close"]
+
+        # The manual check works immediately, even during automatic backoff.
+        discord_open = True
+        widget.check_connection.click()
+        wait_for_status("Connected · No track loaded")
+        assert calls == ["connect", "close", "connect"]
+
+        plugin.window.current_audio_path = path
+        plugin.update_presence()
+        wait_for_status("Connected · Activity sent")
+        assert calls[-1] == ("update", "A song")
+
+        widget.check_connection.click()
+        wait_for_status("Connected · Activity sent")
+        assert calls[-2:] == ["connect", "close"]
+        assert calls.count(("update", "A song")) == 1
+        assert "clear" not in calls
+
+        discord_open = False
+        plugin.update_presence(force=True)
+        wait_for_status("Waiting for Discord")
+        discord_open = True
+        previous_calls = list(calls)
+        plugin.on_position_changed(30_000)
+        assert calls == previous_calls
+        plugin._rpc_retry_after = 0
+        plugin.on_position_changed(30_000)
+        wait_for_status("Connected · Activity sent")
+        assert calls[-2:] == ["connect", ("update", "A song")]
+
+        plugin.settings["show_when_paused"] = False
+        plugin.player_state = 2
+        plugin.update_presence()
+        wait_for_status("Connected · Hidden while paused")
+        assert calls[-1] == "clear"
+    finally:
+        plugin.disconnect()
+        for _ in range(100):
+            if not plugin._rpc_worker_active:
+                break
+            QTest.qWait(10)
+        widget.deleteLater()
+
+
 @pytest.mark.parametrize("online,embedded,expected,calls", [
     ("https://example.com/online.jpg", None, "https://example.com/online.jpg", ["online"]),
     (None, "https://example.com/upload.jpg", "https://example.com/upload.jpg", ["online", "embedded"]),

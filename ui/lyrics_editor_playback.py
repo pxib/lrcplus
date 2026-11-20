@@ -466,6 +466,9 @@ class LyricsEditorPlaybackMixin:
         for segment in line.segments:
             rel_start = (float(segment.start) - old_start) / span
             segment.start = new_start + rel_start * new_span
+            if segment.mora_cues:
+                segment.mora_cues = tuple((offset, elapsed * new_span / span)
+                                          for offset, elapsed in segment.mora_cues)
             if getattr(segment, "end", None) is not None:
                 rel_end = (float(segment.end) - old_start) / span
                 segment.end = new_start + rel_end * new_span

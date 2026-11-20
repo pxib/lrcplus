@@ -29,12 +29,15 @@ def _ruby_spans(segment):
 
 
 def _set_ruby_spans(segment, spans):
+    previous = segment.ruby
     segment.ruby_spans = spans
     segment.ruby = None
     segment.ruby_source = None
     if len(spans) == 1 and spans[0][:2] == (0, len(segment.text)):
         segment.ruby = spans[0][2]
         segment.ruby_source = "manual"
+    if previous != segment.ruby:
+        segment.mora_cues = ()
 
 
 def replace_reading_span(line, start, end, reading):
@@ -81,6 +84,7 @@ def _slice_segment(segment, first, last):
     child.text = segment.text[first:last]
     if first == 0 and last == len(segment.text):
         return child
+    child.mora_cues = ()
     spans = []
     for start, end, reading in _ruby_spans(segment):
         a, b = max(first, start), min(last, end)
@@ -160,6 +164,7 @@ def correct_line_text(line, text, change=None):
         child = deepcopy(segment)
         child.text = text[first:last]
         if child.text != segment.text:
+            child.mora_cues = ()
             spans = []
             for a, b, reading in _ruby_spans(segment):
                 mapped = [equal_positions.get(starts[index] + p) for p in range(a, b)]

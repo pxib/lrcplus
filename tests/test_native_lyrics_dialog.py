@@ -63,7 +63,7 @@ def test_native_provider_preview_cache_and_save(qapp, monkeypatch, tmp_path, sou
             qapp.processEvents()
             time.sleep(.005)
         assert use.isEnabled()
-        assert table.item(0, 3).text() == ("Words" if word_timed else "Lines")
+        assert table.item(0, 3).text() == ("Word-synced" if word_timed else "Line-synced")
         assert table.item(0, 4).text() == "5:23"
         assert "Credit" not in preview.toPlainText()
         assert "[ti:" not in preview.toPlainText()
@@ -72,7 +72,7 @@ def test_native_provider_preview_cache_and_save(qapp, monkeypatch, tmp_path, sou
         before = len(calls)
         provider.setCurrentText("LRCLIB")
         provider.setCurrentText(source)
-        assert table.item(0, 3).text() == ("Words" if word_timed else "Lines")
+        assert table.item(0, 3).text() == ("Word-synced" if word_timed else "Line-synced")
         assert len(calls) == before
         assert use.isEnabled()
         use.click()

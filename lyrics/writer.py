@@ -19,6 +19,16 @@ def format_timestamp(seconds: float) -> str:
     return f"{minutes:02d}:{remainder:06.3f}"
 
 
+def format_mora_reading(reading, start, cues):
+    parts = []
+    cursor = 0
+    for offset, elapsed in cues:
+        parts.extend((reading[cursor:offset], f"<{format_timestamp(start + elapsed)}>"))
+        cursor = offset
+    parts.append(reading[cursor:])
+    return "".join(parts)
+
+
 def _escape_lrc_text(text: str) -> str:
     return str(text).replace("\n", " ")
 
@@ -199,6 +209,11 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
                 and getattr(segment, "ruby_source", None) != "generated"
             ):
                 ruby_spans = [(0, len(text), segment.ruby)]
+            if segment.mora_cues and len(ruby_spans) == 1:
+                a, b, reading = ruby_spans[0]
+                if (a, b) == (0, len(text)):
+                    ruby_spans = [(a, b, format_mora_reading(reading, segment.start, segment.mora_cues))]
+                    has_karaoke_marker = True
             text = format_emphasis(text, line.style_spans, text_offset, ruby_spans)
             text_offset += len(segment.text)
 

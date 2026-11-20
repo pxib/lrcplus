@@ -69,6 +69,8 @@ def test_provider_lyrics_require_confirmation_before_replacing_existing_lyrics(
         assert box.standardButtons() == QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
         assert box.defaultButton() == box.button(QMessageBox.StandardButton.Cancel)
         assert box.escapeButton() == box.button(QMessageBox.StandardButton.Cancel)
+        expected_action = "Overwrite the file at" if destination.exists() else "Save a new file at"
+        assert f"{expected_action} {destination}" in box.text()
         assert not loaded and not cleared
         if existing_path:
             assert existing_path.read_text(encoding="utf-8") == original
@@ -98,11 +100,14 @@ def test_provider_lyrics_require_confirmation_before_replacing_existing_lyrics(
             qapp.processEvents()
             time.sleep(.005)
         assert use.isEnabled()
+        destination_label = dialog.findChild(lyrics_search.QLabel, "lyricsSearchDestination")
+        assert destination_label.text() == f"Save to {destination.name}"
         if double_click:
             table = dialog.findChild(QTableWidget)
             table.itemDoubleClicked.emit(table.item(0, 0))
-        else:
-            use.click()
+            assert not warnings and not loaded
+            assert not destination.exists()
+        use.click()
         if existing != "none" and not saves:
             assert dialog.result() == QDialog.DialogCode.Rejected
             assert use.isEnabled()

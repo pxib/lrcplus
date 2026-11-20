@@ -4,7 +4,7 @@ import time
 
 import pytest
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QDialog, QLabel, QLineEdit, QPushButton, QTableWidget, QWidget
+from PySide6.QtWidgets import QDialog, QLabel, QLineEdit, QPushButton, QTableWidget, QTextEdit, QWidget
 
 import ui.lyrics_search_dialog as lyrics_search
 from ui.main_window import Player
@@ -56,6 +56,59 @@ def test_lyrics_search_query_falls_back_when_metadata_cannot_be_read(
     monkeypatch.setattr(lyrics_search, "read_track", unreadable_track)
 
     assert lyrics_search._lyrics_search_query(audio_path) == "filename-title"
+
+
+def test_search_preselects_the_closest_recording_and_shows_its_save_path(qapp, monkeypatch, tmp_path):
+    parent = QWidget()
+    parent.current_audio_path = tmp_path / "Recording.mp3"
+    monkeypatch.setattr(lyrics_search, "read_track", lambda path: SimpleNamespace(
+        title="Song", artist="Artist", duration=222,
+    ))
+    monkeypatch.setattr(lyrics_search, "search_lrclib", lambda *args: [
+        {"trackName": "Song (Live)", "artistName": "Artist", "duration": 222, "plainLyrics": "Live lyrics"},
+        {"trackName": "Song", "artistName": "Artist", "duration": 220, "syncedLyrics": "[00:01]Similar lyrics"},
+        {"trackName": "Ｓｏｎｇ", "artistName": "ARTIST", "duration": 222, "syncedLyrics": "[00:02]Studio lyrics"},
+        {"trackName": "Song", "artistName": "Other Artist", "duration": 222, "plainLyrics": "Cover lyrics"},
+        {"trackName": "Song", "artistName": "Artist", "syncedLyrics": "[00:01]Unknown duration"},
+    ])
+
+    def interact(dialog):
+        track = dialog.findChild(QLabel, "lyricsSearchTrack")
+        assert track.text() == "Matching lyrics for Song · Artist · 3:42"
+        preview = dialog.findChild(QTextEdit)
+        assert preview.placeholderText() == "Search for this track to see matching lyrics."
+        table = dialog.findChild(QTableWidget)
+        query = dialog.findChild(QLineEdit)
+        assert query.text() == "Artist - Song"
+        query.returnPressed.emit()
+        deadline = time.monotonic() + 4
+        while table.rowCount() != 5 and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(.005)
+        assert table.currentRow() == 2
+        assert [table.item(row, 5).text() for row in range(5)] == [
+            "", "Close match", "Close match", "", "",
+        ]
+        assert preview.toPlainText() == "[00:02]Studio lyrics"
+        destination = dialog.findChild(QLabel, "lyricsSearchDestination")
+        assert destination.text() == "Save to Recording.lrc"
+        table.selectRow(0)
+        assert destination.text() == "Save to Recording.txt"
+
+        # The wizard can leave this dialog open while playback changes tracks.
+        parent.current_audio_path = tmp_path / "Different.mp3"
+        use = next(button for button in dialog.findChildren(QPushButton) if button.text() == "Use Selected Lyrics")
+        use.click()
+        assert not use.isEnabled()
+        assert not list(tmp_path.glob("*.txt"))
+        assert any("The track changed" in label.text() for label in dialog.findChildren(QLabel))
+        return 0
+
+    monkeypatch.setattr(QDialog, "exec", interact)
+    try:
+        Player.search_lrclib_lyrics(parent)
+    finally:
+        parent.deleteLater()
 
 
 @pytest.mark.parametrize("outcome", ["results", "unknown", "empty", "error", "cancel"])
@@ -113,7 +166,7 @@ def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
         release.set()
         deadline = time.monotonic() + 5
         while not any(
-            label.text() == "1 result(s). Select one to inspect the lyrics."
+            label.text() == "1 result"
             or label.text().startswith("No lyrics found.")
             or "Search failed:" in label.text()
             for label in dialog.findChildren(QLabel)
@@ -121,7 +174,8 @@ def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
             qapp.processEvents()
             time.sleep(0.005)
         assert not button.isEnabled()
-        assert button.text() == "Search (5s)"
+        action = "Retry" if outcome == "error" else "Search"
+        assert button.text() == f"{action} (5s)"
         assert loading.isHidden()
         query.returnPressed.emit()
         assert len(worker_threads) == 1
@@ -139,7 +193,7 @@ def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
                     assert not timing.icon().isNull()
                     assert timing.toolTip() == "Timing information is unknown."
                 else:
-                    assert timing.text() == "Lines"
+                    assert timing.text() == "Line-synced"
             else:
                 assert table.rowCount() == 0
         else:
@@ -150,7 +204,7 @@ def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
         now[0] += 4.9
         query.returnPressed.emit()
         assert not button.isEnabled()
-        assert button.text() == "Search (1s)"
+        assert button.text() == f"{action} (1s)"
         assert len(worker_threads) == 1
         now[0] += 0.1
         deadline = time.monotonic() + 2
@@ -158,7 +212,7 @@ def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
             qapp.processEvents()
             time.sleep(0.005)
         assert button.isEnabled()
-        assert button.text() == "Search"
+        assert button.text() == action
         return 0
 
     monkeypatch.setattr(lrclib.requests, "get", get)

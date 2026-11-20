@@ -50,7 +50,7 @@ def test_all_rows_are_checked_without_clicks_and_failures_do_not_replace_preview
 
     def interact(dialog):
         provider, table, preview = controls(dialog)
-        expected = ["Lines", "Words", "Unavailable", "Plain", "Lines"]
+        expected = ["Line-synced", "Word-synced", "Unavailable", "Plain text", "Line-synced"]
         wait_for(qapp, lambda: table.rowCount() == 5 and [table.item(row, 3).text() for row in range(5)] == expected)
         assert table.currentRow() == 0
         assert preview.toPlainText() == "[00:01.000]Song 0"

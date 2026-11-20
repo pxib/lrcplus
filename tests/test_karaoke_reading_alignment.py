@@ -8,6 +8,7 @@ from core.settings import KARAOKE_DEFAULTS, apply_karaoke_settings
 from lyrics.furigana import split_reading_by_text_ranges, token_to_furigana_segments
 from lyrics.furigana_widget import FuriganaWidget
 from lyrics.loader import load_lyrics
+from lyrics.lrcx_parser import parse_lrcx
 from lyrics.models import LyricLine, LyricSegment
 
 
@@ -236,3 +237,50 @@ def test_reading_wipe_tracks_base_fraction(qapp, monkeypatch, reading, romaji):
                     (edge(ruby_gradient) - ruby_left) / piece["_display_reading_width"], abs=0.001)
     finally:
         row.deleteLater()
+
+
+@pytest.mark.parametrize(("base", "early", "late"), [("穴", "あ", "な"), ("京", "きょ", "う")])
+@pytest.mark.parametrize("direction", ["horizontal", "vertical"])
+@pytest.mark.parametrize(("first_cue", "pause_cue"), [
+    ("", ""), ("<00:12.200>", ""), ("<00:12.200>", "<00:12.350>"),
+])
+def test_mora_cue_highlights_half_of_base(
+    rendered_karaoke, monkeypatch, base, early, late, direction, first_cue, pause_cue,
+):
+    from lyrics.furigana_painting import sweep_effect_pen
+
+    row = rendered_karaoke
+    row.set_direction(direction)
+    row.karaoke_sweep_easing = "ease_in"
+    monkeypatch.setattr("lyrics.furigana_widget.get_cached_furigana_segments", lambda text: [
+        {"text": text, "reading": None},
+    ])
+    reading = f"{first_cue}{early}{pause_cue}<00:12.650>{late}"
+    line, = parse_lrcx(f"[00:12.000]{{{base}|{reading}}}<00:12.900>")
+    row.set_segments(line.text, line.segments, line.end)
+    row.set_karaoke_position(12.500 if pause_cue else 12.650)
+    piece, = row._prepare_segments()
+    fractions = []
+
+    def record(style, normal, highlight, left, extent, progress, **kwargs):
+        fractions.append(progress)
+        return sweep_effect_pen(style, normal, highlight, left, extent, progress, **kwargs)
+
+    monkeypatch.setattr("lyrics.furigana_painting.sweep_effect_pen", record)
+    image = QImage(row.size(), QImage.Format.Format_ARGB32_Premultiplied)
+    row.render(image)
+    reading_metrics = QFontMetrics(row.reading_font)
+    reading_fraction = (
+        len(early) / len(early + late) if direction == "vertical"
+        else reading_metrics.horizontalAdvance(early) / piece["_display_reading_width"]
+    )
+    assert fractions == pytest.approx([0.5, reading_fraction])
+    first_start = 12.2 if first_cue else 12.0
+    first_end = 12.35 if pause_cue else 12.65
+    first_midpoint = (first_start + first_end) / 2
+    for time, fraction in [(12.0, 0), (first_start, 0), (first_midpoint, 0.25), (12.775, 0.75), (12.9, 1)]:
+        row.set_karaoke_position(time)
+        assert row._segment_progress(piece, [piece]) == pytest.approx(fraction)
+    for time in (first_end, 12.650):
+        row.set_karaoke_position(time)
+        assert row._segment_progress(piece, [piece]) == pytest.approx(0.5)

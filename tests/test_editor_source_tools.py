@@ -26,6 +26,11 @@ def test_source_validation_collects_all_lines_and_matches_save_error():
     ("[00:01.000]<00:01.500", "invalid karaoke timestamp"),
     ("[00:01.000]{漢字|かんじ", "unclosed reading"),
     ("[00:01.000][00:02.000]Word", "separate LRCX line"),
+    ("[00:12.000]{穴|あ<00:12.000>な}<00:12.900>", "increasing mora timestamps"),
+    ("[00:12.000]{穴|<00:11.900>あ<00:12.650>な}<00:12.900>", "increasing mora timestamps"),
+    ("[00:12.000]{穴|あ<00:12.350><00:12.500><00:12.650>な}<00:12.900>", "increasing mora timestamps"),
+    ("[00:12.000]{穴|あ<00:12.900>な}<00:12.900>", "last mora must start"),
+    ("[00:12.000]{穴|あ<00:12.650>な}へ<00:12.900>", "one reading for the whole chunk"),
 ])
 def test_invalid_extended_syntax_is_reported_and_rejected(source, message):
     issues = validate_editor_source(source, ".lrcx")
@@ -37,6 +42,9 @@ def test_invalid_extended_syntax_is_reported_and_rejected(source, message):
 @pytest.mark.parametrize("source,suffix", [
     ("[ar:Artist]\n[offset:350]\n[00:01.000]<00:01.500>{世界|せかい}" + r"{\nt}Translation", ".lrcx"),
     ("[00:01.000][00:02.000]Repeated", ".lrc"),
+    ("[00:12.000]{穴|あ<00:12.650>な}<00:12.900>", ".lrcx"),
+    ("[00:12.000]{穴|<00:12.000>あ<00:12.650>な}<00:12.900>", ".lrcx"),
+    ("[00:12.000]{穴|<00:12.000>あ<00:12.350><00:12.650>な}<00:12.900>", ".lrcx"),
     ("[00:01.000]1 < 3 and *unpaired text {braces}", ".lrcx"),
     ("Unfinished <00:bad> and any plain text", ".txt"),
 ])

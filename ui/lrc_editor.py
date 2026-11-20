@@ -27,7 +27,7 @@ from lyrics.line_breaks import (
     original_reading_text,
 )
 from lyrics.formatting import format_emphasis, parse_emphasis, parse_quote_prefix
-from lyrics.writer import format_timestamp
+from lyrics.writer import format_mora_reading, format_timestamp
 from lyrics.timing import parse_timestamp
 from lyrics.karaoke_timing import next_lyric_start, segment_end
 from lyrics.editor_operations import correct_line_text, replace_reading_span
@@ -903,7 +903,13 @@ class LrcEditorDialog(
                     ruby_text = str(segment_spans[0][2] or "")
                 else:
                     ruby_text = segment.ruby or ""
-                self.segment_table.setItem(row, 3, make_item(ruby_text))
+                ruby_text = format_mora_reading(ruby_text, segment.start, segment.mora_cues)
+                ruby_item = make_item(ruby_text)
+                ruby_item.setToolTip(
+                    "Enter timestamps before morae. For a pause, use an end and next start together, "
+                    "e.g. <00:12.000>あ<00:12.350><00:12.650>な."
+                )
+                self.segment_table.setItem(row, 3, ruby_item)
                 if segment.needs_timing_review:
                     for column in range(4):
                         item = self.segment_table.item(row, column)
@@ -1529,6 +1535,7 @@ class LrcEditorDialog(
                     segment.ruby = None
                     segment.ruby_source = None
                     segment.ruby_spans = []
+                    segment.mora_cues = ()
                     changed = True
         if clear_reading_segment_cache is not None:
             clear_reading_segment_cache()
@@ -1596,6 +1603,7 @@ class LrcEditorDialog(
                            for i, char in enumerate(segment.text)):
                         replacement.ruby = None
                         replacement.ruby_source = None
+                        replacement.mora_cues = ()
                     segments.append(replacement)
                 offset = end
             line.reading_groups = [(positions[a], positions[b]) for a, b in line.reading_groups
@@ -1636,6 +1644,7 @@ class LrcEditorDialog(
                     segment.ruby = None
                     segment.ruby_source = None
                     segment.ruby_spans = []
+                    segment.mora_cues = ()
                     changed = True
         if changed:
             self._mark_document_dirty()

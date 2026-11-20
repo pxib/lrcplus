@@ -39,7 +39,6 @@ class DownloadQueue(QObject):
         self._schedule_timer.setSingleShot(True)
         self._schedule_timer.timeout.connect(self.pump)
         self.stopping = False
-        self.paused = True
         self.last_error = ""
         try:
             self.limit = max(1, min(4, int(api.get_setting("concurrent_downloads", 2))))
@@ -72,6 +71,10 @@ class DownloadQueue(QObject):
             if item.get("state") not in TERMINAL:
                 item.update(state="waiting", message="Restored; ready to restart.")
             self.items.append(item)
+        self.paused = any(
+            item["state"] == "waiting" or (item["state"] == "completed" and not item["imported"])
+            for item in self.items
+        )
 
     def _save(self):
         saved = deepcopy(self.items)

@@ -134,9 +134,12 @@ class DiscordRpcPlugin:
         self.connected = False
         self._rpc_task_lock = threading.Lock()
         self._rpc_pending_task = None
+        self._rpc_check_pending = False
         self._rpc_worker_active = False
         self._rpc_retry_after = 0.0
         self._rpc_unavailable_logged = False
+        self._rpc_status = "idle"
+        self._rpc_hidden_state = None
 
         self.current_path = None
         self._last_payload = None
@@ -234,7 +237,12 @@ class DiscordRpcPlugin:
 
     def _schedule_rpc_task(self, action, payload=None):
         with self._rpc_task_lock:
-            self._rpc_pending_task = (action, payload)
+            if action == "check":
+                self._rpc_check_pending = True
+            else:
+                self._rpc_pending_task = (action, payload)
+                if action == "disconnect":
+                    self._rpc_check_pending = False
             if self._rpc_worker_active:
                 return
             self._rpc_worker_active = True
@@ -245,12 +253,29 @@ class DiscordRpcPlugin:
             name="DiscordRichPresence",
         ).start()
 
-    def _ensure_rpc_connected(self):
-        if self.connected and self.rpc is not None:
+    def _connect_rpc_client(self):
+        rpc = Presence(DISCORD_CLIENT_ID)
+        try:
+            rpc.connect()
+        except Exception:
+            self._close_rpc_client(rpc)
+            raise
+        return rpc
+
+    @staticmethod
+    def _close_rpc_client(rpc):
+        try:
+            rpc.close()
+        except Exception:
+            pass
+
+    def _ensure_rpc_connected(self, *, check=False):
+        if not check and self.connected and self.rpc is not None:
             return True
-        if time.monotonic() < self._rpc_retry_after:
+        if not check and time.monotonic() < self._rpc_retry_after:
             return False
         if Presence is None:
+            self._rpc_status = "missing"
             if not self._rpc_unavailable_logged:
                 self.log(
                     "Discord RPC is unavailable because pypresence is not installed."
@@ -258,23 +283,22 @@ class DiscordRpcPlugin:
                 self._rpc_unavailable_logged = True
             return False
 
-        rpc = None
+        self._rpc_status = "connecting"
         try:
-            rpc = Presence(DISCORD_CLIENT_ID)
-            rpc.connect()
-            self.rpc = rpc
+            rpc = self._connect_rpc_client()
+            if self.rpc is None:
+                self.rpc = rpc
+            else:
+                # Verify a fresh handshake without changing the current activity.
+                self._close_rpc_client(rpc)
             self.connected = True
             self._rpc_retry_after = 0.0
-            self.log("Connected to Discord RPC.")
+            self._rpc_status = "connected"
+            self.log("Checked Discord RPC connection." if check else "Connected to Discord RPC.")
             return True
         except Exception as error:
-            if rpc is not None:
-                try:
-                    rpc.close()
-                except Exception:
-                    pass
-            self.rpc = None
-            self.connected = False
+            self._close_rpc()
+            self._rpc_status = "waiting"
             self._rpc_retry_after = time.monotonic() + 10.0
             self.log(f"Discord RPC is not available: {error!r}")
             return False
@@ -285,12 +309,16 @@ class DiscordRpcPlugin:
                 task = self._rpc_pending_task
                 self._rpc_pending_task = None
                 if task is None:
-                    self._rpc_worker_active = False
-                    return
+                    if not self._rpc_check_pending:
+                        self._rpc_worker_active = False
+                        return
+                    task = ("check", None)
 
             action, payload = task
             try:
-                if action == "update":
+                if action == "check":
+                    self._ensure_rpc_connected(check=True)
+                elif action == "update":
                     if not self._ensure_rpc_connected():
                         continue
                     values, frozen_payload = payload
@@ -307,10 +335,16 @@ class DiscordRpcPlugin:
                         except Exception:
                             pass
                     self._close_rpc()
+                    self._rpc_status = "idle"
             except Exception as error:
                 self.log(f"Discord RPC {action} failed: {error!r}")
                 self._rpc_retry_after = time.monotonic() + 10.0
                 self._close_rpc()
+                self._rpc_status = "waiting"
+            finally:
+                if action == "check":
+                    with self._rpc_task_lock:
+                        self._rpc_check_pending = False
 
     def _close_rpc(self):
         rpc = self.rpc
@@ -318,10 +352,28 @@ class DiscordRpcPlugin:
         self.connected = False
         self._last_payload = None
         if rpc is not None:
-            try:
-                rpc.close()
-            except Exception:
-                pass
+            self._close_rpc_client(rpc)
+
+    def _connection_status_text(self):
+        if self._rpc_check_pending:
+            return "Checking Discord connection…"
+        if self._rpc_status == "missing":
+            return "Discord support is missing. Install pypresence in Settings → Dependencies."
+        if self._rpc_status == "waiting":
+            return "Waiting for Discord. Open the Discord desktop app and check the connection again."
+        if self._rpc_status == "connecting":
+            return "Connecting to Discord…"
+        if self._rpc_status == "connected":
+            if self.current_path is None:
+                return "Connected · No track loaded"
+            if self._rpc_hidden_state:
+                return f"Connected · Hidden while {self._rpc_hidden_state.lower()}"
+            if self._last_payload is not None:
+                return "Connected · Activity sent"
+            return "Connected · No activity sent"
+        if self._rpc_hidden_state:
+            return f"Activity hidden while {self._rpc_hidden_state.lower()}"
+        return "Connection unchecked"
 
     def disconnect(self):
         self._schedule_rpc_task("disconnect")
@@ -356,7 +408,11 @@ class DiscordRpcPlugin:
                 )
                 # Refresh for background artwork or newly loaded lyrics even
                 # when lyric sharing is disabled.
-                if image != self._last_cover:
+                retry_due = (
+                    self._rpc_status == "waiting"
+                    and time.monotonic() >= self._rpc_retry_after
+                )
+                if image != self._last_cover or retry_due:
                     self.update_presence()
 
         self._maybe_publish_lyric()
@@ -1164,12 +1220,13 @@ class DiscordRpcPlugin:
         return result
 
     def create_settings_widget(self, parent):
-        from PySide6.QtCore import Qt
+        from PySide6.QtCore import Qt, QTimer
         from PySide6.QtWidgets import (
             QCheckBox,
             QComboBox,
             QFormLayout,
             QGroupBox,
+            QHBoxLayout,
             QLabel,
             QLineEdit,
             QPushButton,
@@ -1181,6 +1238,32 @@ class DiscordRpcPlugin:
         widget = QWidget(parent)
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
+
+        connection_box = QGroupBox("Discord status")
+        connection_row = QHBoxLayout(connection_box)
+        widget.connection_status = QLabel()
+        widget.connection_status.setTextFormat(Qt.TextFormat.PlainText)
+        widget.connection_status.setWordWrap(True)
+        widget.check_connection = QPushButton("Check connection")
+        widget.check_connection.setAutoDefault(False)
+        widget.check_connection.setToolTip("Connect to Discord without publishing an activity.")
+        connection_row.addWidget(widget.connection_status, 1)
+        connection_row.addWidget(widget.check_connection)
+        layout.addWidget(connection_box)
+
+        def refresh_connection_status():
+            widget.connection_status.setText(self._connection_status_text())
+            widget.check_connection.setEnabled(not self._rpc_check_pending)
+
+        def check_connection():
+            self._schedule_rpc_task("check")
+            refresh_connection_status()
+
+        status_timer = QTimer(widget)
+        status_timer.timeout.connect(refresh_connection_status)
+        status_timer.start(200)
+        widget.check_connection.clicked.connect(check_connection)
+        refresh_connection_status()
 
         display = QGroupBox("Activity display")
         display_form = QFormLayout(display)
@@ -1413,6 +1496,7 @@ class DiscordRpcPlugin:
 
         if path is None:
             self.current_path = None
+            self._rpc_hidden_state = None
             self._placeholder_easter_egg_track = None
             self._classical_chinese_easter_egg = None
             self.clear_presence()
@@ -1435,8 +1519,10 @@ class DiscordRpcPlugin:
         status = self._playback_status(player)
         is_playing = status == "Playing"
         if not is_playing and not self.settings.get("show_when_paused", True):
+            self._rpc_hidden_state = status
             self.clear_presence()
             return
+        self._rpc_hidden_state = None
 
         metadata = self._local_metadata(path)
         payload = self._presence_text(metadata, status)

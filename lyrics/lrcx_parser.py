@@ -13,6 +13,7 @@ LINE_TIMESTAMP_RE = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
 SEGMENT_TIMESTAMP_RE = re.compile(r"<(\d+):(\d+(?:\.\d+)?)>")
 INSTANT_TAG = "<instant>"
 RUBY_TOKEN_RE = re.compile(r"\{([^|{}]+)\|([^{}]+)\}")
+KARAOKE_TOKEN_RE = re.compile(f"{RUBY_TOKEN_RE.pattern}|{SEGMENT_TIMESTAMP_RE.pattern}")
 METADATA_RE = re.compile(r"^\[[A-Za-z][A-Za-z0-9_]*:.*\]$")
 OFFSET_RE = re.compile(r"^\[offset:([+-]?\d+(?:\.\d+)?)\]$", re.IGNORECASE)
 
@@ -45,6 +46,32 @@ def get_lrcx_offset(path):
 
 def _timestamp(match):
     return int(match.group(1)) * 60 + float(match.group(2))
+
+
+def parse_mora_reading(reading, start):
+    """Return clean ruby text and its cues, with a pair at each pause."""
+    parts = []
+    cues = []
+    cursor = offset = 0
+    previous = start
+    valid = True
+    for match in SEGMENT_TIMESTAMP_RE.finditer(reading):
+        part = reading[cursor:match.start()]
+        parts.append(part)
+        offset += len(part)
+        timestamp = _timestamp(match)
+        if not cues and not part:
+            valid = timestamp >= start
+        else:
+            # Two tags at an interior boundary mark its end and next onset.
+            pause = offset > 0 and (len(cues) < 2 or cues[-2][0] != offset)
+            valid = valid and (bool(part) or pause) and timestamp > previous
+        cues.append((offset, timestamp - start))
+        previous = timestamp
+        cursor = match.end()
+    tail = reading[cursor:]
+    parts.append(tail)
+    return "".join(parts), tuple(cues) if valid and tail else ()
 
 
 def _parse_content(content, start_time, split_newlines=False):
@@ -178,9 +205,18 @@ def parse_lrcx(text, *, infer_ends=True):
             content = line[line_matches[-1].end():]
             content, is_blockquote = parse_quote_prefix(content)
             content, translation_lines = decode_line_breaks(content)
-            segment_matches = list(SEGMENT_TIMESTAMP_RE.finditer(content))
+            # Read the two token types in one pass so ruby cues cannot become
+            # karaoke chunk boundaries.
+            tokens = KARAOKE_TOKEN_RE.finditer(content)
+            segment_matches = []
+            has_mora_tags = False
+            for token in tokens:
+                if token.group(1) is None:
+                    segment_matches.append(SEGMENT_TIMESTAMP_RE.match(content, token.start()))
+                elif SEGMENT_TIMESTAMP_RE.search(token.group(2)):
+                    has_mora_tags = True
             # Karaoke is explicit in LRCX: segment timestamps or instant tags.
-            has_karaoke = bool(segment_matches) or INSTANT_TAG in content
+            has_karaoke = bool(segment_matches) or INSTANT_TAG in content or has_mora_tags
             segments = []
 
             if not segment_matches:
@@ -261,6 +297,21 @@ def parse_lrcx(text, *, infer_ends=True):
                     for a, b, reading in segment.ruby_spans
                     if offsets[source_offset + a] < offsets[source_offset + b]
                 ]
+                if has_mora_tags:
+                    readings = []
+                    for a, b, raw_reading in segment.ruby_spans:
+                        reading, cues = parse_mora_reading(raw_reading, segment.start)
+                        if reading:
+                            readings.append((a, b, reading))
+                        if a == 0 and b == len(segment.text):
+                            segment.mora_cues = cues
+                    segment.ruby_spans = readings
+                    if segment.ruby is not None or segment.mora_cues:
+                        segment.ruby = (
+                            readings[0][2] if len(readings) == 1
+                            and readings[0][:2] == (0, len(segment.text)) else None
+                        )
+                        segment.ruby_source = "manual" if segment.ruby else None
                 source_offset = source_end
                 if segment.text:
                     visible_segments.append(segment)

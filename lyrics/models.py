@@ -36,6 +36,9 @@ class LyricSegment(_LyricModel):
     visual_line: int = 0
     # Session-only editor hint. It is copied by Undo but is not lyric content.
     needs_timing_review: bool = field(default=False, compare=False, metadata={"editor_only": True})
+    # (reading character offset, seconds from segment start) for a full-chunk ruby.
+    # Two cues at one offset are the preceding mora's end and the next mora's start.
+    mora_cues: tuple[tuple[int, float], ...] = ()
 
 
 @dataclass(slots=True)

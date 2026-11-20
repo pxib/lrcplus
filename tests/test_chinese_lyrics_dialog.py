@@ -117,7 +117,7 @@ def test_anonymous_provider_search_preview_and_save(qapp, monkeypatch, tmp_path,
         assert ("歌詞 B" if outcome == "reselect" else "歌詞 A") in preview.toPlainText()
         assert "[ti:" not in preview.toPlainText()
         assert "Credit name" not in preview.toPlainText()
-        assert table.item(table.currentRow(), 3).text() == ("Plain" if outcome == "plain" else "Lines")
+        assert table.item(table.currentRow(), 3).text() == ("Plain text" if outcome == "plain" else "Line-synced")
         assert any(f"Lyrics provided by {source}" in label.text() for label in dialog.findChildren(QLabel))
         use.click()
         return 1

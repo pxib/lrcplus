@@ -753,8 +753,25 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
                 end = float(line_end)
 
         # Truly unknown end: use a small automatic sweep instead of snapping.
+        cues = segment.get("mora_cues")
         if end is None:
-            end = start + 1.0
+            end = start + (cues[-1][1] if cues else 0) + 1.0
+
+        if cues and start + cues[-1][1] < end:
+            elapsed = self.karaoke_position - start
+            mora_count = len({0, *(offset for offset, _ in cues)})
+            completed = previous_offset = 0
+            previous_time = 0.0
+            for offset, boundary in (*cues, (len(segment["mora_reading"]), end - start)):
+                advances = offset != previous_offset
+                if elapsed < boundary:
+                    fraction = 0.0
+                    if advances:
+                        fraction = max(0.0, (elapsed - previous_time) / (boundary - previous_time))
+                    return (completed + fraction) / mora_count
+                completed += advances
+                previous_offset, previous_time = offset, boundary
+            return 1.0
 
         # Generated/user timestamps usually use the next timestamp as the
         # effective end of this chunk. Use a proportional hold so short chunks
@@ -813,6 +830,8 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
             item = dict(segment)
             reading = override_map.get(index)
             if reading is not None:
+                if reading != item.get("reading"):
+                    item.pop("mora_cues", None)
                 item["reading"] = reading or None
                 item["ruby_source"] = "manual"
             updated.append(item)
@@ -885,6 +904,7 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
                 if isinstance(segment, dict)
                 else list(getattr(segment, "ruby_spans", []) or [])
             )
+            mora_cues = segment.get("mora_cues") if isinstance(segment, dict) else segment.mora_cues
             # Render inline ruby spans as separate display pieces while keeping
             # the original karaoke_group/start/end. This is display-only: the
             # LyricSegment itself remains one karaoke chunk.
@@ -899,6 +919,8 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
                     if span_start < span_end:
                         base = segment_text[span_start:span_end]
                         raw_segments.append({"start_offset": offset + span_start, "end_offset": offset + span_end, "text": base, "reading": span_reading or None, "reading_source": "manual" if span_reading else None, "start": segment_start_value, "end": segment_end_value, "instant": instant, "karaoke_group": karaoke_group})
+                        if span_start == 0 and span_end == len(segment_text):
+                            raw_segments[-1]["mora_cues"] = mora_cues
                     cursor = max(cursor, span_end)
                 if cursor < len(segment_text):
                     literal = segment_text[cursor:]
@@ -976,14 +998,14 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
             )
         ]
 
-        timing_owners = {}
+        timing_owners_by_group = {}
         for item in raw_segments:
             group = item["karaoke_group"]
-            if group not in timing_owners:
-                timing_owners[group] = dict(item, timing_group=group)
+            if group not in timing_owners_by_group:
+                timing_owners_by_group[group] = dict(item, timing_group=group)
             else:
-                timing_owners[group]["end_offset"] = item["end_offset"]
-        timing_owners = list(timing_owners.values())
+                timing_owners_by_group[group]["end_offset"] = item["end_offset"]
+        timing_owners = list(timing_owners_by_group.values())
         annotate_next_timed_starts(timing_owners)
 
         def timing_for_range(begin, end):
@@ -1094,6 +1116,14 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
                         "_romaji_particle": bool(token.get("_romaji_particle", False)),
                         "_reading_group": (x, y),
                     })
+                    if owner.get("mora_cues") and not owner["instant"]:
+                        timing = timing_owners_by_group[owner["karaoke_group"]]
+                        start = timing["start"]
+                        end = timing["end"]
+                        if end is None or end <= start:
+                            end = timing["_next_timed_start"] or line_end
+                        if end is None or end <= start or start + owner["mora_cues"][-1][1] < end:
+                            prepared[-1].update(mora_cues=owner["mora_cues"], mora_reading=ruby)
                     rendered_explicit_ranges.add(range_index)
                     continue
 

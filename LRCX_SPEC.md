@@ -34,6 +34,33 @@ A segment can contain embedded ruby:
 
 `{base|ruby}` means the visible lyric text is `base` and the ruby reading is `ruby`.
 
+### Mora timing
+
+A karaoke chunk with one reading covering the whole base can place timestamps
+inside the reading. Each timestamp marks the start of the following mora.
+
+```text
+[00:12.000]{穴|<00:12.000>あ<00:12.650>な}<00:12.900>
+[00:14.000]{京|きょ<00:14.600>う}<00:15.000>
+```
+
+The first cue is optional. When omitted, the first mora starts at the chunk
+start. When placed later than the chunk start, both sweeps wait for it. The
+last mora ends at the chunk end. At 12.650, `あ` is complete and `穴` is halfway
+highlighted. Each mora gets an equal share
+of the base sweep, including morae written with multiple kana such as `きょ`.
+Use increasing timestamps before morae. In the **Karaoke** tab, enter the
+reading with its timestamps in the **Ruby** column, or edit the **Source** tab.
+
+Put two timestamps together between morae to pause the sweep. The first ends
+the preceding mora and the second starts the next one.
+
+```text
+[00:12.000]{穴|<00:12.000>あ<00:12.350><00:12.650>な}<00:12.900>
+```
+
+Both sweeps hold at the boundary from 12.350 to 12.650.
+
 ### Reading editor word groups
 
 In the visual reading editor, click a base word and Shift-click an adjacent

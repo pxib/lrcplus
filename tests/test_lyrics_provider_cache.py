@@ -16,9 +16,9 @@ def wait_for(qapp, predicate):
     assert predicate()
 
 
-def test_results_queries_selection_and_previews_last_only_for_dialog(qapp, monkeypatch):
+def test_results_queries_selection_and_previews_last_only_for_dialog(qapp, monkeypatch, tmp_path):
     parent = QWidget()
-    parent.current_audio_path = None
+    parent.current_audio_path = tmp_path / "Song.mp3"
     monkeypatch.setenv("MUSIXMATCH_TOKEN", "test-token")
     searches, fetches = [], []
     sources = ["LRCLIB", *lyrics_search.CHINESE_LYRICS_PROVIDERS, "Musixmatch"]

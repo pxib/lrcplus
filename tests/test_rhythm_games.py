@@ -1,6 +1,8 @@
 from array import array
 from dataclasses import replace
+from itertools import pairwise
 from math import atan2, cos, hypot, sin, tau
+import os
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -14,8 +16,9 @@ from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QMainWindow, QMenu, QStackedWidget, QWidget
 
+from core import rhythm_analysis
 from core.plugin_manager import PluginManager
-from core.rhythm_analysis import AudioRhythm, analyze_audio_rhythm, beat_grid
+from core.rhythm_analysis import AudioRhythm, analyze_audio_rhythm, beat_grid, load_audio_rhythm
 from core.rhythm_melody import MelodyNote
 from lyrics.models import LyricLine, LyricSegment
 from plugins.community.rhythm_games import plugin as rhythm_games
@@ -143,6 +146,53 @@ def test_audio_chart_keeps_bursts_across_jitter_missing_beats_and_tempo_changes(
     assert next(note for note in chart.notes if note.time_ms == 3000).on_beat
 
 
+def test_dense_audio_chart_limits_short_and_sustained_windows():
+    beats = tuple(range(1000, 19000, 300))
+    onsets = tuple(range(1000, 19000, 75))
+    rhythm = AudioRhythm(beats_ms=beats, accents_ms=beats, onsets_ms=onsets)
+
+    notes = audio_beat_passage(rhythm, 19000).notes
+    times = {note.time_ms for note in notes}
+    assert set(beats) <= times < set(onsets)
+    assert len(notes) > len(beats)
+    for end in times:
+        assert sum(end - 1000 < time <= end for time in times) <= rhythm_games.BURST_TARGETS
+        assert sum(end - 6000 < time <= end for time in times) <= rhythm_games.SUSTAIN_TARGETS
+
+
+def test_full_song_density_budget_keeps_authored_timing_and_line_anchors():
+    beats = tuple(range(1000, 19000, 300))
+    rhythm = AudioRhythm(beats_ms=beats, onsets_ms=tuple(range(1000, 19000, 75)))
+    karaoke = Passage("Words", tuple(Note(time, str(time)) for time in range(7900, 8860, 80)))
+    line = Passage("Line", (Note(9000, "Line"),), line_end_ms=15800)
+
+    full, *_ = rhythm_games.map_song((karaoke, line), rhythm, 19000)
+    protected = {note.time_ms for note in (*karaoke.notes, *line.notes)}
+    times = {note.time_ms for note in full.notes}
+    assert protected < times
+    for end in times:
+        for window, limit in ((1000, rhythm_games.BURST_TARGETS), (6000, rhythm_games.SUSTAIN_TARGETS)):
+            window_times = {time for time in times if end - window < time <= end}
+            assert len(window_times) <= max(limit, len(window_times & protected))
+
+
+@pytest.mark.parametrize(("previous", "lead_strength", "backing_strength"), [
+    ((), 0.15, 0.05),
+    ((MelodyNote(1125, 1470, 64, 0.08),), 0.08, 0.16),
+])
+def test_slider_follows_the_melodic_pitch_instead_of_the_longest_sustain(previous, lead_strength, backing_strength):
+    rhythm = AudioRhythm(
+        beats_ms=(1000, 1500, 2000, 2500, 3000),
+        sustained_ms=((1500, 2810),),
+        melody_notes=(*previous, MelodyNote(1500, 2810, 52, backing_strength),
+                      MelodyNote(1504, 1810, 66, lead_strength)),
+    )
+    chart = audio_beat_passage(rhythm, 3400)
+    slider = next(note for note in chart.notes if note.time_ms == 1500)
+    assert slider.slider and slider.end_ms == 1750
+    assert any(note.time_ms == 2000 for note in chart.notes)
+
+
 def test_grid_splits_a_modest_tempo_change_before_beats_drift():
     beats = (*range(1000, 5000, 500), *range(5000, 9501, 450))
     grid = beat_grid(beats)
@@ -244,6 +294,62 @@ def test_audio_analysis_reads_a_local_click_track(tmp_path):
     chart = audio_beat_passage(rhythm, 15000)
     assert all(any(abs(note.time_ms - beat) < 30 for note in chart.notes) for beat in (1000, 1500, 2000, 2500))
 
+
+def test_analysis_cache_round_trips_and_recovers_from_changes(tmp_path, monkeypatch):
+    track = tmp_path / "track.flac"
+    track.touch()
+    rhythm = AudioRhythm((1000,), (510,), (500, 1000), ((500, 980),), ((0, 490),),
+                         (MelodyNote(500, 980, 65, 0.12),))
+    analyze = Mock(return_value=rhythm)
+    monkeypatch.setattr(rhythm_analysis, "analyze_audio_rhythm", analyze)
+
+    assert load_audio_rhythm(track, Event()) == rhythm
+    assert load_audio_rhythm(str(track), Event()) == rhythm
+    analyze.assert_called_once()
+
+    original = track.stat()
+    os.utime(track, ns=(original.st_atime_ns, original.st_mtime_ns + 1_000_000_000))
+    assert load_audio_rhythm(track, Event()) == rhythm
+    assert analyze.call_count == 2
+
+    monkeypatch.setattr(rhythm_analysis, "ANALYSIS_VERSION", rhythm_analysis.ANALYSIS_VERSION + 1)
+    assert load_audio_rhythm(track, Event()) == rhythm
+    assert analyze.call_count == 3
+
+    entry, = (tmp_path / "app-data" / "cache" / "rhythm").glob("*.json")
+    entry.write_text("[null", encoding="utf-8")
+    assert load_audio_rhythm(track, Event()) == rhythm
+    assert analyze.call_count == 4
+    assert load_audio_rhythm(track, Event()) == rhythm
+    assert analyze.call_count == 4
+
+
+def test_analysis_cache_ignores_cancelled_and_changed_analysis(tmp_path, monkeypatch):
+    track = tmp_path / "track.wav"
+    track.write_bytes(b"old")
+    cancelled = Event()
+    rhythm = AudioRhythm(beats_ms=(1000,))
+
+    def cancel_analysis(_track, signal):
+        signal.set()
+        return AudioRhythm()
+
+    def change_track(path, _signal):
+        path.write_bytes(b"replaced")
+        return AudioRhythm(beats_ms=(500,))
+
+    analyze = Mock(side_effect=cancel_analysis)
+    monkeypatch.setattr(rhythm_analysis, "analyze_audio_rhythm", analyze)
+    assert load_audio_rhythm(track, cancelled) == AudioRhythm()
+    analyze.side_effect = change_track
+    assert load_audio_rhythm(track, Event()).beats_ms == (500,)
+    assert not list((tmp_path / "app-data" / "cache" / "rhythm").glob("*.json"))
+    analyze.side_effect = None
+    analyze.return_value = rhythm
+    assert load_audio_rhythm(track, Event()) == rhythm
+    assert load_audio_rhythm(track, Event()) == rhythm
+    assert analyze.call_count == 3
+
     cancelled.set()
     assert analyze_audio_rhythm(track, cancelled) == AudioRhythm()
 
@@ -306,6 +412,7 @@ def test_audio_chart_follows_a_quieter_melody_in_a_mix(tmp_path, stereo):
     chart = audio_beat_passage(rhythm, 4200)
     baseline = audio_beat_passage(replace(rhythm, melody_notes=()), 4200)
     assert [note.midi_note for note in rhythm.melody_notes] == [74, *(midi for _, _, midi in backing)]
+    assert rhythm.melody_notes[0].strength > max(note.strength for note in rhythm.melody_notes[1:]) > 0
     for note, (start, end, _) in zip(rhythm.melody_notes[1:], backing, strict=True):
         assert note.start_ms == pytest.approx(start * 1000, abs=25)
         assert note.end_ms == pytest.approx(end * 1000, abs=25)
@@ -669,6 +776,46 @@ def test_chains_of_wide_jumps_shorten_periodically_and_reset_at_a_rest():
     centers = generate_circle_centers(notes, QRectF(44, 44, 424, 296), 36.5)
     jumps = [b - a for a, b in zip(centers, centers[1:])]
     assert [hypot(jump.x(), jump.y()) for jump in jumps] == pytest.approx([150, 150, 120, 150, 180, 150, 150, 120])
+
+
+def test_board_limits_peak_and_sustained_cursor_travel_without_freezing(qapp, monkeypatch):
+    def wide_jumps(notes, field, _radius):
+        return [QPointF(field.left() if index % 2 == 0 else field.right(), field.center().y())
+                for index in range(len(notes))]
+
+    monkeypatch.setattr(rhythm_games, "generate_circle_centers", wide_jumps)
+    board = RhythmBoard(None)
+    gap = 125
+    notes = tuple(Note(time, "") for time in range(1000, 22000, gap))
+    try:
+        board.set_frame(notes, 0, 1000)
+        movements = [after.x() - before.x() for before, after in pairwise(board._logical_centers)]
+        radius = board.target_radius / board._scale
+        assert all(first * second < 0 for first, second in pairwise(movements))
+        assert min(map(abs, movements)) > radius / 2
+        effort = [abs(movements[0]), *(abs(dx) * (1 + rhythm_games.TURN_WEIGHT) for dx in movements[1:])]
+        assert max(effort) <= rhythm_games.CURSOR_SPEED * radius * gap / 1000 + 1e-9
+        window = rhythm_games.SUSTAIN_WINDOW_MS // gap
+        sustained = rhythm_games.SUSTAIN_AIM_PER_SECOND * gap * window / 1000 + rhythm_games.AIM_BURST_RADII
+        assert max(sum(effort[start:start + window]) for start in range(len(effort) - window + 1)) <= (
+            sustained * radius + 1e-9
+        )
+    finally:
+        board.deleteLater()
+
+
+def test_repeating_slider_path_respects_cursor_speed_budget(qapp):
+    board = RhythmBoard(None)
+    note = Note(1000, "", end_ms=1500, spans=2, beat_length_ms=200)
+    try:
+        board.set_frame((note,), 0, 1000)
+        path = board._slider_paths[0]
+        distance = path.distances[-1] * note.spans
+        radius = board.target_radius / board._scale
+        assert radius < distance <= rhythm_games.CURSOR_SPEED * radius * 0.5
+        assert board.slider_ball(0, note.end_ms) == board.target_center(0)
+    finally:
+        board.deleteLater()
 
 
 @pytest.mark.parametrize("spans", [1, 2])

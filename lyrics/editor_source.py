@@ -7,7 +7,8 @@ import re
 import tempfile
 
 from lyrics.loader import get_lyrics_generation_mode, load_lyrics
-from lyrics.lrcx_parser import get_lrcx_offset
+from lyrics.karaoke_timing import segment_end
+from lyrics.lrcx_parser import RUBY_TOKEN_RE, SEGMENT_TIMESTAMP_RE, get_lrcx_offset, parse_lrcx
 from lyrics.timing import parse_timestamp
 
 
@@ -81,6 +82,18 @@ def validate_editor_source(text, suffix):
             for ruby in re.finditer(r"\{[^{}\n]*\|[^{}\n]*(?:\}|(?=\{)|$)", line):
                 if not ruby.group().endswith("}"):
                     report("unclosed reading; use {text|reading}.", ruby.start(), len(ruby.group()))
+            cue_count = sum(
+                len(SEGMENT_TIMESTAMP_RE.findall(ruby.group(2)))
+                for ruby in RUBY_TOKEN_RE.finditer(line)
+            )
+            if cue_count:
+                parsed, = parse_lrcx(line, infer_ends=False)
+                if sum(len(chunk.mora_cues) for chunk in parsed.segments) != cue_count:
+                    report("use one reading for the whole chunk and increasing mora timestamps. Use two timestamps between morae for a pause.")
+                for row, chunk in enumerate(parsed.segments):
+                    end = segment_end(parsed, row)
+                    if chunk.mora_cues and end is not None and chunk.start + chunk.mora_cues[-1][1] >= end:
+                        report("the last mora must start before the chunk ends.")
     return issues
 
 

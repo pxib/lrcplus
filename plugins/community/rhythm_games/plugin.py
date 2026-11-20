@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.background_job import BackgroundJob
-from core.rhythm_analysis import BeatGrid, analyze_audio_rhythm, beat_grid
+from core.rhythm_analysis import BeatGrid, beat_grid, load_audio_rhythm
 
 
 # The default chart uses AR5, OD5 and CS4 on a 512×384 playfield.
@@ -61,6 +61,15 @@ VARIED_LOOKAHEAD_CHOICES = 8
 MAX_JUMP_PX = 180
 PATTERN_REST_MS = 650
 PATTERN_HISTORY_MS = 6000
+# Budgets for the default chart. Aim is expressed in hit-circle radii.
+BURST_WINDOW_MS = 1000
+BURST_TARGETS = 8
+SUSTAIN_WINDOW_MS = 6000
+SUSTAIN_TARGETS = 36
+CURSOR_SPEED = 16
+SUSTAIN_AIM_PER_SECOND = 8
+AIM_BURST_RADII = 12
+TURN_WEIGHT = 0.35
 RELIEF_SPACING = 0.8
 PATTERN_ALTERNATIVES = {
     "arc": ("line", "s_curve"),
@@ -89,6 +98,7 @@ class Note:
     on_beat: bool = False
     accented: bool = False
     beat_length_ms: int | None = None
+    generated: bool = False
 
     @property
     def finish_ms(self):
@@ -239,12 +249,17 @@ def full_song_passage(passages):
                         continue
             simultaneous = by_time.setdefault(note.time_ms, {})
             key = note.text, note.reading
-            if key not in simultaneous or finish > simultaneous[key].finish_ms:
-                simultaneous[key] = note if finish == note.finish_ms else replace(note, end_ms=None, spans=1)
+            candidate = note if finish == note.finish_ms else replace(note, end_ms=None, spans=1)
+            prior = simultaneous.get(key)
+            if prior is not None:
+                candidate = replace(max(prior, candidate, key=attrgetter("finish_ms")),
+                                    generated=prior.generated and candidate.generated)
+            simultaneous[key] = candidate
     notes = tuple(fit_sliders([
         replace(max(simultaneous.values(), key=lambda note: note.finish_ms),
                 text=" / ".join(text for text, _ in simultaneous),
-                reading=" / ".join(reading for _, reading in simultaneous if reading))
+                reading=" / ".join(reading for _, reading in simultaneous if reading),
+                generated=all(note.generated for note in simultaneous.values()))
         for _, simultaneous in sorted(by_time.items())
     ]))
     return Passage("Full song", notes, full_song=True)
@@ -372,6 +387,33 @@ def next_attack_after(attacks, cutoff):
     return attacks[index] if index < len(attacks) else float("inf")
 
 
+def limit_chart_density(notes):
+    """Thin crowded windows while keeping lyric anchors and authored targets."""
+    for window_ms, limit in ((BURST_WINDOW_MS, BURST_TARGETS), (SUSTAIN_WINDOW_MS, SUSTAIN_TARGETS)):
+        kept = [True] * len(notes)
+        recent = deque()
+        for index, note in enumerate(notes):
+            while recent and note.time_ms - notes[recent[0]].time_ms >= window_ms:
+                recent.popleft()
+            recent.append(index)
+            if len(recent) <= limit:
+                continue
+
+            # Prefer sustains, beats, and accents. For equal cues, open up the tightest gap.
+            times = [float("-inf"), *(notes[i].time_ms for i in recent), float("inf")]
+            choices = (
+                (notes[i].end_ms is not None, notes[i].on_beat, notes[i].accented, end - start, -i)
+                for i, start, end in zip(recent, times, times[2:]) if notes[i].generated
+            )
+            weakest = min(choices, default=None)
+            if weakest is not None:
+                dropped = -weakest[-1]
+                kept[dropped] = False
+                recent.remove(dropped)
+        notes = tuple(note for note, keep in zip(notes, kept) if keep)
+    return notes
+
+
 def infer_sustained_objects(notes, rhythm, timing, end_ms, *, spinners=False):
     """Cover held sounds while keeping the next independent attack playable."""
     played_attacks = ()
@@ -385,7 +427,8 @@ def infer_sustained_objects(notes, rhythm, timing, end_ms, *, spinners=False):
         if note.time_ms < free_at:
             continue
         audio_end = rhythm.sustained_end(note.time_ms)
-        end = audio_end if audio_end is not None else rhythm.held_melody_end(note.time_ms)
+        melody_end = rhythm.held_melody_end(note.time_ms)
+        end = melody_end if melody_end is not None else audio_end
         if end is None:
             yield note
             continue
@@ -403,11 +446,13 @@ def infer_sustained_objects(notes, rhythm, timing, end_ms, *, spinners=False):
         spin_gap = beat or 500
         spin_minimum = note.time_ms + max(MIN_SPINNER_MS, 3 * spin_gap)
         spin_limit = min(end_ms, next_attack) - spin_gap
-        if spinners and audio_end is not None and min(end, spin_limit) >= spin_minimum:
-            tail = timing.slider_tail(min(end, spin_limit), spin_minimum, min(end + 25, spin_limit))
-            free_at = tail + spin_gap
-            yield replace(note, end_ms=tail, spinner=True)
-            continue
+        if spinners and audio_end is not None:
+            spin_end = min(end, audio_end)
+            if min(spin_end, spin_limit) >= spin_minimum:
+                tail = timing.slider_tail(min(spin_end, spin_limit), spin_minimum, min(spin_end + 25, spin_limit))
+                free_at = tail + spin_gap
+                yield replace(note, end_ms=tail, spinner=True)
+                continue
 
         gap = slider_release_gap(beat)
         earliest = note.time_ms + (max(250, beat / 2) if beat else MIN_SLIDER_MS)
@@ -435,12 +480,13 @@ def mark_rhythm(note, rhythm, timing):
 
 
 def audio_notes(rhythm, timing, start, end):
-    notes = tuple(mark_rhythm(Note(time_ms, ""), rhythm, timing) for time_ms in timing.taps(start, end))
+    notes = tuple(mark_rhythm(Note(time_ms, "", generated=True), rhythm, timing)
+                  for time_ms in timing.taps(start, end))
     return tuple(infer_sustained_objects(notes, rhythm, timing, end, spinners=True))
 
 
 def audio_beat_passage(rhythm, duration_ms):
-    notes = audio_notes(rhythm, ChartTiming.from_audio(rhythm), 0, duration_ms or float("inf"))
+    notes = limit_chart_density(audio_notes(rhythm, ChartTiming.from_audio(rhythm), 0, duration_ms or float("inf")))
     return Passage("Audio beats", notes, full_song=True) if notes else None
 
 
@@ -449,12 +495,12 @@ def apply_audio_rhythm(passage, rhythm, timing=None):
     notes = passage.notes
     if passage.line_end_ms is not None:
         anchor = notes[0]
-        notes = (anchor, *(Note(time_ms, anchor.text) for time_ms in timing.taps(
+        notes = (anchor, *(Note(time_ms, anchor.text, generated=True) for time_ms in timing.taps(
             anchor.time_ms + GENERATED_TAP_GAP_MS, passage.line_end_ms - GENERATED_TAP_GAP_MS + 1,
         )))
     notes = tuple(mark_rhythm(note, rhythm, timing) for note in notes)
     if passage.line_end_ms is not None:
-        notes = tuple(infer_sustained_objects(notes, rhythm, timing, passage.line_end_ms))
+        notes = limit_chart_density(tuple(infer_sustained_objects(notes, rhythm, timing, passage.line_end_ms)))
     return replace(passage, notes=notes)
 
 
@@ -471,7 +517,7 @@ def map_song(passages, rhythm, duration_ms):
             notes.extend(audio_notes(rhythm, timing, cursor, start - GENERATED_TAP_GAP_MS + 1))
         cursor = max(cursor, end + GENERATED_TAP_GAP_MS)
     notes.extend(audio_notes(rhythm, timing, cursor, duration_ms or float("inf")))
-    return replace(full_song, notes=tuple(sorted(notes, key=lambda note: note.time_ms))), *passages
+    return replace(full_song, notes=limit_chart_density(sorted(notes, key=attrgetter("time_ms")))), *passages
 
 
 def distance_snap_gap(note, gap):
@@ -909,6 +955,83 @@ def generate_circle_centers(notes, field, radius):
     return centers
 
 
+class AimBudget:
+    """Limit peak travel speed and rolling travel effort in the playfield."""
+
+    def __init__(self, radius):
+        self.speed = CURSOR_SPEED * radius / 1000
+        self.sustain_speed = SUSTAIN_AIM_PER_SECOND * radius / 1000
+        self.capacity = AIM_BURST_RADII * radius
+        self.history = deque()
+        self.used = 0.0
+
+    def travel(self, distance, turn_factor, duration_ms, finish_ms):
+        duration_ms = max(0, duration_ms)
+        start_ms = finish_ms - duration_ms
+        while self.history and start_ms - self.history[0][0] >= SUSTAIN_WINDOW_MS:
+            self.used -= self.history.popleft()[1]
+        # Charge only effort above the sustained pace, so exhausting the burst budget
+        # still leaves room to move every beat.
+        sustained = self.sustain_speed * duration_ms
+        effort = min(distance * turn_factor, self.speed * duration_ms,
+                     sustained + max(0, self.capacity - self.used))
+        excess = effort - sustained
+        if excess > 0:
+            self.history.append((finish_ms, excess))
+            self.used += excess
+        return effort / turn_factor
+
+
+def aim_turn(before, after):
+    if before is None:
+        return 0.0
+    cross = before.x() * after.y() - before.y() * after.x()
+    angle = atan2(abs(cross), QPointF.dotProduct(before, after))
+    return TURN_WEIGHT * angle / pi
+
+
+def fit_chart_aim(notes, proposed, field, radius):
+    """Budget cursor travel using the same centers and slider paths used for play."""
+    budget = None if notes is DEMO.notes else AimBudget(radius)
+    centers, paths = [], {}
+    origin, heading, previous = None, None, None
+    for index, (note, center) in enumerate(zip(notes, proposed)):
+        if previous is not None:
+            gap = note.time_ms - previous.finish_ms
+            if gap >= PATTERN_REST_MS or note.spinner:
+                heading = None
+            if budget is not None and not note.spinner:
+                movement = center - origin
+                distance = hypot(movement.x(), movement.y())
+                if distance:
+                    travel = budget.travel(distance, 1 + aim_turn(heading, movement), gap, note.time_ms)
+                    if travel < distance:
+                        center = origin + movement * (travel / distance)
+                    if travel:
+                        heading = movement
+        centers.append(center)
+        origin = center
+        if note.slider:
+            path = SliderPath.from_curve(center, *slider_curve(note, index, center, field))
+            distance = path.distances[-1] * note.spans
+            if budget is not None and distance:
+                start_heading = path.points[1] - center
+                end_heading = path.points[-1] - path.points[-2]
+                turn = aim_turn(start_heading, end_heading)
+                turn += (aim_turn(heading, start_heading) + TURN_WEIGHT * (note.spans - 1)) / note.spans
+                travel = budget.travel(distance, 1 + turn, note.finish_ms - note.time_ms, note.finish_ms)
+                if travel < distance:
+                    scale = travel / distance
+                    path = SliderPath(tuple(center + (point - center) * scale for point in path.points),
+                                      tuple(length * scale for length in path.distances))
+                if travel:
+                    heading = end_heading if note.spans % 2 else -start_heading
+            paths[index] = path
+            origin = path.at(note.slider_progress(note.finish_ms))
+        previous = note
+    return centers, paths
+
+
 @dataclass(frozen=True)
 class Judgement:
     index: int
@@ -1131,11 +1254,8 @@ class RhythmBoard(QWidget):
         self._field.moveCenter(QRectF(self.rect()).center())
         if self._layout_notes is not self.notes:
             field = QRectF(radius + 8, radius + 8, 512 - 2 * (radius + 8), 384 - 2 * (radius + 8))
-            self._logical_centers = generate_circle_centers(self.notes, field, radius)
-            self._slider_paths = {
-                index: SliderPath.from_curve(center, *slider_curve(note, index, center, field))
-                for index, (note, center) in enumerate(zip(self.notes, self._logical_centers)) if note.slider
-            }
+            proposed = generate_circle_centers(self.notes, field, radius)
+            self._logical_centers, self._slider_paths = fit_chart_aim(self.notes, proposed, field, radius)
             self._layout_notes = self.notes
         origin = self._field.topLeft()
         self._centers = [origin + center * self._scale for center in self._logical_centers]
@@ -1569,7 +1689,7 @@ class RhythmDialog(QDialog):
         job = self._rhythm_job = BackgroundJob(self, "rhythm-analysis")
         job.finished.connect(self._rhythm_ready)
         job.failed.connect(lambda _message: self._rhythm_ready(None))
-        job.start(analyze_audio_rhythm, self.track_path, self._rhythm_cancelled)
+        job.start(load_audio_rhythm, self.track_path, self._rhythm_cancelled)
         if self._audio_only:
             self.status.setText("Analyzing rhythm…")
 

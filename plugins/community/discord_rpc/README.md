@@ -3,6 +3,9 @@
 Open **Settings > Plugins > Discord Rich Presence > Settings** to customize the
 activity. Changes take effect when you save; restarting the plugin is unnecessary.
 
+- **Discord status** shows the connection and whether activity was sent or is
+  hidden by your playback settings. **Check connection** tests the Discord
+  desktop connection without publishing an activity.
 - Choose Listening to, Playing, Watching, or Competing in.
 - Edit the details, state, and artwork hover text. Leave a field empty to hide it.
 - Show or hide playback progress and activity while paused or stopped.

@@ -4,7 +4,8 @@ import re
 from PySide6.QtCore import Qt, QSignalBlocker
 from PySide6.QtWidgets import QMessageBox
 from lyrics.models import LyricSegment
-from lyrics.writer import format_timestamp
+from lyrics.writer import format_mora_reading, format_timestamp
+from lyrics.lrcx_parser import parse_mora_reading
 from lyrics.karaoke_timing import next_lyric_start, segment_end
 from core.debug import debug_print
 from core.fonts import covering_font
@@ -471,6 +472,8 @@ class LyricsEditorKaraokeMixin:
             for old_a, old_b, old_segment in old_ranges:
                 if old_b <= a or old_a >= b:
                     continue
+                if (a, b) == (old_a, old_b):
+                    child.mora_cues = old_segment.mora_cues
                 old_spans = list(getattr(old_segment, "ruby_spans", []) or [])
                 if not old_spans:
                     old_ruby = getattr(old_segment, "ruby", None)
@@ -579,8 +582,14 @@ class LyricsEditorKaraokeMixin:
         )
         # Timing-only edits must preserve inline ruby spans.
         replacement.ruby_spans = list(getattr(old, "ruby_spans", []) or [])
+        replacement.mora_cues = old.mora_cues
         replacement.visual_line = old.visual_line
         line.segments[row] = replacement
+        ruby_item = self.segment_table.item(row, 3)
+        if change_start and replacement.mora_cues and ruby_item is not None:
+            blocker = QSignalBlocker(self.segment_table)
+            ruby_item.setText(format_mora_reading(old.ruby, new_start, old.mora_cues))
+            del blocker
         if old.needs_timing_review:
             blocker = QSignalBlocker(self.segment_table)
             for column in range(4):
@@ -628,10 +637,29 @@ class LyricsEditorKaraokeMixin:
                 del blocker
                 QMessageBox.warning(self, "Invalid Timestamp", str(error))
                 return
+        old = line.segments[row]
+        ruby = old.ruby
+        cues = old.mora_cues
+        if item.column() == 3:
+            raw_reading = item.text().strip()
+            ruby, cues = parse_mora_reading(raw_reading, old.start)
+            full_span = not old.ruby_spans or (
+                len(old.ruby_spans) == 1 and old.ruby_spans[0][:2] == (0, len(old.text))
+            )
+            end = segment_end(line, row, next_lyric_start(self.lines, line))
+            if ruby != raw_reading and (not cues or not full_span or
+                    (end is not None and old.start + cues[-1][1] >= end)):
+                previous = old.ruby_spans[0][2] if len(old.ruby_spans) == 1 else old.ruby or ""
+                blocker = QSignalBlocker(self.segment_table)
+                item.setText(format_mora_reading(previous, old.start, old.mora_cues))
+                del blocker
+                self.karaoke_hint.setText(
+                    "Use one reading for the whole chunk and increasing mora timestamps within it. Use two timestamps between morae for a pause."
+                )
+                return
         self._push_undo_state()
         # Timing edits and text/ruby edits both preserve the canonical segment
         # object. Only the column that was actually edited may change timing.
-        old = line.segments[row]
         start_time = float(old.start)
         end_time = getattr(old, "end", None)
 
@@ -657,9 +685,9 @@ class LyricsEditorKaraokeMixin:
 
         else:
             text_item = self.segment_table.item(row, 2)
-            ruby_item = self.segment_table.item(row, 3)
             text_value = text_item.text() if text_item is not None else old.text
-            ruby = ruby_item.text().strip() if ruby_item is not None else ""
+            if item.column() != 3 and len(old.ruby_spans) == 1:
+                ruby = old.ruby_spans[0][2]
             ruby = ruby or None
             instant_box = self.segment_table.cellWidget(row, 4)
             instant = instant_box.isChecked() if instant_box else old.instant
@@ -673,6 +701,8 @@ class LyricsEditorKaraokeMixin:
             )
             old_spans = list(getattr(old, "ruby_spans", []) or [])
             replacement.visual_line = old.visual_line
+            if text_value == old.text:
+                replacement.mora_cues = cues
             if item.column() == 3:
                 replacement.ruby_source = "manual" if ruby else None
             if item.column() == 3 and len(old_spans) == 1:
@@ -695,7 +725,7 @@ class LyricsEditorKaraokeMixin:
         line.text = text
         line.has_karaoke = (
             line.has_karaoke or item.column() in (0, 1) or len(line.segments) > 1
-            or any(segment.instant for segment in line.segments)
+            or any(segment.instant or segment.mora_cues for segment in line.segments)
         )
         self.karaoke_dirty = True
         self._mark_document_dirty()
