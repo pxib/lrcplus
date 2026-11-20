@@ -1228,6 +1228,10 @@ class ManiaRound(RoundScore):
     def is_holding(self, index):
         return index in self._heads
 
+    def held_note(self, lane):
+        # Accepted holds stay at the front of their lane until release or expiry.
+        return self.notes[self._lanes[lane][0]]
+
     def caption_note(self, position_ms):
         if self.current is None:
             return None
@@ -1752,6 +1756,17 @@ class RhythmDialog(QDialog):
         self.calibration.setValue(saved if type(saved) is int else 0)
         self.calibration.setToolTip("Increase this value if your taps consistently register late.")
         options.addWidget(self.calibration)
+        self.mania_theme = QComboBox()
+        self.mania_theme.setAccessibleName("Mania theme")
+        self.mania_theme.addItem("Neon", "neon")
+        self.mania_theme.addItem("Classic", "classic")
+        self.mania_theme.setCurrentIndex(max(0, self.mania_theme.findData(api.get_setting("mania_theme", "neon"))))
+        self.mania_theme_label = QLabel("Theme")
+        self.mania_theme_label.setBuddy(self.mania_theme)
+        options.addWidget(self.mania_theme_label)
+        options.addWidget(self.mania_theme)
+        self.mania_theme_label.hide()
+        self.mania_theme.hide()
 
         self.tabs = QTabWidget()
         self.tabs.setAccessibleName("Rhythm game mode")
@@ -1759,6 +1774,7 @@ class RhythmDialog(QDialog):
         self.circle_board.tapped.connect(self._tap)
         self.circle_board.pointer_changed.connect(self._pointer_changed)
         self.mania_board = ManiaBoard(self.tabs, LEAD_IN_MS)
+        self.mania_board.set_theme(self.mania_theme.currentData())
         self.mania_board.pressed.connect(lambda lane: self._lane_input(lane, True))
         self.mania_board.released.connect(lambda lane: self._lane_input(lane, False))
         self.tabs.addTab(self.circle_board, "Circles")
@@ -1789,6 +1805,7 @@ class RhythmDialog(QDialog):
         buttons.addWidget(close)
         self.passage.currentIndexChanged.connect(self._select_passage)
         self.tabs.currentChanged.connect(self._select_passage)
+        self.mania_theme.currentIndexChanged.connect(self._change_mania_theme)
         self._show_passage()
 
     @property
@@ -1836,14 +1853,23 @@ class RhythmDialog(QDialog):
                 self.status.setText(self.board.instructions)
 
     def _select_passage(self):
+        show_theme = self.board is self.mania_board
+        self.mania_theme_label.setVisible(show_theme)
+        self.mania_theme.setVisible(show_theme)
         if self.mania_sounds is not None:
             self.mania_sounds.stop()
+        self.mania_board.clear_feedback()
         if self._waiting_for_rhythm:
             self._waiting_for_rhythm = False
             self.start.setEnabled(True)
         self._show_passage()
         self.start.setText("Start")
         self.status.setText(self.board.instructions if self._selected_passage().notes else "Analyzing rhythm…")
+
+    def _change_mania_theme(self):
+        theme = self.mania_theme.currentData()
+        self.mania_board.set_theme(theme)
+        self.api.set_setting("mania_theme", theme)
 
     def _selected_passage(self):
         return self.passages[self.passage.currentIndex()]
@@ -2034,35 +2060,48 @@ class RhythmDialog(QDialog):
         position = self._position()
         judgements = self.round.advance(position)
         play_sound = False
+        early_release = None
         if pressed:
             judgement, play_sound = self.round.press(position, lane)
         else:
             judgement = self.round.release(position, lane)
+            if judgement is not None and judgement.value == 0:
+                early_release = judgement
         if judgement is not None:
             judgements.append(judgement)
-        self._show_frame(position, judgements)
+        self._show_frame(position, judgements, early_release=early_release)
         if play_sound and self.mania_sounds is not None:
-            sound = self.mania_sounds.holds[lane] if judgement is None else self.mania_sounds.taps[judgement.value][lane]
-            self.mania_sounds.play(sound, self.hit_sound)
+            if judgement is None:
+                self.mania_sounds.play_note(self.round.held_note(lane), None, self.hit_sound)
+            else:
+                note = self.round.notes[judgement.index]
+                self.mania_sounds.play_note(note, judgement.value, self.hit_sound)
 
-    def _show_frame(self, position, judgements):
+    def _show_frame(self, position, judgements, *, early_release=None):
         round_ = self.round
-        self.board.set_frame(round_.notes, round_.index, position, round_)
+        board = self.board
+        mania = isinstance(round_, ManiaRound)
+        board.set_frame(round_.notes, round_.index, position, round_)
         for judgement in judgements:
-            self.board.animate(judgement)
-            if isinstance(round_, ManiaRound) and self.mania_sounds is not None:
+            if mania:
+                board.animate(judgement, early_release=judgement is early_release)
                 note = round_.notes[judgement.index]
-                if note.end_ms is not None:
-                    self.mania_sounds.holds[note.lane].stop()
+                if note.end_ms is not None and self.mania_sounds is not None:
+                    self.mania_sounds.stop_hold(note.lane)
+            else:
+                board.animate(judgement)
         if judgements:
-            value = judgements[-1].value
-            self.status.setText(str(value) if value else "Miss")
-        note = round_.caption_note(position) if isinstance(round_, ManiaRound) else round_.current
+            if mania:
+                self.status.clear()
+            else:
+                value = judgements[-1].value
+                self.status.setText(str(value) if value else "Miss")
+        note = round_.caption_note(position) if mania else round_.current
         caption = note.text if note else ""
         if note and note.reading:
             caption += f"  /  {note.reading}"
         self.caption.setText(self.caption.fontMetrics().elidedText(
-            caption, Qt.TextElideMode.ElideRight, self.board.width(),
+            caption, Qt.TextElideMode.ElideRight, board.width(),
         ))
         self._show_live_score()
 
@@ -2107,6 +2146,7 @@ class RhythmDialog(QDialog):
         self.start.setEnabled(not running)
         self.passage.setEnabled(not running)
         self.calibration.setEnabled(not running)
+        self.mania_theme.setEnabled(not running)
         self.tabs.setTabEnabled(1 - self.tabs.currentIndex(), not running)
         if running:
             if self.board is self.circle_board:

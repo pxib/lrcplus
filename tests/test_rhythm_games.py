@@ -180,13 +180,15 @@ def test_full_song_density_budget_keeps_authored_timing_and_line_anchors():
 def test_mania_maps_shared_chart_timing_to_holds_and_accented_chords():
     source = (
         Note(1000, "Chord", on_beat=True, accented=True),
-        Note(1250, "Sustain", "reading", end_ms=2400),
+        Note(1250, "Sustain", "reading", end_ms=2400, accented=True),
         Note(1500, "Tap"),
         Note(3000, "Long sustain", end_ms=5500, spinner=True),
     )
     first, second, hold, tap, long_hold = mania_chart(source)
     assert first.time_ms == second.time_ms == 1000
     assert first.lane != second.lane
+    assert first.golden and second.golden and hold.golden
+    assert not tap.golden and not long_hold.golden
     assert (hold.time_ms, hold.end_ms, hold.text, hold.reading) == (1250, 2400, "Sustain", "reading")
     assert (tap.time_ms, tap.text) == (1500, "Tap")
     assert tap.lane != hold.lane
@@ -202,6 +204,21 @@ def test_mania_chords_use_available_density_budget():
         assert sum(note.time_ms - 6000 < other.time_ms <= note.time_ms for other in notes) <= (
             rhythm_games.SUSTAIN_TARGETS
         )
+
+
+def test_mania_flicks_use_phrase_ending_taps_and_judge_as_single_presses():
+    source = (
+        Note(1000, ""), Note(1500, ""), Note(2100, ""), Note(2500, ""),
+        Note(3500, "", accented=True), Note(4000, "", end_ms=4800, accented=True),
+    )
+    notes = mania_chart(source)
+    flicks = tuple(note for note in notes if note.flick)
+    assert [(note.time_ms, note.golden) for note in flicks] == [(1500, False), (3500, True)]
+
+    round_ = ManiaRound(flicks)
+    for index, note in enumerate(flicks):
+        assert round_.press(note.time_ms, note.lane) == (Judgement(index, 300), True)
+        assert round_.release(note.time_ms, note.lane) is None
 
 
 @pytest.mark.parametrize(("previous", "lead_strength", "backing_strength"), [
@@ -1194,6 +1211,35 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch):
         assert dialog.board is dialog.circle_board and dialog.start.text() == "Start"
     finally:
         dialog.reject()
+        host.deleteLater()
+        qapp.processEvents()
+
+
+def test_mania_theme_selector_restores_the_saved_skin(qapp):
+    host = QMainWindow()
+    settings = {"mania_theme": "unknown"}
+    api = SimpleNamespace(get_current_track=lambda: None, get_setting=settings.get, set_setting=settings.__setitem__)
+    first = RhythmDialog(host, api, ())
+    try:
+        assert first.mania_theme.isHidden()
+        assert first.mania_board.theme == "neon"
+        first.tabs.setCurrentIndex(1)
+        assert not first.mania_theme.isHidden()
+        first.mania_theme.setCurrentIndex(first.mania_theme.findData("classic"))
+        assert first.mania_board.theme == "classic"
+        assert settings["mania_theme"] == "classic"
+
+        second = RhythmDialog(host, api, ())
+        try:
+            second.tabs.setCurrentIndex(1)
+            assert second.mania_theme.currentText() == "Classic"
+            assert second.mania_board.theme == "classic"
+            second._set_controls_running(True)
+            assert not second.mania_theme.isEnabled()
+        finally:
+            second.reject()
+    finally:
+        first.reject()
         host.deleteLater()
         qapp.processEvents()
 
