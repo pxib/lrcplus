@@ -1,10 +1,11 @@
 """Precise boundary nudging and bounded audio preview for the Karaoke tab."""
 
 from PySide6.QtCore import QSignalBlocker
-from PySide6.QtWidgets import QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton
+from PySide6.QtWidgets import QDialog, QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton
 
 from lyrics.karaoke_timing import next_lyric_start, segment_end
-from lyrics.writer import format_timestamp
+from lyrics.writer import format_mora_reading, format_timestamp
+from ui.mora_timing_dialog import MoraTimingDialog
 
 
 class KaraokeEditorToolsMixin:
@@ -26,7 +27,48 @@ class KaraokeEditorToolsMixin:
         self.preview_karaoke_segment_button.setToolTip("Play the selected segment. Very short segments include extra audio context.")
         self.preview_karaoke_segment_button.clicked.connect(self.preview_karaoke_segment)
         row.addWidget(self.preview_karaoke_segment_button)
+        self.edit_mora_timing_button = QPushButton("Mora Timing…")
+        self.edit_mora_timing_button.setToolTip("Edit the selected chunk's furigana timing on a waveform.")
+        self.edit_mora_timing_button.clicked.connect(self.edit_mora_timing)
+        row.addWidget(self.edit_mora_timing_button)
         layout.addLayout(row)
+
+    def edit_mora_timing(self):
+        _, line = self._current_line()
+        row = self.segment_table.currentRow()
+        if line is None or not 0 <= row < len(line.segments) or self.segment_table.isRowHidden(row):
+            self.karaoke_hint.setText("Select a karaoke chunk to edit its mora timing.")
+            return
+        segment = line.segments[row]
+        reading = segment.ruby
+        if segment.ruby_spans:
+            if len(segment.ruby_spans) != 1 or segment.ruby_spans[0][:2] != (0, len(segment.text)):
+                self.karaoke_hint.setText("Split the chunk so one ruby reading covers the entire chunk.")
+                return
+            reading = segment.ruby_spans[0][2]
+        if not reading:
+            start = sum(len(chunk.text) for chunk in line.segments[:row])
+            end = start + len(segment.text)
+            reading = next((token["reading"] for token in self._furigana_editor_tokens(line, include_generated=True)
+                            if token.get("ruby_start", token["start"]) == start
+                            and token.get("ruby_end", token["end"]) == end and token.get("reading")), None)
+        if not reading:
+            self.karaoke_hint.setText("Add a reading in the Ruby column first.")
+            return
+        if segment.instant:
+            self.karaoke_hint.setText("Turn off Instant for this chunk to use a mora sweep.")
+            return
+        end = segment_end(line, row, next_lyric_start(self.lines, line))
+        if end is None or round(end * 1000) <= round(segment.start * 1000):
+            self.karaoke_hint.setText("Give this chunk an End timestamp after its Start.")
+            return
+        dialog = MoraTimingDialog(self, segment, reading, end)
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                text = format_mora_reading(reading, segment.start, dialog.cues())
+                self.segment_table.item(row, 3).setText(text)
+        finally:
+            dialog.deleteLater()
 
     def nudge_karaoke_boundary(self, direction):
         _, line = self._current_line()

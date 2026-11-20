@@ -22,9 +22,10 @@ from core.rhythm_analysis import AudioRhythm, analyze_audio_rhythm, beat_grid, l
 from core.rhythm_melody import MelodyNote
 from lyrics.models import LyricLine, LyricSegment
 from plugins.community.rhythm_games import plugin as rhythm_games
+from plugins.community.rhythm_games.mania import MANIA_DEMO, ManiaNote
 from plugins.community.rhythm_games.plugin import (
-    Judgement, Note, Passage, RhythmBoard, RhythmDialog, Round, apply_audio_rhythm, audio_beat_passage,
-    circle_patterns, full_song_passage, generate_circle_centers, lyric_passages,
+    Judgement, ManiaRound, Note, Passage, RhythmBoard, RhythmDialog, Round, apply_audio_rhythm,
+    audio_beat_passage, circle_patterns, full_song_passage, generate_circle_centers, lyric_passages, mania_chart,
 )
 
 
@@ -174,6 +175,33 @@ def test_full_song_density_budget_keeps_authored_timing_and_line_anchors():
         for window, limit in ((1000, rhythm_games.BURST_TARGETS), (6000, rhythm_games.SUSTAIN_TARGETS)):
             window_times = {time for time in times if end - window < time <= end}
             assert len(window_times) <= max(limit, len(window_times & protected))
+
+
+def test_mania_maps_shared_chart_timing_to_holds_and_accented_chords():
+    source = (
+        Note(1000, "Chord", on_beat=True, accented=True),
+        Note(1250, "Sustain", "reading", end_ms=2400),
+        Note(1500, "Tap"),
+        Note(3000, "Long sustain", end_ms=5500, spinner=True),
+    )
+    first, second, hold, tap, long_hold = mania_chart(source)
+    assert first.time_ms == second.time_ms == 1000
+    assert first.lane != second.lane
+    assert (hold.time_ms, hold.end_ms, hold.text, hold.reading) == (1250, 2400, "Sustain", "reading")
+    assert (tap.time_ms, tap.text) == (1500, "Tap")
+    assert tap.lane != hold.lane
+    assert (long_hold.time_ms, long_hold.end_ms) == (3000, 5500)
+    assert (first, second, hold, tap, long_hold) == mania_chart(source)
+
+
+def test_mania_chords_use_available_density_budget():
+    source = tuple(Note(time, "", on_beat=True, accented=True) for time in range(1000, 19000, 167))
+    notes = mania_chart(source)
+    assert {note.time_ms for note in notes} == {note.time_ms for note in source}
+    for note in notes:
+        assert sum(note.time_ms - 6000 < other.time_ms <= note.time_ms for other in notes) <= (
+            rhythm_games.SUSTAIN_TARGETS
+        )
 
 
 @pytest.mark.parametrize(("previous", "lead_strength", "backing_strength"), [
@@ -479,12 +507,13 @@ def test_song_round_waits_for_rhythm_analysis_and_uses_fallback_on_error(qapp, m
         qapp.processEvents()
 
 
+@pytest.mark.parametrize("mode", [0, 1])
 @pytest.mark.parametrize("rhythm", [
     AudioRhythm((2000, 2400)),
     AudioRhythm(melody_notes=(MelodyNote(2000, 2190, 63), MelodyNote(2400, 2580, 67))),
     None,
 ])
-def test_audio_only_start_uses_detected_beats_or_returns_to_demo(qapp, monkeypatch, rhythm):
+def test_audio_only_start_uses_detected_beats_or_returns_to_demo(qapp, monkeypatch, rhythm, mode):
     host = QMainWindow()
     host.media_player = SimpleNamespace(playbackState=lambda: QMediaPlayer.PlaybackState.StoppedState)
     host.volume_slider = SimpleNamespace(value=lambda: 25)
@@ -495,6 +524,7 @@ def test_audio_only_start_uses_detected_beats_or_returns_to_demo(qapp, monkeypat
     monkeypatch.setattr(dialog.player, "setSource", Mock())
     dialog._rhythm_job = Mock()
     try:
+        dialog.tabs.setCurrentIndex(mode)
         assert dialog.passage.currentText() == "Audio beats"
         dialog.start.click()
         assert dialog.round is None and not dialog.start.isEnabled()
@@ -502,9 +532,12 @@ def test_audio_only_start_uses_detected_beats_or_returns_to_demo(qapp, monkeypat
         if rhythm is None:
             assert dialog.passage.currentText() == "Demo" and dialog.start.isEnabled()
             assert dialog.round is None and not api.pause.called
+            if mode == 1:
+                assert dialog.board.notes is MANIA_DEMO
         else:
             assert dialog._selected_passage().full_song
             assert [note.time_ms for note in dialog.round.notes] == [2000, 2400]
+            assert isinstance(dialog.round, ManiaRound if mode == 1 else Round)
             api.pause.assert_called_once()
     finally:
         dialog.reject()
@@ -552,6 +585,37 @@ def test_full_song_waits_for_audio_end_while_passage_stops_after_last_note(
         dialog.reject()
         host.deleteLater()
         qapp.processEvents()
+
+
+def test_mania_round_judges_chords_and_overlapping_holds_independently():
+    notes = (
+        ManiaNote(1000, 0, end_ms=1600),
+        ManiaNote(1100, 1),
+        ManiaNote(1100, 2),
+        ManiaNote(1450, 3, end_ms=1850),
+        ManiaNote(1600, 0),
+    )
+    round_ = ManiaRound(notes)
+    assert round_.press(600, 0) == (None, False)
+    assert round_.press(1000, 3) == (None, False)
+    assert round_.press(1000, 0) == (None, True)
+    assert round_.press(1100, 2) == (Judgement(2, 300), True)
+    assert round_.press(1160, 1) == (Judgement(1, 100), True)
+    assert round_.current == notes[0] and round_.accuracy == pytest.approx(2 / 3)
+    assert round_.press(1450, 3) == (None, True)
+    assert round_.release(1520, 0) == Judgement(0, 300)
+    assert round_.press(1600, 0) == (Judgement(4, 300), True)
+    assert round_.release(1600, 3) == Judgement(3, 0)
+    assert round_.advance(float("inf")) == []
+    assert round_.current is None and round_.judged == len(notes)
+
+
+def test_mania_round_expires_misses_and_completes_held_tails_in_time_order():
+    notes = (ManiaNote(1000, 0, end_ms=1560), ManiaNote(1200, 3), ManiaNote(1250, 2))
+    round_ = ManiaRound(notes)
+    assert round_.press(1000, 0) == (None, True)
+    assert round_.advance(1560) == [Judgement(1, 0), Judgement(2, 0), Judgement(0, 300)]
+    assert round_.combo == 1 and round_.accuracy == pytest.approx(1 / 3)
 
 
 def test_rhythm_round_locks_future_notes_and_scores_each_note_once():
@@ -1060,6 +1124,80 @@ def test_100_feedback_stays_inside_the_field_for_a_stack_in_the_corner(qapp, mon
         board.deleteLater()
 
 
+def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch):
+    host = QMainWindow()
+    host.media_player = SimpleNamespace(playbackState=lambda: QMediaPlayer.PlaybackState.StoppedState)
+    host.volume_slider = SimpleNamespace(value=lambda: 25)
+    api = SimpleNamespace(get_current_track=lambda: None, get_setting=lambda _key, default: default, pause=Mock())
+    dialog = RhythmDialog(host, api, ())
+    host.audio_output = dialog.output
+    load = Mock()
+    monkeypatch.setattr(dialog.player, "setSourceDevice", load)
+    clock = 1000
+    monkeypatch.setattr(dialog, "_position", lambda: clock)
+    try:
+        dialog.open()
+        dialog.activateWindow()
+        qapp.processEvents()
+        assert dialog.tabs.tabText(0) == "Circles"
+        QTest.mouseClick(dialog.tabs.tabBar(), Qt.MouseButton.LeftButton, pos=dialog.tabs.tabBar().tabRect(1).center())
+        board = dialog.board
+        assert dialog.tabs.tabText(1) == "Mania"
+        assert board is dialog.mania_board and board.notes is MANIA_DEMO
+        assert "D, F, J, or K" in dialog.status.text()
+
+        dialog.start.click()
+        assert isinstance(dialog.round, ManiaRound) and not dialog.tabs.isTabEnabled(0)
+        assert load.call_args.args[1].toString() == "demo.wav"
+        dialog._media_status(QMediaPlayer.MediaStatus.LoadedMedia)
+        dialog.timer.stop()
+        dialog.preroll_until = float("inf")
+
+        QTest.keyClick(board, Qt.Key.Key_Tab, Qt.KeyboardModifier.ControlModifier)
+        assert dialog.board is board
+        QTest.keyClick(board, Qt.Key.Key_K)
+        assert dialog.round.judged == 0
+        QTest.keyClick(board, Qt.Key.Key_D)
+        clock = 1125
+        QTest.keyClick(board, Qt.Key.Key_F)
+        clock = 1500
+        QTest.keyClick(board, Qt.Key.Key_J)
+        clock = 2000
+        QTest.keyPress(board, Qt.Key.Key_K)
+        assert dialog.round.is_holding(3)
+        clock = 2500
+        QTest.keyClick(board, Qt.Key.Key_F)
+        assert dialog.caption.text() == "Tap F while holding K"
+        assert dialog.round.counts[300] == 4 and dialog.round.is_holding(3)
+        clock = 3000
+        dialog._tick()
+        QTest.keyRelease(board, Qt.Key.Key_K)
+        clock = 3500
+        QTest.keyPress(board, Qt.Key.Key_K)
+        QTest.keyClick(board, Qt.Key.Key_D)
+        QTest.keyRelease(board, Qt.Key.Key_K)
+        assert dialog.round.counts[300] == 7
+
+        clock = 3750
+        QTest.keyClick(board, Qt.Key.Key_J)
+        clock = 4500
+        QTest.keyPress(board, Qt.Key.Key_F)
+        assert dialog.round.is_holding(8)
+        clock = 4700
+        board.clearFocus()
+        assert dialog.round.counts[0] == 1
+
+        dialog._finish_round()
+        assert dialog.round is None and dialog.start.text() == "Retry"
+        assert dialog.tabs.isTabEnabled(0)
+        dialog.tabs.setCurrentIndex(0)
+        assert dialog.board is dialog.circle_board and dialog.start.text() == "Start"
+    finally:
+        dialog.reject()
+        host.deleteLater()
+        qapp.processEvents()
+
+
 def test_circles_require_aim_for_both_clicks_and_keys(qapp, monkeypatch):
     host = QMainWindow()
     api = SimpleNamespace(get_current_track=lambda: None, get_setting=lambda _key, default: default)
@@ -1250,6 +1388,7 @@ def test_menu_and_hidden_lyrics_shortcut_open_and_clean_up_plugin(qapp):
         action.trigger()
         assert action.text().startswith("Rhythm Games")
         assert instance.dialog.passage.currentText() == "Demo"
+        assert [instance.dialog.tabs.tabText(index) for index in range(2)] == ["Circles", "Mania"]
         instance.dialog.reject()
         assert instance.dialog is None
 

@@ -328,3 +328,68 @@ def test_reset_karaoke_enables_save_preserves_ruby_and_supports_undo(editor, mon
     assert editor.lines[0].segments[0].ruby_spans == [(0, 2, "keep")]
     editor.undo()
     assert editor.lines == before
+def test_visual_mora_timing_creates_gap_and_preserves_undo(editor, monkeypatch):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QDialog
+
+    from lyrics.lrcx_parser import parse_lrcx
+    from lyrics.writer import serialize_lrcx
+    from ui.mora_timing_dialog import MoraTimingDialog
+
+    line, = parse_lrcx("[00:12.000]{京|きょう}<00:12.900>", infer_ends=False)
+    editor.lines = [line]
+    editor._populate_lines(preserve_line_index=0)
+    editor._reset_history_baseline()
+
+    def edit(dialog):
+        dialog.show()
+        assert [dialog.table.item(row, 0).text() for row in range(2)] == ["きょ", "う"]
+        separator = dialog.separator
+        split = QPoint(round(separator._boundary_x(1)), separator.height() // 2)
+        QTest.mouseClick(separator, Qt.MouseButton.LeftButton, pos=split)
+        assert [dialog.table.item(row, 0).text() for row in range(3)] == ["き", "ょ", "う"]
+        QTest.mouseClick(separator, Qt.MouseButton.LeftButton, pos=split)
+        assert dialog.ranges == [(12000, 12450), (12450, 12900)]
+        wave = dialog.waveform
+        QTest.mouseClick(wave, Qt.MouseButton.RightButton, Qt.KeyboardModifier.AltModifier,
+                         pos=QPoint(round(wave._x_for_ms(12500)), 30))
+        assert dialog.ranges[0][1] == dialog.ranges[1][0]
+        assert abs(dialog.ranges[0][1] - 12500) <= 2
+        QTest.mouseClick(wave, Qt.MouseButton.RightButton, pos=QPoint(round(wave._x_for_ms(12350)), 30))
+        dialog.table.setCurrentCell(1, 0)
+        QTest.mouseClick(wave, Qt.MouseButton.LeftButton, pos=QPoint(round(wave._x_for_ms(12650)), 30))
+        assert abs(dialog.ranges[0][1] - 12350) <= 2
+        assert abs(dialog.ranges[1][0] - 12650) <= 2
+        dialog.accept()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(MoraTimingDialog, "exec", edit)
+    editor.edit_mora_timing_button.click()
+    assert len(line.segments[0].mora_cues) == 2
+    assert [offset for offset, _ in line.segments[0].mora_cues] == [2, 2]
+    assert parse_lrcx(serialize_lrcx([line]), infer_ends=False) == [line]
+    editor.undo()
+    assert editor.lines[0].segments[0].mora_cues == ()
+
+
+def test_visual_mora_timing_cancel_preserves_existing_cues(editor, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from lyrics.lrcx_parser import parse_lrcx
+    from ui.mora_timing_dialog import MoraTimingDialog
+
+    line, = parse_lrcx("[00:12.000]{穴|<00:12.000>あ<00:12.350><00:12.650>な}<00:12.900>")
+    editor.lines = [line]
+    editor._populate_lines(preserve_line_index=0)
+    original = line.segments[0].mora_cues
+
+    def cancel(dialog):
+        assert dialog.ranges == [(12000, 12350), (12650, 12900)]
+        dialog._move_boundary(0, "end", 12650)
+        dialog.reject()
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(MoraTimingDialog, "exec", cancel)
+    editor.edit_mora_timing_button.click()
+    assert line.segments[0].mora_cues == original

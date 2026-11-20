@@ -906,7 +906,8 @@ class LrcEditorDialog(
                 ruby_text = format_mora_reading(ruby_text, segment.start, segment.mora_cues)
                 ruby_item = make_item(ruby_text)
                 ruby_item.setToolTip(
-                    "Enter timestamps before morae. For a pause, use an end and next start together, "
+                    "Use Mora Timing… to edit on a waveform, or enter timestamps before morae. "
+                    "For a pause, use an end and next start together, "
                     "e.g. <00:12.000>あ<00:12.350><00:12.650>な."
                 )
                 self.segment_table.setItem(row, 3, ruby_item)

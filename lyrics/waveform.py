@@ -156,10 +156,13 @@ class WaveformWidget(QWidget):
     karaokeTimingFinished = Signal()
     lyricTimingRequested = Signal(str, int)
 
-    def __init__(self, parent=None, *, defer_hidden_load=False, shift_click_playback=False):
+    def __init__(self, parent=None, *, defer_hidden_load=False, shift_click_playback=False,
+                 show_timing_without_peaks=False, karaoke_boundary_labels=("Lyric start", "Next lyric")):
         super().__init__(parent)
         self._defer_hidden_load = defer_hidden_load
         self._shift_click_playback = shift_click_playback
+        self._show_timing_without_peaks = show_timing_without_peaks
+        self._karaoke_boundary_labels = karaoke_boundary_labels
         self._playback_click_active = False
         self._audio_path = None
         self._audio_load_pending = False
@@ -306,7 +309,7 @@ class WaveformWidget(QWidget):
         state = (
             tuple(normalized), int(selected_index), view_identity, boundary, line_start
         )
-        if state == getattr(self, "_karaoke_segments_state", None):
+        if state == getattr(self, "_karaoke_segments_state", None) and normalized == self._karaoke_segments:
             return
         self._karaoke_segments_state = state
         self._karaoke_segments = normalized
@@ -1242,12 +1245,13 @@ class WaveformWidget(QWidget):
             painter.setBrush(QBrush(QColor(60, 60, 65, 120)))
             painter.drawRoundedRect(rect, 6, 6)
 
-            if self._loading:
+            show_timing = self._show_timing_without_peaks and bool(self._karaoke_segments)
+            if self._loading and not show_timing:
                 painter.setPen(QPen(QColor(190, 190, 195), 1))
                 painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Loading waveform…")
                 return
 
-            if self._error or not self._peaks:
+            if (self._error or not self._peaks) and not show_timing:
                 painter.setPen(QPen(QColor(170, 170, 175), 1))
                 text = "Waveform unavailable" if self._error else "No waveform"
                 painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
@@ -1342,9 +1346,12 @@ class WaveformWidget(QWidget):
                         round(boundary_x), rect.bottom() - 1
                     )
                     painter.setPen(QPen(QColor(255, 240, 180, 255), 1))
+                    end_label = self._karaoke_boundary_labels[1]
+                    label_width = painter.fontMetrics().horizontalAdvance(end_label)
+                    label_x = min(boundary_x + 5, rect.right() - label_width)
                     painter.drawText(
-                        round(boundary_x + 5), rect.top() + 14,
-                        "Next lyric"
+                        round(max(rect.left(), label_x)), rect.top() + 14,
+                        end_label,
                     )
 
             # Karaoke lyric-start barrier. Yellow = lyric timestamp;
@@ -1363,7 +1370,7 @@ class WaveformWidget(QWidget):
                 painter.setPen(QPen(QColor(255, 240, 180, 255), 1))
                 painter.drawText(
                     round(line_start_x + 5), rect.top() + 14,
-                    "Lyric start",
+                    self._karaoke_boundary_labels[0],
                 )
 
             # Karaoke segment-level editor. Each segment occupies its real timing

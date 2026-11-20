@@ -1,6 +1,6 @@
 {
   "name": "Rhythm Games",
   "version": "0.1.0",
-  "description": "Play charts from karaoke timing, timed lyric lines, or detected audio beats.",
+  "description": "Play Circles or four-key Mania charts from lyric timing or detected audio beats.",
   "api_version": 3
 }

@@ -61,6 +61,11 @@ the preceding mora and the second starts the next one.
 
 Both sweeps hold at the boundary from 12.350 to 12.650.
 
+To edit visually, select the chunk in **Karaoke** and open **Mora Timing…**.
+Click between kana to split or join morae. Select a mora to move its start
+with the left mouse button and its end with the right mouse button. Hold
+Alt to move a shared boundary. A gap between the spans is a pause.
+
 ### Reading editor word groups
 
 In the visual reading editor, click a base word and Shift-click an adjacent

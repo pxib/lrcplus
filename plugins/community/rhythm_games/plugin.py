@@ -1,4 +1,4 @@
-"""A circular-target rhythm game with charts mapped from audio and lyric timing."""
+"""Circle and four-key rhythm games mapped from audio and lyric timing."""
 
 from array import array
 from bisect import bisect_left, bisect_right
@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from heapq import nsmallest
 from io import BytesIO
 from itertools import accumulate, cycle, pairwise
-from math import asinh, atan2, cos, exp, floor, hypot, pi, sin, sqrt, tau
+from math import asinh, atan2, cos, exp, floor, hypot, isfinite, pi, sin, sqrt, tau
 from operator import attrgetter
 from pathlib import Path
 from threading import Event
@@ -18,12 +18,13 @@ from PySide6.QtCore import QBuffer, QIODevice, QPointF, QRectF, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QCursor, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QSoundEffect
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QSpinBox,
+    QComboBox, QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QSpinBox, QTabWidget,
     QVBoxLayout, QWidget,
 )
 
 from core.background_job import BackgroundJob
 from core.rhythm_analysis import BeatGrid, beat_grid, load_audio_rhythm
+from plugins.community.rhythm_games.mania import LANE_KEYS, MANIA_DEMO, ManiaBoard, ManiaSounds, assign_lanes
 
 
 # The default chart uses AR5, OD5 and CS4 on a 512×384 playfield.
@@ -39,6 +40,8 @@ HIT_WINDOWS = ((300, 80 - 6 * OVERALL_DIFFICULTY),
 # Stable rounds the input error before comparing it against each strict window.
 HIT_WINDOW_MS = HIT_WINDOWS[-1][1] - 0.5
 EARLY_MISS_MS = 400
+MANIA_CHORD_GAP_MS = 900
+MANIA_RELEASE_WINDOW_MS = 80
 MIN_SLIDER_MS = 425
 MAX_SLIDER_MS = 1600
 GENERATED_TAP_GAP_MS = 180
@@ -412,6 +415,18 @@ def limit_chart_density(notes):
                 recent.remove(dropped)
         notes = tuple(note for note, keep in zip(notes, kept) if keep)
     return notes
+
+
+def mania_chart(notes):
+    """Map the source chart and layer occasional chords on accented beats."""
+    layered = []
+    next_chord = 0
+    for note in notes:
+        layered.append(replace(note, generated=False))
+        if note.on_beat and note.accented and note.time_ms >= next_chord and note.end_ms is None:
+            layered.append(replace(note, generated=True))
+            next_chord = note.time_ms + MANIA_CHORD_GAP_MS
+    return assign_lanes(limit_chart_density(layered))
 
 
 def infer_sustained_objects(notes, rhythm, timing, end_ms, *, spinners=False):
@@ -1038,15 +1053,19 @@ class Judgement:
     value: int
 
 
-class Round:
+def hit_grade(delta):
+    return next((value for value, window in HIT_WINDOWS if abs(delta) < window - 0.5), 0)
+
+
+class RoundScore:
     def __init__(self, notes):
         self.notes = notes
-        self.index = self.score = self.combo = self.best_combo = 0
+        self.index = self.judged = self.score = self.combo = self.best_combo = 0
         self.counts = dict.fromkeys((300, 100, 50, 0), 0)
-        drain_seconds = max(1, (notes[-1].finish_ms - notes[0].time_ms) / 1000) if notes else 1
+        self.finish_ms = max((note.finish_ms for note in notes), default=0)
+        drain_seconds = max(1, (self.finish_ms - notes[0].time_ms) / 1000) if notes else 1
         density = min(16, len(notes) / drain_seconds * 8)
         self.score_multiplier = round((CIRCLE_SIZE + OVERALL_DIFFICULTY + density) * 5 / 38)
-        self._reset_object()
 
     @property
     def current(self):
@@ -1054,23 +1073,43 @@ class Round:
 
     @property
     def accuracy(self):
-        if self.index == 0:
+        if self.judged == 0:
             return 1.0
-        return sum(value * count for value, count in self.counts.items()) / (300 * self.index)
+        return sum(value * count for value, count in self.counts.items()) / (300 * self.judged)
 
     @property
     def grade(self):
-        great = self.counts[300] / self.index if self.index else 0
+        great = self.counts[300] / self.judged if self.judged else 0
         no_miss = self.counts[0] == 0
         if great == 1:
             return "SS"
-        if no_miss and great > 0.9 and self.counts[50] < self.index * 0.01:
+        if no_miss and great > 0.9 and self.counts[50] < self.judged * 0.01:
             return "S"
         if great > 0.9 or (no_miss and great > 0.8):
             return "A"
         if great > 0.8 or (no_miss and great > 0.7):
             return "B"
         return "C" if great > 0.6 else "D"
+
+    def _increment_combo(self):
+        self.combo += 1
+        self.best_combo = max(self.best_combo, self.combo)
+
+    def _record_judgement(self, index, value, increment_combo=True):
+        self.judged += 1
+        self.counts[value] += 1
+        self.score += value + value * max(0, self.combo - 1) * self.score_multiplier // 25
+        if not value:
+            self.combo = 0
+        elif increment_combo:
+            self._increment_combo()
+        return Judgement(index, value)
+
+
+class Round(RoundScore):
+    def __init__(self, notes):
+        super().__init__(notes)
+        self._reset_object()
 
     def _reset_object(self):
         self.slider_head = None
@@ -1081,18 +1120,8 @@ class Round:
         self._spin_remainder = 0.0
         self._half_turns = 0
 
-    def _increment_combo(self):
-        self.combo += 1
-        self.best_combo = max(self.best_combo, self.combo)
-
     def _judge(self, value, increment_combo=True):
-        result = Judgement(self.index, value)
-        self.counts[value] += 1
-        self.score += value + value * max(0, self.combo - 1) * self.score_multiplier // 25
-        if not value:
-            self.combo = 0
-        elif increment_combo:
-            self._increment_combo()
+        result = self._record_judgement(self.index, value, increment_combo)
         self.index += 1
         self._reset_object()
         return result
@@ -1105,7 +1134,7 @@ class Round:
         delta = position_ms - note.time_ms
         if delta <= -EARLY_MISS_MS or delta >= HIT_WINDOW_MS:
             return None, False
-        value = next((value for value, window in HIT_WINDOWS if abs(delta) < window - 0.5), 0)
+        value = hit_grade(delta)
         if note.slider:
             self.slider_head = bool(value)
             if value:
@@ -1184,6 +1213,71 @@ class Round:
         return judgements
 
 
+class ManiaRound(RoundScore):
+    def __init__(self, notes):
+        super().__init__(notes)
+        self._lanes = tuple(deque() for _ in LANE_KEYS)
+        for index, note in enumerate(notes):
+            self._lanes[note.lane].append(index)
+        self._heads = {}
+        self._resolved = [False] * len(notes)
+
+    def is_judged(self, index):
+        return self._resolved[index]
+
+    def is_holding(self, index):
+        return index in self._heads
+
+    def caption_note(self, position_ms):
+        if self.current is None:
+            return None
+        index = bisect_right(self.notes, position_ms + HIT_WINDOWS[0][1], key=attrgetter("time_ms")) - 1
+        return self.notes[max(0, index)]
+
+    def _judge_lane(self, index, value):
+        self._resolved[index] = True
+        while self.index < len(self.notes) and self._resolved[self.index]:
+            self.index += 1
+        return self._record_judgement(index, value)
+
+    def press(self, position_ms, lane):
+        pending = self._lanes[lane]
+        if not pending or self.is_holding(pending[0]):
+            return None, False
+        index = pending[0]
+        note = self.notes[index]
+        value = hit_grade(position_ms - note.time_ms)
+        if not value:
+            return None, False
+        if note.end_ms is not None:
+            self._heads[index] = value
+            return None, True
+        pending.popleft()
+        return self._judge_lane(index, value), True
+
+    def release(self, position_ms, lane):
+        pending = self._lanes[lane]
+        if not pending or not self.is_holding(pending[0]):
+            return None
+        index = pending.popleft()
+        value = self._heads.pop(index)
+        return self._judge_lane(index, value if position_ms >= self.notes[index].end_ms - MANIA_RELEASE_WINDOW_MS else 0)
+
+    def advance(self, position_ms):
+        due = []
+        for pending in self._lanes:
+            while pending:
+                index = pending[0]
+                note = self.notes[index]
+                holding = self.is_holding(index)
+                deadline = note.end_ms if holding else note.time_ms + HIT_WINDOW_MS
+                if position_ms < deadline:
+                    break
+                value = self._heads.pop(index) if holding else 0
+                due.append((deadline, pending.popleft(), value if isfinite(position_ms) else 0))
+        return [self._judge_lane(index, value) for _, index, value in sorted(due)]
+
+
 def demo_wave():
     """Generate an original click track for the demo."""
     sample_rate = 22050
@@ -1210,6 +1304,7 @@ class RhythmBoard(QWidget):
     tap_buttons = (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton)
     combo_colors = ("#327e87", "#8a5497", "#9a643d", "#4e7956")
     judgement_colors = {300: "#69d6d4", 100: "#a4dc89", 50: "#f0c27a", 0: "#ed8184"}
+    instructions = HOW_TO_PLAY
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -1613,6 +1708,8 @@ class RhythmDialog(QDialog):
         self._rhythm_job = None
         self._rhythm_cancelled = Event()
         self._waiting_for_rhythm = False
+        self._mania_source = None
+        self._mania_notes = ()
         self.setWindowTitle("Rhythm Games")
         self.setModal(True)
         self.resize(760, 520)
@@ -1622,6 +1719,7 @@ class RhythmDialog(QDialog):
         self.player.setAudioOutput(self.output)
         self.hit_sound = QSoundEffect(self)
         self.hit_sound.setSource(QUrl.fromLocalFile(str(HIT_SOUND_PATH)))
+        self.mania_sounds = None
         self.demo_buffer = QBuffer(self)
         self.player.mediaStatusChanged.connect(self._media_status)
         self.player.positionChanged.connect(self._record_position)
@@ -1655,10 +1753,17 @@ class RhythmDialog(QDialog):
         self.calibration.setToolTip("Increase this value if your taps consistently register late.")
         options.addWidget(self.calibration)
 
-        self.board = RhythmBoard(self)
-        self.board.tapped.connect(self._tap)
-        self.board.pointer_changed.connect(self._pointer_changed)
-        layout.addWidget(self.board, 1)
+        self.tabs = QTabWidget()
+        self.tabs.setAccessibleName("Rhythm game mode")
+        self.circle_board = RhythmBoard(self.tabs)
+        self.circle_board.tapped.connect(self._tap)
+        self.circle_board.pointer_changed.connect(self._pointer_changed)
+        self.mania_board = ManiaBoard(self.tabs, LEAD_IN_MS)
+        self.mania_board.pressed.connect(lambda lane: self._lane_input(lane, True))
+        self.mania_board.released.connect(lambda lane: self._lane_input(lane, False))
+        self.tabs.addTab(self.circle_board, "Circles")
+        self.tabs.addTab(self.mania_board, "Mania")
+        layout.addWidget(self.tabs, 1)
         self.progress = QProgressBar()
         self.progress.setAccessibleName("Song progress")
         self.progress.setTextVisible(False)
@@ -1683,7 +1788,12 @@ class RhythmDialog(QDialog):
         close.clicked.connect(self.reject)
         buttons.addWidget(close)
         self.passage.currentIndexChanged.connect(self._select_passage)
+        self.tabs.currentChanged.connect(self._select_passage)
         self._show_passage()
+
+    @property
+    def board(self):
+        return self.tabs.currentWidget()
 
     def analyze_track(self):
         job = self._rhythm_job = BackgroundJob(self, "rhythm-analysis")
@@ -1723,28 +1833,41 @@ class RhythmDialog(QDialog):
         elif self.round is None and self._selected_passage() is not DEMO:
             self._show_passage()
             if self._audio_only:
-                self.status.setText(HOW_TO_PLAY)
+                self.status.setText(self.board.instructions)
 
     def _select_passage(self):
+        if self.mania_sounds is not None:
+            self.mania_sounds.stop()
         if self._waiting_for_rhythm:
             self._waiting_for_rhythm = False
             self.start.setEnabled(True)
         self._show_passage()
         self.start.setText("Start")
-        self.status.setText(HOW_TO_PLAY if self._selected_passage().notes else "Analyzing rhythm…")
+        self.status.setText(self.board.instructions if self._selected_passage().notes else "Analyzing rhythm…")
 
     def _selected_passage(self):
         return self.passages[self.passage.currentIndex()]
 
+    def _chart_notes(self, passage):
+        if self.board is self.circle_board:
+            return passage.notes
+        if passage is DEMO:
+            return MANIA_DEMO
+        if self._mania_source is not passage.notes:
+            self._mania_source = passage.notes
+            self._mania_notes = mania_chart(passage.notes)
+        return self._mania_notes
+
     def _show_passage(self):
         passage = self._selected_passage()
-        position = passage.notes[0].time_ms - LEAD_IN_MS + FADE_IN_MS if passage.notes else 0
-        self.board.set_frame(passage.notes, 0, position)
+        notes = self._chart_notes(passage)
+        position = notes[0].time_ms - LEAD_IN_MS + FADE_IN_MS if notes else 0
+        self.board.set_frame(notes, 0, position)
         self.caption.clear()
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
         self.progress.setVisible(passage.full_song)
-        self.score.setText(f"{len(passage.notes)} targets" if passage.notes else "")
+        self.score.setText(f"{len(notes)} targets" if notes else "")
 
     def _start_round(self):
         if self.pending_start or self.round is not None:
@@ -1755,7 +1878,8 @@ class RhythmDialog(QDialog):
             self.start.setEnabled(False)
             self.status.setText("Analyzing rhythm…")
             return
-        if not passage.notes:
+        notes = self._chart_notes(passage)
+        if not notes:
             return
         if not self.main_paused:
             self.resume_main = self.host.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
@@ -1765,10 +1889,17 @@ class RhythmDialog(QDialog):
         volume = min(1.0, self.host.volume_slider.value() / 100)
         self.output.setDevice(device)
         self.output.setVolume(volume)
-        self.hit_sound.stop()
+        self._stop_effects()
         self.hit_sound.setAudioDevice(device)
         self.hit_sound.setVolume(volume * HIT_SOUND_GAIN)
-        self.round = Round(passage.notes)
+        if self.board is self.mania_board:
+            if self.mania_sounds is None:
+                self.mania_sounds = ManiaSounds(self, HIT_SOUND_PATH.parent)
+            self.mania_sounds.configure(device, volume * HIT_SOUND_GAIN)
+            self.round = ManiaRound(notes)
+        else:
+            self.round = Round(notes)
+        self.board.clear_inputs()
         self.board.clear_feedback()
         self._show_passage()
         self.pending_start = True
@@ -1802,7 +1933,7 @@ class RhythmDialog(QDialog):
                 self.progress.setValue(self.progress.maximum())
             # Process a slider tail or spinner that ends on the last audio sample.
             position = self.player.duration() - self.offset_ms
-            self._show_frame(position, self._advance_round(position, self.board.pointer))
+            self._show_frame(position, self._advance_round(position))
             self._finish_round()
 
     def _play_round(self):
@@ -1850,7 +1981,7 @@ class RhythmDialog(QDialog):
         if self.round is None or self.pending_start:
             return
         position = self._position()
-        self._show_frame(position, self._advance_round(position, self.board.pointer))
+        self._show_frame(position, self._advance_round(position))
         if self._selected_passage().full_song:
             audio_position = self.player.position()
             self.progress.setValue(audio_position)
@@ -1858,7 +1989,7 @@ class RhythmDialog(QDialog):
             # The media backend can reach the duration without sending EndOfMedia.
             if duration > 0 and audio_position >= duration:
                 self._finish_round()
-        elif position > self.round.notes[-1].finish_ms + HIT_WINDOW_MS + 200:
+        elif position > self.round.finish_ms + HIT_WINDOW_MS + 200:
             self._finish_round()
 
     def _playing_round(self):
@@ -1866,19 +1997,24 @@ class RhythmDialog(QDialog):
                 and (self.preroll_until is not None
                      or self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState))
 
-    def _advance_round(self, position, point):
+    def _advance_round(self, position, point=None):
         round_ = self.round
+        if isinstance(round_, ManiaRound):
+            return round_.advance(position)
+        if point is None:
+            point = self.circle_board.pointer
         tracking = lambda time: self.board.tracks_slider(round_.index, point, time)
         angle = self.board.spin_angle(point) if round_.current and round_.current.spinner else None
         return round_.advance(position, tracking, angle)
 
     def _pointer_changed(self, point):
-        if self._playing_round() and self.round.current and self.round.current.end_ms is not None:
+        if (isinstance(self.round, Round) and self._playing_round()
+                and self.round.current and self.round.current.end_ms is not None):
             position = self._position()
             self._show_frame(position, self._advance_round(position, point))
 
     def _tap(self, point):
-        if not self._playing_round() or self.round.current is None:
+        if not isinstance(self.round, Round) or not self._playing_round() or self.round.current is None:
             return
         position = self._position()
         judgements = self._advance_round(position, point)
@@ -1892,15 +2028,36 @@ class RhythmDialog(QDialog):
                 self.hit_sound.play()
         self._show_frame(position, judgements)
 
+    def _lane_input(self, lane, pressed):
+        if not isinstance(self.round, ManiaRound) or not self._playing_round():
+            return
+        position = self._position()
+        judgements = self.round.advance(position)
+        play_sound = False
+        if pressed:
+            judgement, play_sound = self.round.press(position, lane)
+        else:
+            judgement = self.round.release(position, lane)
+        if judgement is not None:
+            judgements.append(judgement)
+        self._show_frame(position, judgements)
+        if play_sound and self.mania_sounds is not None:
+            sound = self.mania_sounds.holds[lane] if judgement is None else self.mania_sounds.taps[judgement.value][lane]
+            self.mania_sounds.play(sound, self.hit_sound)
+
     def _show_frame(self, position, judgements):
         round_ = self.round
         self.board.set_frame(round_.notes, round_.index, position, round_)
         for judgement in judgements:
             self.board.animate(judgement)
+            if isinstance(round_, ManiaRound) and self.mania_sounds is not None:
+                note = round_.notes[judgement.index]
+                if note.end_ms is not None:
+                    self.mania_sounds.holds[note.lane].stop()
         if judgements:
             value = judgements[-1].value
             self.status.setText(str(value) if value else "Miss")
-        note = round_.current
+        note = round_.caption_note(position) if isinstance(round_, ManiaRound) else round_.current
         caption = note.text if note else ""
         if note and note.reading:
             caption += f"  /  {note.reading}"
@@ -1927,10 +2084,18 @@ class RhythmDialog(QDialog):
         self.status.setText("   ·   ".join(f"{count} {value or 'Miss'}" for value, count in result.counts.items()))
         self.start.setText("Retry")
         self._set_controls_running(False)
+        if isinstance(result, ManiaRound) and self.mania_sounds is not None:
+            self._stop_effects()
+            self.mania_sounds.play_result(result.counts)
+
+    def _stop_effects(self):
+        self.hit_sound.stop()
+        if self.mania_sounds is not None:
+            self.mania_sounds.stop()
 
     def _playback_error(self, error, message):
         self.timer.stop()
-        self.hit_sound.stop()
+        self._stop_effects()
         self.board.clear_feedback()
         self.round = None
         self.pending_start = self.source_ready = False
@@ -1942,8 +2107,10 @@ class RhythmDialog(QDialog):
         self.start.setEnabled(not running)
         self.passage.setEnabled(not running)
         self.calibration.setEnabled(not running)
+        self.tabs.setTabEnabled(1 - self.tabs.currentIndex(), not running)
         if running:
-            self.board.setCursor(Qt.CursorShape.CrossCursor)
+            if self.board is self.circle_board:
+                self.board.setCursor(Qt.CursorShape.CrossCursor)
             self.board.setFocus(Qt.FocusReason.OtherFocusReason)
         else:
             self.board.clear_inputs()
@@ -1956,9 +2123,10 @@ class RhythmDialog(QDialog):
             self._rhythm_job.close()
             self._rhythm_job = None
         self.timer.stop()
-        self.hit_sound.stop()
+        self._stop_effects()
         self.board.clear_feedback()
         self.round = None
+        self.board.clear_inputs()
         self.pending_start = False
         self.preroll_until = None
         self.player.stop()
