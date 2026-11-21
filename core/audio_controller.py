@@ -590,6 +590,16 @@ class AudioController:
             return abs(float(getattr(self, "playback_speed", 1.0)) - 1.0) >= 0.001
 
 
+        def _pcm_equalizer_active(self):
+            equalizer = getattr(self, "_equalizer", None)
+            return equalizer is not None and equalizer.configuration is not None
+
+
+        def _refresh_equalizer_route(self):
+            if not getattr(self, "_closing", False):
+                self._configure_pcm_volume(self.volume_slider.value())
+
+
         def _configure_pcm_volume(self, value, refresh_format=False):
             value = int(value)
             decoder = getattr(self.media_player, "_decoder", None)
@@ -615,16 +625,18 @@ class AudioController:
             gain_active = self._current_pcm_gain > 1.0
             worker = getattr(self, "_pcm_worker", None)
             owns_output = getattr(worker, "owns_output", False)
+            needs_pcm = (gain_active or pitch_active or rate_active
+                         or (owns_output and self._pcm_equalizer_active()))
             if owns_output:
                 worker.configure(
                     self.audio_output.device(), self.playback_speed,
                     self._pcm_pitch_shift(), self._current_pcm_gain,
-                    enabled=(gain_active or pitch_active or rate_active)
+                    enabled=needs_pcm
                             and not getattr(self, "_audio_output_unavailable", False)
                             and getattr(self, "_audio_device_dialog", None) is None,
                     playing=self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState,
                 )
-            if not gain_active and not pitch_active and not rate_active:
+            if not needs_pcm:
                 # Keep the decoder's buffer output attached when returning to
                 # native playback, so Qt does not reconfigure the renderer
                 # during the handoff from processed audio.
@@ -823,9 +835,11 @@ class AudioController:
                 self._flush_pcm_output()
             if (
                 state == QMediaPlayer.PlaybackState.PlayingState
+                and not getattr(self.media_player, "_gapless_active", False)
                 and (getattr(self, "_current_pcm_gain", 1.0) > 1.0
                      or abs(self._pcm_pitch_shift()) >= 0.001
-                     or self._pcm_rate_active())
+                     or self._pcm_rate_active()
+                     or self._pcm_equalizer_active())
                 and self._pcm_buffer_output is not None
                 and self.media_player.audioBufferOutput()
                 is not self._pcm_buffer_output

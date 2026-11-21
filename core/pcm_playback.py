@@ -41,7 +41,7 @@ class PcmPlayback(QObject):
     _error = Signal(int, str)
     _drained = Signal(int)
 
-    def __init__(self, parent=None, *, sink_factory=QAudioSink):
+    def __init__(self, parent=None, *, sink_factory=QAudioSink, equalizer=None):
         super().__init__(parent)
         self._lock = Lock()
         self._controls = _Controls()
@@ -60,7 +60,7 @@ class PcmPlayback(QObject):
         self._buffer_receivers = set()
         self._thread = QThread()
         self._thread.setObjectName("processed-audio")
-        self._engine = _PlaybackEngine(self, sink_factory)
+        self._engine = _PlaybackEngine(self, sink_factory, equalizer)
         self._engine.moveToThread(self._thread)
         self._thread.started.connect(self._engine.start)
         self._wake.connect(self._engine.pump, Qt.ConnectionType.QueuedConnection)
@@ -279,12 +279,13 @@ class _BufferReceiver(QObject):
 
 
 class _PlaybackEngine(QObject):
-    def __init__(self, mailbox, sink_factory):
+    def __init__(self, mailbox, sink_factory, equalizer):
         super().__init__()
         self._mailbox = mailbox
         self._sink_factory = sink_factory
         self._processor = PcmPitchProcessor()
         self._rate_processor = PcmRateProcessor()
+        self._equalizer = equalizer
         self._last_input = None
         self._stream_flushed = False
         self._written_bytes = 0
@@ -320,6 +321,8 @@ class _PlaybackEngine(QObject):
         self._stop_sink()
         self._processor.reset()
         self._rate_processor.reset()
+        if self._equalizer is not None:
+            self._equalizer.reset()
         self._last_input = None
         self._stream_flushed = False
 
@@ -442,11 +445,12 @@ class _PlaybackEngine(QObject):
             return
         if settings.gain > 1:
             pcm = apply_pcm_gain_to_bytes(pcm, fmt.sampleFormat(), settings.gain)
-        if not self._current():
-            return
         if abs(settings.shift) >= 0.001 and not self._processor._started:
             return
-        self._accept(pcm, fmt, tail=tail)
+        if self._equalizer is not None:
+            pcm = self._equalizer.process(pcm, fmt)
+        if self._current():
+            self._accept(pcm, fmt, tail=tail)
 
     def _accept(self, pcm, fmt, *, tail=False):
         if self._sink is None or self._sink.format() != fmt:

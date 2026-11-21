@@ -134,7 +134,11 @@ class Player(
             # AUDIO
             # --------------------------------------------------
 
-            self.media_player = GaplessMediaPlayer(self)
+            self._equalizer = (plugin_manager.get_service("playback_equalizer")
+                               if plugin_manager is not None else None)
+            self.media_player = GaplessMediaPlayer(
+                self, equalizer=self._equalizer.create_processor() if self._equalizer else None,
+            )
             self.media_player.next_path = self._gapless_next_path
             self.media_player.gaplessFallback.connect(
                 self._handle_gapless_fallback
@@ -145,7 +149,9 @@ class Player(
             self._pcm_sink = None
             self._pcm_sink_io = None
             self._pcm_pending = bytearray()
-            self._pcm_worker = PcmPlayback(self)
+            self._pcm_worker = PcmPlayback(
+                self, equalizer=self._equalizer.create_processor() if self._equalizer else None,
+            )
             self._pcm_worker.route_started.connect(self._activate_pcm_route)
             self._pcm_worker.failed.connect(self._pcm_output_failed)
             self._pcm_worker.drained.connect(self._pcm_output_drained)

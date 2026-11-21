@@ -1,0 +1,6 @@
+{
+  "name": "Equalizer",
+  "version": "1.0.0",
+  "description": "Adjust the frequency balance of music playback.",
+  "api_version": 6
+}

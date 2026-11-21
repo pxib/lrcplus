@@ -96,8 +96,13 @@ def transport(qapp):
         qapp.processEvents()
 
 
-def test_continuity_and_audible_track_boundary_use_single_sink(transport):
+@pytest.mark.parametrize("preamp", [0, -6])
+def test_continuity_and_audible_track_boundary_use_single_sink(transport, preamp):
+    from plugins.core.equalizer.dsp import FREQUENCIES, EqualizerProcessor
+
     player = transport
+    if preamp:
+        player._equalizer = EqualizerProcessor(lambda: (preamp, (0,) * len(FREQUENCIES)))
     sources = []
 
     def advance(status):
@@ -114,7 +119,8 @@ def test_continuity_and_audible_track_boundary_use_single_sink(transport):
     assert sources == []  # UI stays on the first track while its tail is audible.
     assert player.position() == 0
     assert len(sink.written) == 2 * 4800 * 4
-    expected = struct.pack("<9600f", *([0.25] * 4800 + [-0.5] * 4800))
+    gain = 10 ** (preamp / 20)
+    expected = struct.pack("<9600f", *([0.25 * gain] * 4800 + [-0.5 * gain] * 4800))
     assert bytes(sink.written) == expected
     sink.time = 100000
     player._pump()
@@ -503,8 +509,13 @@ def test_statistics_split_audible_gapless_tracks_and_repeats(sleep_window, monke
 
 
 @pytest.mark.parametrize("partial", [False, True])
-def test_crossfade_mixes_overlap_and_preserves_successor_clock(transport, partial):
+@pytest.mark.parametrize("preamp", [0, -6])
+def test_crossfade_mixes_overlap_and_preserves_successor_clock(transport, partial, preamp):
+    from plugins.core.equalizer.dsp import FREQUENCIES, EqualizerProcessor
+
     player = transport
+    if preamp:
+        player._equalizer = EqualizerProcessor(lambda: (preamp, (0,) * len(FREQUENCIES)))
     player._crossfade_seconds = 1
     def advance(status):
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
@@ -520,10 +531,11 @@ def test_crossfade_mixes_overlap_and_preserves_successor_clock(transport, partia
     sink = player._sink
     samples = [x[0] for x in struct.iter_unpack("<f", sink.written)]
     assert len(samples) == 7200  # 100 ms + 100 ms - 50 ms overlap
-    assert samples[:2400] == [0.25] * 2400
-    assert samples[2400] == pytest.approx(0.25)
-    assert samples[3599] == pytest.approx(-0.125, abs=0.001)
-    assert samples[4799:] == pytest.approx([-0.5] * 2401)
+    gain = 10 ** (preamp / 20)
+    assert samples[:2400] == pytest.approx([0.25 * gain] * 2400)
+    assert samples[2400] == pytest.approx(0.25 * gain)
+    assert samples[3599] == pytest.approx(-0.125 * gain, abs=0.001)
+    assert samples[4799:] == pytest.approx([-0.5 * gain] * 2401)
     sink.time = 100000
     player._pump()
     assert player.position() == 50  # incoming head was already heard

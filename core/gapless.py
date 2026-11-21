@@ -129,10 +129,12 @@ class GaplessMediaPlayer(QMediaPlayer):
     seekFinished = Signal()
     playbackRestarting = Signal()
 
-    def __init__(self, parent=None, *, sink_factory=QAudioSink, decoder_factory=TrackDecoder):
+    def __init__(self, parent=None, *, sink_factory=QAudioSink, decoder_factory=TrackDecoder,
+                 equalizer=None):
         super().__init__(parent)
         self._sink_factory = sink_factory
         self._decoder_factory = decoder_factory
+        self._equalizer = equalizer
         self._crossfade_seconds = 0
         self._read_frames = self._next_offset_frames = self._next_read_frames = 0
         self._crossfade_out = b""
@@ -330,6 +332,8 @@ class GaplessMediaPlayer(QMediaPlayer):
 
     def _release(self):
         self._timer.stop()
+        if self._equalizer is not None:
+            self._equalizer.reset()
         for decoder in (self._decoder, self._next_decoder):
             if decoder is not None:
                 decoder.close()
@@ -497,4 +501,6 @@ class GaplessMediaPlayer(QMediaPlayer):
             self._next_read_frames += len(data) // frame_bytes
         if abs(gain - 1.0) > 1e-8:
             data = apply_pcm_gain_to_bytes(data, QAudioFormat.SampleFormat.Float, gain)
+        if self._equalizer is not None:
+            data = self._equalizer.process(data, self._format)
         return data

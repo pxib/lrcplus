@@ -106,6 +106,24 @@ def close(worker):
     assert thread.wait(3000)
 
 
+def test_equalizer_processes_audio_at_normal_speed_pitch_and_volume(qapp):
+    from plugins.core.equalizer.dsp import FREQUENCIES, EqualizerProcessor
+
+    sinks = []
+    equalizer = EqualizerProcessor(lambda: (-6, (0,) * len(FREQUENCIES)))
+    worker = PcmPlayback(
+        equalizer=equalizer, sink_factory=lambda *args: sinks.append(Sink(*args)) or sinks[-1],
+    )
+    try:
+        worker.configure(None, 1, 0, 1, enabled=True, playing=True)
+        worker.receive_buffer(buffer())
+        wait_without_gui(lambda: sinks and sinks[0].total_written == 4096 * 8)
+        samples = np.frombuffer(bytes(sinks[0].written), dtype=np.float32)
+        np.testing.assert_allclose(samples, 0.25 * 10 ** (-6 / 20))
+    finally:
+        close(worker)
+
+
 def test_output_primes_real_audio_reserve_before_starting(qapp):
     sinks = []
     worker = PcmPlayback(sink_factory=lambda *args: sinks.append(Sink(*args)) or sinks[-1])
@@ -229,8 +247,9 @@ def test_player_waits_for_audible_processed_tail_before_advancing(qapp, tmp_path
             samples[-2400:] = tone[:, None]
             audio.writeframes(samples.tobytes())
     sinks = []
-    monkeypatch.setattr(main_window, "PcmPlayback", lambda parent: PcmPlayback(
+    monkeypatch.setattr(main_window, "PcmPlayback", lambda parent, **kwargs: PcmPlayback(
         parent, sink_factory=lambda *args: sinks.append(ClockedSink(*args)) or sinks[-1],
+        **kwargs,
     ))
     monkeypatch.setattr(main_window.Player, "_automatic_update_check", lambda self: None)
     save_playback_settings({"play_mode": "playlist", "volume": 0})
@@ -784,8 +803,9 @@ def test_player_decoder_keeps_feeding_audio_during_gui_stall(qapp, tmp_path, mon
         audio.setframerate(48000)
         audio.writeframes(bytes(48000 * 4 * 8))
     sinks = []
-    monkeypatch.setattr(main_window, "PcmPlayback", lambda parent: PcmPlayback(
+    monkeypatch.setattr(main_window, "PcmPlayback", lambda parent, **kwargs: PcmPlayback(
         parent, sink_factory=lambda *args: sinks.append(DeviceSink(*args)) or sinks[-1],
+        **kwargs,
     ))
     window = main_window.Player()
     errors = []
