@@ -21,7 +21,7 @@ from core.plugin_manager import PluginManager
 from core.rhythm_analysis import AudioRhythm, analyze_audio_rhythm, beat_grid, load_audio_rhythm
 from core.rhythm_melody import MelodyNote
 from lyrics.models import LyricLine, LyricSegment
-from plugins.community.rhythm_games import plugin as rhythm_games
+from plugins.community.rhythm_games import mania, plugin as rhythm_games
 from plugins.community.rhythm_games.mania import MANIA_DEMO, ManiaNote
 from plugins.community.rhythm_games.plugin import (
     Judgement, ManiaRound, Note, Passage, RhythmBoard, RhythmDialog, Round, apply_audio_rhythm,
@@ -1188,6 +1188,38 @@ def test_100_feedback_stays_inside_the_field_for_a_stack_in_the_corner(qapp, mon
         assert board.grab().toImage().pixelColor(marker.toPoint()) != initial.pixelColor(marker.toPoint())
     finally:
         board.clear_feedback()
+        board.deleteLater()
+
+
+def test_mania_neon_bursts_outlast_key_feedback_and_overlap_in_a_lane(qapp, monkeypatch):
+    clock = 10.0
+    monkeypatch.setattr(mania, "monotonic", lambda: clock)
+    board = mania.ManiaBoard(None, 1200)
+    notes = (ManiaNote(1000, 0), ManiaNote(1125, 0, flick=True), ManiaNote(1250, 0))
+    try:
+        board.set_frame(notes, 0, 1000)
+        board.animate(Judgement(0, 300))
+        clock += 0.125
+        board.animate(Judgement(1, 300))
+        clock += 0.125
+        board.animate(Judgement(2, 0))
+        assert board._feedback[0].value == 0
+        assert [burst.note for burst in board._bursts] == list(notes[:2])
+
+        clock += 0.25
+        board._advance_feedback()
+        assert not board._feedback
+        assert [burst.note for burst in board._bursts] == [notes[1]]
+        clock += 0.125
+        board._advance_feedback()
+        assert not board._bursts
+
+        board.animate(Judgement(0, 300))
+        board.set_theme("classic")
+        board.animate(Judgement(1, 300))
+        assert not board._bursts
+        assert board._feedback[0].value == 300
+    finally:
         board.deleteLater()
 
 

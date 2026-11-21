@@ -8,7 +8,7 @@ from time import monotonic
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QBrush, QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPainterPathStroker,
-    QPen, QPixmap, QPolygonF,
+    QPen, QPixmap, QPolygonF, QRadialGradient,
 )
 from PySide6.QtMultimedia import QSoundEffect
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget
@@ -23,7 +23,9 @@ HOLD_COLOR = QColor("#71edb2")
 GOLD_NOTE_COLOR = QColor("#ffcf60")
 FLICK_NOTE_COLOR = QColor("#ff9dc8")
 PERFECT_EFFECT_COLOR = QColor("#ffdd91")
+HIT_CORE_COLOR = QColor("#f5fffd")
 FEEDBACK_SECONDS = 0.24
+BURST_SECONDS = 0.48
 JUDGEMENT_SECONDS = 1.0
 JUDGEMENT_SCALE_SECONDS = 0.1
 COMBO_GROW_SECONDS = 0.1
@@ -32,8 +34,11 @@ COMBO_ECHO_SCALE = 1.45
 MANIA_BAD = -1
 JUDGEMENT_LABELS = {300: "Perfect", 100: "Great", 50: "Good", MANIA_BAD: "Bad", 0: "Miss"}
 JUDGEMENT_COLORS = {"Great": "#d9b9ff", "Good": "#ace0ff", "Bad": "#66f4f5", "Miss": "#b7bdc9"}
-HIT_SPARKS = ((-0.19, 0.14, 27), (0.16, 0.18, 31), (-0.05, 0.31, 39),
-              (0.07, 0.26, 45), (-0.27, 0.11, 16), (0.26, 0.12, 20))
+# Spawn offset and horizontal drift in lane widths, rise in pixels, and delay within a burst.
+HIT_SPARKS = ((-0.08, -0.40, 35, 0.00), (0.10, 0.35, 45, 0.03),
+              (-0.04, -0.14, 68, 0.05), (0.04, 0.15, 54, 0.01),
+              (-0.21, -0.33, 21, 0.09), (0.17, 0.35, 25, 0.07),
+              (-0.02, 0.23, 82, 0.13), (0.13, -0.35, 59, 0.15))
 MANIA_INSTRUCTIONS = "Tap D, F, J, or K at the hit line, including arrow notes. Hold long notes until their tails reach the line."
 FLICK_GAP_MS = 1700
 MAX_LIFE = 1000
@@ -173,10 +178,10 @@ class ManiaSounds:
 class HitFeedback:
     note: ManiaNote
     value: int
-    deadline: float
+    started: float
 
     def strength(self, now):
-        return max(0, (self.deadline - now) / FEEDBACK_SECONDS)
+        return max(0, 1 - (now - self.started) / FEEDBACK_SECONDS)
 
 
 @dataclass(frozen=True)
@@ -209,6 +214,47 @@ def tinted(color, alpha):
     result = QColor(color)
     result.setAlpha(alpha)
     return result
+
+
+def neon_note_color(note):
+    if note.golden:
+        return GOLD_NOTE_COLOR
+    if note.flick:
+        return FLICK_NOTE_COLOR
+    if note.end_ms is not None:
+        return HOLD_COLOR
+    return LANE_COLORS[note.lane]
+
+
+def draw_glow(painter, center, y, width, height, color, opacity):
+    glow = QRadialGradient(0, 0, 0.5)
+    glow.setColorAt(0, tinted(color, round(opacity)))
+    glow.setColorAt(0.44, tinted(color, round(opacity * 0.38)))
+    glow.setColorAt(1, tinted(color, 0))
+    painter.save()
+    painter.translate(center, y)
+    painter.scale(width, height)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(glow)
+    painter.drawEllipse(QRectF(-0.5, -0.5, 1, 1))
+    painter.restore()
+
+
+def draw_ripple(painter, center, y, width, height, color, opacity):
+    ring = QRectF(center - width / 2, y - height / 2, width, height)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.setPen(QPen(tinted(color, round(opacity * 0.27)), 3.5))
+    painter.drawEllipse(ring)
+    painter.setPen(QPen(tinted(color.lighter(135), round(opacity)), 1.25))
+    painter.drawEllipse(ring)
+
+
+def draw_spark(painter, x, y, size, *, glint=False):
+    corners = ((0, -1.35), (1, 0), (0, 1.35), (-1, 0))
+    if glint:
+        corners = ((0, -1.35), (0.26, -0.26), (1, 0), (0.26, 0.26),
+                   (0, 1.35), (-0.26, 0.26), (-1, 0), (-0.26, -0.26))
+    painter.drawPolygon(QPolygonF([QPointF(x + dx * size, y + dy * size) for dx, dy in corners]))
 
 
 def life_heart():
@@ -356,6 +402,7 @@ class ManiaBoard(QWidget):
         self.round = None
         self._held = set()
         self._feedback = {}
+        self._bursts = []
         self._judgement_label = None
         self._feedback_timer = QTimer(self, interval=16)
         self._feedback_timer.timeout.connect(self._advance_feedback)
@@ -518,6 +565,7 @@ class ManiaBoard(QWidget):
 
     def clear_feedback(self):
         self._feedback.clear()
+        self._bursts.clear()
         self._judgement_label = None
         self._feedback_timer.stop()
         self.combo_number.clear_animation()
@@ -526,8 +574,11 @@ class ManiaBoard(QWidget):
     def animate(self, judgement, *, early_release=False):
         note = self.notes[judgement.index]
         now = monotonic()
-        self._feedback[note.lane] = HitFeedback(note, judgement.value, now + FEEDBACK_SECONDS)
+        hit = HitFeedback(note, judgement.value, now)
+        self._feedback[note.lane] = hit
         if self.theme == "neon":
+            if judgement.value > 0:
+                self._bursts.append(hit)
             label = "Bad" if early_release else JUDGEMENT_LABELS[judgement.value]
             self._judgement_label = label, now
         if not self._feedback_timer.isActive():
@@ -536,10 +587,11 @@ class ManiaBoard(QWidget):
 
     def _advance_feedback(self):
         now = monotonic()
-        self._feedback = {lane: hit for lane, hit in self._feedback.items() if hit.deadline > now}
+        self._feedback = {lane: hit for lane, hit in self._feedback.items() if now - hit.started < FEEDBACK_SECONDS}
+        self._bursts = [hit for hit in self._bursts if now - hit.started < BURST_SECONDS]
         if self._judgement_label is not None and now - self._judgement_label[1] >= JUDGEMENT_SECONDS:
             self._judgement_label = None
-        if not self._feedback and self._judgement_label is None:
+        if not self._feedback and not self._bursts and self._judgement_label is None:
             self._feedback_timer.stop()
         self.update()
 
@@ -582,13 +634,21 @@ class ManiaBoard(QWidget):
         if self.theme == "classic":
             field = Playfield(center, min(408, self.width() - 32), 10, hit_y, top_scale=1)
             self._draw_classic_playfield(painter, field)
-        else:
-            field = Playfield(center, self._neon_lane_width(), 8, hit_y, top_scale=0.14)
-            self._draw_playfield(painter, field)
-            self._draw_receptors(painter, field)
+            self._draw_notes(painter, field)
+            return
+
+        field = Playfield(center, self._neon_lane_width(), 8, hit_y, top_scale=0.14)
+        now = monotonic()
+        bursts = [(hit, (now - hit.started) / BURST_SECONDS) for hit in self._bursts]
+        bursts = [(hit, phase) for hit, phase in bursts if phase < 1]
+        self._draw_playfield(painter, field)
+        for hit, phase in bursts:
+            self._draw_lane_flash(painter, field, hit, phase)
+        self._draw_receptors(painter, field, now)
         self._draw_notes(painter, field)
-        if self.theme == "neon":
-            self._draw_judgement(painter, field)
+        for hit, phase in bursts:
+            self._draw_hit_burst(painter, field, hit, phase)
+        self._draw_judgement(painter, field)
 
     def _draw_judgement(self, painter, field):
         if self._judgement_label is None:
@@ -678,7 +738,7 @@ class ManiaBoard(QWidget):
 
             key = QRectF(x + 5, field.hit_y + 8, width - 10, 29)
             hit = self._feedback.get(lane)
-            if hit is not None and hit.deadline > now:
+            if hit is not None and hit.strength(now) > 0:
                 fill = QColor("#b44859") if hit.value == 0 else color
                 text = QColor("#17191c") if hit.value else QColor("white")
             else:
@@ -707,16 +767,12 @@ class ManiaBoard(QWidget):
         if not classic:
             self._draw_chord_guides(painter, field, visible)
         painter.setPen(Qt.PenStyle.NoPen)
-        colors = CLASSIC_LANE_COLORS if classic else LANE_COLORS
         for note, y, holding in visible:
             lane = note.lane
             is_hold = note.end_ms is not None
-            color = HOLD_COLOR if is_hold and not classic else colors[lane]
+            color = CLASSIC_LANE_COLORS[lane] if classic else neon_note_color(note)
             if not classic and note.flick:
-                color = GOLD_NOTE_COLOR if note.golden else FLICK_NOTE_COLOR
                 self._draw_flick_chevron(painter, field, lane, y, color)
-            elif not classic and note.golden:
-                color = GOLD_NOTE_COLOR
             if is_hold:
                 if holding:
                     y = min(y, field.hit_y)
@@ -734,7 +790,7 @@ class ManiaBoard(QWidget):
                     if field.top <= tail < y:
                         painter.drawPolygon(field.strip(lane + 0.25, lane + 0.75, tail, min(y, tail + 3)))
                     if holding:
-                        self._draw_hold_aura(painter, field, lane, y, color)
+                        self._draw_hold_aura(painter, field, note, y, color)
 
             if classic:
                 left = field.x(lane, y) + 6
@@ -805,11 +861,10 @@ class ManiaBoard(QWidget):
             painter.drawRoundedRect(stripe, scale, scale)
         else:
             glint = QRectF(left + width * 0.12, head.top() + 2 * scale, width * 0.76, 1.5 * scale)
-            painter.setBrush(tinted(QColor("#f5fffd"), 214))
+            painter.setBrush(tinted(HIT_CORE_COLOR, 214))
             painter.drawRoundedRect(glint, scale, scale)
 
-    def _draw_receptors(self, painter, field):
-        now = monotonic()
+    def _draw_receptors(self, painter, field, now):
         font = painter.font()
         font.setBold(True)
         painter.setFont(font)
@@ -817,10 +872,9 @@ class ManiaBoard(QWidget):
             pressed = lane in self._held
             hit = self._feedback.get(lane)
             strength = hit.strength(now) if hit is not None else 0
-            bright = hit is not None and (hit.note.golden or hit.value == 300)
-            feedback = PERFECT_EFFECT_COLOR if bright else color
-            if hit is not None and hit.value <= 0:
-                feedback = QColor("#ff829e")
+            feedback = color
+            if hit is not None:
+                feedback = neon_note_color(hit.note).lighter(125) if hit.value > 0 else QColor("#ff829e")
             left = field.x(lane + 0.06, field.hit_y)
             right = field.x(lane + 0.94, field.hit_y)
             width = right - left
@@ -829,8 +883,6 @@ class ManiaBoard(QWidget):
             painter.fillRect(QRectF(left, field.hit_y - 1, width, 2), color)
             if strength:
                 painter.fillRect(QRectF(left, field.hit_y - 4, width, 8), tinted(feedback, round(195 * strength)))
-                if hit.value > 0:
-                    self._draw_hit_burst(painter, field, hit.note, color, strength, bright=bright)
 
             key = QRectF(left + 3, field.hit_y + 12, width - 6, 26)
             painter.setPen(QPen(feedback if strength else tinted(color, 200 if pressed else 100), 1))
@@ -839,84 +891,113 @@ class ManiaBoard(QWidget):
             painter.setPen(QColor("#f2f8ff"))
             painter.drawText(key, Qt.AlignmentFlag.AlignCenter, label)
 
-    def _draw_hit_burst(self, painter, field, note, color, strength, *, bright):
-        lane = note.lane
-        if note.golden:
-            color = GOLD_NOTE_COLOR
-        elif note.flick:
-            color = FLICK_NOTE_COLOR
-        elif note.end_ms is not None:
-            color = HOLD_COLOR
-
-        rise = 1 - strength
-        travel = 1 - strength ** 2
+    def _draw_lane_flash(self, painter, field, hit, phase):
+        fade = max(0, 1 - phase / 0.6) ** 2
+        if not fade:
+            return
+        lane = hit.note.lane
+        color = neon_note_color(hit.note)
         bottom = field.hit_y
-        lane_width = field.width / len(LANE_KEYS)
-        scale = min(1.0, lane_width / 115)
-        top = max(field.top, bottom - (36 + 42 * travel) * scale)
+        top = bottom - field.travel * (0.44 if hit.note.flick else 0.34)
+        intensity = 0.72 + hit.value / 1100
         beam = QLinearGradient(0, top, 0, bottom)
         beam.setColorAt(0, tinted(color, 0))
-        beam.setColorAt(0.72, tinted(color, round(68 * strength)))
-        beam.setColorAt(1, tinted(color, round(185 * strength)))
+        beam.setColorAt(0.55, tinted(color, round(46 * intensity * fade)))
+        beam.setColorAt(1, tinted(color, round(150 * intensity * fade)))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(beam)
-        painter.drawPolygon(field.strip(lane + 0.16, lane + 0.84, top, bottom))
+        painter.drawPolygon(field.strip(lane + 0.05, lane + 0.95, top, bottom))
 
-        accent = PERFECT_EFFECT_COLOR if note.golden else color.lighter(155 if bright else 125)
-        center = field.x(lane + 0.5, bottom)
-        ring_width = lane_width * (0.38 + 0.58 * travel)
-        ring_height = (5 + 15 * travel) * scale
-        painter.setPen(QPen(tinted(accent, round(208 * strength)), 1.6 * scale))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawEllipse(QRectF(center - ring_width / 2, bottom - 4 - ring_height / 2, ring_width, ring_height))
+    def _draw_hit_burst(self, painter, field, hit, phase):
+        note = hit.note
+        color = neon_note_color(note)
+        accent = PERFECT_EFFECT_COLOR if note.golden else color.lighter(145)
+        center, y = field.x(note.lane + 0.5, field.hit_y), field.hit_y - 3
+        width = field.width / len(LANE_KEYS)
+        scale = min(1, width / 110)
+        intensity = 0.65 + hit.value / 860
+        flash = max(0, 1 - phase / 0.43) ** 2 * intensity
+        if flash:
+            draw_glow(painter, center, y, width * 1.45, 52 * scale, color, 235 * flash)
+            draw_glow(painter, center, y, width * 1.21, 13 * scale, HIT_CORE_COLOR, 250 * flash)
+
+        delays = (0, 0.15, 0.27) if note.golden else (0, 0.16)
+        for index, delay in enumerate(delays):
+            wave = (phase - delay) / (1 - delay)
+            if wave < 0:
+                continue
+            spread = 1 - (1 - wave) ** 2
+            draw_ripple(painter, center, y - 4 * spread * scale,
+                        width * (0.33 + 0.80 * spread), (4 + 17 * spread) * scale, accent,
+                        200 * intensity * (1 - wave) ** 2 / (1 + 0.55 * index))
 
         if note.flick:
-            self._draw_flick_trails(painter, field, lane, color, travel, strength, scale)
+            self._draw_flick_trails(painter, center, y, width, scale, color, phase, intensity)
 
+        sparks = HIT_SPARKS if hit.value == 300 or note.golden or note.flick else HIT_SPARKS[:6]
+        lift = 1.65 if note.flick else 1
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(tinted(accent, round(240 * strength)))
-        sparks = HIT_SPARKS if bright else HIT_SPARKS[:4]
-        radius = (3.7 if bright else 2.4) * (1 - 0.4 * rise) * scale
-        for offset, spread, distance in sparks:
-            y = bottom - (9 + distance * travel) * scale
-            x = field.x(lane + 0.5 + offset * (1 + spread * travel), y)
-            painter.drawPolygon(QPolygonF([
-                QPointF(x, y - radius * 1.4), QPointF(x + radius, y),
-                QPointF(x, y + radius * 1.4), QPointF(x - radius, y),
-            ]))
+        for index, (offset, drift, rise, delay) in enumerate(sparks):
+            flight = (phase - delay) / (1 - delay)
+            if flight < 0:
+                continue
+            spread = 1 - (1 - flight) ** 2
+            x = center + width * (offset + drift * spread)
+            spark_y = y - (5 + rise * lift * spread) * scale
+            glint = index in (2, 5, 7)
+            size = (4.0 if glint else 2.8) * (1 - 0.55 * flight) * scale
+            painter.setBrush(tinted(HIT_CORE_COLOR if glint else accent,
+                                    round(255 * intensity * (1 - flight) ** 1.6)))
+            draw_spark(painter, x, spark_y, size, glint=glint)
 
-    def _draw_flick_trails(self, painter, field, lane, color, travel, strength, scale):
-        bottom = field.hit_y - (7 + 29 * travel) * scale
-        top = bottom - (27 + 24 * travel) * scale
-        trail = QLinearGradient(0, top, 0, bottom)
-        trail.setColorAt(0, tinted(color.lighter(145), round(245 * strength)))
-        trail.setColorAt(1, tinted(color, 0))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(trail)
-        for direction in (-1, 1):
-            root = lane + 0.5 + direction * 0.09
-            tip = root + direction * (0.16 + 0.15 * travel)
-            painter.drawPolygon(QPolygonF([
-                QPointF(field.x(root, bottom), bottom),
-                QPointF(field.x(tip, top), top),
-                QPointF(field.x(tip + direction * 0.12, top + 13 * scale), top + 13 * scale),
-            ]))
+    def _draw_flick_trails(self, painter, center, y, width, scale, color, phase, intensity):
+        strength = max(0, 1 - phase / 0.72) * intensity
+        if not strength:
+            return
+        travel = 1 - (1 - phase) ** 2
+        for offset, angle, length, thickness in ((0, 0, 83, 9), (-0.16, -20, 64, 5), (0.15, 16, 69, 5)):
+            tip = -(length + 62 * travel) * scale
+            tail = -61 * travel * scale
+            trail = QLinearGradient(0, tip, 0, tail)
+            trail.setColorAt(0, tinted(color, 0))
+            trail.setColorAt(0.35, tinted(HIT_CORE_COLOR, round(239 * strength)))
+            trail.setColorAt(0.60, tinted(color, round(179 * strength)))
+            trail.setColorAt(1, tinted(color, 0))
+            painter.save()
+            painter.translate(center + offset * width, y)
+            painter.rotate(angle)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(trail)
+            shoulder = 0.42 * tip + 0.58 * tail
+            half = thickness * scale / 2
+            painter.drawPolygon(QPolygonF([QPointF(0, tip), QPointF(half, shoulder),
+                                           QPointF(0, tail), QPointF(-half, shoulder)]))
+            painter.restore()
 
-    def _draw_hold_aura(self, painter, field, lane, y, color):
-        pulse = 0.5 + 0.5 * sin(tau * self.position_ms / 480)
-        height = min(48, field.width * 0.1)
-        top = y - height * (0.8 + 0.2 * pulse)
+    def _draw_hold_aura(self, painter, field, note, y, color):
+        lane = note.lane
+        center = field.x(lane + 0.5, y)
+        width = field.x(lane + 1, y) - field.x(lane, y)
+        phase = max(0, self.position_ms - note.time_ms) / 520
+        pulse = 0.5 + 0.5 * sin(tau * phase)
+        height = min(78, field.travel * 0.25)
+        top = y - height
         aura = QLinearGradient(0, top, 0, y)
         aura.setColorAt(0, tinted(color, 0))
-        aura.setColorAt(1, tinted(color, round(95 + 55 * pulse)))
+        aura.setColorAt(0.65, tinted(color, round(36 + 26 * pulse)))
+        aura.setColorAt(1, tinted(color, round(92 + 64 * pulse)))
         painter.setBrush(aura)
-        painter.drawPolygon(field.strip(lane + 0.08, lane + 0.92, top, y))
-        for edge in (0.21, 0.76):
-            painter.drawPolygon(field.strip(lane + edge, lane + edge + 0.03, top, y))
+        painter.drawPolygon(field.strip(lane + 0.16, lane + 0.84, top, y))
+        draw_glow(painter, center, y - 6, width * 1.25, height, color, 130 + 50 * pulse)
 
-        width = (field.x(lane + 1, y) - field.x(lane, y)) * (0.53 + 0.21 * pulse)
-        center = field.x(lane + 0.5, y)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(tinted(color.lighter(145), round(125 + 100 * pulse)), 1.5))
-        painter.drawEllipse(QRectF(center - width / 2, y - 6, width, 10))
+        for offset in (0, 0.5):
+            wave = (phase + offset) % 1
+            draw_ripple(painter, center, y - 6 - 12 * wave, width * (0.40 + 0.60 * wave),
+                        6 + 8 * wave, color, 156 * sin(wave * tau / 2))
+
         painter.setPen(Qt.PenStyle.NoPen)
+        for index, offset in enumerate((-0.26, 0.21, -0.12, 0.29, 0.07)):
+            rise = (phase * (0.8 + 0.12 * index) + index * 0.23) % 1
+            x = field.x(lane + 0.5 + offset * (1 + 0.5 * rise), y - rise * height)
+            painter.setBrush(tinted(color.lighter(148), round(218 * sin(rise * tau / 2))))
+            draw_spark(painter, x, y - rise * height, 1.4 + 1.4 * (1 - rise), glint=index == 2)
