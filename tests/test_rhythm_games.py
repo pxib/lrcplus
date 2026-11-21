@@ -12,6 +12,7 @@ import wave
 import numpy as np
 import pytest
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
+from PySide6.QtGui import QTextDocumentFragment
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QMainWindow, QMenu, QStackedWidget, QWidget
@@ -1256,7 +1257,8 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch):
         assert dialog.board is board
         assert board.life_meter.value() == 1000 and board.pause_button.isEnabled()
         assert board.life_number.text() == "1000"
-        assert board.score_number.text() == "00000000" and board.score_rank.text() == "D"
+        assert QTextDocumentFragment.fromHtml(board.score_number.text()).toPlainText() == "00000000"
+        assert board.score_rank.text() == "D"
         assert board.combo_hud.isHidden()
         QTest.mouseClick(board.pause_button, Qt.MouseButton.LeftButton)
         assert dialog.status.text() == "Paused" and not dialog.timer.isActive()
@@ -1268,7 +1270,9 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch):
         QTest.keyClick(board, Qt.Key.Key_K)
         assert dialog.round.judged == 0
         QTest.keyClick(board, Qt.Key.Key_D)
-        assert board.score_number.text() == "00000300" and board.score_meter.value() > 0
+        assert dialog.round.score == 300
+        assert board.score_meter.value() == dialog.round.display_score > 300
+        assert QTextDocumentFragment.fromHtml(board.score_number.text()).toPlainText() == f"{dialog.round.display_score:08d}"
         assert board.combo_number.text() == "1" and board.combo_hud.isVisible()
         clock = 1125
         QTest.keyClick(board, Qt.Key.Key_F)
@@ -1332,6 +1336,71 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch):
         dialog.reject()
         host.deleteLater()
         qapp.processEvents()
+
+
+@pytest.mark.parametrize(("miss_index", "rank"), ((0, "S"), (10, "B")))
+def test_neon_results_match_the_live_score_rank_at_equal_accuracy(qapp, miss_index, rank):
+    host = QMainWindow()
+    host.volume_slider = SimpleNamespace(value=lambda: 25)
+    host.media_player = SimpleNamespace(playbackState=lambda: QMediaPlayer.PlaybackState.StoppedState)
+    api = SimpleNamespace(get_current_track=lambda: None, get_setting=lambda _key, default: default, pause=Mock())
+    dialog = RhythmDialog(host, api, ())
+    dialog.mania_sounds = Mock()
+    notes = tuple(ManiaNote(1000 + index * 250, 0) for index in range(20))
+    round_ = ManiaRound(notes)
+    try:
+        dialog.tabs.setCurrentIndex(1)
+        dialog.round = round_
+        for index, note in enumerate(notes):
+            if index == miss_index:
+                round_.advance(note.time_ms + 150)
+            else:
+                round_.press(note.time_ms, note.lane)
+
+        assert round_.accuracy == 0.95
+        dialog.mania_board.set_frame(notes, round_.index, notes[-1].time_ms, round_)
+        assert dialog.mania_board.score_rank.text() == rank
+
+        dialog._finish_round()
+        assert dialog.score.text().startswith(f"Grade {rank}   ·   Score {round_.display_score:,}")
+    finally:
+        dialog.reject()
+        host.deleteLater()
+        qapp.processEvents()
+
+
+def test_neon_score_dims_only_leading_zeroes(qapp):
+    board = mania.ManiaBoard(None, 1200)
+    notes = tuple(ManiaNote(1000 + index * 250, 0) for index in range(1000))
+    round_ = ManiaRound(notes)
+    initial = board.score_number.text()
+    grey = '<span style="color: #9a9da8">{}</span>'
+    assert initial == grey.format("00000000")
+
+    round_.score = 123_109
+    board.set_frame(notes, 0, 0, round_)
+    assert board.score_number.text() == grey.format("00") + "123109"
+    round_.score = 123_209
+    board.set_frame(notes, 0, 1, round_)
+    expected = grey.format("00") + "123209"
+    assert board.score_number.text() == expected
+
+    board.set_frame(notes, 0, 2, round_)
+    assert board.score_number.text() == expected
+    board.set_frame(notes, 0, 0)
+    assert board.score_number.text() == initial
+
+
+def test_neon_long_chart_uses_score_points_for_rank():
+    notes = tuple(ManiaNote(1000 + index * 250, 0) for index in range(1000))
+    round_ = ManiaRound(notes)
+    assert round_.max_score > 10_000_000
+    for score, rank in ((0, "D"), (49_999, "D"), (50_000, "C"), (450_000, "B"),
+                        (899_999, "B"), (900_000, "A"), (987_442, "A"),
+                        (1_149_999, "A"), (1_150_000, "S"), (2_000_000, "S")):
+        round_.score = score
+        assert round_.display_score == score
+        assert round_.grade == rank
 
 
 def test_mania_theme_selector_restores_the_saved_skin(qapp, monkeypatch):

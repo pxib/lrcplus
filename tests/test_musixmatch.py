@@ -136,6 +136,19 @@ def test_token_search_uses_commontrack_id_for_lookup(monkeypatch):
     assert len(closed) == 2
 
 
+@pytest.mark.parametrize("artist", ["", "Artist - Ensemble"])
+def test_token_search_preserves_dashes_inside_title_and_artist(monkeypatch, artist):
+    calls, _ = install_replies(monkeypatch, (200, {"track_list": []}))
+    title = "Song - Part 2"
+    query = f"{artist} - {title}" if artist else title
+
+    musixmatch.search(query, "token", auth_mode="token", title=title, artist=artist)
+
+    params = calls[0][1]["params"]
+    assert params["q_track"] == title
+    assert params.get("q_artist", "") == artist
+
+
 def test_token_renew_hint_does_not_masquerade_as_no_results(monkeypatch):
     monkeypatch.setattr(musixmatch.requests, "get", lambda *args, **kwargs: SimpleNamespace(
         status_code=200, headers={}, close=lambda: None,

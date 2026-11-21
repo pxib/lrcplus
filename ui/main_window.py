@@ -81,7 +81,7 @@ from ui.player_repeat import PlayerRepeatMixin
 from ui.player_sleep_timer import PlayerSleepTimerMixin
 from ui.player_statistics import PlayerStatisticsMixin
 from ui.statistics_page import StatisticsPage
-from ui.lyrics_search_dialog import LyricsSearchDialogMixin, _lyrics_search_query
+from ui.lyrics_search_dialog import LyricsSearchDialogMixin
 
 
 class Player(
@@ -1820,13 +1820,19 @@ class Player(
                 )
                 return
 
-            default_path = str(source_path)
+            formats = {
+                ".lrc": "LRC Files (*.lrc)",
+                ".lrcx": "LRCX Files (*.lrcx)",
+                ".ttml": "TTML Files (*.ttml)",
+            }
+            default_filter = formats.get(source_path.suffix.lower(), formats[".lrc"])
 
             destination, selected_filter = QFileDialog.getSaveFileName(
                 self,
                 "Save Lyrics As",
-                default_path,
-                "LRC Files (*.lrc);;LRCX Files (*.lrcx);;All Files (*)",
+                str(source_path),
+                ";;".join([*formats.values(), "All Files (*)"]),
+                default_filter,
             )
 
             if not destination:
@@ -1835,14 +1841,8 @@ class Player(
             destination_path = Path(destination)
 
             if not destination_path.suffix:
-                if "LRCX" in selected_filter:
-                    destination_path = destination_path.with_suffix(
-                        ".lrcx"
-                    )
-                else:
-                    destination_path = destination_path.with_suffix(
-                        ".lrc"
-                    )
+                extension = next((suffix for suffix, label in formats.items() if label == selected_filter), ".lrc")
+                destination_path = destination_path.with_suffix(extension)
 
             try:
                 convert_lyrics(
@@ -1858,6 +1858,9 @@ class Player(
                 )
                 return
 
+            if destination_path.suffix.lower() == ".ttml":
+                self.statusBar().showMessage(f"Saved TTML copy to {destination_path.name}.", 5000)
+                return
             self.current_lyrics_path = destination_path
             self.load_lrc_file(str(destination_path))
 

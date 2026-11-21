@@ -59,3 +59,5 @@ class LyricLine(_LyricModel):
     # User-selected reading words, in visible text coordinates. Timing chunks
     # remain independent; groups contain no whitespace and do not overlap.
     reading_groups: list[tuple[int, int]] = field(default_factory=list)
+    # A playback fallback should stay implicit when saving line-timed lyrics.
+    end_inferred: bool = field(default=False, compare=False, repr=False)

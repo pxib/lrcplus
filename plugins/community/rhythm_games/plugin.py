@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 from core.background_job import BackgroundJob
 from core.rhythm_analysis import BeatGrid, beat_grid, load_audio_rhythm
 from plugins.community.rhythm_games.mania import (
-    LANE_KEYS, MANIA_BAD, MANIA_DEMO, MAX_LIFE, ManiaBoard, ManiaSounds, assign_lanes,
+    LANE_KEYS, MANIA_BAD, MANIA_DEMO, MAX_LIFE, SCORE_METER_MAX, SCORE_RANKS, ManiaBoard, ManiaSounds, assign_lanes,
 )
 
 
@@ -1105,6 +1105,10 @@ class RoundScore:
         return sum(self._judgement_weight(value) * count for value, count in self.counts.items()) / (300 * self.judged)
 
     @property
+    def display_score(self):
+        return self.score
+
+    @property
     def grade(self):
         great = sum(count for value, count in self.counts.items() if self._judgement_weight(value) == 300)
         great = great / self.judged if self.judged else 0
@@ -1273,6 +1277,20 @@ class ManiaRound(RoundScore):
         # Accepted holds stay at the front of their lane until release or expiry.
         pending = self._lanes[lane]
         return self.notes[pending[0]] if pending and self.is_holding(pending[0]) else None
+
+    @property
+    def display_score(self):
+        if self.life is not None and 0 < self.max_score < SCORE_METER_MAX:
+            # Give short charts enough points to reach the same rank thresholds.
+            return self.score * SCORE_METER_MAX // self.max_score
+        return self.score
+
+    @property
+    def grade(self):
+        if self.life is None:
+            return super().grade
+        score = self.display_score
+        return next((label for label, threshold in reversed(SCORE_RANKS) if score >= threshold), "D")
 
     @property
     def failed(self):
@@ -2251,7 +2269,7 @@ class RhythmDialog(QDialog):
             self.board.animate(judgement)
         self.caption.clear()
         grade = "Failed" if mania and result.failed else f"Grade {result.grade}"
-        self.score.setText(f"{grade}   ·   Score {result.score:,}   ·   {result.accuracy:.2%}"
+        self.score.setText(f"{grade}   ·   Score {result.display_score:,}   ·   {result.accuracy:.2%}"
                            f"   ·   Best combo {result.best_combo}×")
         labels = {320: "MAX", MANIA_BAD: "Bad", 0: "Miss"}
         self.status.setText("   ·   ".join(f"{count} {labels.get(value, value)}" for value, count in result.counts.items()))

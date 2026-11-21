@@ -20,12 +20,13 @@ def test_history_limits_recency_and_persistence(qapp, category, limit):
     assert "Search 4" not in history
     assert "Search 0" not in history
     reopened = SearchHistoryLineEdit(category)
-    assert reopened.completer().model().stringList() == history
+    model = reopened.completer().model()
+    assert [model.index(row, 0).data() for row in range(model.rowCount())] == history
     reopened._recall(history[-1])
     assert reopened.text() == history[-1]
     reopened.clear_history()
     assert load_search_history(category) == []
-    assert reopened.completer().model().stringList() == []
+    assert model.rowCount() == 0
 
 
 def test_histories_are_independent_and_tolerate_malformed_settings():

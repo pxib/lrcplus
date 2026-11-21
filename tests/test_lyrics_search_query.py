@@ -3,7 +3,8 @@ import threading
 import time
 
 import pytest
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QDialog, QLabel, QLineEdit, QPushButton, QTableWidget, QTextEdit, QWidget
 
 import ui.lyrics_search_dialog as lyrics_search
@@ -11,7 +12,7 @@ from ui.main_window import Player
 import core.lrclib as lrclib
 
 
-def test_lyrics_search_query_prefers_artist_and_title_metadata(
+def test_lyrics_search_fields_prefer_artist_and_title_metadata(
     monkeypatch,
     tmp_path,
 ):
@@ -25,12 +26,10 @@ def test_lyrics_search_query_prefers_artist_and_title_metadata(
         ),
     )
 
-    assert lyrics_search._lyrics_search_query(audio_path) == (
-        "Tagged Artist - Tagged Song"
-    )
+    assert lyrics_search._lyrics_search_fields(audio_path) == ("Tagged Song", "Tagged Artist")
 
 
-def test_lyrics_search_query_falls_back_to_filename_without_tags(
+def test_lyrics_search_fields_fall_back_to_filename_without_tags(
     monkeypatch,
     tmp_path,
 ):
@@ -41,10 +40,10 @@ def test_lyrics_search_query_falls_back_to_filename_without_tags(
         lambda _path: SimpleNamespace(artist="", title=audio_path.stem),
     )
 
-    assert lyrics_search._lyrics_search_query(audio_path) == "filename-title"
+    assert lyrics_search._lyrics_search_fields(audio_path) == ("filename-title", "")
 
 
-def test_lyrics_search_query_falls_back_when_metadata_cannot_be_read(
+def test_lyrics_search_fields_fall_back_when_metadata_cannot_be_read(
     monkeypatch,
     tmp_path,
 ):
@@ -55,7 +54,64 @@ def test_lyrics_search_query_falls_back_when_metadata_cannot_be_read(
 
     monkeypatch.setattr(lyrics_search, "read_track", unreadable_track)
 
-    assert lyrics_search._lyrics_search_query(audio_path) == "filename-title"
+    assert lyrics_search._lyrics_search_fields(audio_path) == ("filename-title", "")
+
+
+def test_combined_paste_and_history_restore_both_fields(qapp, monkeypatch):
+    from core.search_history import load_lyrics_search_history, save_search_history
+
+    save_search_history("lyrics", ["Old Artist - Old Song"])
+    parent = QWidget()
+    parent.current_audio_path = None
+    clipboard = qapp.clipboard()
+    previous_clipboard = clipboard.text()
+    queries = []
+    monkeypatch.setattr(lyrics_search, "search_lrclib", lambda query, _cancel: queries.append(query) or [])
+
+    def interact(dialog):
+        title = dialog.findChild(QLineEdit, "lyricsSearchTitle")
+        artist = dialog.findChild(QLineEdit, "lyricsSearchArtist")
+        dialog.show()
+        title.setFocus()
+        qapp.processEvents()
+        QTest.keyClicks(title, "Old")
+        qapp.processEvents()
+        popup = title.completer().popup()
+        assert popup.isVisible()
+        popup.setCurrentIndex(popup.model().index(0, 0))
+        QTest.keyClick(popup, Qt.Key.Key_Return)
+        assert (title.text(), artist.text()) == ("Old Song", "Old Artist")
+
+        clipboard.setText("Pasted Artist - Song - Part 2")
+        title.selectAll()
+        title.paste()
+        assert (title.text(), artist.text()) == ("Song - Part 2", "Pasted Artist")
+        artist.clear()
+        clipboard.setText("Song - Part 2")
+        title.selectAll()
+        QTest.keyClicks(title, "Song - Part 2")
+        assert (title.text(), artist.text()) == ("Song - Part 2", "")
+        title.returnPressed.emit()
+        assert load_lyrics_search_history() == [("Song - Part 2", ""), ("Old Song", "Old Artist")]
+
+        deadline = time.monotonic() + 4
+        while not queries and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(.005)
+        assert queries == ["Song - Part 2"]
+
+        model = title.completer().model()
+        title._recall(model.index(0, 0).data(Qt.ItemDataRole.UserRole))
+        assert (title.text(), artist.text()) == ("Song - Part 2", "")
+        return 0
+
+    monkeypatch.setattr(QDialog, "exec", interact)
+    try:
+        Player.search_lrclib_lyrics(parent)
+    finally:
+        clipboard.setText(previous_clipboard)
+        parent.deleteLater()
+        qapp.processEvents()
 
 
 def test_search_preselects_the_closest_recording_and_shows_its_save_path(qapp, monkeypatch, tmp_path):
@@ -78,9 +134,10 @@ def test_search_preselects_the_closest_recording_and_shows_its_save_path(qapp, m
         preview = dialog.findChild(QTextEdit)
         assert preview.placeholderText() == "Search for this track to see matching lyrics."
         table = dialog.findChild(QTableWidget)
-        query = dialog.findChild(QLineEdit)
-        assert query.text() == "Artist - Song"
-        query.returnPressed.emit()
+        title = dialog.findChild(QLineEdit, "lyricsSearchTitle")
+        artist = dialog.findChild(QLineEdit, "lyricsSearchArtist")
+        assert (title.text(), artist.text()) == ("Song", "Artist")
+        artist.returnPressed.emit()
         deadline = time.monotonic() + 4
         while table.rowCount() != 5 and time.monotonic() < deadline:
             qapp.processEvents()
@@ -146,8 +203,8 @@ def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
         loading = dialog.findChild(QLabel, "lyricsSearchLoading")
         result = dialog.findChild(QLabel, "lyricsSearchResult")
         button.click()
-        from core.search_history import load_search_history
-        assert load_search_history("lyrics") == ["Song"]
+        from core.search_history import load_lyrics_search_history
+        assert load_lyrics_search_history() == [("Song", "")]
         assert entered.wait(2)
         assert not loading.isHidden()
         assert loading.movie().state() == loading.movie().MovieState.Running

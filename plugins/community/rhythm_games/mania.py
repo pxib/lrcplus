@@ -42,7 +42,8 @@ HIT_SPARKS = ((-0.08, -0.40, 35, 0.00), (0.10, 0.35, 45, 0.03),
 MANIA_INSTRUCTIONS = "Tap D, F, J, or K at the hit line, including arrow notes. Hold long notes until their tails reach the line."
 FLICK_GAP_MS = 1700
 MAX_LIFE = 1000
-SCORE_RANKS = (("C", 450), ("B", 600), ("A", 750), ("S", 900))
+SCORE_METER_MAX = 1_300_000
+SCORE_RANKS = (("C", 50_000), ("B", 450_000), ("A", 900_000), ("S", 1_150_000))
 
 
 @dataclass(frozen=True)
@@ -276,7 +277,7 @@ class ScoreMeter(QProgressBar):
     def __init__(self):
         super().__init__()
         self.setAccessibleName("Score progress")
-        self.setRange(0, 1000)
+        self.setRange(0, SCORE_METER_MAX)
         self.setTextVisible(False)
         self.setFixedHeight(33)
 
@@ -303,10 +304,9 @@ class ScoreMeter(QProgressBar):
         font.setPixelSize(11)
         painter.setFont(font)
         painter.setPen(QColor("#edf3ff"))
-        painter.drawText(QRectF(2, 0, 42, 16), Qt.AlignmentFlag.AlignVCenter, "SCORE")
         for rank, threshold in SCORE_RANKS:
             x = track.left() + track.width() * threshold / self.maximum()
-            painter.drawText(QRectF(x - 7, 0, 14, 16), Qt.AlignmentFlag.AlignCenter, rank)
+            painter.drawText(QRectF(max(0, x - 7), 0, 14, 16), Qt.AlignmentFlag.AlignCenter, rank)
             painter.drawLine(QPointF(x, 16), QPointF(x, 25))
 
 
@@ -400,6 +400,7 @@ class ManiaBoard(QWidget):
         self.notes = ()
         self.first = self.position_ms = 0
         self.round = None
+        self._score_digits = ""
         self._held = set()
         self._feedback = {}
         self._bursts = []
@@ -424,6 +425,7 @@ class ManiaBoard(QWidget):
         self.score_number = QLabel()
         self.score_number.setObjectName("scoreNumber")
         self.score_number.setAccessibleName("Score")
+        self.score_number.setTextFormat(Qt.TextFormat.RichText)
         self.score_meter = ScoreMeter()
         score = QVBoxLayout()
         score.setSpacing(0)
@@ -510,19 +512,27 @@ class ManiaBoard(QWidget):
         neon = self.theme == "neon"
         round_ = self.round if neon else None
         life = MAX_LIFE if round_ is None or round_.life is None else round_.life
-        score = round_.score if round_ is not None else 0
+        score = round_.display_score if round_ is not None else 0
         combo = round_.combo if round_ is not None else 0
-        progress = min(1000, score * 1000 // round_.max_score) if round_ and round_.max_score else 0
-        rank = next((label for label, threshold in reversed(SCORE_RANKS) if progress >= threshold), "D")
+        rank = round_.grade if round_ is not None else "D"
         self.life_meter.setValue(life)
         self.life_number.setText(str(life))
-        self.score_meter.setValue(progress)
-        self.score_number.setText(f"{score:08d}")
+        self.score_meter.setValue(min(score, self.score_meter.maximum()))
+        self._update_score_number(score)
         self.score_rank.setText(rank)
         self.combo_number.set_combo(combo)
         self.life_hud.setVisible(neon)
         self.score_hud.setVisible(neon)
         self.combo_hud.setVisible(neon and combo > 0)
+
+    def _update_score_number(self, score):
+        digits = f"{score:08d}"
+        if digits == self._score_digits:
+            return
+        significant = digits.lstrip("0")
+        leading_zeroes = digits[:len(digits) - len(significant)]
+        self.score_number.setText(f'<span style="color: #9a9da8">{leading_zeroes}</span>{significant}')
+        self._score_digits = digits
 
     def set_pause_state(self, *, enabled, paused=False):
         label = "Resume" if paused else "Pause"

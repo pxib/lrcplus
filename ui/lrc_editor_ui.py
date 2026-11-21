@@ -669,13 +669,15 @@ class LrcEditorUiMixin:
         source_buttons.addWidget(reload_source)
         source_buttons.addWidget(open_source_file)
         source_buttons.addWidget(open_source_folder)
-        import_ass = QPushButton("Import ASS…")
-        import_ass.setToolTip(
-            "Import ASS/SSA Dialogue lines and convert \\k, \\K, \\kf and \\ko karaoke timing into LRCX."
-        )
-        import_ass.clicked.connect(self.import_ass)
+        import_lyrics = QPushButton("Import…")
+        import_lyrics.setToolTip("Import timed lyrics from TTML or ASS/SSA subtitles.")
+        import_lyrics.clicked.connect(self.import_timed_lyrics)
+        export_lyrics = QPushButton("Export…")
+        export_lyrics.setToolTip("Export a TTML copy with lyric timing, translations, and authored readings.")
+        export_lyrics.clicked.connect(self.export_timed_lyrics)
         source_buttons.addStretch()
-        source_buttons.addWidget(import_ass)
+        source_buttons.addWidget(import_lyrics)
+        source_buttons.addWidget(export_lyrics)
         source_layout.addLayout(source_buttons)
         self.tabs.addTab(source_page, "Source")
 

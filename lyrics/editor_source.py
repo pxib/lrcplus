@@ -99,7 +99,7 @@ def validate_editor_source(text, suffix):
 
 def extract_metadata(text):
     """Keep portable metadata that the structured model does not otherwise store."""
-    reserved = {"format", "version", "g", "offset", "attach", "reading_groups"}
+    reserved = {"format", "version", "g", "offset", "attach", "reading_groups", "line_ends"}
     result = []
     for line in text.splitlines():
         match = re.fullmatch(r"\[([A-Za-z][A-Za-z0-9_]*):.*\]", line.strip())

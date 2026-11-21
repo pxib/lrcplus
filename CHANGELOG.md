@@ -1,6 +1,18 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [2026-11-21]
+
+### Added
+
+- Add TTML import and export in the lyrics editor's **Source** tab. **Import…** accepts TTML and ASS/SSA, and imports can be undone. **Export…** writes a TTML copy of the current draft with line and word timing, translations, and authored furigana.
+- Add TTML to the player's **LRC > Save As…** menu. It saves a copy with the lyrics file's timing offset applied and keeps the current lyrics active.
+
+### Changed
+
+- Split Lyrics Search into **Title** and optional **Artist** fields. Prefill both from the loaded track's tags, support pasting `Artist - Title`, and restore both fields from search history.
+- Make **Try another source** carry both fields over and search the selected source. Reuse cached results when both fields match.
+
 ## [2026-11-20]
 
 ### Added

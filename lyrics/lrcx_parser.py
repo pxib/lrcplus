@@ -182,10 +182,19 @@ def parse_lrcx(text, *, infer_ends=True):
     """
     lines = []
     reading_groups = {}
+    line_ends = {}
 
     with StringIO(text.lstrip("\ufeff")) as file:
         for raw_line in file:
             line = raw_line.rstrip("\r\n")
+            if line.startswith("[line_ends:") and line.endswith("]"):
+                try:
+                    value = json.loads(line[len("[line_ends:"):-1])
+                    if isinstance(value, dict):
+                        line_ends = value
+                except (ValueError, TypeError):
+                    pass
+                continue
             if line.startswith("[reading_groups:") and line.endswith("]"):
                 try:
                     value = json.loads(line[len("[reading_groups:"):-1])
@@ -347,6 +356,9 @@ def parse_lrcx(text, *, infer_ends=True):
             )
 
     for index, lyric in enumerate(lines):
+        end_ms = line_ends.get(str(index))
+        if not lyric.has_karaoke and type(end_ms) is int and 0 <= end_ms < 10**15 and end_ms / 1000 >= lyric.start:
+            lyric.end = end_ms / 1000
         entries = reading_groups.get(str(index), [])
         candidates = []
         for entry in entries if isinstance(entries, list) else []:
@@ -367,11 +379,8 @@ def parse_lrcx(text, *, infer_ends=True):
         key=lambda item: (item[1].start, item[0]),
     )
     for timeline_index, (original_index, lyric) in enumerate(timeline):
-        if infer_ends and lyric.end is None:
-            lyric.end = (
-                timeline[timeline_index + 1][1].start
-                if timeline_index + 1 < len(timeline)
-                else None
-            )
+        if infer_ends and lyric.end is None and timeline_index + 1 < len(timeline):
+            lyric.end = timeline[timeline_index + 1][1].start
+            lyric.end_inferred = True
 
     return lines

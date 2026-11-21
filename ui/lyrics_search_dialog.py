@@ -8,13 +8,15 @@ from time import monotonic
 from threading import Event
 from unicodedata import normalize
 from PySide6.QtCore import QEventLoop, Qt, QTimer, QSize
-from PySide6.QtGui import QIcon, QMovie, QPixmap
+from PySide6.QtGui import QGuiApplication, QIcon, QMovie, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
@@ -44,6 +46,10 @@ from core.chinese_lyrics import (
 )
 from core.synclrc import SyncLRCError, search as search_synclrc, fetch_lyrics as fetch_synclrc_lyrics
 from core.music_library import LibraryTrack, read_track
+from core.search_history import (
+    clean_lyrics_history, load_lyrics_search_history, save_lyrics_search_history,
+    split_lyrics_query,
+)
 from ui.lyrics_preview import LyricsPreview
 from ui.search_history import SearchHistoryLineEdit
 from core.file_io import atomic_write_text
@@ -59,11 +65,16 @@ def _lyrics_search_track(audio_path):
         return LibraryTrack(str(audio_path), audio_path.stem)
 
 
-def _lyrics_search_query(audio_path, *, track=None):
+def _lyrics_search_fields(audio_path, *, track=None):
     track = track if track is not None else _lyrics_search_track(audio_path)
     title = (track.title or "").strip() or Path(audio_path).stem
     artist = (track.artist or "").strip()
-    return f"{artist} - {title}" if artist else title
+    return title, artist
+
+
+def _history_label(fields):
+    title, artist = fields
+    return f"{title} · {artist}" if artist else title
 
 
 def _duration_seconds(value):
@@ -101,14 +112,12 @@ class LyricsSearchDialogMixin:
         dialog.setWindowTitle("Search Lyrics")
         dialog.resize(900, 650)
         audio_path = Path(self.current_audio_path) if self.current_audio_path else None
-        track_title = track_artist = initial_query = ""
+        track_title = track_artist = ""
         track_duration = 0
         if audio_path:
             track = _lyrics_search_track(audio_path)
-            track_title = (track.title or "").strip() or audio_path.stem
-            track_artist = (track.artist or "").strip()
+            track_title, track_artist = _lyrics_search_fields(audio_path, track=track)
             track_duration = _duration_seconds(getattr(track, "duration", None))
-            initial_query = _lyrics_search_query(audio_path, track=track)
         from core.onboarding_events import onboarding_events
         dialog.finished.connect(lambda _result: onboarding_events(self).occurred.emit("lyrics_search_closed"))
 
@@ -131,26 +140,70 @@ class LyricsSearchDialogMixin:
         provider_row.addStretch()
         layout.addLayout(provider_row)
 
-        search_row = QHBoxLayout()
-        query_input = SearchHistoryLineEdit("lyrics", dialog)
-        query_input.setPlaceholderText("Song title, artist, or keywords")
-        query_input.setFont(content_font(query_input.font(), ""))
-        query_input.textChanged.connect(
-            lambda text: query_input.setFont(content_font(query_input.font(), text))
+        search_form = QGridLayout()
+        title_input = SearchHistoryLineEdit(
+            "lyrics", dialog, load=load_lyrics_search_history, save=save_lyrics_search_history,
+            clean=clean_lyrics_history, label=_history_label, completion_text=lambda fields: fields[0],
         )
+        artist_input = QLineEdit(dialog)
+        title_input.setObjectName("lyricsSearchTitle")
+        artist_input.setObjectName("lyricsSearchArtist")
+        title_input.setPlaceholderText("Song title")
+        artist_input.setPlaceholderText("Artist name")
+        for column, label, field in (
+            (0, "&Title", title_input), (1, "&Artist (optional)", artist_input),
+        ):
+            caption = QLabel(label, dialog)
+            caption.setBuddy(field)
+            search_form.addWidget(caption, 0, column)
+            search_form.addWidget(field, 1, column)
+            field.setFont(content_font(field.font(), ""))
+            field.textChanged.connect(
+                lambda _text, field=field: field.setFont(content_font(field.font(), field.text()))
+            )
 
-        # Prefer embedded tags, falling back to the filename when unavailable.
-        query_input.setText(initial_query)
+        def set_search_fields(fields):
+            title, artist = fields
+            title_input.setText(title)
+            artist_input.setText(artist)
+
+        def search_fields():
+            return title_input.text().strip(), artist_input.text().strip()
+
+        set_search_fields((track_title, track_artist))
+        title_input.entry_recalled.connect(set_search_fields)
+        previous_title = title_input.text()
+
+        def split_pasted_title(text):
+            title, artist = split_lyrics_query(text)
+            if not artist:
+                return
+            # A single typed character can complete a title that happens to match the clipboard.
+            cursor = title_input.cursorPosition()
+            if cursor and text[:cursor - 1] + text[cursor:] == previous_title:
+                return
+            if text.strip() == QGuiApplication.clipboard().text().strip():
+                set_search_fields((title, artist))
+
+        def remember_title(_text):
+            nonlocal previous_title
+            previous_title = title_input.text()
+
+        title_input.textEdited.connect(split_pasted_title)
+        title_input.textChanged.connect(remember_title)
 
         search_button = QPushButton("Search", dialog)
         search_button.setAutoDefault(False)
-        search_row.addWidget(query_input)
-        search_row.addWidget(search_button)
-        layout.addLayout(search_row)
+        search_form.addWidget(search_button, 1, 2)
+        search_form.setColumnStretch(0, 2)
+        search_form.setColumnStretch(1, 1)
+        layout.addLayout(search_form)
 
         recovery_row = QHBoxLayout()
         title_only_button = QPushButton("Search title only", dialog)
         other_source_button = QPushButton("Try another source", dialog)
+        other_sources = QMenu(other_source_button)
+        other_source_button.setMenu(other_sources)
         for button in (title_only_button, other_source_button):
             button.setAutoDefault(False)
             button.hide()
@@ -320,6 +373,7 @@ class LyricsSearchDialogMixin:
         search_cancel = Event()
         search_in_progress = False
         search_state = None
+        submitted_fields = None
         cooldown_timer = QTimer(dialog)
         cooldown_timer.setInterval(100)
         provider_errors = (LRCLibError, MusixmatchError, LyricsProviderError, SyncLRCError)
@@ -335,9 +389,9 @@ class LyricsSearchDialogMixin:
             }
             preview.setPlaceholderText(placeholders.get(
                 state, "Search for this track to see matching lyrics." if audio_path
-                else "Enter a song title or artist to find lyrics.",
+                else "Enter a song title to find lyrics.",
             ))
-            title_only_button.setVisible(state == "empty" and bool(title_only_query()))
+            title_only_button.setVisible(state == "empty" and all(search_fields()))
             other_source_button.setVisible(state in {"empty", "error"})
             search_movie.stop()
             search_loading.hide()
@@ -359,12 +413,6 @@ class LyricsSearchDialogMixin:
                 ))
                 search_result.setAccessibleName(accessible_name)
                 search_result.show()
-
-        def title_only_query():
-            query = query_input.text().strip()
-            if track_artist and query == initial_query:
-                return track_title
-            return query.partition(" - ")[2].strip()
 
         def cooldown_attribute():
             return {
@@ -397,7 +445,7 @@ class LyricsSearchDialogMixin:
             enabled = not search_in_progress and remaining == 0
             search_button.setEnabled(enabled)
             title_only_button.setEnabled(enabled)
-            title_only_button.setVisible(search_state == "empty" and bool(title_only_query()))
+            title_only_button.setVisible(search_state == "empty" and all(search_fields()))
             action = "Retry" if search_state == "error" else "Search"
             search_button.setText(f"{action} ({remaining}s)" if remaining else action)
             if remaining:
@@ -406,7 +454,8 @@ class LyricsSearchDialogMixin:
                 cooldown_timer.stop()
 
         cooldown_timer.timeout.connect(update_search_button)
-        query_input.textChanged.connect(update_search_button)
+        title_input.textChanged.connect(update_search_button)
+        artist_input.textChanged.connect(update_search_button)
         update_search_button()
 
         def selected_record():
@@ -550,11 +599,12 @@ class LyricsSearchDialogMixin:
                 update_preview()
 
         def reset_provider():
-            nonlocal search_in_progress
+            nonlocal search_in_progress, submitted_fields
             search_cancel.set()
             search_job.cancel()
             preview_queue.cancel()
             search_in_progress = False
+            submitted_fields = None
             set_search_indicator(None)
             results.setRowCount(0)
             records.clear()
@@ -567,9 +617,10 @@ class LyricsSearchDialogMixin:
             update_search_button()
 
         def switch_provider():
-            nonlocal active_provider, records
+            nonlocal active_provider, records, submitted_fields
             provider_states[active_provider] = {
-                "records": list(records), "query": query_input.text(),
+                "records": list(records), "fields": (title_input.text(), artist_input.text()),
+                "submitted_fields": submitted_fields,
                 "row": results.currentRow(),
                 "scroll": results.verticalScrollBar().value(),
                 "preview_scroll": preview.verticalScrollBar().value(),
@@ -582,7 +633,8 @@ class LyricsSearchDialogMixin:
             saved = provider_states.get(active_provider)
             if saved is not None:
                 records = list(saved["records"])
-                query_input.setText(saved["query"])
+                submitted_fields = saved["submitted_fields"]
+                set_search_fields(saved["fields"])
                 check_result_timing()
                 populate_results(saved["row"])
                 results.verticalScrollBar().setValue(saved["scroll"])
@@ -616,15 +668,14 @@ class LyricsSearchDialogMixin:
             reset_provider()
 
         def run_search():
-            nonlocal search_in_progress, search_cancel
+            nonlocal search_in_progress, search_cancel, submitted_fields
             update_search_button()
             if not search_button.isEnabled():
                 return
-            query = query_input.text().strip()
-            if not query:
-                status.setText(
-                    "Enter a title, artist, or other keywords."
-                )
+            fields = search_fields()
+            if not fields[0]:
+                status.setText("Enter a song title.")
+                title_input.setFocus()
                 return
 
             source = provider.currentText()
@@ -639,10 +690,11 @@ class LyricsSearchDialogMixin:
                 return
             if source == "Musixmatch":
                 setattr(self, credential_attribute(), key)
-            query_input.remember_search()
+            title_input.remember_search(fields)
             search_cancel.set()
             preview_queue.cancel()
             search_cancel = Event()
+            submitted_fields = fields
             set_search_indicator("loading")
             status.setText(f"Searching {source}...")
             results.setRowCount(0)
@@ -654,20 +706,50 @@ class LyricsSearchDialogMixin:
             update_search_button()
             from core.onboarding_events import onboarding_events
             onboarding_events(self).occurred.emit("lyrics_search_started")
-            search_job.start(fetch_results, query, source, key, search_cancel, auth_method.currentData())
+            search_job.start(fetch_results, fields, source, key, search_cancel, auth_method.currentData())
 
         def search_title_only():
-            title_query = title_only_query()
-            if title_query:
-                query_input.setText(title_query)
+            if all(search_fields()):
+                artist_input.clear()
                 run_search()
 
-        def fetch_results(query, source, key, cancel, mode):
+        def submit_title():
+            popup = title_input.completer().popup()
+            if not (popup.isVisible() and popup.currentIndex().isValid()):
+                run_search()
+
+        def search_other_source(source):
+            fields = search_fields()
+            if not fields[0] or source == active_provider:
+                return
+            provider.setCurrentText(source)
+            if submitted_fields != fields:
+                reset_provider()
+            set_search_fields(fields)
+            if search_state != "success":
+                run_search()
+
+        for index in range(provider.count()):
+            source = provider.itemText(index)
+            action = other_sources.addAction(source)
+            action.triggered.connect(lambda _checked=False, source=source: search_other_source(source))
+
+        def update_other_sources():
+            for action in other_sources.actions():
+                action.setVisible(action.text() != active_provider)
+
+        other_sources.aboutToShow.connect(update_other_sources)
+
+        def fetch_results(fields, source, key, cancel, mode):
+            title, artist = fields
+            query = f"{artist} - {title}" if artist else title
             try:
                 if source == "SyncLRC":
                     return search_synclrc(query, cancel)
                 if source == "Musixmatch":
-                    return search_musixmatch(query, key, cancel, auth_mode=mode)
+                    return search_musixmatch(
+                        query, key, cancel, auth_mode=mode, title=title, artist=artist,
+                    )
                 if source in CHINESE_LYRICS_PROVIDERS:
                     return search_chinese_lyrics(source, query, cancel)
                 return search_lrclib(query, cancel)
@@ -902,10 +984,10 @@ class LyricsSearchDialogMixin:
 
         search_button.clicked.connect(run_search)
         title_only_button.clicked.connect(search_title_only)
-        other_source_button.clicked.connect(provider.showPopup)
         search_job.finished.connect(show_results)
         search_job.failed.connect(search_failed)
-        query_input.returnPressed.connect(run_search)
+        title_input.returnPressed.connect(submit_title)
+        artist_input.returnPressed.connect(run_search)
         results.itemSelectionChanged.connect(update_preview)
         provider.currentTextChanged.connect(switch_provider)
         api_key.textEdited.connect(credential_edited)

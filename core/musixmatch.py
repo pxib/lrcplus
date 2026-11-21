@@ -125,14 +125,17 @@ def get_token(cancel=None):
     return token.strip()
 
 
-def search(query, credential, cancel=None, *, auth_mode="api_key"):
+def search(query, credential, cancel=None, *, auth_mode="api_key", title=None, artist=""):
     cancel = cancel if cancel is not None else Event()
     params = {"q": query, "page_size": 30, "page": 1, "s_track_rating": "desc"}
     if auth_mode == "token":
-        artist, separator, title = query.partition(" - ")
+        if title is None:
+            artist, separator, title = query.partition(" - ")
+            if not separator:
+                title, artist = query, ""
         params.pop("q")
-        params["q_track"] = title.strip() if separator else query
-        if separator:
+        params["q_track"] = title.strip()
+        if artist:
             params["q_artist"] = artist.strip()
     body = _request("track.search", credential, params, cancel, auth_mode)
     tracks = body.get("track_list", [])

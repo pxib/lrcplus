@@ -1,9 +1,11 @@
 import re
 import json
 
+from dataclasses import replace
 from pathlib import Path
 
 from lyrics.loader import load_lyrics
+from lyrics.lrcx_parser import get_lrcx_offset
 from lyrics.furigana import build_furigana_segments
 from lyrics.models import LyricSegment
 from lyrics.line_breaks import encode_line_breaks, reading_source
@@ -165,6 +167,11 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
               for index, line in enumerate(lines) if line.reading_groups}
     if groups:
         output.append("[reading_groups:" + json.dumps(groups, ensure_ascii=False, separators=(",", ":")) + "]")
+    line_ends = {str(index): round(line.end * 1000) for index, line in enumerate(lines)
+                 if not line.has_karaoke and not line.end_inferred and
+                 line.end is not None and line.end >= line.start}
+    if line_ends:
+        output.append("[line_ends:" + json.dumps(line_ends, separators=(",", ":")) + "]")
     tag = _generation_mode_tag(generation_mode)
     if tag:
         output.append(tag)
@@ -296,7 +303,7 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
     return "\n".join(output) + ("\n" if output else "")
 
 
-def save_lyrics(path, lines, manual_overrides=None, generation_mode=None) -> None:
+def save_lyrics(path, lines, manual_overrides=None, generation_mode=None, *, offset_ms=0.0) -> None:
     path = Path(path)
     suffix = path.suffix.lower()
 
@@ -306,12 +313,23 @@ def save_lyrics(path, lines, manual_overrides=None, generation_mode=None) -> Non
         contents = serialize_lrcx(
             lines,
             manual_overrides=manual_overrides,
+            offset_ms=offset_ms,
             generation_mode=generation_mode,
         )
+    elif suffix == ".ttml":
+        from lyrics.ttml import serialize_ttml
+
+        if manual_overrides:
+            lines = [
+                replace(line, segments=_manual_segments(line, manual_overrides))
+                if manual_overrides.get(line.text) else line
+                for line in lines
+            ]
+        contents = serialize_ttml(lines, offset_ms=offset_ms)
     else:
         raise ValueError(
             f"Unsupported lyrics format: {path.suffix}. "
-            "Use .lrc or .lrcx."
+            "Use .lrc, .lrcx, or .ttml."
         )
 
     atomic_write_text(path, contents, backup=True)
@@ -322,10 +340,16 @@ def convert_lyrics(
     destination_path,
     manual_overrides=None,
 ) -> None:
+    source_path = Path(source_path)
+    destination_path = Path(destination_path)
     lines = load_lyrics(source_path)
+    offset_ms = 0.0
+    if destination_path.suffix.lower() == ".ttml" and source_path.suffix.lower() in {".lrc", ".lrcx"}:
+        offset_ms = get_lrcx_offset(source_path)
 
     save_lyrics(
         destination_path,
         lines,
         manual_overrides=manual_overrides,
+        offset_ms=offset_ms,
     )

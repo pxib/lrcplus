@@ -24,6 +24,23 @@ Classic LRC-style metadata is allowed and ignored by the lyric timing parser for
 
 The square-bracket timestamp is the line start. Each angle-bracket timestamp is the start of a karaoke segment.
 
+### Import and export timed lyrics
+
+In the lyrics editor, choose **Source > Import…** to bring in TTML or ASS/SSA
+lyrics. The import replaces the editor contents and can be undone. **Source >
+Export…** writes a separate TTML file. It carries line and word timing,
+translation rows, authored ruby and supported mora timing. The current lyric
+offset is applied to the exported timestamps. Save the editable copy as LRCX
+to retain its inline styles, quotes, and reading groups.
+
+From the player, **LRC > Save As…** can also create a TTML copy of the
+currently loaded lyrics file. Use the editor to export a draft.
+
+The optional `[line_ends:{"0":3500}]` tag stores explicit end times for
+line-timed lyrics. Keys are zero-based document line indices and values are
+milliseconds. This lets an imported line end at its original time without
+adding a karaoke segment.
+
 ## Ruby
 
 A segment can contain embedded ruby:

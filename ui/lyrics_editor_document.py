@@ -12,12 +12,13 @@ from PySide6.QtCore import QSignalBlocker, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox, QApplication
 from lyrics.loader import load_lyrics, get_lyrics_generation_mode
-from lyrics.writer import format_timestamp, serialize_lrc, serialize_lrcx
+from lyrics.writer import format_timestamp, save_lyrics, serialize_lrc, serialize_lrcx
 from lyrics.editor_source import effective_source_suffix, extract_metadata, parse_editor_source
 from lyrics.editor_recovery import recoverable_drafts
 from core.debug import debug_print
 from core.file_io import atomic_write_text
 from lyrics.ass_parser import parse_ass
+from lyrics.ttml import load_ttml
 from core.settings import get_lyrics_attachment, set_lyrics_attachment
 from lyrics.models import LyricLine, LyricSegment
 
@@ -685,41 +686,82 @@ class LyricsEditorDocumentMixin:
             return
         self.share_status_label.setText(f"Exported to {target}.")
 
-    def import_ass(self):
+    def import_timed_lyrics(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Import ASS/SSA Lyrics",
+            "Import Timed Lyrics",
             str(self.lrc_path.parent),
-            "ASS/SSA Subtitle Files (*.ass *.ssa);;All Files (*)",
+            "Timed Lyrics (*.ttml *.ass *.ssa);;TTML Files (*.ttml);;ASS/SSA Subtitle Files (*.ass *.ssa)",
         )
         if not path:
             return
+        source = Path(path)
+        suffix = source.suffix.lower()
         try:
-            imported = parse_ass(path)
-        except Exception as error:
-            QMessageBox.warning(self, "Import ASS", f"Could not import subtitle:\n{error}")
+            if suffix == ".ttml":
+                imported = load_ttml(source)
+            elif suffix in {".ass", ".ssa"}:
+                imported = parse_ass(source)
+            else:
+                raise ValueError(f"Unsupported import format: {source.suffix}")
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Import Timed Lyrics", f"Could not import lyrics:\n{error}")
             return
         if not imported:
             QMessageBox.information(
-                self,
-                "Import ASS",
-                "No Dialogue lines were found in this ASS/SSA file.",
+                self, "Import Timed Lyrics", "No timed lyrics were found in this file.",
             )
             return
+        if self._source_dirty:
+            answer = QMessageBox.question(
+                self, "Replace Source Edits?",
+                "Replace the pending source edits with the imported lyrics?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         self._push_undo_state()
+        self._reading_generation_epoch += 1
         self.lines = imported
-        self.document_dirty = True
-        self.karaoke_dirty = any(
-            getattr(line, "has_karaoke", False) for line in self.lines
-        )
-        self._populate_lines()
-        self.line_list.setCurrentRow(0)
+        self.karaoke_dirty = any(line.has_karaoke for line in imported)
+        if suffix == ".ttml":
+            # TTML stores the effective playback times directly.
+            self.lyrics_offset_ms = 0.0
+            with QSignalBlocker(self.lyrics_offset):
+                self.lyrics_offset.setValue(0.0)
+        self._source_dirty = False
+        self._populate_lines(preserve_line_index=0, selected_line_indices=[])
+        self._mark_document_dirty()
         self.sync_source_from_model()
         QMessageBox.information(
-            self,
-            "Import ASS",
-            f"Imported {len(imported)} dialogue line(s). Karaoke tags were converted to editable LRCX timing.",
+            self, "Import Timed Lyrics", f"Imported {len(imported)} timed lyric line(s).",
         )
+
+    def export_timed_lyrics(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Timed Lyrics", str(self.lrc_path.with_suffix(".ttml")),
+            "TTML Files (*.ttml)",
+        )
+        if not path:
+            return
+        target = Path(path)
+        if target.suffix.lower() != ".ttml":
+            target = target.with_name(target.name + ".ttml")
+            if target.exists() and QMessageBox.question(
+                self, "Export Timed Lyrics", f"Replace {target.name}?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            ) != QMessageBox.StandardButton.Yes:
+                return
+        if not self._commit_pending_source():
+            return
+        try:
+            save_lyrics(target, self.lines, offset_ms=self.lyrics_offset_ms)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Export Timed Lyrics", f"Could not export lyrics:\n{error}")
+            return
+        QMessageBox.information(self, "Export Timed Lyrics", f"Exported lyrics to {target.name}.")
 
     def sync_source_from_model(self):
         if self._source_dirty:
@@ -830,6 +872,8 @@ class LyricsEditorDocumentMixin:
         )
         if has_karaoke:
             features.append("Karaoke timing")
+        if any(line.end is not None and not line.has_karaoke for line in self.lines):
+            features.append("Lyric end times")
 
         return features
 
