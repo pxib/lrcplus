@@ -635,6 +635,56 @@ def test_mania_round_expires_misses_and_completes_held_tails_in_time_order():
     assert round_.combo == 1 and round_.accuracy == pytest.approx(1 / 3)
 
 
+@pytest.mark.parametrize(("theme", "value"), (("neon", 50), ("classic", 100)))
+def test_mania_life_and_good_combo_break_are_neon_only(theme, value):
+    round_ = ManiaRound((ManiaNote(1000, 0), ManiaNote(1400, 0),
+                         ManiaNote(1800, 0, end_ms=2200), ManiaNote(2600, 0)), theme=theme)
+    starting_life = 1000 if theme == "neon" else None
+    assert round_.life == starting_life
+    round_.press(1000, 0)
+    assert round_.press(1500, 0) == (Judgement(1, value), True)
+    assert round_.combo == (0 if theme == "neon" else 2)
+    assert round_.life == starting_life
+    round_.press(1800, 0)
+    assert round_.release(1900, 0) == Judgement(2, 0)
+    assert round_.life == (950 if theme == "neon" else None)
+    assert round_.advance(2800) == [Judgement(3, 0)]
+    assert round_.life == (850 if theme == "neon" else None)
+
+
+def test_mania_neon_timing_varies_by_note_type_and_direction():
+    notes = (ManiaNote(1000, 0), ManiaNote(1000, 1, golden=True),
+             ManiaNote(1000, 2, flick=True), ManiaNote(1000, 3, golden=True, flick=True))
+    round_ = ManiaRound(notes)
+    assert round_.press(1045, 0) == (Judgement(0, 100), True)
+    assert round_.press(1045, 1) == (Judgement(1, 300), True)
+    assert round_.press(1120, 2) == (Judgement(2, 100), True)
+    assert round_.press(1057, 3) == (Judgement(3, 300), True)
+
+    round_ = ManiaRound(notes)
+    assert round_.press(880, 2) == (Judgement(2, rhythm_games.MANIA_BAD), False)
+    assert round_.advance(1126) == [Judgement(0, 0), Judgement(1, 0)]
+    assert round_.press(1135, 3) == (Judgement(3, rhythm_games.MANIA_BAD), False)
+    assert round_.life == 700 and round_.accuracy == 0 and round_.combo == 0
+
+
+@pytest.mark.parametrize(("offset", "value"), (
+    (16, 320), (17, 300), (50, 200), (83, 100), (-113, 50), (113, 0), (-137, 0),
+))
+def test_mania_classic_uses_stable_od_five_windows(offset, value):
+    round_ = ManiaRound((ManiaNote(1000, 0, golden=True, flick=True),), theme="classic")
+    position = 1000 + offset
+    judgements = round_.advance(position)
+    if value:
+        assert judgements == []
+        assert round_.press(position, 0) == (Judgement(0, value), True)
+        assert round_.accuracy == pytest.approx(min(300, value) / 300)
+    elif offset > 0:
+        assert judgements == [Judgement(0, 0)]
+    else:
+        assert round_.press(position, 0) == (None, False)
+
+
 def test_rhythm_round_locks_future_notes_and_scores_each_note_once():
     notes = tuple(Note(time, str(time)) for time in (1000, 1300, 1800, 2300, 2700))
     round_ = Round(notes)
@@ -1172,9 +1222,22 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch):
 
         QTest.keyClick(board, Qt.Key.Key_Tab, Qt.KeyboardModifier.ControlModifier)
         assert dialog.board is board
+        assert board.life_meter.value() == 1000 and board.pause_button.isEnabled()
+        assert board.life_number.text() == "1000"
+        assert board.score_number.text() == "00000000" and board.score_rank.text() == "D"
+        assert board.combo_hud.isHidden()
+        QTest.mouseClick(board.pause_button, Qt.MouseButton.LeftButton)
+        assert dialog.status.text() == "Paused" and not dialog.timer.isActive()
+        QTest.keyClick(board, Qt.Key.Key_D)
+        assert dialog.round.judged == 0
+        QTest.mouseClick(board.pause_button, Qt.MouseButton.LeftButton)
+        assert board.pause_button.accessibleName() == "Pause" and dialog.timer.isActive()
+        dialog.timer.stop()
         QTest.keyClick(board, Qt.Key.Key_K)
         assert dialog.round.judged == 0
         QTest.keyClick(board, Qt.Key.Key_D)
+        assert board.score_number.text() == "00000300" and board.score_meter.value() > 0
+        assert board.combo_number.text() == "1" and board.combo_hud.isVisible()
         clock = 1125
         QTest.keyClick(board, Qt.Key.Key_F)
         clock = 1500
@@ -1190,22 +1253,46 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch):
         dialog._tick()
         QTest.keyRelease(board, Qt.Key.Key_K)
         clock = 3500
+        play = Mock()
+        monkeypatch.setattr(dialog.mania_sounds, "play", play)
         QTest.keyPress(board, Qt.Key.Key_K)
         QTest.keyClick(board, Qt.Key.Key_D)
         QTest.keyRelease(board, Qt.Key.Key_K)
         assert dialog.round.counts[300] == 7
+        golden_tap, golden_flick = play.call_args_list
+        assert golden_tap.args[0].source().fileName() == "maniahitcritical.wav"
+        assert golden_flick.args[0].source().fileName() == "maniahitflickcritical.wav"
 
         clock = 3750
         QTest.keyClick(board, Qt.Key.Key_J)
+        assert play.call_args.args[0].source().fileName() == "maniahitflick.wav"
         clock = 4500
         QTest.keyPress(board, Qt.Key.Key_F)
         assert dialog.round.is_holding(8)
         clock = 4700
         board.clearFocus()
         assert dialog.round.counts[0] == 1
+        assert board.life_meter.value() == 950 and board._judgement_label[0] == "Bad"
+        assert board.life_number.text() == "950" and board.combo_hud.isHidden()
 
-        dialog._finish_round()
+        clock = 13000
+        dialog._tick()
+        assert dialog.round is not None and dialog.round.life == 0
+        assert board.life_meter.value() == 0 and board.pause_button.isEnabled()
+        perfects = dialog.round.counts[300]
+        clock = 13250
+        QTest.keyClick(board, Qt.Key.Key_D)
+        assert dialog.round.counts[300] == perfects + 1 and dialog.round.combo == 1
+
+        clock = 16000
+        dialog._tick()
         assert dialog.round is None and dialog.start.text() == "Retry"
+        assert board.life_meter.value() == 0 and not board.pause_button.isEnabled()
+        assert dialog.score.text().startswith("Failed")
+        assert play.call_args.args[0].source().fileName() == "fail.wav"
+        dialog.start.click()
+        assert dialog.round.life == board.life_meter.value() == 1000
+        dialog._finish_round()
         assert dialog.tabs.isTabEnabled(0)
         dialog.tabs.setCurrentIndex(0)
         assert dialog.board is dialog.circle_board and dialog.start.text() == "Start"
@@ -1215,10 +1302,12 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch):
         qapp.processEvents()
 
 
-def test_mania_theme_selector_restores_the_saved_skin(qapp):
+def test_mania_theme_selector_restores_the_saved_skin(qapp, monkeypatch):
     host = QMainWindow()
     settings = {"mania_theme": "unknown"}
-    api = SimpleNamespace(get_current_track=lambda: None, get_setting=settings.get, set_setting=settings.__setitem__)
+    host.volume_slider = SimpleNamespace(value=lambda: 25)
+    host.media_player = SimpleNamespace(playbackState=lambda: QMediaPlayer.PlaybackState.StoppedState)
+    api = SimpleNamespace(get_current_track=lambda: None, get_setting=settings.get, set_setting=settings.__setitem__, pause=Mock())
     first = RhythmDialog(host, api, ())
     try:
         assert first.mania_theme.isHidden()
@@ -1233,9 +1322,26 @@ def test_mania_theme_selector_restores_the_saved_skin(qapp):
         try:
             second.tabs.setCurrentIndex(1)
             assert second.mania_theme.currentText() == "Classic"
-            assert second.mania_board.theme == "classic"
-            second._set_controls_running(True)
+            board = second.mania_board
+            assert board.theme == "classic" and board.life_hud.isHidden()
+            assert board.score_hud.isHidden() and board.combo_hud.isHidden()
+            assert "arrow" not in second.status.text()
+            host.audio_output = second.output
+            monkeypatch.setattr(second.player, "setSourceDevice", Mock())
+            hit = Mock()
+            monkeypatch.setattr(second.hit_sound, "isLoaded", lambda: True)
+            monkeypatch.setattr(second.hit_sound, "play", hit)
+            second._start_round()
             assert not second.mania_theme.isEnabled()
+            second._media_status(QMediaPlayer.MediaStatus.LoadedMedia)
+            second.timer.stop()
+            second.preroll_until = float("inf")
+            monkeypatch.setattr(second, "_position", lambda: 3500)
+            QTest.keyClick(board, Qt.Key.Key_D)
+            assert second.mania_sounds is None and second.round.life is None
+            assert board._judgement_label is None
+            assert second.hit_sound.source().fileName() == "hit.wav"
+            hit.assert_called_once_with()
         finally:
             second.reject()
     finally:

@@ -2,12 +2,16 @@
 
 from dataclasses import dataclass
 from itertools import cycle, groupby, pairwise
+from math import sin, tau
 from time import monotonic
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPainterPathStroker, QPen, QPolygonF
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QBrush, QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPainterPathStroker,
+    QPen, QPixmap, QPolygonF,
+)
 from PySide6.QtMultimedia import QSoundEffect
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 
 LANE_KEYS = (Qt.Key.Key_D, Qt.Key.Key_F, Qt.Key.Key_J, Qt.Key.Key_K)
@@ -22,12 +26,18 @@ PERFECT_EFFECT_COLOR = QColor("#ffdd91")
 FEEDBACK_SECONDS = 0.24
 JUDGEMENT_SECONDS = 1.0
 JUDGEMENT_SCALE_SECONDS = 0.1
-JUDGEMENT_LABELS = {300: "Perfect", 100: "Great", 50: "Good", 0: "Miss"}
+COMBO_GROW_SECONDS = 0.1
+COMBO_ECHO_SECONDS = 0.2
+COMBO_ECHO_SCALE = 1.45
+MANIA_BAD = -1
+JUDGEMENT_LABELS = {300: "Perfect", 100: "Great", 50: "Good", MANIA_BAD: "Bad", 0: "Miss"}
 JUDGEMENT_COLORS = {"Great": "#d9b9ff", "Good": "#ace0ff", "Bad": "#66f4f5", "Miss": "#b7bdc9"}
 HIT_SPARKS = ((-0.19, 0.14, 27), (0.16, 0.18, 31), (-0.05, 0.31, 39),
               (0.07, 0.26, 45), (-0.27, 0.11, 16), (0.26, 0.12, 20))
 MANIA_INSTRUCTIONS = "Tap D, F, J, or K at the hit line, including arrow notes. Hold long notes until their tails reach the line."
 FLICK_GAP_MS = 1700
+MAX_LIFE = 1000
+SCORE_RANKS = (("C", 450), ("B", 600), ("A", 750), ("S", 900))
 
 
 @dataclass(frozen=True)
@@ -104,12 +114,14 @@ class ManiaSounds:
         }
         self.holds = tuple(load("maniahithold") for _ in LANE_KEYS)
         self.golden_taps = tuple(load("maniahitcritical") for _ in LANE_KEYS)
+        self.flicks = tuple(load("maniahitflick") for _ in LANE_KEYS)
         self.golden_flicks = tuple(load("maniahitflickcritical") for _ in LANE_KEYS)
         self.golden_holds = tuple(load("maniaholdcritical") for _ in LANE_KEYS)
         for effect in (*self.holds, *self.golden_holds):
             effect.setLoopCount(QSoundEffect.Loop.Infinite.value)
         self.results = {name: load(name) for name in ("allperfect", "fullcombo", "clear", "fail")}
-        self.effects = (*self.holds, *self.golden_taps, *self.golden_flicks, *self.golden_holds, *self.results.values(),
+        self.effects = (*self.holds, *self.golden_taps, *self.flicks, *self.golden_flicks,
+                        *self.golden_holds, *self.results.values(),
                         *(effect for taps in self.taps.values() for effect in taps))
 
     def configure(self, device, volume):
@@ -133,26 +145,38 @@ class ManiaSounds:
         normal = self.holds if value is None else self.taps[value]
         golden = self.golden_holds if value is None else self.golden_taps
         lane = note.lane
+        effects = (normal[lane], fallback)
         if note.golden:
-            variants = (self.golden_flicks[lane], golden[lane]) if note.flick else (golden[lane],)
-            self.play(*variants, normal[lane], fallback)
-        else:
-            self.play(normal[lane], fallback)
+            effects = (golden[lane], *effects)
+        if note.flick:
+            flicks = self.golden_flicks if note.golden else self.flicks
+            effects = (flicks[lane], *effects)
+        self.play(*effects)
 
     def stop_hold(self, lane):
         self.holds[lane].stop()
         self.golden_holds[lane].stop()
 
-    def play_result(self, counts):
-        if not any(counts[value] for value in self.taps):
+    def play_result(self, counts, *, failed):
+        if failed:
             name = "fail"
-        elif counts[0]:
+        elif counts[0] or counts.get(MANIA_BAD, 0) or counts[50]:
             name = "clear"
-        elif counts[100] or counts[50]:
+        elif counts[100]:
             name = "fullcombo"
         else:
             name = "allperfect"
         self.play(self.results[name])
+
+
+@dataclass(frozen=True)
+class HitFeedback:
+    note: ManiaNote
+    value: int
+    deadline: float
+
+    def strength(self, now):
+        return max(0, (self.deadline - now) / FEEDBACK_SECONDS)
 
 
 @dataclass(frozen=True)
@@ -187,10 +211,138 @@ def tinted(color, alpha):
     return result
 
 
+def life_heart():
+    heart = QPixmap(24, 24)
+    heart.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(heart)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    shape = QPainterPath(QPointF(12, 22))
+    shape.cubicTo(8, 19, 1, 13, 1, 8)
+    shape.cubicTo(1, 1, 9, 0, 12, 6)
+    shape.cubicTo(15, 0, 23, 1, 23, 8)
+    shape.cubicTo(23, 13, 16, 19, 12, 22)
+    painter.fillPath(shape, QColor("#89ff99"))
+    painter.end()
+    return heart
+
+
+class ScoreMeter(QProgressBar):
+    def __init__(self):
+        super().__init__()
+        self.setAccessibleName("Score progress")
+        self.setRange(0, 1000)
+        self.setTextVisible(False)
+        self.setFixedHeight(33)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        track = QRectF(1, 18, self.width() - 2, 12)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#363b60"))
+        painter.drawRoundedRect(track, 6, 6)
+        if self.value():
+            fill = QLinearGradient(track.topLeft(), track.topRight())
+            fill.setColorAt(0, QColor("#90ffce"))
+            fill.setColorAt(0.55, QColor("#80dff8"))
+            fill.setColorAt(1, QColor("#aa9cff"))
+            painter.save()
+            painter.setClipRect(QRectF(track.left(), track.top(), track.width() * self.value() / self.maximum(), track.height()))
+            painter.setBrush(fill)
+            painter.drawRoundedRect(track, 6, 6)
+            painter.restore()
+
+        font = painter.font()
+        font.setBold(True)
+        font.setPixelSize(11)
+        painter.setFont(font)
+        painter.setPen(QColor("#edf3ff"))
+        painter.drawText(QRectF(2, 0, 42, 16), Qt.AlignmentFlag.AlignVCenter, "SCORE")
+        for rank, threshold in SCORE_RANKS:
+            x = track.left() + track.width() * threshold / self.maximum()
+            painter.drawText(QRectF(x - 7, 0, 14, 16), Qt.AlignmentFlag.AlignCenter, rank)
+            painter.drawLine(QPointF(x, 16), QPointF(x, 25))
+
+
+class ComboNumber(QLabel):
+    def __init__(self):
+        super().__init__("0")
+        self.setObjectName("comboNumber")
+        self.setAccessibleName("Combo")
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._pulses = []
+        self._timer = QTimer(self, interval=16)
+        self._timer.timeout.connect(self._advance)
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        return QSize(hint.width(), round(hint.height() * COMBO_ECHO_SCALE))
+
+    def set_combo(self, combo):
+        previous = int(self.text())
+        if combo == previous:
+            return
+        text = str(combo)
+        self.setText(text)
+        if combo < previous:
+            self.clear_animation()
+            return
+        self._pulses.append((text, monotonic()))
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def clear_animation(self):
+        self._pulses.clear()
+        self._timer.stop()
+        self.update()
+
+    def _advance(self):
+        now = monotonic()
+        duration = COMBO_GROW_SECONDS + COMBO_ECHO_SECONDS
+        self._pulses = [(text, started) for text, started in self._pulses if now - started < duration]
+        if not self._pulses:
+            self._timer.stop()
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setFont(self.font())
+        painter.setPen(QColor("#f4faff"))
+        now = monotonic()
+        scale = 1.0
+        if self._pulses:
+            progress = min(1.0, (now - self._pulses[-1][1]) / COMBO_GROW_SECONDS)
+            scale = 1.0 - 0.5 * (1.0 - progress) ** 2
+            for text, started in reversed(self._pulses):
+                age = now - started - COMBO_GROW_SECONDS
+                if 0 <= age < COMBO_ECHO_SECONDS:
+                    fade = age / COMBO_ECHO_SECONDS
+                    self._draw_number(painter, text, 1.0 + (COMBO_ECHO_SCALE - 1.0) * fade, 0.4 * (1.0 - fade))
+                    break
+        self._draw_number(painter, self.text(), scale, 1.0)
+
+    def _draw_number(self, painter, text, scale, opacity):
+        text_width = self.fontMetrics().horizontalAdvance(text)
+        fit = min(1.0, self.width() / (text_width * COMBO_ECHO_SCALE))
+        painter.save()
+        painter.setOpacity(opacity)
+        painter.translate(self.width() / 2, self.height() / 2)
+        painter.scale(scale * fit, scale * fit)
+        bounds = QRectF(-self.width() / 2, -self.height() / 2, self.width(), self.height())
+        painter.drawText(bounds, Qt.AlignmentFlag.AlignCenter, text)
+        painter.restore()
+
+
 class ManiaBoard(QWidget):
     pressed = Signal(int)
     released = Signal(int)
-    instructions = MANIA_INSTRUCTIONS
+
+    @property
+    def instructions(self):
+        if self.theme == "classic":
+            return "Tap D, F, J, or K at the hit line. Hold long notes until their tails reach the line."
+        return MANIA_INSTRUCTIONS
 
     def __init__(self, parent, lead_ms):
         super().__init__(parent)
@@ -207,16 +359,158 @@ class ManiaBoard(QWidget):
         self._judgement_label = None
         self._feedback_timer = QTimer(self, interval=16)
         self._feedback_timer.timeout.connect(self._advance_feedback)
+        self._build_hud()
+        self._update_hud()
+
+    def _build_hud(self):
+        self.score_hud = QWidget(self)
+        self.score_hud.setStyleSheet("""
+            QLabel { color: #f3f6ff; font-weight: bold; }
+            QLabel#scoreRank { background: #292c50; color: #a9ccff; border-radius: 9px; font-size: 27px; }
+            QLabel#scoreNumber { font-size: 20px; }
+        """)
+        self.score_rank = QLabel()
+        self.score_rank.setObjectName("scoreRank")
+        self.score_rank.setAccessibleName("Score rank")
+        self.score_rank.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.score_rank.setFixedSize(38, 54)
+        self.score_number = QLabel()
+        self.score_number.setObjectName("scoreNumber")
+        self.score_number.setAccessibleName("Score")
+        self.score_meter = ScoreMeter()
+        score = QVBoxLayout()
+        score.setSpacing(0)
+        score.addWidget(self.score_meter)
+        score.addWidget(self.score_number)
+        rank_and_score = QHBoxLayout(self.score_hud)
+        rank_and_score.setContentsMargins(0, 0, 0, 0)
+        rank_and_score.addWidget(self.score_rank, alignment=Qt.AlignmentFlag.AlignTop)
+        rank_and_score.addLayout(score, 1)
+
+        self.life_hud = QWidget(self)
+        self.life_hud.setObjectName("maniaLife")
+        self.life_hud.setFixedHeight(50)
+        self.life_hud.setStyleSheet("""
+            QWidget#maniaLife { background: #797995; border-radius: 22px; }
+            QLabel { color: white; background: transparent; font-size: 14px; font-weight: bold; }
+            QProgressBar { background: #303047; border: 0; border-radius: 5px; }
+            QProgressBar::chunk { background: #89ff99; border-radius: 5px; }
+            QPushButton { background: #fff; border: 0; border-radius: 20px; }
+            QPushButton:disabled { background: #dedee9; }
+            QPushButton:hover, QPushButton:focus { background: #dddefe; }
+        """)
+        heart = QLabel()
+        heart.setPixmap(life_heart())
+        self.life_meter = QProgressBar()
+        self.life_meter.setAccessibleName("Life")
+        self.life_meter.setRange(0, MAX_LIFE)
+        self.life_meter.setValue(MAX_LIFE)
+        self.life_meter.setTextVisible(False)
+        self.life_meter.setFixedHeight(10)
+        self.life_number = QLabel()
+        self.life_number.setAccessibleName("Life remaining")
+        life_heading = QHBoxLayout()
+        life_heading.addWidget(QLabel("LIFE"))
+        life_heading.addStretch()
+        life_heading.addWidget(self.life_number)
+        meter = QVBoxLayout()
+        meter.setSpacing(1)
+        meter.addLayout(life_heading)
+        meter.addWidget(self.life_meter)
+        self.pause_button = QPushButton()
+        self.pause_button.setFixedSize(40, 40)
+        self.pause_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.pause_button.setAutoDefault(False)
+        self.set_pause_state(enabled=False)
+        hud = QHBoxLayout(self.life_hud)
+        hud.setContentsMargins(12, 4, 6, 4)
+        hud.addWidget(heart)
+        hud.addLayout(meter, 1)
+        hud.addWidget(self.pause_button)
+        self.combo_hud = QWidget(self)
+        self.combo_hud.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.combo_hud.setStyleSheet("""
+            QLabel { color: #d9c8ff; font-size: 13px; font-weight: bold; }
+        """)
+        combo_title = QLabel("COMBO", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.combo_number = ComboNumber()
+        combo = QVBoxLayout(self.combo_hud)
+        combo.setContentsMargins(0, 0, 0, 0)
+        combo.setSpacing(0)
+        combo.addWidget(combo_title)
+        combo.addWidget(self.combo_number)
+
+        header = QHBoxLayout()
+        header.addWidget(self.score_hud)
+        header.addStretch()
+        header.addWidget(self.life_hud, alignment=Qt.AlignmentFlag.AlignTop)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 55)
+        layout.addLayout(header)
+        layout.addStretch()
+        layout.addWidget(self.combo_hud, alignment=Qt.AlignmentFlag.AlignRight)
+
+    def resizeEvent(self, event):
+        width = self.width()
+        hud_width = min(330, round(width * 0.35))
+        self.score_hud.setFixedWidth(hud_width)
+        self.life_hud.setFixedWidth(hud_width)
+        self.combo_hud.setFixedWidth(min(130, round((width - self._neon_lane_width()) / 2) - 9))
+        self.combo_number.setStyleSheet(f"font-size: {min(46, round(width / 20))}px;")
+        super().resizeEvent(event)
+
+    def _update_hud(self):
+        neon = self.theme == "neon"
+        round_ = self.round if neon else None
+        life = MAX_LIFE if round_ is None or round_.life is None else round_.life
+        score = round_.score if round_ is not None else 0
+        combo = round_.combo if round_ is not None else 0
+        progress = min(1000, score * 1000 // round_.max_score) if round_ and round_.max_score else 0
+        rank = next((label for label, threshold in reversed(SCORE_RANKS) if progress >= threshold), "D")
+        self.life_meter.setValue(life)
+        self.life_number.setText(str(life))
+        self.score_meter.setValue(progress)
+        self.score_number.setText(f"{score:08d}")
+        self.score_rank.setText(rank)
+        self.combo_number.set_combo(combo)
+        self.life_hud.setVisible(neon)
+        self.score_hud.setVisible(neon)
+        self.combo_hud.setVisible(neon and combo > 0)
+
+    def set_pause_state(self, *, enabled, paused=False):
+        label = "Resume" if paused else "Pause"
+        icon = QPixmap(16, 16)
+        icon.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(icon)
+        ink = QColor("#222140")
+        if paused:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(ink)
+            painter.drawPolygon(QPolygonF([QPointF(3, 0), QPointF(15, 8), QPointF(3, 16)]))
+        else:
+            painter.fillRect(2, 0, 4, 16, ink)
+            painter.fillRect(10, 0, 4, 16, ink)
+        painter.end()
+        self.pause_button.setIcon(QIcon(icon))
+        self.pause_button.setAccessibleName(label)
+        self.pause_button.setToolTip(label)
+        self.pause_button.setEnabled(enabled)
 
     def set_theme(self, theme):
         self.theme = theme
-        self.update()
+        self._update_hud()
+        self.clear_feedback()
 
     def set_frame(self, notes, first, position_ms, round_=None):
         if notes is not self.notes:
             self.clear_feedback()
         self.notes, self.first, self.position_ms, self.round = notes, first, position_ms, round_
+        self._update_hud()
         self.update()
+
+    def is_pressed(self, lane):
+        return lane in self._held
 
     def clear_inputs(self):
         self._held.clear()
@@ -226,21 +520,23 @@ class ManiaBoard(QWidget):
         self._feedback.clear()
         self._judgement_label = None
         self._feedback_timer.stop()
+        self.combo_number.clear_animation()
         self.update()
 
     def animate(self, judgement, *, early_release=False):
         note = self.notes[judgement.index]
         now = monotonic()
-        self._feedback[note.lane] = judgement.value, now + FEEDBACK_SECONDS, note.golden
-        label = "Bad" if early_release else JUDGEMENT_LABELS[judgement.value]
-        self._judgement_label = label, now
+        self._feedback[note.lane] = HitFeedback(note, judgement.value, now + FEEDBACK_SECONDS)
+        if self.theme == "neon":
+            label = "Bad" if early_release else JUDGEMENT_LABELS[judgement.value]
+            self._judgement_label = label, now
         if not self._feedback_timer.isActive():
             self._feedback_timer.start()
         self.update()
 
     def _advance_feedback(self):
         now = monotonic()
-        self._feedback = {lane: entry for lane, entry in self._feedback.items() if entry[1] > now}
+        self._feedback = {lane: hit for lane, hit in self._feedback.items() if hit.deadline > now}
         if self._judgement_label is not None and now - self._judgement_label[1] >= JUDGEMENT_SECONDS:
             self._judgement_label = None
         if not self._feedback and self._judgement_label is None:
@@ -276,6 +572,9 @@ class ManiaBoard(QWidget):
             self.released.emit(lane)
         super().focusOutEvent(event)
 
+    def _neon_lane_width(self):
+        return min(620, self.width() * 0.72)
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -284,11 +583,12 @@ class ManiaBoard(QWidget):
             field = Playfield(center, min(408, self.width() - 32), 10, hit_y, top_scale=1)
             self._draw_classic_playfield(painter, field)
         else:
-            field = Playfield(center, min(464, self.width() * 0.82), 14, hit_y)
+            field = Playfield(center, self._neon_lane_width(), 8, hit_y, top_scale=0.14)
             self._draw_playfield(painter, field)
             self._draw_receptors(painter, field)
         self._draw_notes(painter, field)
-        self._draw_judgement(painter, field)
+        if self.theme == "neon":
+            self._draw_judgement(painter, field)
 
     def _draw_judgement(self, painter, field):
         if self._judgement_label is None:
@@ -377,10 +677,10 @@ class ManiaBoard(QWidget):
             painter.fillRect(QRectF(x + 1, field.hit_y - 1, width - 2, 3), color)
 
             key = QRectF(x + 5, field.hit_y + 8, width - 10, 29)
-            value, deadline, golden = self._feedback.get(lane, (None, 0, False))
-            if deadline > now:
-                fill = QColor("#b44859") if value == 0 else GOLD_NOTE_COLOR if golden else color
-                text = QColor("#17191c") if value else QColor("white")
+            hit = self._feedback.get(lane)
+            if hit is not None and hit.deadline > now:
+                fill = QColor("#b44859") if hit.value == 0 else color
+                text = QColor("#17191c") if hit.value else QColor("white")
             else:
                 fill = color if pressed else palette.button().color()
                 text = QColor("#17191c") if pressed else palette.buttonText().color()
@@ -403,18 +703,19 @@ class ManiaBoard(QWidget):
 
         painter.save()
         painter.setClipRect(QRectF(0, field.top, self.width(), field.travel + 10))
-        self._draw_chord_guides(painter, field, visible)
-        painter.setPen(Qt.PenStyle.NoPen)
         classic = self.theme == "classic"
+        if not classic:
+            self._draw_chord_guides(painter, field, visible)
+        painter.setPen(Qt.PenStyle.NoPen)
         colors = CLASSIC_LANE_COLORS if classic else LANE_COLORS
         for note, y, holding in visible:
             lane = note.lane
             is_hold = note.end_ms is not None
             color = HOLD_COLOR if is_hold and not classic else colors[lane]
-            if note.flick:
+            if not classic and note.flick:
                 color = GOLD_NOTE_COLOR if note.golden else FLICK_NOTE_COLOR
                 self._draw_flick_chevron(painter, field, lane, y, color)
-            elif note.golden:
+            elif not classic and note.golden:
                 color = GOLD_NOTE_COLOR
             if is_hold:
                 if holding:
@@ -453,9 +754,9 @@ class ManiaBoard(QWidget):
             y = pending[0][1]
             start = QPointF(field.x(left + 0.5, y), y)
             end = QPointF(field.x(right + 0.5, y), y)
-            color = self.palette().text().color() if self.theme == "classic" else QColor("#deedff")
+            color = QColor("#deedff")
             if all(note.golden for note, _ in pending):
-                color = GOLD_NOTE_COLOR.darker(155) if self.theme == "classic" else PERFECT_EFFECT_COLOR
+                color = PERFECT_EFFECT_COLOR
             painter.setPen(QPen(tinted(color, 75), 4))
             painter.drawLine(start, end)
             painter.setPen(QPen(color, 1.5))
@@ -514,11 +815,11 @@ class ManiaBoard(QWidget):
         painter.setFont(font)
         for lane, (label, color) in enumerate(zip(LANE_LABELS, LANE_COLORS)):
             pressed = lane in self._held
-            value, deadline, golden = self._feedback.get(lane, (None, 0, False))
-            strength = max(0, (deadline - now) / FEEDBACK_SECONDS)
-            bright = golden or value == 300
+            hit = self._feedback.get(lane)
+            strength = hit.strength(now) if hit is not None else 0
+            bright = hit is not None and (hit.note.golden or hit.value == 300)
             feedback = PERFECT_EFFECT_COLOR if bright else color
-            if value == 0:
+            if hit is not None and hit.value <= 0:
                 feedback = QColor("#ff829e")
             left = field.x(lane + 0.06, field.hit_y)
             right = field.x(lane + 0.94, field.hit_y)
@@ -528,9 +829,8 @@ class ManiaBoard(QWidget):
             painter.fillRect(QRectF(left, field.hit_y - 1, width, 2), color)
             if strength:
                 painter.fillRect(QRectF(left, field.hit_y - 4, width, 8), tinted(feedback, round(195 * strength)))
-                if value:
-                    beam_color = GOLD_NOTE_COLOR if golden else color
-                    self._draw_hit_burst(painter, field, lane, beam_color, strength, bright=bright)
+                if hit.value > 0:
+                    self._draw_hit_burst(painter, field, hit.note, color, strength, bright=bright)
 
             key = QRectF(left + 3, field.hit_y + 12, width - 6, 26)
             painter.setPen(QPen(feedback if strength else tinted(color, 200 if pressed else 100), 1))
@@ -539,43 +839,84 @@ class ManiaBoard(QWidget):
             painter.setPen(QColor("#f2f8ff"))
             painter.drawText(key, Qt.AlignmentFlag.AlignCenter, label)
 
-    def _draw_hit_burst(self, painter, field, lane, color, strength, *, bright):
+    def _draw_hit_burst(self, painter, field, note, color, strength, *, bright):
+        lane = note.lane
+        if note.golden:
+            color = GOLD_NOTE_COLOR
+        elif note.flick:
+            color = FLICK_NOTE_COLOR
+        elif note.end_ms is not None:
+            color = HOLD_COLOR
+
         rise = 1 - strength
-        top = field.hit_y - 34 - 27 * rise
+        travel = 1 - strength ** 2
         bottom = field.hit_y
+        lane_width = field.width / len(LANE_KEYS)
+        scale = min(1.0, lane_width / 115)
+        top = max(field.top, bottom - (36 + 42 * travel) * scale)
         beam = QLinearGradient(0, top, 0, bottom)
         beam.setColorAt(0, tinted(color, 0))
-        beam.setColorAt(1, tinted(color, round(144 * strength)))
+        beam.setColorAt(0.72, tinted(color, round(68 * strength)))
+        beam.setColorAt(1, tinted(color, round(185 * strength)))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(beam)
         painter.drawPolygon(field.strip(lane + 0.16, lane + 0.84, top, bottom))
 
-        accent = PERFECT_EFFECT_COLOR if bright else color.lighter(138)
+        accent = PERFECT_EFFECT_COLOR if note.golden else color.lighter(155 if bright else 125)
         center = field.x(lane + 0.5, bottom)
-        ring_width = (field.x(lane + 1, bottom) - field.x(lane, bottom)) * (0.38 + 0.58 * rise)
-        ring_height = 6 + 14 * rise
-        painter.setPen(QPen(tinted(accent, round(208 * strength)), 1.6))
+        ring_width = lane_width * (0.38 + 0.58 * travel)
+        ring_height = (5 + 15 * travel) * scale
+        painter.setPen(QPen(tinted(accent, round(208 * strength)), 1.6 * scale))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(QRectF(center - ring_width / 2, bottom - 4 - ring_height / 2, ring_width, ring_height))
+
+        if note.flick:
+            self._draw_flick_trails(painter, field, lane, color, travel, strength, scale)
 
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(tinted(accent, round(240 * strength)))
         sparks = HIT_SPARKS if bright else HIT_SPARKS[:4]
-        radius = (3.7 if bright else 2.4) * (1 - 0.4 * rise)
-        for offset, spread, travel in sparks:
-            y = bottom - 9 - travel * rise
-            x = field.x(lane + 0.5 + offset * (1 + spread * rise), y)
+        radius = (3.7 if bright else 2.4) * (1 - 0.4 * rise) * scale
+        for offset, spread, distance in sparks:
+            y = bottom - (9 + distance * travel) * scale
+            x = field.x(lane + 0.5 + offset * (1 + spread * travel), y)
             painter.drawPolygon(QPolygonF([
                 QPointF(x, y - radius * 1.4), QPointF(x + radius, y),
                 QPointF(x, y + radius * 1.4), QPointF(x - radius, y),
             ]))
 
+    def _draw_flick_trails(self, painter, field, lane, color, travel, strength, scale):
+        bottom = field.hit_y - (7 + 29 * travel) * scale
+        top = bottom - (27 + 24 * travel) * scale
+        trail = QLinearGradient(0, top, 0, bottom)
+        trail.setColorAt(0, tinted(color.lighter(145), round(245 * strength)))
+        trail.setColorAt(1, tinted(color, 0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(trail)
+        for direction in (-1, 1):
+            root = lane + 0.5 + direction * 0.09
+            tip = root + direction * (0.16 + 0.15 * travel)
+            painter.drawPolygon(QPolygonF([
+                QPointF(field.x(root, bottom), bottom),
+                QPointF(field.x(tip, top), top),
+                QPointF(field.x(tip + direction * 0.12, top + 13 * scale), top + 13 * scale),
+            ]))
+
     def _draw_hold_aura(self, painter, field, lane, y, color):
-        top = y - 40
+        pulse = 0.5 + 0.5 * sin(tau * self.position_ms / 480)
+        height = min(48, field.width * 0.1)
+        top = y - height * (0.8 + 0.2 * pulse)
         aura = QLinearGradient(0, top, 0, y)
         aura.setColorAt(0, tinted(color, 0))
-        aura.setColorAt(1, tinted(color, 106))
+        aura.setColorAt(1, tinted(color, round(95 + 55 * pulse)))
         painter.setBrush(aura)
         painter.drawPolygon(field.strip(lane + 0.08, lane + 0.92, top, y))
         for edge in (0.21, 0.76):
             painter.drawPolygon(field.strip(lane + edge, lane + edge + 0.03, top, y))
+
+        width = (field.x(lane + 1, y) - field.x(lane, y)) * (0.53 + 0.21 * pulse)
+        center = field.x(lane + 0.5, y)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(tinted(color.lighter(145), round(125 + 100 * pulse)), 1.5))
+        painter.drawEllipse(QRectF(center - width / 2, y - 6, width, 10))
+        painter.setPen(Qt.PenStyle.NoPen)

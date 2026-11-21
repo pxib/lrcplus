@@ -24,7 +24,9 @@ from PySide6.QtWidgets import (
 
 from core.background_job import BackgroundJob
 from core.rhythm_analysis import BeatGrid, beat_grid, load_audio_rhythm
-from plugins.community.rhythm_games.mania import LANE_KEYS, MANIA_DEMO, ManiaBoard, ManiaSounds, assign_lanes
+from plugins.community.rhythm_games.mania import (
+    LANE_KEYS, MANIA_BAD, MANIA_DEMO, MAX_LIFE, ManiaBoard, ManiaSounds, assign_lanes,
+)
 
 
 # The default chart uses AR5, OD5 and CS4 on a 512×384 playfield.
@@ -42,6 +44,29 @@ HIT_WINDOW_MS = HIT_WINDOWS[-1][1] - 0.5
 EARLY_MISS_MS = 400
 MANIA_CHORD_GAP_MS = 900
 MANIA_RELEASE_WINDOW_MS = 80
+MANIA_BAD_DAMAGE = 50
+MANIA_MISS_DAMAGE = 100
+# Project Sekai's windows may differ before and after the note, in units of 1/60 second.
+SEKAI_FRAME_MS = 1000 / 60
+SEKAI_TAP_WINDOWS = ((300, 2.5, 2.5), (100, 5, 5), (50, 6.5, 6.5), (MANIA_BAD, 7.5, 7.5))
+SEKAI_GOLD_TAP_WINDOWS = ((300, 3.3, 3.3), (100, 4.5, 4.5), *SEKAI_TAP_WINDOWS[2:])
+SEKAI_FLICK_WINDOWS = ((300, 2.5, 2.5), (100, 6.5, 7.5), (50, 7, 8), (MANIA_BAD, 7.5, 8.5))
+SEKAI_GOLD_FLICK_WINDOWS = ((300, 3.5, 3.5), *SEKAI_FLICK_WINDOWS[1:])
+SEKAI_HIT_WINDOWS = {
+    (False, False): SEKAI_TAP_WINDOWS,
+    (False, True): SEKAI_GOLD_TAP_WINDOWS,
+    (True, False): SEKAI_FLICK_WINDOWS,
+    (True, True): SEKAI_GOLD_FLICK_WINDOWS,
+}
+# Stable's native osu!mania windows. The 50 tier is only available early.
+MANIA_OD_SHIFT = 3 * OVERALL_DIFFICULTY
+CLASSIC_MANIA_WINDOWS = (
+    (320, 16.5, 16.5),
+    (300, 64.5 - MANIA_OD_SHIFT, 64.5 - MANIA_OD_SHIFT),
+    (200, 97.5 - MANIA_OD_SHIFT, 97.5 - MANIA_OD_SHIFT),
+    (100, 127.5 - MANIA_OD_SHIFT, 127.5 - MANIA_OD_SHIFT),
+    (50, 151.5 - MANIA_OD_SHIFT, 127.5 - MANIA_OD_SHIFT),
+)
 MIN_SLIDER_MS = 425
 MAX_SLIDER_MS = 1600
 GENERATED_TAP_GAP_MS = 180
@@ -1058,6 +1083,8 @@ def hit_grade(delta):
 
 
 class RoundScore:
+    hit_window_ms = HIT_WINDOW_MS
+
     def __init__(self, notes):
         self.notes = notes
         self.index = self.judged = self.score = self.combo = self.best_combo = 0
@@ -1075,12 +1102,13 @@ class RoundScore:
     def accuracy(self):
         if self.judged == 0:
             return 1.0
-        return sum(value * count for value, count in self.counts.items()) / (300 * self.judged)
+        return sum(self._judgement_weight(value) * count for value, count in self.counts.items()) / (300 * self.judged)
 
     @property
     def grade(self):
-        great = self.counts[300] / self.judged if self.judged else 0
-        no_miss = self.counts[0] == 0
+        great = sum(count for value, count in self.counts.items() if self._judgement_weight(value) == 300)
+        great = great / self.judged if self.judged else 0
+        no_miss = not any(count for value, count in self.counts.items() if self._judgement_weight(value) == 0)
         if great == 1:
             return "SS"
         if no_miss and great > 0.9 and self.counts[50] < self.judged * 0.01:
@@ -1095,11 +1123,19 @@ class RoundScore:
         self.combo += 1
         self.best_combo = max(self.best_combo, self.combo)
 
+    @staticmethod
+    def _judgement_weight(value):
+        return value
+
+    def _judgement_points(self, value, combo):
+        value = self._judgement_weight(value)
+        return value + value * max(0, combo - 1) * self.score_multiplier // 25
+
     def _record_judgement(self, index, value, increment_combo=True):
         self.judged += 1
         self.counts[value] += 1
-        self.score += value + value * max(0, self.combo - 1) * self.score_multiplier // 25
-        if not value:
+        self.score += self._judgement_points(value, self.combo)
+        if self._judgement_weight(value) == 0:
             self.combo = 0
         elif increment_combo:
             self._increment_combo()
@@ -1214,8 +1250,13 @@ class Round(RoundScore):
 
 
 class ManiaRound(RoundScore):
-    def __init__(self, notes):
+    def __init__(self, notes, *, theme="neon"):
         super().__init__(notes)
+        self.life = MAX_LIFE if theme == "neon" else None
+        tap_windows = SEKAI_TAP_WINDOWS if theme == "neon" else CLASSIC_MANIA_WINDOWS
+        self.counts = dict.fromkeys([value for value, _, _ in tap_windows] + [0], 0)
+        self.hit_window_ms = SEKAI_FLICK_WINDOWS[-1][2] * SEKAI_FRAME_MS if theme == "neon" else tap_windows[-1][2]
+        self.max_score = sum(self._judgement_points(300, combo) for combo in range(len(notes)))
         self._lanes = tuple(deque() for _ in LANE_KEYS)
         for index, note in enumerate(notes):
             self._lanes[note.lane].append(index)
@@ -1230,7 +1271,12 @@ class ManiaRound(RoundScore):
 
     def held_note(self, lane):
         # Accepted holds stay at the front of their lane until release or expiry.
-        return self.notes[self._lanes[lane][0]]
+        pending = self._lanes[lane]
+        return self.notes[pending[0]] if pending and self.is_holding(pending[0]) else None
+
+    @property
+    def failed(self):
+        return self.life == 0
 
     def caption_note(self, position_ms):
         if self.current is None:
@@ -1238,11 +1284,28 @@ class ManiaRound(RoundScore):
         index = bisect_right(self.notes, position_ms + HIT_WINDOWS[0][1], key=attrgetter("time_ms")) - 1
         return self.notes[max(0, index)]
 
-    def _judge_lane(self, index, value):
+    @staticmethod
+    def _judgement_weight(value):
+        return max(0, min(300, value))
+
+    def _timing_windows(self, note):
+        if self.life is None:
+            return CLASSIC_MANIA_WINDOWS
+        return tuple((value, early * SEKAI_FRAME_MS, late * SEKAI_FRAME_MS)
+                     for value, early, late in SEKAI_HIT_WINDOWS[note.flick, note.golden])
+
+    def _judge_lane(self, index, value, *, bad=False):
         self._resolved[index] = True
         while self.index < len(self.notes) and self._resolved[self.index]:
             self.index += 1
-        return self._record_judgement(index, value)
+        breaks_combo = self.life is not None and value == 50
+        judgement = self._record_judgement(index, value, increment_combo=not breaks_combo)
+        if breaks_combo:
+            self.combo = 0
+        if self.life is not None and value <= 0:
+            damage = MANIA_BAD_DAMAGE if bad or value == MANIA_BAD else MANIA_MISS_DAMAGE
+            self.life = max(0, self.life - damage)
+        return judgement
 
     def press(self, position_ms, lane):
         pending = self._lanes[lane]
@@ -1250,9 +1313,13 @@ class ManiaRound(RoundScore):
             return None, False
         index = pending[0]
         note = self.notes[index]
-        value = hit_grade(position_ms - note.time_ms)
+        value = next((value for value, early, late in self._timing_windows(note)
+                      if note.time_ms - early <= position_ms <= note.time_ms + late), 0)
         if not value:
             return None, False
+        if value == MANIA_BAD:
+            pending.popleft()
+            return self._judge_lane(index, value), False
         if note.end_ms is not None:
             self._heads[index] = value
             return None, True
@@ -1265,7 +1332,8 @@ class ManiaRound(RoundScore):
             return None
         index = pending.popleft()
         value = self._heads.pop(index)
-        return self._judge_lane(index, value if position_ms >= self.notes[index].end_ms - MANIA_RELEASE_WINDOW_MS else 0)
+        bad = position_ms < self.notes[index].end_ms - MANIA_RELEASE_WINDOW_MS
+        return self._judge_lane(index, 0 if bad else value, bad=bad)
 
     def advance(self, position_ms):
         due = []
@@ -1274,8 +1342,8 @@ class ManiaRound(RoundScore):
                 index = pending[0]
                 note = self.notes[index]
                 holding = self.is_holding(index)
-                deadline = note.end_ms if holding else note.time_ms + HIT_WINDOW_MS
-                if position_ms < deadline:
+                deadline = note.end_ms if holding else note.time_ms + self._timing_windows(note)[-1][2]
+                if position_ms < deadline or (position_ms == deadline and not holding):
                     break
                 value = self._heads.pop(index) if holding else 0
                 due.append((deadline, pending.popleft(), value if isfinite(position_ms) else 0))
@@ -1707,6 +1775,7 @@ class RhythmDialog(QDialog):
         self.using_demo = None
         self.anchor = None
         self.preroll_until = None
+        self._paused_at = None
         self.resume_main = False
         self.main_paused = False
         self._rhythm_job = None
@@ -1777,6 +1846,7 @@ class RhythmDialog(QDialog):
         self.mania_board.set_theme(self.mania_theme.currentData())
         self.mania_board.pressed.connect(lambda lane: self._lane_input(lane, True))
         self.mania_board.released.connect(lambda lane: self._lane_input(lane, False))
+        self.mania_board.pause_button.clicked.connect(self._toggle_mania_pause)
         self.tabs.addTab(self.circle_board, "Circles")
         self.tabs.addTab(self.mania_board, "Mania")
         layout.addWidget(self.tabs, 1)
@@ -1870,6 +1940,7 @@ class RhythmDialog(QDialog):
         theme = self.mania_theme.currentData()
         self.mania_board.set_theme(theme)
         self.api.set_setting("mania_theme", theme)
+        self._select_passage()
 
     def _selected_passage(self):
         return self.passages[self.passage.currentIndex()]
@@ -1919,10 +1990,12 @@ class RhythmDialog(QDialog):
         self.hit_sound.setAudioDevice(device)
         self.hit_sound.setVolume(volume * HIT_SOUND_GAIN)
         if self.board is self.mania_board:
-            if self.mania_sounds is None:
-                self.mania_sounds = ManiaSounds(self, HIT_SOUND_PATH.parent)
-            self.mania_sounds.configure(device, volume * HIT_SOUND_GAIN)
-            self.round = ManiaRound(notes)
+            theme = self.mania_board.theme
+            if theme == "neon":
+                if self.mania_sounds is None:
+                    self.mania_sounds = ManiaSounds(self, HIT_SOUND_PATH.parent)
+                self.mania_sounds.configure(device, volume * HIT_SOUND_GAIN)
+            self.round = ManiaRound(notes, theme=theme)
         else:
             self.round = Round(notes)
         self.board.clear_inputs()
@@ -1975,6 +2048,8 @@ class RhythmDialog(QDialog):
         self.last_position_ms = start_ms - self.offset_ms
         self.board.set_frame(self.round.notes, 0, self.last_position_ms, self.round)
         self.status.setText("Get ready")
+        if isinstance(self.round, ManiaRound):
+            self.mania_board.set_pause_state(enabled=self.round.life is not None)
         self.timer.start()
         if start_ms < 0:
             self.preroll_until = monotonic() - start_ms / 1000
@@ -1998,6 +2073,8 @@ class RhythmDialog(QDialog):
         return self.last_position_ms
 
     def _tick(self):
+        if self._paused_at is not None:
+            return
         if self.preroll_until is not None:
             if monotonic() >= self.preroll_until:
                 self.preroll_until = None
@@ -2008,6 +2085,8 @@ class RhythmDialog(QDialog):
             return
         position = self._position()
         self._show_frame(position, self._advance_round(position))
+        if self.round is None:
+            return
         if self._selected_passage().full_song:
             audio_position = self.player.position()
             self.progress.setValue(audio_position)
@@ -2015,13 +2094,57 @@ class RhythmDialog(QDialog):
             # The media backend can reach the duration without sending EndOfMedia.
             if duration > 0 and audio_position >= duration:
                 self._finish_round()
-        elif position > self.round.finish_ms + HIT_WINDOW_MS + 200:
+        elif position > self.round.finish_ms + self.round.hit_window_ms + 200:
             self._finish_round()
 
     def _playing_round(self):
-        return (self.round is not None and not self.pending_start
+        return (self.round is not None and not self.pending_start and self._paused_at is None
                 and (self.preroll_until is not None
                      or self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState))
+
+    def _toggle_mania_pause(self):
+        round_ = self.round
+        board = self.mania_board
+        if not isinstance(round_, ManiaRound) or round_.life is None or self.pending_start:
+            return
+        if self._paused_at is None:
+            self._paused_position = self._position()
+            self._show_frame(self._paused_position, round_.advance(self._paused_position))
+            if self.round is None:
+                return
+            self._paused_at = monotonic()
+            self.timer.stop()
+            self.player.pause()
+            self._stop_effects()
+            board.set_pause_state(enabled=True, paused=True)
+            self.status.setText("Paused")
+            return
+
+        # A hold can be picked back up while paused, before the chart moves again.
+        judgements = []
+        for lane in range(len(LANE_KEYS)):
+            if not board.is_pressed(lane):
+                judgement = round_.release(self._paused_position, lane)
+                if judgement is not None:
+                    judgements.append(judgement)
+        if judgements:
+            self._show_frame(self._paused_position, judgements, early_releases=judgements)
+            if self.round is None:
+                return
+        paused_seconds = monotonic() - self._paused_at
+        self._paused_at = None
+        if self.preroll_until is not None:
+            self.preroll_until += paused_seconds
+        else:
+            self._record_position(self.player.position())
+            self.player.play()
+        self.status.clear()
+        board.set_pause_state(enabled=True)
+        board.setFocus(Qt.FocusReason.OtherFocusReason)
+        for lane in range(len(LANE_KEYS)):
+            if (note := round_.held_note(lane)) is not None:
+                self.mania_sounds.play_note(note, None, self.hit_sound)
+        self.timer.start()
 
     def _advance_round(self, position, point=None):
         round_ = self.round
@@ -2059,6 +2182,7 @@ class RhythmDialog(QDialog):
             return
         position = self._position()
         judgements = self.round.advance(position)
+        neon = self.round.life is not None
         play_sound = False
         early_release = None
         if pressed:
@@ -2069,24 +2193,24 @@ class RhythmDialog(QDialog):
                 early_release = judgement
         if judgement is not None:
             judgements.append(judgement)
-        self._show_frame(position, judgements, early_release=early_release)
-        if play_sound and self.mania_sounds is not None:
-            if judgement is None:
-                self.mania_sounds.play_note(self.round.held_note(lane), None, self.hit_sound)
-            else:
-                note = self.round.notes[judgement.index]
-                self.mania_sounds.play_note(note, judgement.value, self.hit_sound)
+        self._show_frame(position, judgements, early_releases=(early_release,) if early_release is not None else ())
+        if play_sound and self.round is not None:
+            if neon:
+                note = self.round.held_note(lane) if judgement is None else self.round.notes[judgement.index]
+                self.mania_sounds.play_note(note, None if judgement is None else judgement.value, self.hit_sound)
+            elif self.hit_sound.isLoaded():
+                self.hit_sound.play()
 
-    def _show_frame(self, position, judgements, *, early_release=None):
+    def _show_frame(self, position, judgements, *, early_releases=()):
         round_ = self.round
         board = self.board
         mania = isinstance(round_, ManiaRound)
         board.set_frame(round_.notes, round_.index, position, round_)
         for judgement in judgements:
             if mania:
-                board.animate(judgement, early_release=judgement is early_release)
+                board.animate(judgement, early_release=not judgement.value and judgement in early_releases)
                 note = round_.notes[judgement.index]
-                if note.end_ms is not None and self.mania_sounds is not None:
+                if note.end_ms is not None and round_.life is not None:
                     self.mania_sounds.stop_hold(note.lane)
             else:
                 board.animate(judgement)
@@ -2106,26 +2230,36 @@ class RhythmDialog(QDialog):
         self._show_live_score()
 
     def _show_live_score(self):
-        self.score.setText(f"Score {self.round.score:,}   ·   {self.round.accuracy:.2%}   ·   {self.round.combo}× combo")
+        if isinstance(self.round, ManiaRound) and self.round.life is not None:
+            self.score.setText(f"Accuracy {self.round.accuracy:.2%}")
+        else:
+            self.score.setText(f"Score {self.round.score:,}   ·   {self.round.accuracy:.2%}   ·   {self.round.combo}× combo")
 
     def _finish_round(self):
         result = self.round
+        if result is None:
+            return
         self.round = None
         self.preroll_until = None
+        self._paused_at = None
         self.timer.stop()
         self.player.pause()
-        self.board.set_frame(result.notes, len(result.notes), self.board.position_ms)
-        for judgement in result.advance(float("inf")):
+        judgements = result.advance(float("inf"))
+        mania = isinstance(result, ManiaRound)
+        self.board.set_frame(result.notes, len(result.notes), self.board.position_ms, result if mania else None)
+        for judgement in judgements:
             self.board.animate(judgement)
         self.caption.clear()
-        self.score.setText(f"Grade {result.grade}   ·   Score {result.score:,}   ·   {result.accuracy:.2%}"
+        grade = "Failed" if mania and result.failed else f"Grade {result.grade}"
+        self.score.setText(f"{grade}   ·   Score {result.score:,}   ·   {result.accuracy:.2%}"
                            f"   ·   Best combo {result.best_combo}×")
-        self.status.setText("   ·   ".join(f"{count} {value or 'Miss'}" for value, count in result.counts.items()))
+        labels = {320: "MAX", MANIA_BAD: "Bad", 0: "Miss"}
+        self.status.setText("   ·   ".join(f"{count} {labels.get(value, value)}" for value, count in result.counts.items()))
         self.start.setText("Retry")
         self._set_controls_running(False)
-        if isinstance(result, ManiaRound) and self.mania_sounds is not None:
+        if mania and result.life is not None:
             self._stop_effects()
-            self.mania_sounds.play_result(result.counts)
+            self.mania_sounds.play_result(result.counts, failed=result.failed)
 
     def _stop_effects(self):
         self.hit_sound.stop()
@@ -2139,6 +2273,7 @@ class RhythmDialog(QDialog):
         self.round = None
         self.pending_start = self.source_ready = False
         self.preroll_until = None
+        self._paused_at = None
         self.status.setText(message or "Could not play this audio.")
         self._set_controls_running(False)
 
@@ -2153,6 +2288,7 @@ class RhythmDialog(QDialog):
                 self.board.setCursor(Qt.CursorShape.CrossCursor)
             self.board.setFocus(Qt.FocusReason.OtherFocusReason)
         else:
+            self.mania_board.set_pause_state(enabled=False)
             self.board.clear_inputs()
             self.board.unsetCursor()
 
@@ -2169,6 +2305,7 @@ class RhythmDialog(QDialog):
         self.board.clear_inputs()
         self.pending_start = False
         self.preroll_until = None
+        self._paused_at = None
         self.player.stop()
         self.player.setSource(QUrl())
         if self.calibration.value() != self.api.get_setting("input_offset_ms", 0):
