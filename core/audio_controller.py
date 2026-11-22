@@ -1304,7 +1304,9 @@ class AudioController:
         def handle_media_status(self, status):
             if getattr(self, "_closing", False) or getattr(self, "_sleep_expired", False):
                 return
-            if self._stream_url is not None and not self._stream_error:
+            stream_url = getattr(self, "_stream_url", None)
+            stream_error = getattr(self, "_stream_error", False)
+            if stream_url is not None and not stream_error:
                 if status == QMediaPlayer.MediaStatus.StalledMedia:
                     self.statusBar().showMessage(f"Buffering audio from {self._stream_url.host()}…")
                 elif status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia):
@@ -1332,7 +1334,7 @@ class AudioController:
             if timer is not None and self._sleep_before_advance():
                 return
 
-            if self._stream_url is not None:
+            if stream_url is not None:
                 self._set_live_playback_delayed(False)
                 self._stream_lyrics.reset()
                 self.media_player.setSource(QUrl())

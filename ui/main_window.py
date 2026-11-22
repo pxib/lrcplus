@@ -2125,15 +2125,18 @@ class Player(
             event.accept()
 
         def open_pitch_options(self):
+            follows_speed = getattr(self, "_pitch_follows_speed", None)
+            if follows_speed is None:
+                follows_speed = lambda: bool(getattr(self, "pitch_linked_to_speed", False))
             dialog = PitchChangerDialog(
                 self.pitch_semitones,
                 self.pitch_settings.get("mode", "Semitones"),
                 self.handle_pitch_change,
                 speed_percent=round(self.playback_speed * 100),
-                link_pitch_to_speed=self._pitch_follows_speed(),
+                link_pitch_to_speed=follows_speed(),
                 on_speed_change=self.handle_speed_change,
                 on_link_change=self.handle_pitch_link_change,
-                speed_enabled=not self._live_speed_locked,
+                speed_enabled=not getattr(self, "_live_speed_locked", False),
                 parent=self,
             )
             self._pitch_options_dialog = dialog
