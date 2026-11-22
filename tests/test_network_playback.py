@@ -10,10 +10,12 @@ from PySide6.QtGui import QColor
 from PySide6.QtMultimedia import QAudioBufferOutput, QMediaPlayer
 from PySide6.QtTest import QSignalSpy, QTest
 
-from core.radio_browser import Station
+from core.plugin_manager import PluginManager
+from core.radio_browser import Station, StationPage
 from core.radio_history import load_station_history, remember_station
 from core.settings import get_playback_settings, save_playback_settings, save_statistics_settings
 from ui.main_window import Player
+from ui.player_dialogs import PitchChangerDialog
 
 
 @pytest.fixture
@@ -163,8 +165,9 @@ def test_network_stream_url_requires_http_and_an_explicit_host(qapp):
         window.deleteLater()
 
 
-def test_live_network_stream_disables_seeking(qapp, stream_server, monkeypatch):
-    _, url = stream_server
+def test_live_network_stream_disables_seeking_and_speed_changes(qapp, stream_server, monkeypatch, tmp_path):
+    server, url = stream_server
+    save_playback_settings({"speed_percent": 125, "pitch_linked_to_speed": True})
     window = Player()
     player = window.media_player
     monkeypatch.setattr(window, "_audio_output_unavailable", False)
@@ -180,7 +183,24 @@ def test_live_network_stream_disables_seeking(qapp, stream_server, monkeypatch):
         assert clicks.count() == 1
         assert window.show_remaining_time
         window.load_stream(url.replace("/audio.wav", "/live.wav"))
+        assert window.playback_speed == player.playbackRate() == 1.0
         wait_for(lambda: any(buffers), player)
+        assert window.playback_speed == player.playbackRate() == 1.0
+        window.handle_speed_change(150)
+        window.handle_pitch_link_change(False)
+        assert window.playback_speed == player.playbackRate() == 1.0
+        assert window.playback_settings["speed_percent"] == 125
+        assert window.pitch_linked_to_speed
+
+        def check_pitch_dialog(dialog):
+            assert dialog.speed_label.text() == "100%"
+            assert not dialog.speed_slider.isEnabled()
+            assert not dialog.link_pitch_checkbox.isEnabled()
+            assert not dialog.link_pitch_checkbox.isChecked()
+            assert dialog.slider.isEnabled()
+
+        monkeypatch.setattr(PitchChangerDialog, "exec", check_pitch_dialog)
+        window.open_pitch_options()
         assert window.duration_label.text() == "Live"
         assert window.network_source_label.text() == "127.0.0.1"
         assert window.network_source_label.width() > 0
@@ -204,18 +224,40 @@ def test_live_network_stream_disables_seeking(qapp, stream_server, monkeypatch):
         assert clicks.count() == 1
         assert window.show_remaining_time
         assert not label.text().startswith("-")
+        window.toggle_playback()
+        assert player.playbackState() == QMediaPlayer.PlaybackState.PausedState
+        changes = QSignalSpy(player.sourceChanged)
+        window.toggle_playback()
+        assert player.isPlaying()
+        assert changes.count() == 0
         window.stop_playback()
         assert player.source().isEmpty()
         assert label.cursor().shape() == Qt.CursorShape.PointingHandCursor
         assert label.toolTip() == "Click to show elapsed time"
         QTest.mouseClick(label, Qt.MouseButton.LeftButton)
         assert clicks.count() == 2
+        audio_path = tmp_path / "local.wav"
+        with wave.open(str(audio_path), "wb") as recording:
+            recording.setparams((1, 2, 48000, 0, "NONE", "not compressed"))
+            recording.writeframes(b"\0" * 48000 * 2)
+        monkeypatch.setattr(window, "update_background_for_audio", lambda *_: None)
+        window.load_audio(audio_path)
+        assert window.playback_speed == player.playbackRate() == 1.25
+        assert window._pitch_follows_speed()
+
+        server.available = True
+        monkeypatch.setattr(window, "_sleep_before_track_load", lambda: False)
+        window.load_stream(url)
+        wait_for(lambda: player.duration() > 0, player)
+        assert window.playback_speed == player.playbackRate() == 1.25
+        assert window._pitch_follows_speed()
     finally:
         window.close()
         window.deleteLater()
 
 
-def test_live_lyrics_follow_station_titles_and_remain_plain(qapp, stream_server, monkeypatch):
+@pytest.mark.parametrize("keep_buffer", [False, True])
+def test_live_lyrics_follow_resume_mode(qapp, stream_server, monkeypatch, keep_buffer):
     server, url = stream_server
     window = Player()
     player = window.media_player
@@ -226,16 +268,27 @@ def test_live_lyrics_follow_station_titles_and_remain_plain(qapp, stream_server,
     errors = []
     window._stream_lyrics._monitor.failed.connect(errors.append)
 
-    def lookup(song, cancelled):
-        requests.append(song)
-        return (f"Lyrics for {song[1]}",)
+    def lookup(title, cancelled, *, artist):
+        requests.append((artist, title))
+        if title == "Second Song":
+            return []
+        if title == "First Song":
+            return [{"trackName": title, "artistName": artist, "syncedLyrics": "[00:01.00]Lyrics for First Song"}]
+        return [
+            {"trackName": title, "artistName": artist, "plainLyrics": f"Lyrics for {title}"},
+            {"trackName": title, "artistName": artist, "plainLyrics": f"Lyrics, for\n{title}!"},
+        ]
 
-    monkeypatch.setattr("ui.stream_lyrics.find_stream_lyrics", lookup)
+    monkeypatch.setattr("core.stream_lyrics.lrclib.search", lookup)
     try:
         window.open_network_playback()
-        option = window._network_playback_dialog.auto_lyrics_checkbox
+        dialog = window._network_playback_dialog
+        option = dialog.auto_lyrics_checkbox
         assert not option.isChecked()
+        assert not dialog.keep_live_buffer_checkbox.isChecked()
         option.click()
+        if keep_buffer:
+            dialog.keep_live_buffer_checkbox.click()
         assert window.playback_settings["radio_auto_lyrics"]
         window.load_stream(url.replace("/audio.wav", "/icy.wav"))
         wait_for(lambda: player.position() > 0, player)
@@ -244,18 +297,53 @@ def test_live_lyrics_follow_station_titles_and_remain_plain(qapp, stream_server,
         wait_for(lambda: bool(window.lyric_lines) or bool(errors), player)
         assert not errors
         assert window.lyric_lines[0].text == "Lyrics for First Song"
+        status = window.stream_lyrics_status_label
+        assert status.text() == "Test Artist — First Song · Plain lyrics"
         assert window.plain_lyrics_mode and window.current_lyrics_path is None
         assert window.current_line == -1
         seeks = QSignalSpy(player.seekStarting)
         window.jump_to_lyric_item(window.lyrics_list_widget.item(0))
         assert seeks.count() == 0
         assert get_playback_settings()["radio_auto_lyrics"]
+        assert get_playback_settings()["resume_live_from_buffer"] == keep_buffer
 
         server.icy_title = "Test Artist - Second Song"
-        wait_for(lambda: window.lyric_lines and window.lyric_lines[0].text == "Lyrics for Second Song", player)
+        wait_for(lambda: status.text() == "No confident lyrics match for Test Artist — Second Song.", player)
+        assert not window.lyric_lines
         assert requests == [("Test Artist", "First Song"), ("Test Artist", "Second Song")]
+
+        server.icy_title = "Test Artist - First Song"
+        wait_for(lambda: status.text() == "Test Artist — First Song · Plain lyrics", player)
+        window.toggle_playback()
+        assert player.playbackState() == QMediaPlayer.PlaybackState.PausedState
+        paused_position = player.position()
+        server.icy_title = "Test Artist - Third Song"
+        QTest.qWait(400)
+        assert window.lyric_lines[0].text == "Lyrics for First Song"
+        assert status.text() == "Test Artist — First Song · Plain lyrics"
+
+        changes = QSignalSpy(player.sourceChanged)
+        player.play()
+        if keep_buffer:
+            assert changes.count() == 0
+            assert not window.go_live_button.isHidden()
+            assert window.duration_label.text() == "Delayed"
+            assert "Choose Go Live" in status.text()
+            assert not window.lyric_lines
+            wait_for(lambda: player.position() > paused_position, player)
+            assert window._stream_lyrics._monitor_cancel is None
+            assert requests == [("Test Artist", "First Song"), ("Test Artist", "Second Song")]
+            window.go_live_button.click()
+        assert changes.count() == 2
+        assert changes.at(0)[0].isEmpty()
+        assert changes.at(1)[0] == window._stream_url
+        assert window.go_live_button.isHidden()
+        assert not window.lyric_lines
+        wait_for(lambda: status.text() == "Test Artist — Third Song · Plain lyrics", player)
+        assert window.lyric_lines[0].text == "Lyrics for Third Song"
         option.click()
         assert not window.lyric_lines
+        assert status.isHidden()
     finally:
         window.close()
         window.deleteLater()
@@ -301,6 +389,35 @@ def test_radio_history_and_statistics_follow_actual_playback(qapp, stream_server
         window._network_playback_dialog.tabs.setCurrentWidget(history)
         history.play_button.click()
         assert player.source().toString() == refreshed.url
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_radio_can_search_yt_dlp_from_metadata_without_auto_lyrics(qapp, stream_server, monkeypatch):
+    _, url = stream_server
+    manager = PluginManager()
+    searches = []
+    manager.register_service("ytdlp_import.search", lambda query: searches.append(query) or True, "test")
+    monkeypatch.setattr("ui.internet_radio.search_stations", lambda *_: StationPage((), False))
+    window = Player(plugin_manager=manager)
+    player = window.media_player
+    monkeypatch.setattr(window, "_audio_output_unavailable", False)
+    output = QAudioBufferOutput(window)
+    player.setAudioBufferOutput(output)
+    try:
+        window.load_stream(url.replace("/audio.wav", "/icy.wav"))
+        wait_for(lambda: player.position() > 0, player)
+        window.open_network_playback()
+        dialog = window._network_playback_dialog
+        assert not dialog.auto_lyrics_checkbox.isChecked()
+        dialog.tabs.setCurrentWidget(dialog.radio)
+        # The button uses the playing stream even when the radio page has no selection.
+        dialog.radio.download_button.click()
+        wait_for(lambda: bool(searches), player)
+        assert searches == ["Test Artist First Song"]
+        assert dialog.radio.download_button.isEnabled()
+        assert window._stream_lyrics._monitor_cancel is None
     finally:
         window.close()
         window.deleteLater()

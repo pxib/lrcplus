@@ -142,6 +142,7 @@ class Player(
                 self, equalizer=self._equalizer.create_processor() if self._equalizer else None,
             )
             self.media_player.next_path = self._gapless_next_path
+            self.media_player.prepare_resume = self._prepare_playback_resume
             self.media_player.gaplessFallback.connect(
                 self._handle_gapless_fallback
             )
@@ -277,6 +278,7 @@ class Player(
             self.lyrics = []
             self.lyric_times = []
             self.current_lyrics_path = None
+            self.plain_lyrics_mode = False
 
             self.current_line = -1
             self.last_lyric_text = None
@@ -685,6 +687,12 @@ class Player(
             self.network_source_label = NetworkSourceLabel()
             self.network_source_label.setObjectName("networkSourceLabel")
             volume_layout.addWidget(self.network_source_label, 1)
+            self.go_live_button = QPushButton("Go Live")
+            self.go_live_button.setObjectName("dockAction")
+            self.go_live_button.setToolTip("Discard buffered audio and rejoin the live broadcast")
+            self.go_live_button.clicked.connect(lambda: self._rejoin_live_stream())
+            self.go_live_button.hide()
+            volume_layout.addWidget(self.go_live_button)
             volume_layout.addWidget(self.mute_button)
             volume_layout.addWidget(QLabel("Volume"))
             volume_layout.addWidget(self.volume_slider)
@@ -787,6 +795,11 @@ class Player(
             lyrics_page_layout = QVBoxLayout(self.lyrics_page)
             lyrics_page_layout.setContentsMargins(0, 0, 0, 0)
             lyrics_page_layout.setSpacing(8)
+            self.stream_lyrics_status_label = QLabel(self.lyrics_page)
+            self.stream_lyrics_status_label.setTextFormat(Qt.TextFormat.PlainText)
+            self.stream_lyrics_status_label.setWordWrap(True)
+            self.stream_lyrics_status_label.hide()
+            lyrics_page_layout.addWidget(self.stream_lyrics_status_label, 0)
             lyrics_page_layout.addWidget(self.lyrics_background, 1)
             lyrics_page_layout.addWidget(self.furigana_progress_bar, 0)
             lyrics_page_layout.addWidget(self.lyrics_list_toggle, 0)
@@ -1398,7 +1411,7 @@ class Player(
                     not getattr(renderer, "rows", None)
                     or renderer.lyric_count != len(source_lines)
                 ):
-                    renderer.set_lyrics(source_lines)
+                    renderer.set_lyrics(source_lines, plain=self.plain_lyrics_mode)
 
                 if hasattr(renderer, "refresh_layout_now"):
                     renderer.refresh_layout_now()
@@ -1790,7 +1803,7 @@ class Player(
 
                     self.refresh_lyrics_settings_for_current_file()
                     if getattr(dialog, "_reading_dictionary_draft", None) is not None and self._lyrics_renderers_ready:
-                        self.scrolling_lyrics_widget.set_lyrics(self.lyric_lines)
+                        self.scrolling_lyrics_widget.set_lyrics(self.lyric_lines, plain=self.plain_lyrics_mode)
                         self.scrolling_lyrics_widget.set_current_line(self.current_line, animate=False)
                         self._refresh_current_lyric_furigana()
                         if self.plugin_manager is not None:
@@ -2041,12 +2054,15 @@ class Player(
                 self.pitch_settings.get("mode", "Semitones"),
                 self.handle_pitch_change,
                 speed_percent=round(self.playback_speed * 100),
-                link_pitch_to_speed=self.pitch_linked_to_speed,
+                link_pitch_to_speed=self._pitch_follows_speed(),
                 on_speed_change=self.handle_speed_change,
                 on_link_change=self.handle_pitch_link_change,
+                speed_enabled=not self._live_speed_locked,
                 parent=self,
             )
+            self._pitch_options_dialog = dialog
             try:
                 dialog.exec()
             finally:
+                self._pitch_options_dialog = None
                 dialog.deleteLater()

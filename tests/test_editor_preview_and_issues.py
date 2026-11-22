@@ -142,6 +142,13 @@ def test_preview_speed_updates_player_and_tracks_external_changes(editor):
     set_rate(0.9)
     assert editor.preview_speed.currentData() == 0.9
     assert editor._segment_preview_timer.interval() == 1445
+    editor.player._live_speed_locked = True
+    set_rate(1.0)
+    assert editor.preview_speed.currentData() == 1.0
+    assert not editor.preview_speed.isEnabled()
+    editor.player._live_speed_locked = False
+    editor.preview_duration_changed(5000)
+    assert editor.preview_speed.isEnabled()
 
 
 def test_timing_badges_follow_source_indices_in_sorted_sidebar(editor):

@@ -76,6 +76,29 @@ def test_manual_scroll_mounts_rows_without_changing_playback_line(view, qapp):
     assert len(widget.rows) < 40
 
 
+def test_plain_rows_stay_sharp_and_full_opacity_while_scrolling(view, qapp):
+    widget, _ = view
+    widget.set_focus_transition(True)
+    widget.set_highlight_animation("pop")
+    widget.set_lyrics(document(100), plain=True)
+    widget.set_current_line(20, animate=False)
+    widget._scroll_axis().setValue(int(widget._line_start(50)))
+    widget.set_focus_transition(True)
+    widget.set_highlight_animation("scale")
+    qapp.processEvents()
+    assert widget.current_line == -1
+    assert 50 in widget._mounted_rows
+    assert all(not row.is_current_line and not row.focus_transition
+               and row.display_opacity == 1.0 and row._highlight_scale() == 1.0 for row in widget.rows)
+
+    widget.set_lyrics(document(10))
+    assert widget._mounted_rows[0].is_current_line
+    neighbor = widget._mounted_rows[1]
+    assert neighbor.focus_transition
+    assert neighbor.display_opacity == 0.65
+    assert neighbor._highlight_scale() == 0.88
+
+
 @pytest.mark.parametrize("alignment", ["left", "right"])
 def test_vertical_columns_seek_resize_and_reverse_order(view, qapp, alignment):
     widget, _ = view

@@ -524,15 +524,7 @@ class ImportDialog(QDialog):
         if self.job is not None:
             return
         if not self._is_url():
-            query = self.url.text().strip()
-            if not query or len(query) > 500:
-                self.status.setText("Enter a YouTube search of 1 to 500 characters, or paste a URL.")
-                return
-            self._url_changed()
-            self.search_results.clear()
-            self.search_results.hide()
-            self.url.remember_search()
-            self._start("search")
+            self.search_youtube(self.url.text())
             return
         try:
             self.preview_url = validate_url(self.url.text())
@@ -544,6 +536,24 @@ class ImportDialog(QDialog):
         self._refresh_preview_metadata()
         self.url.remember_search()
         self._start("preview")
+
+    def search_youtube(self, query):
+        if self.job is not None:
+            return False
+        query = query.strip()
+        if not query or len(query) > 500:
+            self.status.setText("Enter a YouTube search of 1 to 500 characters, or paste a URL.")
+            return False
+        if self.download_queue is not None:
+            self.tabs.setCurrentIndex(0)
+        self.url.setText(query)
+        self.preview_button.setText("Search")
+        self._url_changed()
+        self.search_results.clear()
+        self.search_results.hide()
+        self.url.remember_search()
+        self._start("search")
+        return True
 
     def _history_key(self):
         return self.info["identity"] + ":" + self.codec.currentData() if self.info else None

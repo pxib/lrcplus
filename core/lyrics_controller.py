@@ -240,6 +240,8 @@ class LyricsController(LyricsSearchMixin):
     def apply_lyric_display_mode(self):
         if getattr(self, "_lyrics_renderers_ready", True) is False:
             return
+        plain = getattr(self, "plain_lyrics_mode", False)
+        show_scrolling = plain or self.scrolling_lyrics_enabled
         # Remember the previously visible mode. Re-entering scrolling must
         # rebuild its rows: switching the stacked widget can otherwise leave
         # existing rows attached but visually empty.
@@ -249,7 +251,7 @@ class LyricsController(LyricsSearchMixin):
             None,
         )
         entering_scrolling = (
-            self.scrolling_lyrics_enabled
+            show_scrolling
             and previous_scrolling is not True
         )
         self.lyric_widget.set_direction(self.lyrics_direction)
@@ -324,9 +326,7 @@ class LyricsController(LyricsSearchMixin):
         # TXT has no timing information, so it is always rendered as
         # continuous scrolling. Timed LRC/LRCX keeps the user's mode.
         effective_scroll_mode = (
-            "continuous"
-            if getattr(self, "plain_lyrics_mode", False)
-            else self.scrolling_mode
+            "continuous" if plain else self.scrolling_mode
         )
         self.scrolling_lyrics_widget.set_scrolling_mode(
             effective_scroll_mode
@@ -346,7 +346,7 @@ class LyricsController(LyricsSearchMixin):
         )
 
         self.lyric_display_stack.setCurrentIndex(
-            1 if self.scrolling_lyrics_enabled else 0
+            int(show_scrolling)
         )
 
         self.lyrics_list_label.setVisible(True)
@@ -354,7 +354,7 @@ class LyricsController(LyricsSearchMixin):
             not self.lyrics_list_collapsed
         )
 
-        if self.scrolling_lyrics_enabled:
+        if show_scrolling:
             # Always rebuild when switching back from Compact. This guarantees
             # the scrolling container gets fresh, visible lyric rows instead
             # of relying on stale widgets from a previously hidden page.
@@ -364,7 +364,7 @@ class LyricsController(LyricsSearchMixin):
                 or self.scrolling_lyrics_widget.lyric_count != len(self.lyrics)
             ):
                 source_lines = getattr(self, "lyric_lines", None) or self.lyrics
-                self.scrolling_lyrics_widget.set_lyrics(source_lines)
+                self.scrolling_lyrics_widget.set_lyrics(source_lines, plain=plain)
 
             # Always synchronize empty timestamp rows, even when the scrolling
             # widget was not rebuilt (for example after changing settings or
@@ -436,7 +436,7 @@ class LyricsController(LyricsSearchMixin):
 
             self.highlight_current_lyric()
 
-        self._last_scrolling_lyrics_enabled = self.scrolling_lyrics_enabled
+        self._last_scrolling_lyrics_enabled = show_scrolling
 
     def _start_furigana_prefetch(self):
         previous_cancel = getattr(self, "_furigana_prefetch_cancel", None)
@@ -567,6 +567,9 @@ class LyricsController(LyricsSearchMixin):
         if cancel_search is not None:
             cancel_search()
         self._auto_stream_lyrics = False
+        stream_status = getattr(self, "stream_lyrics_status_label", None)
+        if stream_status is not None:
+            stream_status.hide()
         path = Path(path)
         self.current_lyrics_path = path
         self.lyrics_offset_seconds = (
@@ -718,15 +721,9 @@ class LyricsController(LyricsSearchMixin):
         )
         if prefetch:
             self._start_furigana_prefetch()
-        self.scrolling_lyrics_widget.set_lyrics(self.lyric_lines)
-        if self.plain_lyrics_mode:
-            self.scrolling_lyrics_widget.set_scrolling_mode("continuous")
-            self.lyric_display_stack.setCurrentIndex(1)
-            self.scrolling_lyrics_widget.set_current_line(-1, animate=False)
-        else:
-            self.scrolling_lyrics_widget.set_scrolling_mode(
-                self.scrolling_mode
-            )
+        self.scrolling_lyrics_widget.set_scrolling_mode("continuous" if plain else self.scrolling_mode)
+        self.scrolling_lyrics_widget.set_lyrics(self.lyric_lines, plain=plain)
+        self.lyric_display_stack.setCurrentIndex(int(plain or self.scrolling_lyrics_enabled))
         # A paused player emits no positionChanged signal after an editor or
         # manual reload. Render the active line at the existing position now.
         self.update_lyrics(self.media_player.position())

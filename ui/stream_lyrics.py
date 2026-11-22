@@ -16,9 +16,10 @@ class StreamLyricsController(QObject):
         self.player = player
         self._monitor = BackgroundJob(self, "radio-metadata")
         self._monitor.finished.connect(self._monitor_ended)
-        self._monitor.failed.connect(self._monitor_ended)
+        self._monitor.failed.connect(self._monitor_failed)
         self._lookup = BackgroundJob(self, "radio-lyrics")
         self._lookup.finished.connect(self._apply_result)
+        self._lookup.failed.connect(self._lookup_failed)
         self._cache = IdleCache(64, max_bytes=512 * 1024)
         self._timer = QTimer(self)
         self._timer.setInterval(200)
@@ -32,9 +33,14 @@ class StreamLyricsController(QObject):
         self._lookup_cancel = None
         self._song = None
 
+    @property
+    def current_song(self):
+        return self._song
+
     def observe(self):
         player = self.player
         if (self._monitor_cancel is not None or getattr(player, "_closing", False)
+                or player._live_playback_delayed
                 or not player.playback_settings.get("radio_auto_lyrics")
                 or not player._is_live_stream() or not player.media_player.isPlaying()
                 or player.media_player.position() <= 0):
@@ -42,17 +48,25 @@ class StreamLyricsController(QObject):
         self._monitor_cancel = Event()
         self._monitor.start(watch_icy_titles, player._stream_url.toString(), self._monitor_cancel, self._titles)
         self._timer.start()
+        self._set_status("Waiting for a song title from the stream…")
 
     def _poll_title(self):
         if self._titles:
             self._receive_title(self._titles.popleft())
 
-    def _monitor_ended(self, _result):
+    def _monitor_ended(self, _result, message=None):
+        if message is None:
+            message = ("The stream stopped sending song titles." if self._song is not None
+                       else "This stream did not provide a song title.")
         self._timer.stop()
         self._song = None
         self._titles.clear()
         self._cancel_lookup()
         self.player._clear_auto_stream_lyrics()
+        self._set_status(message)
+
+    def _monitor_failed(self, _error):
+        self._monitor_ended(None, "Could not read song titles from the stream.")
 
     def _receive_title(self, title):
         song = song_from_title(title)
@@ -62,6 +76,7 @@ class StreamLyricsController(QObject):
         self._cancel_lookup()
         self.player._clear_auto_stream_lyrics()
         if not song or self.player.current_lyrics_path is not None:
+            self._set_status("Waiting for an artist and song title from the stream…")
             return
         if song in self._cache:
             self._apply_result((song, self._cache[song]))
@@ -73,6 +88,7 @@ class StreamLyricsController(QObject):
         if not song or self.player.current_lyrics_path is not None:
             return
         self._lookup_cancel = Event()
+        self._set_status(f"Looking up lyrics for {self._song_label()}…")
 
         def lookup(cancelled):
             return song, find_stream_lyrics(song, cancelled)
@@ -85,6 +101,22 @@ class StreamLyricsController(QObject):
             self._cache[song] = lines
             if lines and self.player.current_lyrics_path is None:
                 self.player._show_auto_stream_lyrics(lines)
+                self._set_status(f"{self._song_label()} · Plain lyrics")
+            else:
+                self._set_status(f"No confident lyrics match for {self._song_label()}.")
+
+    def _lookup_failed(self, _error):
+        if self._song:
+            self._set_status(f"Could not look up lyrics for {self._song_label()}.")
+
+    def _song_label(self):
+        return " — ".join(self._song)
+
+    def _set_status(self, text):
+        label = self.player.stream_lyrics_status_label
+        text = text if self.player.current_lyrics_path is None else ""
+        label.setText(text)
+        label.setVisible(bool(text))
 
     def _cancel_lookup(self):
         self._lookup_delay.stop()
@@ -106,6 +138,11 @@ class StreamLyricsController(QObject):
     def reset(self):
         self.suspend()
         self.player._clear_auto_stream_lyrics()
+        self._set_status("")
+
+    def wait_for_live(self):
+        self.reset()
+        self._set_status("Lyrics are paused during buffered playback. Choose Go Live to resume.")
 
     def close(self):
         self.suspend()

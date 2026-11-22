@@ -106,6 +106,7 @@ PLAYBACK_DEFAULTS = {
     "high_volume_warning_shown": False,
     "show_waveform": True,
     "radio_auto_lyrics": False,
+    "resume_live_from_buffer": False,
     "pitch_mode": "Semitones",
     "pitch_value": 0,
     "speed_percent": 100,
@@ -248,6 +249,7 @@ def get_playback_settings(payload=None):
             values.get("show_waveform", PLAYBACK_DEFAULTS["show_waveform"])
         ),
         "radio_auto_lyrics": values.get("radio_auto_lyrics", PLAYBACK_DEFAULTS["radio_auto_lyrics"]) is True,
+        "resume_live_from_buffer": values.get("resume_live_from_buffer", PLAYBACK_DEFAULTS["resume_live_from_buffer"]) is True,
         "pitch_mode": pitch_mode,
         "pitch_value": pitch_value,
         "speed_percent": max(25, min(200, speed_percent)),

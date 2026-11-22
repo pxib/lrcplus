@@ -20,6 +20,36 @@ def test_playback_source_defaults_to_library_and_restores_choice(qapp, saved_sou
         qapp.processEvents()
 
 
+@pytest.mark.parametrize("from_stream", [False, True])
+def test_plain_lyrics_stay_readable_when_refreshing_compact_display(qapp, tmp_path, monkeypatch, from_stream):
+    window = Player()
+    try:
+        window.show()
+        window.workspace_stack.setCurrentWidget(window.lyrics_page)
+        window.scrolling_lyrics_enabled = False
+        window.focus_transition = True
+        window.highlight_animation = "pop"
+        monkeypatch.setattr(window, "_start_furigana_prefetch", lambda: None)
+        if from_stream:
+            window._show_auto_stream_lyrics(("One plain line", "Another plain line"))
+        else:
+            path = tmp_path / "plain.txt"
+            path.write_text("One plain line\nAnother plain line\n", encoding="utf-8")
+            window.load_lrc_file(path)
+
+        window.apply_lyric_display_mode()
+        qapp.processEvents()
+        renderer = window.scrolling_lyrics_widget
+        assert window.lyric_display_stack.currentWidget() is renderer
+        assert renderer.rows
+        assert all(row.display_opacity == 1.0 and not row.focus_transition
+                   and row._highlight_scale() == 1.0 for row in renderer.rows)
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
 @pytest.mark.parametrize("saved_pitch", [0, 5])
 def test_player_starts_and_pitch_dialog_controls_work(qapp, monkeypatch, saved_pitch):
     save_playback_settings({

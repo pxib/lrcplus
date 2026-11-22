@@ -618,6 +618,7 @@ class LyricsEditorPlaybackMixin:
         self._refresh_lyrics_preview(estimated_position_ms, rebuild_segments=False)
 
     def preview_duration_changed(self, duration_ms):
+        self._update_preview_speed_enabled()
         self._schedule_timing_validation()
         seeks = [self.lyrics_seek]
         if self.karaoke_enabled:
@@ -851,6 +852,7 @@ class LyricsEditorPlaybackMixin:
     def _sync_preview_speed(self, rate):
         if not hasattr(self, "preview_speed"):
             return
+        self._update_preview_speed_enabled()
         blocker = QSignalBlocker(self.preview_speed)
         index = self.preview_speed.findData(rate)
         if index < 0:
@@ -858,6 +860,13 @@ class LyricsEditorPlaybackMixin:
             index = self.preview_speed.count() - 1
         self.preview_speed.setCurrentIndex(index)
         del blocker
+
+    def _update_preview_speed_enabled(self):
+        if hasattr(self, "preview_speed"):
+            self.preview_speed.setEnabled(
+                callable(getattr(self.player, "handle_speed_change", None))
+                and not getattr(self.player, "_live_speed_locked", False)
+            )
 
     def change_preview_speed(self, _index):
         change_speed = getattr(self.player, "handle_speed_change", None)

@@ -156,6 +156,7 @@ class GaplessMediaPlayer(QMediaPlayer):
         self._boundary_us = None
         self.next_path = lambda: None
         self.before_pump = lambda: None
+        self.prepare_resume = lambda: True
         self._rg_settings = ("off", 0, True)
         self._volume = 1.0
         self._timer = QTimer(self)
@@ -266,6 +267,9 @@ class GaplessMediaPlayer(QMediaPlayer):
             self.playbackStateChanged.emit(state)
 
     def play(self):
+        if (self.playbackState() == QMediaPlayer.PlaybackState.PausedState
+                and not self.prepare_resume()):
+            return
         if ((self._gapless_active and self._at_end)
                 or (not self._gapless_active and self.mediaStatus() == QMediaPlayer.MediaStatus.EndOfMedia)):
             self.playbackRestarting.emit()

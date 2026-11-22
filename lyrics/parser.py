@@ -26,7 +26,13 @@ def get_lrc_generation_mode(path):
 
 
 def load_lrc(path):
-    """Load an LRC file with occurrence-aware multi-timestamp expansion.
+    """Load an LRC file in playback order."""
+    with open(path, "r", encoding="utf-8-sig") as file:
+        return parse_lrc_lines(file)
+
+
+def parse_lrc_lines(lines):
+    """Parse LRC with occurrence-aware multi-timestamp expansion.
 
     Consecutive physical lines with the same timestamp sequence stay together
     at each timestamp occurrence. For example:
@@ -44,19 +50,18 @@ def load_lrc(path):
     timestamp_pattern = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
     physical_lines = []
 
-    with open(path, "r", encoding="utf-8-sig") as file:
-        for raw_line in file:
-            line = raw_line.rstrip("\r\n")
-            matches = list(timestamp_pattern.finditer(line))
-            if not matches:
-                continue
+    for raw_line in lines:
+        line = raw_line.rstrip("\r\n")
+        matches = list(timestamp_pattern.finditer(line))
+        if not matches:
+            continue
 
-            timestamps = tuple(
-                int(match.group(1)) * 60 + float(match.group(2))
-                for match in matches
-            )
-            lyric_text = line[matches[-1].end():].lstrip()
-            physical_lines.append((timestamps, lyric_text))
+        timestamps = tuple(
+            int(match.group(1)) * 60 + float(match.group(2))
+            for match in matches
+        )
+        lyric_text = line[matches[-1].end():].lstrip()
+        physical_lines.append((timestamps, lyric_text))
 
     lyrics = []
     index = 0

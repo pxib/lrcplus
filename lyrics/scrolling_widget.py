@@ -75,6 +75,7 @@ class ScrollingLyricsWidget(QWidget):
         self._continuous_last_position_ms = None
         self.rows = []
         self._lyrics = []
+        self._plain = False
         self._mounted_rows = {}
         self._extents = []
         self._starts = [0]
@@ -505,7 +506,7 @@ class ScrollingLyricsWidget(QWidget):
 
         for row in self.rows:
             row.set_highlight_animation(
-                self.highlight_animation,
+                "none" if self._plain else self.highlight_animation,
                 self.highlight_animation_duration,
                 self.highlight_animation_easing,
                 self.highlight_animation_out_duration,
@@ -810,11 +811,12 @@ class ScrollingLyricsWidget(QWidget):
         row.setParent(None)
         row.deleteLater()
 
-    def set_lyrics(self, lyrics):
+    def set_lyrics(self, lyrics, *, plain=False):
         self.clear()
+        self._plain = plain
         self._lyrics = list(lyrics)
         self._refresh_row_heights()
-        if self._lyrics:
+        if self._lyrics and not self._plain:
             self.set_current_line(0, animate=False)
 
     def _create_row(self, lyric, index):
@@ -837,7 +839,7 @@ class ScrollingLyricsWidget(QWidget):
         row.set_colors(self.lyrics_color, self.highlight_color)
         row.set_highlight_current(self.highlight_current)
         row.set_highlight_animation(
-            self.highlight_animation,
+            "none" if self._plain else self.highlight_animation,
             self.highlight_animation_duration,
             self.highlight_animation_easing,
             self.highlight_animation_out_duration,
@@ -854,7 +856,7 @@ class ScrollingLyricsWidget(QWidget):
             line_entrance=getattr(self, "karaoke_line_entrance", False),
             word_lift=getattr(self, "karaoke_word_lift", False),
         )
-        row.set_focus_transition(getattr(self, "focus_transition", False))
+        row.set_focus_transition(getattr(self, "focus_transition", False) and not self._plain)
         row.set_current_line(False)
         row.set_ruby_visible(self.show_ruby)
         row.set_romaji_visible(self.show_romaji)
@@ -917,6 +919,10 @@ class ScrollingLyricsWidget(QWidget):
         return row
 
     def _apply_row_state(self, row, index):
+        # Plain lyrics have no timestamp to make any row current.
+        if self._plain:
+            row.set_opacity(1.0)
+            return
         current = self.current_line
         distance = abs(index - current)
         opacity = (1.0 if distance == 0 else 0.65 if distance == 1 else 0.48 if distance == 2 else 0.32)
@@ -989,7 +995,7 @@ class ScrollingLyricsWidget(QWidget):
     def set_focus_transition(self, enabled):
         self.focus_transition = bool(enabled)
         for row in self.rows:
-            row.set_focus_transition(enabled)
+            row.set_focus_transition(self.focus_transition and not self._plain)
 
     def set_karaoke_sweep_style(self, style):
         """Set the karaoke sweep style for every scrolling lyric row."""
@@ -1074,7 +1080,7 @@ class ScrollingLyricsWidget(QWidget):
 
 
     def set_current_line(self, index, animate=True):
-        if not 0 <= index < self.lyric_count:
+        if self._plain or not 0 <= index < self.lyric_count:
             index = -1
         if index == self.current_line and animate:
             return

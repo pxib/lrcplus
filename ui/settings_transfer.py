@@ -192,8 +192,10 @@ class SettingsTransferMixin:
         if "device_lyric_delays_ms" in incoming.get("playback", {}):
             self._device_lyric_delays = settings.get_playback_settings(payload)["device_lyric_delays_ms"]
             self._show_device_lyric_delay()
-        if "radio_auto_lyrics" in incoming.get("playback", {}):
-            self.playback_settings["radio_auto_lyrics"] = settings.get_playback_settings(payload)["radio_auto_lyrics"]
+        if "playback" in incoming:
+            playback = settings.get_playback_settings(payload)
+            for key in ("radio_auto_lyrics", "resume_live_from_buffer"):
+                self.playback_settings[key] = playback[key]
         if "appearance" in incoming:
             self.appearance_settings = values = settings.get_appearance_settings(payload)
             for key in ("theme_mode", "theme_color", "theme_surface", "theme_overrides", "theme_preset_name", "custom_themes"):

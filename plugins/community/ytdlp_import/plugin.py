@@ -38,6 +38,7 @@ class YtdlpImportPlugin:
         self.download_queue = DownloadQueue(context.api)
         context.api.on("app_ready", self.on_app_ready)
         context.api.add_menu_action("Plugins", "Search and import audio…", self.open_import)
+        context.api.register_service("ytdlp_import.search", self.open_search)
         context.api.register_settings_widget(
             "yt-dlp Audio Import", self.create_settings_widget,
             apply=self.apply_settings_widget,
@@ -60,6 +61,10 @@ class YtdlpImportPlugin:
         self.dialog.show()
         self.dialog.raise_()
         self.dialog.activateWindow()
+
+    def open_search(self, query):
+        self.open_import()
+        return self.dialog.search_youtube(query)
 
     def shutdown(self):
         if self.download_queue is not None:

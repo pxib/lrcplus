@@ -965,7 +965,6 @@ class LrcEditorUiMixin:
         media = getattr(self.player, "media_player", None)
         self._sync_preview_speed(getattr(media, "playbackRate", lambda: 1.0)())
         self.preview_speed.currentIndexChanged.connect(self.change_preview_speed)
-        self.preview_speed.setEnabled(callable(getattr(self.player, "handle_speed_change", None)))
         row.addWidget(self.preview_speed)
         options = QPushButton("Preview options")
         menu = QMenu(options)

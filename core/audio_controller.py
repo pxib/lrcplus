@@ -38,6 +38,8 @@ from core.audio_dsp import (
 class AudioController:
         _stream_url = None
         _stream_error = False
+        _live_speed_locked = False
+        _live_playback_delayed = False
         _station = None
         _station_history_pending = False
 
@@ -133,8 +135,10 @@ class AudioController:
             self.current_audio_path = audio_path
             if self._stream_url is not None:
                 self._stream_lyrics.reset()
+                self._set_live_playback_delayed(False)
                 self._stream_url = None
                 self._stream_error = False
+                self._set_live_speed_lock(False)
                 self._station = None
                 self._station_history_pending = False
                 self.statusBar().clearMessage()
@@ -279,18 +283,47 @@ class AudioController:
             self.network_source_label.setToolTip(f"<qt>{escape(name)}</qt>" if name else "")
 
 
-        def _open_stream_source(self, *, autoplay=True):
+        def _open_stream_source(self, *, autoplay=True, resume=False):
+            self._set_live_playback_delayed(False)
             self._stream_lyrics.reset()
             self._stream_error = False
             if self.media_player.source() == self._stream_url:
                 self.media_player.setSource(QUrl())
+            self._set_live_speed_lock(True)
             self.statusBar().showMessage(f"Connecting to {self._stream_url.host()}…")
             self.media_player.setSource(self._stream_url)
-            self._statistics_track_started()
+            if resume:
+                self._statistics_rebase()
+            else:
+                self._statistics_track_started()
+                self._station_history_pending = self._station is not None
             self._set_native_pitch_compensation()
-            self._station_history_pending = self._station is not None
             if autoplay and not self._stream_error:
                 self.media_player.play()
+
+
+        def _prepare_playback_resume(self):
+            if not self._is_live_stream():
+                return True
+            if (self.playback_settings.get("radio_auto_lyrics")
+                    and not self.playback_settings.get("resume_live_from_buffer")):
+                return self._rejoin_live_stream(autoplay=False)
+            self._set_live_playback_delayed(True)
+            self._apply_radio_lyrics_preference()
+            self._update_stream_seekability()
+            return True
+
+
+        def _rejoin_live_stream(self, *, autoplay=True):
+            if self._is_live_stream():
+                self._flush_pcm_output()
+                self._open_stream_source(autoplay=autoplay, resume=True)
+            return not self._stream_error
+
+
+        def _set_live_playback_delayed(self, delayed):
+            self._live_playback_delayed = delayed
+            self.go_live_button.setVisible(delayed)
 
 
         def _record_station_history(self, position_ms):
@@ -311,6 +344,7 @@ class AudioController:
                     or getattr(self, "_closing", False)):
                 return
             self._stream_error = True
+            self._set_live_playback_delayed(False)
             self._stream_lyrics.reset()
             self._flush_pcm_output()
             self._update_stream_seekability()
@@ -391,6 +425,7 @@ class AudioController:
                 timer.cancel()
             self._flush_pcm_output()
             if self._stream_url is not None:
+                self._set_live_playback_delayed(False)
                 self._stream_lyrics.reset()
                 self.media_player.setSource(QUrl())
                 self.statusBar().clearMessage()
@@ -631,12 +666,20 @@ class AudioController:
 
         def _update_stream_seekability(self):
             if self._stream_url is not None:
+                if not getattr(self, "_closing", False):
+                    self._set_live_speed_lock(
+                        self.media_player.source() != self._stream_url
+                        or self.media_player.duration() <= 0
+                    )
                 enabled = self._can_seek_source()
                 for control in (self.seek_slider, self.rewind_button, self.forward_button):
                     control.setEnabled(enabled)
                 live = self._is_live_stream()
                 self._set_live_transport(live)
-                self.duration_label.setText("Live" if live else self.format_time(self.media_player.duration()))
+                if live:
+                    self.duration_label.setText("Delayed" if self._live_playback_delayed else "Live")
+                else:
+                    self.duration_label.setText(self.format_time(self.media_player.duration()))
 
 
         def _is_live_stream(self):
@@ -731,7 +774,7 @@ class AudioController:
 
         def _pcm_pitch_shift(self):
             """Return the pitch adjustment after rate resampling the PCM stream."""
-            if getattr(self, "pitch_linked_to_speed", False):
+            if self._pitch_follows_speed():
                 # Linked mode uses speed for pitch and disables the manual offset.
                 return 0.0
             pitch = float(getattr(self, "pitch_semitones", 0.0))
@@ -744,7 +787,7 @@ class AudioController:
         def _displayed_pitch_semitones(self):
             """Return the audible pitch shift represented by the current controls."""
             pitch = float(getattr(self, "pitch_semitones", 0.0))
-            if not getattr(self, "pitch_linked_to_speed", False):
+            if not self._pitch_follows_speed():
                 return pitch
             speed = max(0.01, float(getattr(self, "playback_speed", 1.0)))
             return 12.0 * math.log2(speed)
@@ -1133,31 +1176,51 @@ class AudioController:
 
 
         def handle_speed_change(self, value):
+            if self._live_speed_locked:
+                return
             if hasattr(self, "statistics"):
                 self._statistics_sample()
-            previous_speed = self.playback_speed
-            # Snap to 100% if close enough (within 5 units)
-            snap_threshold = 5
-            if abs(value - 100) <= snap_threshold:
+            if abs(value - 100) <= 5:
                 value = 100
-                # Update slider without triggering another signal
-            # The dialog slider ranges from 25% to 200%.
-            self.playback_speed = value / 100.0
-            self.media_player.setPlaybackRate(self.playback_speed)
-            self._set_native_pitch_compensation()
             self.playback_settings["speed_percent"] = value
             self._schedule_playback_settings_save()
+            self._apply_playback_speed(value / 100.0)
+
+
+        def _set_live_speed_lock(self, locked):
+            if locked == self._live_speed_locked:
+                return
+            self._statistics_sample()
+            previous_shift = self._pcm_pitch_shift()
+            previous_link = self._pitch_follows_speed()
+            self._live_speed_locked = locked
+            speed = 1.0 if locked else self.playback_settings.get("speed_percent", 100) / 100.0
+            if speed != self.playback_speed or previous_link != self._pitch_follows_speed():
+                self._apply_playback_speed(speed, previous_shift=previous_shift)
+            dialog = getattr(self, "_pitch_options_dialog", None)
+            if dialog is not None:
+                dialog.set_speed_controls(round(speed * 100), self._pitch_follows_speed(), not locked)
+
+
+        def _apply_playback_speed(self, speed, *, previous_shift=None):
+            speed_changed = abs(self.playback_speed - speed) >= 0.001
+            self.playback_speed = speed
+            self.media_player.setPlaybackRate(speed)
+            self._set_native_pitch_compensation()
             self.pitch_status_label.setText(
                 f"{self._displayed_pitch_semitones():+.1f} st"
             )
-            if abs(previous_speed - self.playback_speed) >= 0.001:
+            if speed_changed or (previous_shift is not None
+                                 and abs(previous_shift - self._pcm_pitch_shift()) >= 0.001):
                 self._flush_pcm_output()
-                if getattr(self, "_device_lyric_delay_ms", 0) and self.lyrics:
-                    self._refresh_playback_lyric_timing()
+            if speed_changed and getattr(self, "_device_lyric_delay_ms", 0) and self.lyrics:
+                self._refresh_playback_lyric_timing()
             self._configure_pcm_volume(self.volume_slider.value())
 
 
         def handle_pitch_link_change(self, linked):
+            if self._live_speed_locked:
+                return
             previous_shift = self._pcm_pitch_shift()
             self.pitch_linked_to_speed = bool(linked)
             self.playback_settings["pitch_linked_to_speed"] = self.pitch_linked_to_speed
@@ -1171,13 +1234,17 @@ class AudioController:
             self._configure_pcm_volume(self.volume_slider.value())
 
 
+        def _pitch_follows_speed(self):
+            return not self._live_speed_locked and getattr(self, "pitch_linked_to_speed", False)
+
+
         def _set_native_pitch_compensation(self):
             """Keep Qt's direct-output fallback consistent with the link option."""
             setter = getattr(self.media_player, "setPitchCompensation", None)
             if setter is None:
                 return
             try:
-                setter(not self.pitch_linked_to_speed)
+                setter(not self._pitch_follows_speed())
             except (RuntimeError, TypeError):
                 # Some backends expose the API but keep compensation always on.
                 pass
@@ -1259,6 +1326,7 @@ class AudioController:
                 return
 
             if self._stream_url is not None:
+                self._set_live_playback_delayed(False)
                 self._stream_lyrics.reset()
                 self.media_player.setSource(QUrl())
                 self.statusBar().showMessage("Network stream ended. Press Play to reconnect.")
@@ -1434,13 +1502,19 @@ class AudioController:
             self._apply_radio_lyrics_preference()
 
 
+        def set_resume_live_from_buffer(self, enabled):
+            self.playback_settings["resume_live_from_buffer"] = enabled
+            self._schedule_playback_settings_save()
+
+
         def _apply_radio_lyrics_preference(self):
             enabled = self.playback_settings.get("radio_auto_lyrics", False)
             dialog = getattr(self, "_network_playback_dialog", None)
             if dialog is not None:
-                with QSignalBlocker(dialog.auto_lyrics_checkbox):
-                    dialog.auto_lyrics_checkbox.setChecked(enabled)
-            if enabled:
+                dialog.sync_playback_preferences()
+            if enabled and self._live_playback_delayed:
+                self._stream_lyrics.wait_for_live()
+            elif enabled:
                 self._stream_lyrics.observe()
             else:
                 self._stream_lyrics.reset()

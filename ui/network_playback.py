@@ -1,6 +1,6 @@
 """Open a direct audio URL or browse internet radio in one window."""
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTabWidget, QVBoxLayout, QWidget,
@@ -44,7 +44,7 @@ class NetworkPlaybackDialog(QDialog):
         direct_layout.addStretch()
         self.tabs.addTab(direct, "Direct URL")
 
-        self.radio = InternetRadioPage(self.tabs, player.play_radio_station)
+        self.radio = InternetRadioPage(self.tabs, player)
         self.tabs.addTab(self.radio, "Internet Radio")
         self.history = StationHistoryPage(self.tabs, player.play_radio_station)
         self.tabs.addTab(self.history, "Station History")
@@ -53,12 +53,19 @@ class NetworkPlaybackDialog(QDialog):
 
         footer = QHBoxLayout()
         self.auto_lyrics_checkbox = QCheckBox("Find lyrics for live streams", self)
-        self.auto_lyrics_checkbox.setChecked(player.playback_settings.get("radio_auto_lyrics", False))
         self.auto_lyrics_checkbox.setToolTip(
             "Read song metadata over a second stream connection and look for plain lyrics on LRCLIB."
         )
         self.auto_lyrics_checkbox.toggled.connect(player.set_radio_auto_lyrics)
         footer.addWidget(self.auto_lyrics_checkbox)
+        self.keep_live_buffer_checkbox = QCheckBox("Keep buffered audio on resume", self)
+        self.keep_live_buffer_checkbox.setToolTip(
+            "Resume from the paused position when buffered audio is available. "
+            "Automatic lyrics resume when you choose Go Live."
+        )
+        self.keep_live_buffer_checkbox.toggled.connect(player.set_resume_live_from_buffer)
+        footer.addWidget(self.keep_live_buffer_checkbox)
+        self.sync_playback_preferences()
         footer.addStretch()
         close_button = QPushButton("Close", self)
         close_button.setAutoDefault(False)
@@ -66,6 +73,12 @@ class NetworkPlaybackDialog(QDialog):
         footer.addWidget(close_button)
         layout.addLayout(footer)
         self.url.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def sync_playback_preferences(self):
+        settings = self._player.playback_settings
+        with QSignalBlocker(self.auto_lyrics_checkbox), QSignalBlocker(self.keep_live_buffer_checkbox):
+            self.auto_lyrics_checkbox.setChecked(settings.get("radio_auto_lyrics", False))
+            self.keep_live_buffer_checkbox.setChecked(settings.get("resume_live_from_buffer", False))
 
     def _url_changed(self, text):
         self.url_status.clear()

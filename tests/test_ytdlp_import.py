@@ -209,11 +209,18 @@ def test_plugin_registers_owned_ui_and_unloads_cleanly(qapp, monkeypatch):
     plugin = manager.plugins["ytdlp_import"].instance
     plugin.open_import()
     assert plugin.dialog is not None
+    actions = []
+    monkeypatch.setattr(plugin.dialog, "_start", actions.append)
+    search = manager.get_service("ytdlp_import.search")
+    assert search("Artist Song")
+    assert plugin.dialog.url.text() == "Artist Song"
+    assert actions == ["search"]
     manager.unload_all()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     assert plugin.dialog is None
     assert manager.get_settings_widgets() == []
     assert manager._pending_menu_actions == []
+    assert manager.get_service("ytdlp_import.search") is None
 
 
 def test_import_api_validates_all_files_before_mutating_host(tmp_path):

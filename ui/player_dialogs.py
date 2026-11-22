@@ -1,6 +1,6 @@
 import math
 
-from PySide6.QtCore import Qt, QTimer, Signal, QThread, QRect, QRectF
+from PySide6.QtCore import Qt, QTimer, Signal, QThread, QRect, QRectF, QSignalBlocker
 from PySide6.QtGui import QPixmap, QPainter, QColor, QPalette, QPen, QLinearGradient, QBrush
 from PySide6.QtWidgets import (
     QDialog,
@@ -338,7 +338,7 @@ class PitchChangerDialog(QDialog):
 
     def __init__(self, semitones, mode, on_change, parent=None, *, speed_percent=100,
                  link_pitch_to_speed=False, on_speed_change=None,
-                 on_link_change=None):
+                 on_link_change=None, speed_enabled=True):
         super().__init__(parent)
         self.setWindowTitle("Pitch changer")
         self.setMinimumWidth(380)
@@ -357,18 +357,12 @@ class PitchChangerDialog(QDialog):
         speed_layout.addWidget(QLabel("Speed"))
         self.speed_slider = QSlider(Qt.Orientation.Horizontal)
         self.speed_slider.setRange(25, 200)
-        self.speed_slider.setValue(int(speed_percent))
-        self.speed_slider.setToolTip("Playback speed from 25% to 200%")
-        self.speed_label = QLabel(f"{int(speed_percent)}%")
+        self.speed_label = QLabel()
         self.speed_label.setFixedWidth(48)
         speed_layout.addWidget(self.speed_slider, 1)
         speed_layout.addWidget(self.speed_label)
 
         self.link_pitch_checkbox = QCheckBox("Link pitch to speed")
-        self.link_pitch_checkbox.setToolTip(
-            "When enabled, speed changes pitch like a tape deck and manual pitch controls are disabled."
-        )
-        self.link_pitch_checkbox.setChecked(bool(link_pitch_to_speed))
 
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(("Semitones", "Octaves", "Percent"))
@@ -470,7 +464,23 @@ class PitchChangerDialog(QDialog):
             self.slider, low, high, self.fine_tune_label, self.value_spin,
             *self.quick_pitch_buttons,
         ]
-        self._set_pitch_controls_enabled(not link_pitch_to_speed)
+        self.set_speed_controls(speed_percent, link_pitch_to_speed, speed_enabled)
+
+    def set_speed_controls(self, speed_percent, linked, enabled):
+        with QSignalBlocker(self.speed_slider), QSignalBlocker(self.link_pitch_checkbox):
+            self.speed_slider.setValue(int(speed_percent))
+            self.link_pitch_checkbox.setChecked(linked)
+        self.speed_label.setText(f"{int(speed_percent)}%")
+        self.speed_slider.setEnabled(enabled)
+        self.link_pitch_checkbox.setEnabled(enabled)
+        fixed_speed = "Speed is fixed at 1× during live playback."
+        self.speed_slider.setToolTip("Playback speed from 25% to 200%" if enabled else fixed_speed)
+        self.speed_label.setToolTip("" if enabled else fixed_speed)
+        self.link_pitch_checkbox.setToolTip(
+            "When enabled, speed changes pitch like a tape deck and manual pitch controls are disabled."
+            if enabled else fixed_speed
+        )
+        self._set_pitch_controls_enabled(not linked)
 
     def _set_pitch_controls_enabled(self, enabled):
         for control in getattr(self, "_pitch_controls", ()):
