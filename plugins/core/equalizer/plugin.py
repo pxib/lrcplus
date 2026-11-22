@@ -10,9 +10,10 @@ from PySide6.QtWidgets import (
     QSlider, QVBoxLayout, QWidget,
 )
 
-from plugins.core.equalizer.dsp import Band, EqualizerProcessor, FREQUENCIES_BY_COUNT, graphic_bands
+from plugins.core.equalizer.dsp import (
+    Band, EqualizerProcessor, FREQUENCIES_BY_COUNT, graphic_bands, load_dsp_dependencies,
+)
 from plugins.core.equalizer.presets import PRESETS, preset_gains
-from plugins.core.equalizer.response import ResponsePlot, response_db
 from ui.settings_controls import (
     ThemedComboBox, ThemedDoubleSpinBox, ThemedSpinBox, settings_theme_options, use_native_controls,
 )
@@ -212,6 +213,8 @@ class EqualizerPanel(QWidget):
     preview_ended = Signal()
 
     def __init__(self, parent, enabled, preamp, curves, mode, count, *, get_presets, store_presets):
+        from plugins.core.equalizer.response import ResponsePlot
+
         super().__init__(parent)
         self.setObjectName("equalizerPanel")
         policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
@@ -378,6 +381,8 @@ class EqualizerPanel(QWidget):
         self.parametric.set_bands(graphic_bands(self.graphic.gains()))
 
     def _apply_preset(self, name):
+        from plugins.core.equalizer.response import response_db
+
         gains = preset_gains(name, self.count())
         bands = graphic_bands(gains)
         if self.mode() == "graphic":
@@ -537,6 +542,7 @@ class EqualizerPlugin:
         return EqualizerProcessor(lambda: self.configuration)
 
     def _create_panel(self, parent):
+        load_dsp_dependencies()
         panel = EqualizerPanel(
             parent, self._enabled, self._preamp, self._curves, self._mode, self._count,
             get_presets=lambda: self._custom_presets, store_presets=self._store_custom_presets,
@@ -572,6 +578,9 @@ class EqualizerPlugin:
 
     def _set_configuration(self, configuration):
         was_active = self.configuration is not None
+        if configuration is not None and not was_active:
+            # Load the backend before publishing the configuration to the audio worker.
+            load_dsp_dependencies()
         self.configuration = configuration
         if self._window is not None and was_active != (configuration is not None):
             self._window._refresh_equalizer_route()

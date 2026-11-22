@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 from core.background_job import BackgroundJob
 from core.lyrics_preview_queue import LyricsPreviewQueue
-from core.lyrics_translations import converted_translations, translation_preview
+from core.lyrics_translations import converted_translations, timed_translations, translation_preview
 from core.lrclib import LRCLibError, search as search_lrclib
 from core.musixmatch import (
     MusixmatchError,
@@ -57,6 +57,7 @@ from ui.search_history import SearchHistoryLineEdit
 from core.file_io import atomic_write_text
 from core.fonts import content_font, library_font
 from core.settings import get_lyrics_attachment, set_lyrics_attachment
+from lyrics.plain_ruby import edit_plain_ruby
 from lyrics.writer import serialize_lrcx
 from lyrics.provider_credit import add_provider_credit, credit_markup, provider_credit
 
@@ -356,6 +357,7 @@ class LyricsSearchDialogMixin:
         preview_controls_widget.setVisible(provider.currentText() in CHINESE_LYRICS_PROVIDERS)
 
         preview = LyricsPreview(preview_panel)
+        preview.setAccessibleName("Lyrics preview")
         preview_layout.addWidget(preview)
         attribution = QLabel(preview_panel)
         attribution.setTextFormat(Qt.TextFormat.PlainText)
@@ -419,6 +421,7 @@ class LyricsSearchDialogMixin:
         records = []
         provider_states = {}
         preview_retry_at = {}
+        preview_target = None
         active_provider = provider.currentText()
         search_job = BackgroundJob(dialog, "lyrics-search")
         preview_queue = LyricsPreviewQueue(dialog)
@@ -430,9 +433,10 @@ class LyricsSearchDialogMixin:
         cooldown_timer.setInterval(100)
         provider_errors = (LRCLibError, MusixmatchError, LyricsProviderError, SyncLRCError)
 
-        def set_search_indicator(state):
-            nonlocal search_state
-            search_state = state
+        def update_preview_placeholder():
+            if preview_target is not None:
+                preview.setPlaceholderText("Enter lyrics here.")
+                return
             placeholders = {
                 "loading": "Results will appear here when the search finishes.",
                 "empty": "No matching lyrics to preview.",
@@ -440,9 +444,14 @@ class LyricsSearchDialogMixin:
                 "success": "Select a result to preview its lyrics.",
             }
             preview.setPlaceholderText(placeholders.get(
-                state, "Search for this track to see matching lyrics." if audio_path
+                search_state, "Search for this track to see matching lyrics." if audio_path
                 else "Enter a song title to find lyrics.",
             ))
+
+        def set_search_indicator(state):
+            nonlocal search_state
+            search_state = state
+            update_preview_placeholder()
             title_only_button.setVisible(state == "empty" and all(search_fields()))
             other_source_button.setVisible(state in {"empty", "error"})
             search_movie.stop()
@@ -525,19 +534,47 @@ class LyricsSearchDialogMixin:
                 return records[row_index]
             return None
 
+        def lyrics_field(item):
+            if include_translations.isChecked() and item.get("translatedLyrics"):
+                return "translatedLyrics"
+            return "syncedLyrics" if item.get("syncedLyrics") else "plainLyrics"
+
+        def draft_key(field):
+            script = translation_script.currentData() if field in ("translatedLyrics", "translationRows") else None
+            return field, script
+
+        def preview_source():
+            # Preserve nonbreaking spaces that QTextEdit.toPlainText() normalizes.
+            return preview.document().toRawText().replace("\u2029", "\n")
+
+        def remember_preview_edit():
+            if preview_target is None:
+                return
+            item, key, original = preview_target
+            text = preview_source()
+            if text == original:
+                item.get("_preview_drafts", {}).pop(key, None)
+            else:
+                item.setdefault("_preview_drafts", {})[key] = (original, text)
+
         def destination_for(item, only_translation=False):
             if not audio_path:
                 return None
             if only_translation:
                 source_path = getattr(self, "current_lyrics_path", None)
                 return Path(source_path).with_suffix(".lrcx") if source_path else None
-            if include_translations.isChecked() and item.get("translatedLyrics"):
+            field = lyrics_field(item)
+            if field == "translatedLyrics":
                 return audio_path.with_suffix(".lrcx")
-            if item.get("syncedLyrics"):
+            if field == "syncedLyrics":
                 return audio_path.with_suffix(".lrcx" if item.get("lyricsFormat") == "lrcx" else ".lrc")
             return audio_path.with_suffix(".txt") if item.get("plainLyrics") else None
 
         def update_preview():
+            nonlocal preview_target
+            previous_target, preview_target = preview_target, None
+            preview.setReadOnly(True)
+            preview.setToolTip("")
             use_button.setEnabled(False)
             use_translation_button.setEnabled(False)
             destination_label.clear()
@@ -555,6 +592,7 @@ class LyricsSearchDialogMixin:
             include_translations.setEnabled(has_translation and preview_tabs.currentIndex() == 0)
             if item is None:
                 preview.clear()
+                update_preview_placeholder()
                 return
 
             links = provider_credit(item)
@@ -570,22 +608,29 @@ class LyricsSearchDialogMixin:
                 preview_queue.prioritize(item)
                 return
 
-            synced = item.get("syncedLyrics") or ""
-            plain = item.get("plainLyrics") or ""
-
-            if preview_tabs.currentIndex() == 1 and has_translation:
+            translation_only = preview_tabs.currentIndex() == 1 and has_translation
+            field = "translationRows" if translation_only else lyrics_field(item)
+            if field in ("translatedLyrics", "translationRows"):
                 variant = converted_translations(item, translation_script.currentData())
-                preview.setPlainText(translation_preview(variant))
-            elif synced:
-                if has_translation and include_translations.isChecked():
-                    variant = converted_translations(item, translation_script.currentData())
-                    preview.setPlainText(variant["translatedLyrics"])
+                content = translation_preview(variant) if translation_only else variant["translatedLyrics"]
+            else:
+                content = item.get(field)
+
+            if content:
+                key = draft_key(field)
+                draft = item.get("_preview_drafts", {}).get(key)
+                if previous_target is not None and previous_target[0] is item and previous_target[1] == key:
+                    preview_target = previous_target
                 else:
-                    preview.setPlainText(synced)
-            elif plain:
-                preview.setPlainText(plain)
+                    preview.setPlainText(draft[1] if draft is not None else content)
+                    original = draft[0] if draft is not None else preview_source()
+                    preview_target = item, key, original
+                preview.setReadOnly(False)
+                preview.setToolTip("Edit before applying with Apply Only Translation." if translation_only
+                                   else "Edit before saving with Use Selected Lyrics.")
             else:
                 preview.setPlainText("This result does not contain lyrics. Try another result.")
+            update_preview_placeholder()
             destination = destination_for(item)
             translation_destination = (
                 destination_for(item, only_translation=True)
@@ -603,7 +648,7 @@ class LyricsSearchDialogMixin:
                 if translation_destination and translation_destination != destination:
                     tooltip += f"\nTranslation only: {translation_destination}"
                 destination_label.setToolTip(tooltip)
-            elif not audio_path and (synced or plain):
+            elif not audio_path and content:
                 destination_label.setText("Open an audio file to save lyrics.")
             if not links and item.get("source"):
                 notes = [f"Lyrics provided by {item['source']}", item.get("copyright"), item.get("sourceUrl")]
@@ -620,6 +665,7 @@ class LyricsSearchDialogMixin:
         include_translations.toggled.connect(update_preview)
         preview_tabs.currentChanged.connect(update_preview)
         translation_script.currentIndexChanged.connect(update_preview)
+        preview.textChanged.connect(remember_preview_edit)
 
         def fetch_preview(item, key, mode, cancel):
             try:
@@ -799,7 +845,6 @@ class LyricsSearchDialogMixin:
             set_search_indicator("loading")
             status.setText(f"Searching {source}...")
             results.setRowCount(0)
-            preview.clear()
             records.clear()
             update_preview()
             search_in_progress = True
@@ -974,6 +1019,12 @@ class LyricsSearchDialogMixin:
                 use_translation_button.setEnabled(False)
                 return
             destination = destination_for(item, only_translation)
+            field = "translationRows" if only_translation else lyrics_field(item)
+            draft = item.get("_preview_drafts", {}).get(draft_key(field))
+            edited_text = draft[1] if draft is not None else None
+            if edited_text is not None and not edited_text.strip():
+                status.setText("Enter lyrics in the preview before applying.")
+                return
 
             if only_translation:
                 if (provider.currentText() not in CHINESE_LYRICS_PROVIDERS
@@ -981,7 +1032,8 @@ class LyricsSearchDialogMixin:
                     status.setText("No provider translation is available for this result.")
                     return
                 item = converted_translations(item, translation_script.currentData())
-                translation_rows = item.get("translationRows") or {}
+                translation_rows = (timed_translations(edited_text, multiline=True) if edited_text is not None
+                                    else item.get("translationRows") or {})
                 source_path = getattr(self, "current_lyrics_path", None)
                 current_lines = getattr(self, "lyric_lines", None) or []
                 if not source_path or not current_lines:
@@ -994,11 +1046,12 @@ class LyricsSearchDialogMixin:
                     line = by_timestamp.get(int(timestamp))
                     if line is None or not str(translated).strip():
                         continue
-                    rows = line.text.split("\n")
-                    if translated in rows:
+                    translated = "\n".join(translated.splitlines())
+                    if f"\n{translated}\n" in f"\n{line.text}\n":
                         continue
+                    first_row = line.text.count("\n") + 1
                     line.translation_lines = list(line.translation_lines or [])
-                    line.translation_lines.append(len(rows))
+                    line.translation_lines.extend(range(first_row, first_row + translated.count("\n") + 1))
                     line.text = line.text + "\n" + translated
                     matched += 1
                 if not matched:
@@ -1011,7 +1064,7 @@ class LyricsSearchDialogMixin:
                     "lyricsFormat": "lrcx",
                 }
 
-            if not only_translation and include_translations.isChecked() and item.get("translatedLyrics"):
+            if field == "translatedLyrics":
                 item = converted_translations(item, translation_script.currentData())
                 item = {**item, "syncedLyrics": item["translatedLyrics"], "lyricsFormat": "lrcx"}
 
@@ -1023,6 +1076,9 @@ class LyricsSearchDialogMixin:
                 return
 
             content = synced or item.get("plainDocument") or plain
+            if edited_text is not None and not only_translation:
+                content = (edit_plain_ruby(item["plainDocument"], edited_text)
+                           if field == "plainLyrics" and item.get("plainDocument") else edited_text)
             try:
                 current_lyrics = getattr(self, "current_lyrics_path", None)
                 destination_exists = destination.exists()
@@ -1081,6 +1137,7 @@ class LyricsSearchDialogMixin:
                 content = add_provider_credit(content, provider_credit(item), synced=bool(synced))
                 atomic_write_text(destination, content.rstrip() + "\n", backup=True)
                 if not only_translation and (item.get("source") in public_lyrics.PROVIDERS
+                                             or (item.get("lyricsfile") and item.get("lyricsFormat") == "lrcx")
                                              or get_lyrics_attachment(audio_path)):
                     set_lyrics_attachment(audio_path, destination)
                 self.clear_lyrics_search_index()

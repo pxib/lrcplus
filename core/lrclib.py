@@ -29,6 +29,19 @@ def _retry_after(value):
             return None
 
 
+def _with_lyricsfile(payload, cancel):
+    from core.lyricsfile import apply_lyricsfile
+
+    results = []
+    for record in payload:
+        if cancel.is_set():
+            return []
+        if record.get("lyricsfile") and not record.get("instrumental"):
+            record = apply_lyricsfile(record)
+        results.append(record)
+    return results
+
+
 def search(query, cancel=None, *, artist=None):
     cancel = cancel if cancel is not None else Event()
     params = {"q": query} if artist is None else {"track_name": query, "artist_name": artist}
@@ -68,7 +81,7 @@ def search(query, cancel=None, *, artist=None):
                     raise LRCLibError("LRCLIB returned an invalid response. Please try again later.") from error
                 if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
                     raise LRCLibError("LRCLIB returned unexpected search results. Please try again later.")
-                return payload
+                return _with_lyricsfile(payload, cancel)
         finally:
             response.close()
         if cancel.wait(delay):

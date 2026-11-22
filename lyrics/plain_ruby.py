@@ -1,5 +1,6 @@
 """Store authored readings with untimed plain lyrics."""
 
+from difflib import SequenceMatcher
 from html import unescape
 import json
 import re
@@ -37,6 +38,28 @@ def encode_plain_ruby(text, markup):
     if not annotations:
         return text
     return f"{_HEADER}{json.dumps(annotations, ensure_ascii=False)}]\n{text}"
+
+
+def edit_plain_ruby(document, text):
+    """Carry readings over to matching, unedited rows in the new plain text."""
+    header, _, original = document.partition("\n")
+    if not header.startswith(_HEADER) or not header.endswith("]"):
+        return text
+    try:
+        annotations = json.loads(header[len(_HEADER):-1])
+    except (ValueError, RecursionError):
+        return text
+    if not isinstance(annotations, dict) or not annotations:
+        return text
+
+    updated = {}
+    rows = SequenceMatcher(None, original.splitlines(), text.splitlines())
+    for old_start, new_start, count in rows.get_matching_blocks():
+        for offset in range(count):
+            spans = annotations.get(str(old_start + offset))
+            if spans:
+                updated[new_start + offset] = spans
+    return f"{_HEADER}{json.dumps(updated, ensure_ascii=False)}]\n{text}" if updated else text
 
 
 def load_plain_rows(file):

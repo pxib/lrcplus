@@ -25,15 +25,32 @@ PROJECT_ROOT = Path(SPEC).resolve().parent
 #
 # at runtime.
 
+excluded_community_plugins = (
+    "anki_flashcards",
+    "audio_visualizer",
+    "cantonese_readings",
+    "english_katakana",
+    "lyrics_translator",
+    "rhythm_games",
+)
+
 datas = [
     (str(PROJECT_ROOT / "LICENSE.txt"), "."),
     (str(PROJECT_ROOT / "assets"), "assets"),
     (str(PROJECT_ROOT / "themedata"), "themedata"),
     (str(PROJECT_ROOT / "docs" / "manual"), "docs/manual"),
     (str(PROJECT_ROOT / "PLUGIN_API.md"), "."),
-    (str(PROJECT_ROOT / "plugins"), "plugins"),
     (str(PROJECT_ROOT / "core" / "dependency_probe.py"), "core"),
 ]
+
+plugins_dir = PROJECT_ROOT / "plugins"
+excluded_plugin_paths = {("community", name) for name in excluded_community_plugins}
+for source in sorted(plugins_dir.rglob("*")):
+    relative = source.relative_to(plugins_dir)
+    if relative.parts[:2] not in excluded_plugin_paths and source.is_file():
+        destination = Path("plugins") / relative.parent
+        datas.append((str(source), destination.as_posix()))
+
 datas += collect_data_files("opencc")
 
 updater_exe = PROJECT_ROOT / "dist" / "LRCPlusUpdater.exe"
@@ -83,13 +100,11 @@ a = Analysis(
     hooksconfig=[],
     runtime_hooks=[],
 
-    # LRCPlus does not need these Qt modules.
-    #
-    # Keeping them out helps reduce the distribution size considerably,
-    # especially with PySide6.
     excludes=[
         # Standalone development tool; run it from the source checkout only.
         "tools.renderer_playground",
+        # Omit these plugins even if a bundled module imports them.
+        *[f"plugins.community.{name}" for name in excluded_community_plugins],
         # Optional plugin engines are installed through Settings > Dependencies.
         "koroman",
         "alkana",
@@ -99,6 +114,7 @@ a = Analysis(
         "pypresence",
         "fugashi",
         "unidic_lite",
+        # Unused Qt modules are large, especially with PySide6.
         "PySide6.QtQml",
         "PySide6.QtQuick",
         "PySide6.QtQuickWidgets",

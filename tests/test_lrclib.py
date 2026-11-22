@@ -6,6 +6,7 @@ import requests
 
 from core import lrclib
 from core.app_info import APP_VERSION
+from lyrics.lrcx_parser import parse_lrcx
 
 
 class Cancel:
@@ -54,6 +55,78 @@ def test_structured_song_search_passes_artist_and_title(monkeypatch):
                         calls.append(kwargs["params"]) or response())
     assert lrclib.search("Song", Cancel(), artist="Artist") == []
     assert calls == [{"track_name": "Song", "artist_name": "Artist"}]
+
+
+def test_lyricsfile_keeps_word_boundaries_and_overlapping_line_ends(monkeypatch):
+    source = """\
+version: '1.0'
+metadata: {title: Song, artist: Artist}
+lines:
+  - text: Yes
+    start_ms: 950
+    end_ms: 4000
+  - text: 'Go now!'
+    start_ms: 1001
+    end_ms: 3500
+    words:
+      - {text: 'Go ', start_ms: 1101, end_ms: 1302}
+      - {text: now!, start_ms: 1503}
+"""
+    monkeypatch.setattr(lrclib.requests, "get", lambda *args, **kwargs: response(payload=[{
+        "trackName": "Song", "lyricsfile": source, "syncedLyrics": "[00:01]Legacy",
+    }]))
+    record, = lrclib.search("Song")
+    assert record["lyricsFormat"] == "lrcx"
+    assert record["hasWordTiming"] is True
+    assert record["plainLyrics"] == "Yes\nGo now!"
+    line, karaoke = parse_lrcx(record["syncedLyrics"], infer_ends=False)
+    assert (line.text, line.start, line.end, line.has_karaoke) == ("Yes", 0.95, 4.0, False)
+    assert (karaoke.text, karaoke.start, karaoke.end) == ("Go now!", 1.001, 3.5)
+    assert [(word.text, word.start, word.end) for word in karaoke.segments] == [
+        ("Go ", 1.101, 1.302), ("now!", 1.503, 3.5),
+    ]
+
+
+def test_lyricsfile_plain_lyrics_keep_line_breaks(monkeypatch):
+    monkeypatch.setattr(lrclib.requests, "get", lambda *args, **kwargs: response(payload=[{
+        "lyricsfile": "version: '1.0'\nmetadata: {}\nplain: |\n  First line\n\n  Second line\n",
+        "plainLyrics": "Legacy plain lyrics",
+    }]))
+    record, = lrclib.search("Song")
+    assert record["plainLyrics"] == "First line\n\nSecond line\n"
+    assert not record.get("syncedLyrics")
+
+
+def test_lyricsfile_keeps_an_instant_word_at_the_line_end(monkeypatch):
+    source = """\
+version: '1.0'
+metadata: {}
+lines:
+  - text: Wait!
+    start_ms: 500
+    end_ms: 1200
+    words: [{text: Wait!, start_ms: 1200, end_ms: 1200}]
+"""
+    monkeypatch.setattr(lrclib.requests, "get", lambda *args, **kwargs: response(payload=[{"lyricsfile": source}]))
+    record, = lrclib.search("Song")
+    line, = parse_lrcx(record["syncedLyrics"], infer_ends=False)
+    word, = line.segments
+    assert (line.start, line.end, word.start, word.end, word.instant) == (0.5, 1.2, 1.2, 1.2, True)
+
+
+@pytest.mark.parametrize("lyricsfile", [
+    "version: '2.0'\nmetadata: {}\nplain: Future format",
+    "version: '1.0'\nmetadata: [",
+    "version: '1.0'\nmetadata: {}\nplain: duplicate\nplain: also duplicate",
+    "version: '1.0'\nmetadata: {}\nplain: !custom value",
+    "version: '1.0'\nmetadata: &loop {recursive: *loop}",
+    "version: '1.0'\nmetadata: !!map [invalid]",
+    'version: "1.0"\nmetadata: {}\nplain: "\\uD800"',
+])
+def test_unreadable_lyricsfile_keeps_legacy_lyrics(monkeypatch, lyricsfile):
+    record = {"lyricsfile": lyricsfile, "syncedLyrics": "[00:01]Legacy", "plainLyrics": "Legacy"}
+    monkeypatch.setattr(lrclib.requests, "get", lambda *args, **kwargs: response(payload=[record]))
+    assert lrclib.search("Song") == [record]
 
 
 @pytest.mark.parametrize("status", [429, 500, 502, 503, 504])

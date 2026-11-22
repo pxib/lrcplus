@@ -287,7 +287,7 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
         if (
             preserve_karaoke_boundaries
             and getattr(line, "end", None) is not None
-            and (not segments or getattr(segments[-1], "end", None) != line.end)
+            and (not segments or segments[-1].end != line.end or segments[-1].start == line.end)
         ):
             parts.append(f"<{format_timestamp(float(line.end))}>")
             has_karaoke_marker = True

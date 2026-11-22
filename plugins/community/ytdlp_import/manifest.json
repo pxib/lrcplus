@@ -1,6 +1,6 @@
 {
   "name": "yt-dlp Audio Import",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Search YouTube and queue tracks, batches, and playlists, with optional synced lyrics and MusicBrainz album covers.",
   "api_version": 4,
   "dependencies": [

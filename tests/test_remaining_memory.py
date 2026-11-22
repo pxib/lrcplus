@@ -11,7 +11,7 @@ from core.settings import save_global_lyrics_settings
 from ui.main_window import Player
 
 
-def test_default_startup_defers_requests_and_lyrics_renderers():
+def test_default_startup_defers_networking_equalizer_dsp_and_lyrics_renderers():
     script = """
 import sys
 from pathlib import Path
@@ -27,8 +27,9 @@ try:
     manager.emit('app_ready', window=window)
     window.show()
     QTest.qWait(100)
-    assert 'requests' not in sys.modules
-    for name in ('ui.settings_dialog', 'ui.lrc_editor', 'ui.translation_panel',
+    assert manager.get_service('playback_equalizer').configuration is None
+    for name in ('requests', 'numpy', 'pedalboard', 'plugins.core.equalizer.response',
+                 'ui.settings_dialog', 'ui.lrc_editor', 'ui.translation_panel',
                  'plugins.community.lyrics_translator.dialog'):
         assert name not in sys.modules, name
     assert manager.plugins['floating_lyrics'].instance.floating is None

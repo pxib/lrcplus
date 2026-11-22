@@ -1,9 +1,13 @@
 import threading
 import time
 
-from PySide6.QtCore import QTimer
+import pytest
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QComboBox, QDialog, QLineEdit, QPushButton, QTableWidget, QTextEdit, QWidget
 
+from lyrics.loader import load_lyrics
+from lyrics.plain_ruby import encode_plain_ruby
 import ui.lyrics_search_dialog as lyrics_search
 from ui.main_window import Player
 
@@ -14,6 +18,64 @@ def wait_for(qapp, predicate):
         qapp.processEvents()
         time.sleep(0.005)
     assert predicate()
+
+
+@pytest.mark.parametrize("suffix,source", [
+    (".lrc", "[00:01.00]Original\u00a0lyric"),
+    (".lrcx", "[00:01.000]<00:01.100>Original\u00a0lyric<00:02.000>"),
+    (".txt", "Original\u00a0lyric\n漢字"),
+])
+def test_preview_edits_follow_the_result_and_save_in_its_format(qapp, monkeypatch, tmp_path, suffix, source):
+    parent = QWidget()
+    parent.current_audio_path = tmp_path / "Song.mp3"
+    parent.clear_lyrics_search_index = lambda: None
+    loaded = []
+    parent.load_lrc_file = loaded.append
+    destination = parent.current_audio_path.with_suffix(suffix)
+    item = {"trackName": "Song", "plainLyrics" if suffix == ".txt" else "syncedLyrics": source,
+            "lyricsFormat": suffix[1:]}
+    if suffix == ".txt":
+        item["plainDocument"] = encode_plain_ruby(source, "Original\u00a0lyric<br><ruby>漢字<rt>かんじ</rt></ruby>")
+    monkeypatch.setattr(lyrics_search, "search_lrclib", lambda *args: [
+        item, {"trackName": "Other", "plainLyrics": "Another result"},
+    ])
+
+    def interact(dialog):
+        provider = dialog.findChild(QComboBox)
+        table, preview = dialog.findChild(QTableWidget), dialog.findChild(QTextEdit)
+        buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
+        use = buttons["Use Selected Lyrics"]
+        assert preview.isReadOnly()
+        buttons["Search"].click()
+        wait_for(qapp, use.isEnabled)
+        assert not preview.isReadOnly()
+        preview.selectAll()
+        QTest.keyClick(preview, Qt.Key.Key_Backspace)
+        use.click()
+        assert not destination.exists()
+        preview.undo()
+        preview.setTextCursor(preview.document().find("Original"))
+        QTest.keyClicks(preview, "Corrected")
+        assert "Corrected lyric" in preview.toPlainText()
+        table.selectRow(1)
+        assert preview.toPlainText() == "Another result"
+        table.selectRow(0)
+        provider.setCurrentText("SyncLRC")
+        assert preview.isReadOnly()
+        provider.setCurrentText("LRCLIB")
+        assert "Corrected lyric" in preview.toPlainText()
+        use.click()
+        return dialog.result()
+
+    monkeypatch.setattr(QDialog, "exec", interact)
+    try:
+        Player.search_lrclib_lyrics(parent)
+        assert loaded == [str(destination)]
+        assert source.replace("Original", "Corrected") in destination.read_text(encoding="utf-8")
+        if suffix == ".txt":
+            assert load_lyrics(destination)[1].segments[0].ruby_spans == [(0, 2, "かんじ")]
+    finally:
+        parent.deleteLater()
 
 
 def test_results_queries_selection_and_previews_last_only_for_dialog(qapp, monkeypatch, tmp_path):

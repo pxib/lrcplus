@@ -2,12 +2,70 @@ from pathlib import Path
 import time
 
 import pytest
-from PySide6.QtWidgets import QCheckBox, QComboBox, QDialog, QLineEdit, QPushButton, QTabBar, QTextEdit, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox, QComboBox, QDialog, QLineEdit, QMessageBox, QPushButton, QTabBar, QTextEdit, QWidget,
+)
 
 from core.lyrics_translations import with_translations
 from lyrics.lrcx_parser import load_lrcx
+from lyrics.models import LyricLine
 import ui.lyrics_search_dialog as lyrics_search
 from ui.main_window import Player
+
+
+@pytest.mark.parametrize("only_translation", [False, True])
+def test_translation_preview_edits_apply_to_the_displayed_version(qapp, monkeypatch, tmp_path, only_translation):
+    parent = QWidget()
+    parent.current_audio_path = tmp_path / "song.mp3"
+    parent.clear_lyrics_search_index = lambda: None
+    loaded = []
+    parent.load_lrc_file = loaded.append
+    if only_translation:
+        parent.current_lyrics_path = tmp_path / "song.lrc"
+        parent.lyric_lines = [LyricLine(1, "Local lyric")]
+
+        def accept_warning(box):
+            box.button(QMessageBox.StandardButton.Yes).click()
+            return box.result()
+
+        monkeypatch.setattr(QMessageBox, "exec", accept_warning)
+
+    monkeypatch.setattr(lyrics_search, "search_chinese_lyrics", lambda source, *args: [
+        with_translations({"source": source, "syncedLyrics": "[00:01.000]Original"}, {1000: "Translation"}),
+    ])
+
+    def interact(dialog):
+        dialog.findChild(QComboBox).setCurrentText("NetEase Cloud Music")
+        buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
+        buttons["Search"].click()
+        checkbox, tabs = dialog.findChild(QCheckBox), dialog.findChild(QTabBar)
+        preview = dialog.findChild(QTextEdit)
+        deadline = time.monotonic() + 4
+        while not checkbox.isEnabled() and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(.005)
+        assert checkbox.isEnabled()
+        checkbox.setChecked(True)
+        tabs.setCurrentIndex(1 if only_translation else 0)
+        assert not preview.isReadOnly()
+        preview.setTextCursor(preview.document().find("Translation"))
+        preview.insertPlainText("Corrected\nAnother row" if only_translation else "Corrected")
+        tabs.setCurrentIndex(0 if only_translation else 1)
+        assert "Corrected" not in preview.toPlainText()
+        tabs.setCurrentIndex(1 if only_translation else 0)
+        assert "Corrected" in preview.toPlainText()
+        buttons["Apply Only Translation" if only_translation else "Use Selected Lyrics"].click()
+        return dialog.result()
+
+    monkeypatch.setattr(QDialog, "exec", interact)
+    try:
+        Player.search_lrclib_lyrics(parent)
+        assert loaded == [str(tmp_path / "song.lrcx")]
+        line, = load_lrcx(loaded[0])
+        assert line.text == ("Local lyric\nCorrected\nAnother row" if only_translation else "Original\nCorrected")
+        assert line.translation_lines == ([1, 2] if only_translation else [1])
+    finally:
+        parent.deleteLater()
 
 
 @pytest.mark.parametrize("include", [False, True])

@@ -1,7 +1,5 @@
 """Built-in EQ curves, specified at the ten graphic EQ frequencies."""
 
-import numpy as np
-
 from plugins.core.equalizer.dsp import FREQUENCIES, FREQUENCIES_BY_COUNT
 
 
@@ -16,6 +14,8 @@ PRESETS = {
 
 
 def preset_gains(name, count):
+    import numpy as np
+
     anchored = PRESETS[name]
     gains = np.interp(np.log2(FREQUENCIES_BY_COUNT[count]), np.log2(FREQUENCIES), anchored)
     return tuple(int(round(gain)) for gain in gains)

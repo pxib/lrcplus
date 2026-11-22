@@ -168,6 +168,60 @@ def test_search_preselects_the_closest_recording_and_shows_its_save_path(qapp, m
         parent.deleteLater()
 
 
+def test_lrclib_lyricsfile_search_saves_and_loads_word_timing(qapp, monkeypatch, tmp_path):
+    from core.settings import get_lyrics_attachment
+    from lyrics.loader import load_lyrics
+
+    source = """\
+version: '1.0'
+metadata: {title: Song, artist: Artist}
+lines:
+  - text: Go now
+    start_ms: 1000
+    words:
+      - {text: 'Go ', start_ms: 1000}
+      - {text: now, start_ms: 1400}
+"""
+    parent = QWidget()
+    audio = tmp_path / "Song.mp3"
+    destination = audio.with_suffix(".lrcx")
+    parent.current_audio_path = audio
+    parent.clear_lyrics_search_index = lambda: None
+    loaded = []
+    parent.load_lrc_file = lambda path: loaded.extend(load_lyrics(path))
+    monkeypatch.setattr(lrclib.requests, "get", lambda *args, **kwargs: SimpleNamespace(
+        status_code=200, raise_for_status=lambda: None, close=lambda: None,
+        json=lambda: [{"trackName": "Song", "artistName": "Artist", "lyricsfile": source}],
+    ))
+
+    def interact(dialog):
+        table = dialog.findChild(QTableWidget)
+        dialog.findChild(QLineEdit, "lyricsSearchTitle").setText("Song")
+        buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
+        buttons["Search"].click()
+        deadline = time.monotonic() + 4
+        while not table.rowCount() and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(.005)
+        assert table.rowCount() == 1
+        assert table.item(0, 3).text() == "Word-synced"
+        assert dialog.findChild(QLabel, "lyricsSearchDestination").text() == "Save to Song.lrcx"
+        buttons["Use Selected Lyrics"].click()
+        assert dialog.result() == QDialog.DialogCode.Accepted
+        return dialog.result()
+
+    monkeypatch.setattr(QDialog, "exec", interact)
+    try:
+        Player.search_lrclib_lyrics(parent)
+        assert parent.current_lyrics_path == destination
+        assert get_lyrics_attachment(audio) == str(destination)
+        line, = loaded
+        assert line.has_karaoke
+        assert [(word.text, word.start) for word in line.segments] == [("Go ", 1.0), ("now", 1.4)]
+    finally:
+        parent.deleteLater()
+
+
 @pytest.mark.parametrize("outcome", ["results", "unknown", "empty", "error", "cancel"])
 def test_lrclib_search_does_not_block_gui(qapp, monkeypatch, outcome):
     entered, release = threading.Event(), threading.Event()

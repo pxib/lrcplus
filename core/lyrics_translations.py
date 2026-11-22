@@ -10,6 +10,7 @@ from core.native_lyrics import timestamp_ms
 
 
 _STAMP = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
+_STAMP_PREFIX = re.compile(rf"(?m)^(?:{_STAMP.pattern})+")
 _END = re.compile(r"<(\d+:\d+(?:\.\d+)?)>$")
 
 
@@ -22,11 +23,18 @@ def _milliseconds(match):
     return int(value.to_integral_value(rounding=ROUND_HALF_UP))
 
 
-def timed_translations(text):
-    """Ignore untimed/empty translations and ambiguous duplicate timestamps."""
+def timed_translations(text, *, multiline=False):
+    """Read timestamped translations, allowing continuation lines in edited previews."""
     rows, ambiguous = {}, set()
-    for line in str(text or "").splitlines():
-        stamps = list(_STAMP.finditer(line))
+    text = str(text or "")
+    if multiline:
+        starts = [match.start() for match in _STAMP_PREFIX.finditer(text)]
+        lines = (text[start:end] for start, end in zip(starts, starts[1:] + [len(text)]))
+    else:
+        lines = text.splitlines()
+    for line in lines:
+        prefix_end = _STAMP_PREFIX.match(line).end() if multiline else len(line)
+        stamps = list(_STAMP.finditer(line, 0, prefix_end))
         if not stamps or stamps[0].start() != 0:
             continue
         body = line[stamps[-1].end():].strip()

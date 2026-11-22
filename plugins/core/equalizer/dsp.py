@@ -1,9 +1,8 @@
 """Stateful parametric filters for one playback stream."""
 
 from dataclasses import dataclass
+from functools import cache
 
-import numpy as np
-from pedalboard import HighShelfFilter, LowShelfFilter, PeakFilter, Pedalboard
 from PySide6.QtMultimedia import QAudioFormat
 
 
@@ -14,12 +13,11 @@ THIRD_OCTAVE_FREQUENCIES = (
     12500, 16000, 20000,
 )
 FREQUENCIES_BY_COUNT = {10: FREQUENCIES, 31: THIRD_OCTAVE_FREQUENCIES}
-FILTERS = {"bell": PeakFilter, "low_shelf": LowShelfFilter, "high_shelf": HighShelfFilter}
 SAMPLE_FORMATS = {
-    QAudioFormat.SampleFormat.Float: (np.float32, 1, 0),
-    QAudioFormat.SampleFormat.Int16: (np.int16, 32768, 0),
-    QAudioFormat.SampleFormat.Int32: (np.int32, 2147483648, 0),
-    QAudioFormat.SampleFormat.UInt8: (np.uint8, 128, 128),
+    QAudioFormat.SampleFormat.Float: ("float32", 1, 0),
+    QAudioFormat.SampleFormat.Int16: ("int16", 32768, 0),
+    QAudioFormat.SampleFormat.Int32: ("int32", 2147483648, 0),
+    QAudioFormat.SampleFormat.UInt8: ("uint8", 128, 128),
 }
 
 
@@ -38,9 +36,19 @@ def graphic_bands(gains):
     return tuple(Band(frequency, gain, q) for frequency, gain in zip(frequencies, gains))
 
 
+@cache
+def load_dsp_dependencies():
+    import numpy as np
+    from pedalboard import HighShelfFilter, LowShelfFilter, PeakFilter, Pedalboard
+
+    filters = {"bell": PeakFilter, "low_shelf": LowShelfFilter, "high_shelf": HighShelfFilter}
+    return np, Pedalboard, filters
+
+
 def filter_board(bands):
-    return Pedalboard([
-        FILTERS[band.shape](cutoff_frequency_hz=band.frequency, gain_db=band.gain, q=band.q)
+    _, board_type, filters = load_dsp_dependencies()
+    return board_type([
+        filters[band.shape](cutoff_frequency_hz=band.frequency, gain_db=band.gain, q=band.q)
         for band in bands
     ])
 
@@ -74,13 +82,14 @@ class EqualizerProcessor:
 
         if not self._boards and not preamp:
             return data
+        np, _, _ = load_dsp_dependencies()
         dtype, scale, bias = SAMPLE_FORMATS[fmt.sampleFormat()]
         samples = np.frombuffer(data, dtype=dtype).reshape(-1, channels)
         # Keep conversion precision for 32-bit integer PCM until the filters.
         samples = (samples.astype(np.float64) - bias) * (10 ** (preamp / 20) / scale)
         for channel, board in enumerate(self._boards):
             samples[:, channel] = board(samples[:, channel], rate, reset=False)
-        if dtype is np.float32:
+        if dtype == "float32":
             return np.clip(samples, -1, 1).astype(dtype).tobytes()
         limits = np.iinfo(dtype)
         return np.clip(np.rint(samples * scale + bias), limits.min, limits.max).astype(dtype).tobytes()
