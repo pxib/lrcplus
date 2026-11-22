@@ -39,14 +39,19 @@ def stream_server():
                     self.send_header("icy-metaint", "32000")
                 self.end_headers()
                 try:
-                    audio = live_header + payload[44:32000] if icy else live_header
+                    header = live_header
                     while not stop_live.is_set():
-                        self.wfile.write(audio)
+                        song = self.server.icy_title
                         if icy:
-                            title = f"StreamTitle='{self.server.icy_title}';".encode()
+                            # Distinguish the new song in decoded audio as well as metadata.
+                            sample_byte = b"\x10" if song.endswith(" - Next Song") else b"\0"
+                            self.wfile.write(header + sample_byte * (32000 - len(header)))
+                            title = f"StreamTitle='{song}';".encode()
                             size = (len(title) + 15) // 16
                             self.wfile.write(bytes([size]) + title.ljust(size * 16, b"\0"))
-                        audio = payload[44:32044] if icy else payload[44:]
+                        else:
+                            self.wfile.write(header or payload[44:])
+                        header = b""
                         stop_live.wait(0.1)
                 except ConnectionError:
                     pass
@@ -167,7 +172,8 @@ def test_network_stream_url_requires_http_and_an_explicit_host(qapp):
 
 def test_live_network_stream_disables_seeking_and_speed_changes(qapp, stream_server, monkeypatch, tmp_path):
     server, url = stream_server
-    save_playback_settings({"speed_percent": 125, "pitch_linked_to_speed": True})
+    save_playback_settings({"speed_percent": 125, "pitch_linked_to_speed": True,
+                            "resume_live_from_buffer": True})
     window = Player()
     player = window.media_player
     monkeypatch.setattr(window, "_audio_output_unavailable", False)
@@ -259,7 +265,11 @@ def test_live_network_stream_disables_seeking_and_speed_changes(qapp, stream_ser
 @pytest.mark.parametrize("keep_buffer", [False, True])
 def test_live_lyrics_follow_resume_mode(qapp, stream_server, monkeypatch, keep_buffer):
     server, url = stream_server
-    window = Player()
+    manager = PluginManager()
+    searches = []
+    manager.register_service("ytdlp_import.search", lambda query: searches.append(query) or True, "test")
+    monkeypatch.setattr("ui.internet_radio.search_stations", lambda *_: StationPage((), False))
+    window = Player(plugin_manager=manager)
     player = window.media_player
     monkeypatch.setattr(window, "_audio_output_unavailable", False)
     output = QAudioBufferOutput(window)
@@ -283,6 +293,8 @@ def test_live_lyrics_follow_resume_mode(qapp, stream_server, monkeypatch, keep_b
     try:
         window.open_network_playback()
         dialog = window._network_playback_dialog
+        dialog.tabs.setCurrentWidget(dialog.radio)
+        download = dialog.radio.download_button
         option = dialog.auto_lyrics_checkbox
         assert not option.isChecked()
         assert not dialog.keep_live_buffer_checkbox.isChecked()
@@ -297,6 +309,8 @@ def test_live_lyrics_follow_resume_mode(qapp, stream_server, monkeypatch, keep_b
         wait_for(lambda: bool(window.lyric_lines) or bool(errors), player)
         assert not errors
         assert window.lyric_lines[0].text == "Lyrics for First Song"
+        download.click()
+        assert searches == ["Test Artist First Song"]
         status = window.stream_lyrics_status_label
         assert status.text() == "Test Artist — First Song · Plain lyrics"
         assert window.plain_lyrics_mode and window.current_lyrics_path is None
@@ -321,6 +335,8 @@ def test_live_lyrics_follow_resume_mode(qapp, stream_server, monkeypatch, keep_b
         QTest.qWait(400)
         assert window.lyric_lines[0].text == "Lyrics for First Song"
         assert status.text() == "Test Artist — First Song · Plain lyrics"
+        download.click()
+        assert searches == ["Test Artist First Song"]
 
         changes = QSignalSpy(player.sourceChanged)
         player.play()
@@ -333,6 +349,9 @@ def test_live_lyrics_follow_resume_mode(qapp, stream_server, monkeypatch, keep_b
             wait_for(lambda: player.position() > paused_position, player)
             assert window._stream_lyrics._monitor_cancel is None
             assert requests == [("Test Artist", "First Song"), ("Test Artist", "Second Song")]
+            download.click()
+            assert "Choose Go Live" in dialog.radio.status.text()
+            assert searches == ["Test Artist First Song"]
             window.go_live_button.click()
         assert changes.count() == 2
         assert changes.at(0)[0].isEmpty()
@@ -341,6 +360,8 @@ def test_live_lyrics_follow_resume_mode(qapp, stream_server, monkeypatch, keep_b
         assert not window.lyric_lines
         wait_for(lambda: status.text() == "Test Artist — Third Song · Plain lyrics", player)
         assert window.lyric_lines[0].text == "Lyrics for Third Song"
+        download.click()
+        assert searches == ["Test Artist First Song", "Test Artist Third Song"]
         option.click()
         assert not window.lyric_lines
         assert status.isHidden()
@@ -394,8 +415,10 @@ def test_radio_history_and_statistics_follow_actual_playback(qapp, stream_server
         window.deleteLater()
 
 
-def test_radio_can_search_yt_dlp_from_metadata_without_auto_lyrics(qapp, stream_server, monkeypatch):
-    _, url = stream_server
+@pytest.mark.parametrize("keep_buffer", [False, True])
+def test_radio_can_search_yt_dlp_from_metadata_without_auto_lyrics(qapp, stream_server, monkeypatch, keep_buffer):
+    server, url = stream_server
+    save_playback_settings({"resume_live_from_buffer": keep_buffer})
     manager = PluginManager()
     searches = []
     manager.register_service("ytdlp_import.search", lambda query: searches.append(query) or True, "test")
@@ -405,6 +428,10 @@ def test_radio_can_search_yt_dlp_from_metadata_without_auto_lyrics(qapp, stream_
     monkeypatch.setattr(window, "_audio_output_unavailable", False)
     output = QAudioBufferOutput(window)
     player.setAudioBufferOutput(output)
+    decoded = []
+    output.audioBufferReceived.connect(
+        lambda buffer: decoded.append(bytes(buffer.constData()[:2])) if buffer.byteCount() else None
+    )
     try:
         window.load_stream(url.replace("/audio.wav", "/icy.wav"))
         wait_for(lambda: player.position() > 0, player)
@@ -418,6 +445,31 @@ def test_radio_can_search_yt_dlp_from_metadata_without_auto_lyrics(qapp, stream_
         assert searches == ["Test Artist First Song"]
         assert dialog.radio.download_button.isEnabled()
         assert window._stream_lyrics._monitor_cancel is None
+
+        window.toggle_playback()
+        assert player.playbackState() == QMediaPlayer.PlaybackState.PausedState
+        server.icy_title = "Test Artist - Next Song"
+        decoded.clear()
+        changes = QSignalSpy(player.sourceChanged)
+        window.toggle_playback()
+        if keep_buffer:
+            assert changes.count() == 0
+            wait_for(lambda: bool(decoded), player)
+            assert decoded[0] == b"\0\0"
+            dialog.radio.download_button.click()
+            assert "Choose Go Live" in dialog.radio.status.text()
+            assert searches == ["Test Artist First Song"]
+            decoded.clear()
+            window.go_live_button.click()
+        assert changes.count() == 2
+        wait_for(lambda: player.position() > 0, player)
+        # A buffer queued before the reconnect can still reach the observer.
+        decoded.clear()
+        wait_for(lambda: bool(decoded), player)
+        assert all(sample == b"\x10\x10" for sample in decoded)
+        dialog.radio.download_button.click()
+        wait_for(lambda: len(searches) == 2, player)
+        assert searches[-1] == "Test Artist Next Song"
     finally:
         window.close()
         window.deleteLater()

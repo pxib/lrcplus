@@ -305,8 +305,7 @@ class AudioController:
         def _prepare_playback_resume(self):
             if not self._is_live_stream():
                 return True
-            if (self.playback_settings.get("radio_auto_lyrics")
-                    and not self.playback_settings.get("resume_live_from_buffer")):
+            if not self.playback_settings.get("resume_live_from_buffer"):
                 return self._rejoin_live_stream(autoplay=False)
             self._set_live_playback_delayed(True)
             self._apply_radio_lyrics_preference()
