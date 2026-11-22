@@ -38,6 +38,13 @@ def graphic_bands(gains):
     return tuple(Band(frequency, gain, q) for frequency, gain in zip(frequencies, gains))
 
 
+def filter_board(bands):
+    return Pedalboard([
+        FILTERS[band.shape](cutoff_frequency_hz=band.frequency, gain_db=band.gain, q=band.q)
+        for band in bands
+    ])
+
+
 class EqualizerProcessor:
     def __init__(self, configuration):
         self._configuration = configuration
@@ -62,13 +69,7 @@ class EqualizerProcessor:
             active_bands = [band for band in bands if band.gain and band.frequency < rate / 2]
             # Mono boards keep filter history independent for each channel,
             # including when a decoder hands us fewer frames than channels.
-            self._boards = tuple(
-                Pedalboard([
-                    FILTERS[band.shape](cutoff_frequency_hz=band.frequency, gain_db=band.gain, q=band.q)
-                    for band in active_bands
-                ])
-                for _ in range(channels)
-            ) if active_bands else ()
+            self._boards = tuple(filter_board(active_bands) for _ in range(channels)) if active_bands else ()
             self._key = key
 
         if not self._boards and not preamp:

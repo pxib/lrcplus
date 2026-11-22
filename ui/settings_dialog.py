@@ -56,6 +56,7 @@ from ui.settings_controls import (
     _ComboDropButton,
     SETTINGS_DIALOG_STYLE,
     _apply_settings_dialog_style,
+    settings_theme_options,
 )
 
 
@@ -176,22 +177,16 @@ class PluginSettingsDialog(QDialog):
         super().__init__(parent)
         self.plugin_manager = plugin_manager
         self.plugin_id = str(plugin_id)
-        theme_color = getattr(
-            parent,
-            "theme_color",
-            APPEARANCE_DEFAULTS["theme_color"],
-        )
-        theme_mode = getattr(parent, "theme_mode", "light")
-        _apply_settings_dialog_style(self, theme_mode, theme_color, getattr(parent, "theme_surface", "classic"), getattr(parent, "theme_overrides", {}))
         self.setWindowTitle(f"{plugin_name} Settings")
         self.resize(520, 460)
 
         root = QVBoxLayout(self)
-        scroll = QScrollArea()
+        scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         body = QWidget()
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(12, 12, 12, 12)
+        scroll.setWidget(body)
 
         self._instances = []
         entries = [
@@ -223,7 +218,6 @@ class PluginSettingsDialog(QDialog):
                 body_layout.addWidget(label)
 
         body_layout.addStretch()
-        scroll.setWidget(body)
         root.addWidget(scroll, 1)
 
         buttons = QDialogButtonBox(
@@ -233,6 +227,7 @@ class PluginSettingsDialog(QDialog):
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+        _apply_settings_dialog_style(self, *settings_theme_options(parent))
 
     @staticmethod
     def _add_section_heading(layout, text):

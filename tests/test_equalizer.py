@@ -3,11 +3,14 @@ from pathlib import Path
 import numpy as np
 
 from PySide6.QtMultimedia import QAudioFormat
+from PySide6.QtTest import QSignalSpy
 
 from core.plugin_manager import PluginManager
+from core.theme import build_theme_palette
 from plugins.core.equalizer.dsp import (
     Band, EqualizerProcessor, FREQUENCIES, THIRD_OCTAVE_FREQUENCIES, graphic_bands,
 )
+from plugins.core.equalizer.response import FREQUENCIES as RESPONSE_FREQUENCIES
 from ui.settings_dialog import PluginSettingsDialog
 
 
@@ -73,15 +76,32 @@ def test_core_equalizer_settings_enable_and_restore_the_playback_route(qapp, mon
     manager.set_host_window(window)
     manager.emit("app_ready", window=window)
     monkeypatch.setattr(window, "_audio_output_unavailable", False)
-    dialog = PluginSettingsDialog(manager, "equalizer", "Equalizer", parent=window)
-    try:
-        assert not window._pcm_worker._controls.enabled
+    appearance = {"theme_mode": "dark", "theme_color": "#ce88ee", "theme_surface": "classic",
+                  "theme_overrides": {"dark": {"window": "#192035", "surface": "#232941"}}}
+    monkeypatch.setattr(window, "appearance_settings", appearance)
+    colors = build_theme_palette("dark", "#ce88ee", "classic", appearance["theme_overrides"])
+    opened = []
+
+    def enable_from_menu(dialog):
+        opened.append(dialog)
+        assert dialog.parentWidget() is window
         _, panel = dialog._instances[0]
+        assert f"background: {colors['window']};" in dialog.styleSheet()
+        assert panel.response._colors["surface"].name() == colors["surface"]
+        assert panel.response._colors["accent"].name() == colors["accent"]
         assert panel.mode() == "graphic"
         assert panel.count() == 10
         assert panel.graphic.sliders[5].value() == 6
         panel.enabled.setChecked(True)
         dialog._save()
+
+    monkeypatch.setattr(PluginSettingsDialog, "exec", enable_from_menu)
+    try:
+        assert not window._pcm_worker._controls.enabled
+        assert not window.plugins_button.isHidden()
+        action = next(item for item in window.plugins_menu.actions() if item.text() == "Equalizer…")
+        action.trigger()
+        assert len(opened) == 1
         assert window._equalizer.configuration == (0, (Band(1000, gain=6),))
         assert window._pcm_worker._controls.enabled
 
@@ -115,6 +135,8 @@ def test_core_equalizer_settings_enable_and_restore_the_playback_route(qapp, mon
         reset_dialog._save()
         assert not window._pcm_worker._controls.enabled
         assert reset_panel.graphic.gains()[5] == 6
+        manager.unload("equalizer")
+        assert action not in window.plugins_menu.actions()
     finally:
         window.close()
         manager.unload_all()
@@ -134,10 +156,21 @@ def test_expanded_equalizer_keeps_31_band_curves_separate(qapp):
         panel.counts.setCurrentIndex(panel.counts.findData(31))
         assert len(panel.graphic.sliders) == len(panel.parametric.rows) == 31
         assert panel.parametric.bands()[2].frequency == 31.5
+        preview_updates = QSignalSpy(panel._response_timer.timeout)
         panel.graphic.sliders[-1].setValue(6)
+        panel.preamp.setValue(-3)
+        assert preview_updates.wait(1000)
+        np.testing.assert_allclose(panel.response._response[-1], 3, atol=0.1)
         panel.modes.setCurrentIndex(panel.modes.findData("parametric"))
+        np.testing.assert_allclose(panel.response._response, -3)
+        panel._copy_graphic.click()
+        assert panel.parametric.bands()[-1].gain == 6
         panel.parametric.rows[-1][2].setValue(3.5)
+        assert preview_updates.wait(1000)
+        np.testing.assert_allclose(panel.response._response[-1], 0.5, atol=0.1)
         panel.modes.setCurrentIndex(panel.modes.findData("graphic"))
+        np.testing.assert_allclose(panel.response._response[-1], 3, atol=0.1)
+        panel.preamp.setValue(0)
         dialog._save()
         assert manager.get_service("playback_equalizer").configuration == (
             0, (Band(THIRD_OCTAVE_FREQUENCIES[-1], gain=6, q=4.32),),
@@ -152,7 +185,51 @@ def test_expanded_equalizer_keeps_31_band_curves_separate(qapp):
         assert panel.parametric.bands()[-1].gain == 3.5
         panel.counts.setCurrentIndex(panel.counts.findData(10))
         assert panel.graphic.sliders[0].value() == -4
+        np.testing.assert_allclose(np.interp(31, RESPONSE_FREQUENCIES, panel.response._response), -4, atol=0.1)
         reopened._save()
         assert manager.get_service("playback_equalizer").configuration == (0, (Band(31, gain=-4),))
+    finally:
+        manager.unload_all()
+
+
+def test_presets_load_into_selected_eq_and_save_as_editable_values(qapp):
+    root = Path(__file__).resolve().parents[1] / "plugins"
+    manager = PluginManager()
+    manager.load_from_file("equalizer", root / "core" / "equalizer" / "plugin.py")
+    try:
+        dialog = PluginSettingsDialog(manager, "equalizer", "Equalizer")
+        _, panel = dialog._instances[0]
+        actions = {item.text(): item for item in panel.presets.menu().actions() if not item.isSeparator()}
+        panel.enabled.setChecked(True)
+        actions["Bass Boost"].trigger()
+        bass_boost = panel.graphic.gains()
+        assert bass_boost[:3] == (5, 5, 4)
+        assert panel.preamp.value() < 0
+        assert panel.response._response.max() <= 0.01
+        service = manager.get_service("playback_equalizer")
+        assert service.configuration is None
+
+        panel.counts.setCurrentIndex(panel.counts.findData(31))
+        panel.modes.setCurrentIndex(panel.modes.findData("parametric"))
+        shape, frequency, gain, q = panel.parametric.rows[0]
+        shape.setCurrentIndex(shape.findData("high_shelf"))
+        frequency.setValue(14000)
+        actions["Vocal Clarity"].trigger()
+        assert len(panel.parametric.bands()) == 31
+        assert panel.parametric.bands()[0] == Band(20, gain=-4, q=4.32)
+        assert panel.graphic.gains() == (0,) * 31
+        assert panel.response._response.max() <= 0.01
+        actions["Flat"].trigger()
+        assert panel.preamp.value() == 0
+        assert all(band.gain == 0 for band in panel.parametric.bands())
+
+        panel.counts.setCurrentIndex(panel.counts.findData(10))
+        panel.modes.setCurrentIndex(panel.modes.findData("graphic"))
+        assert panel.graphic.gains() == bass_boost
+        panel.graphic.sliders[0].setValue(3)
+        dialog._save()
+        reopened = PluginSettingsDialog(manager, "equalizer", "Equalizer")
+        _, saved_panel = reopened._instances[0]
+        assert saved_panel.graphic.gains() == (3, *bass_boost[1:])
     finally:
         manager.unload_all()

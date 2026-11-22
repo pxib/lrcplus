@@ -1,6 +1,7 @@
 from PySide6.QtCore import QPoint, QSignalBlocker, Qt
 from PySide6.QtGui import QColor, QPainter, QPalette, QPolygon
-from PySide6.QtWidgets import QAbstractSpinBox, QComboBox, QSpinBox, QToolButton
+from PySide6.QtWidgets import QAbstractSpinBox, QComboBox, QDoubleSpinBox, QSpinBox, QToolButton
+from core.settings import APPEARANCE_DEFAULTS
 from core.theme import build_theme_palette
 
 class _SpinStepButton(QToolButton):
@@ -37,7 +38,7 @@ class _SpinStepButton(QToolButton):
         painter.drawPolygon(points)
 
 
-class ThemedSpinBox(QSpinBox):
+class _ThemedSpinButtons:
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
@@ -64,6 +65,14 @@ class ThemedSpinBox(QSpinBox):
             button_width,
             usable_height - upper_height,
         )
+
+
+class ThemedSpinBox(_ThemedSpinButtons, QSpinBox):
+    pass
+
+
+class ThemedDoubleSpinBox(_ThemedSpinButtons, QDoubleSpinBox):
+    pass
 
 
 _NativeComboBox = QComboBox
@@ -263,6 +272,7 @@ SETTINGS_DIALOG_STYLE = """
     }
     QDialog QLineEdit,
     QDialog QSpinBox,
+    QDialog QWidget#equalizerPanel QDoubleSpinBox,
     QDialog QTextEdit,
     QDialog QListWidget {
         color: @TEXT@;
@@ -361,6 +371,25 @@ SETTINGS_DIALOG_STYLE = """
     QDialog QPushButton:pressed {
         background: @PRESSED@;
     }
+    QMenu#equalizerPresets {
+        color: @TEXT@;
+        background: @SURFACE@;
+        border: 1px solid @FIELD_BORDER@;
+        padding: 4px;
+    }
+    QMenu#equalizerPresets::item {
+        color: @TEXT@;
+        padding: 5px 18px 5px 8px;
+        border-radius: 4px;
+    }
+    QMenu#equalizerPresets::item:selected {
+        background: @ACCENT_SOFT@;
+    }
+    QMenu#equalizerPresets::separator {
+        height: 1px;
+        background: @BORDER@;
+        margin: 4px 5px;
+    }
     QDialog QGroupBox {
         color: @TEXT@;
         background: @SURFACE_ALT@;
@@ -389,6 +418,26 @@ SETTINGS_DIALOG_STYLE = """
         background: @SURFACE@;
         border: 2px solid @ACCENT@;
         border-radius: 7px;
+    }
+    QSlider#equalizerBandGain::groove:vertical {
+        width: 4px;
+        background: @FIELD_BORDER@;
+        border-radius: 2px;
+    }
+    QSlider#equalizerBandGain::sub-page:vertical {
+        background: @ACCENT_SOFT@;
+        border-radius: 2px;
+    }
+    QSlider#equalizerBandGain::handle:vertical {
+        height: 10px;
+        margin: 0 -5px;
+        background: @SURFACE@;
+        border: 2px solid @ACCENT@;
+        border-radius: 5px;
+    }
+    QSlider#equalizerBandGain::handle:vertical:hover,
+    QSlider#equalizerBandGain::handle:vertical:focus {
+        background: @ACCENT_SOFT@;
     }
     QDialog QWidget[settingsSearchHighlight="true"] {
         border: 2px solid @ACCENT@;
@@ -443,12 +492,23 @@ def use_native_controls(widget, enabled):
     """Restore Qt's own indicators when custom styling is disabled."""
     for combo in widget.findChildren(ThemedComboBox):
         combo._drop_indicator.setVisible(not enabled)
-    for spin in widget.findChildren(ThemedSpinBox):
+    for spin in (*widget.findChildren(ThemedSpinBox), *widget.findChildren(ThemedDoubleSpinBox)):
         spin._step_up.setVisible(not enabled)
         spin._step_down.setVisible(not enabled)
         spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows if enabled
                               else QAbstractSpinBox.ButtonSymbols.NoButtons)
         spin.lineEdit().setTextMargins(0, 0, 0 if enabled else 24, 0)
+
+
+def settings_theme_options(parent):
+    """Read an open Settings dialog's draft theme or the player's active theme."""
+    appearance = getattr(parent, "appearance_settings", {})
+    return (
+        getattr(parent, "theme_mode", appearance.get("theme_mode", "light")),
+        getattr(parent, "theme_color", appearance.get("theme_color", APPEARANCE_DEFAULTS["theme_color"])),
+        getattr(parent, "theme_surface", appearance.get("theme_surface", "classic")),
+        getattr(parent, "theme_overrides", appearance.get("theme_overrides", {})),
+    )
 
 
 def _apply_settings_dialog_style(dialog, theme_mode, theme_color, theme_surface="classic", theme_overrides=None):
