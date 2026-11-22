@@ -362,6 +362,9 @@ class AudioController:
 
         def _clear_track_lyrics(self):
             self._cancel_lyrics_search()
+            credit_label = getattr(self, "lyrics_credit_label", None)
+            if credit_label is not None:
+                credit_label.hide()
             self.lyric_lines = []
             self.lyrics = []
             self.lyric_times = []

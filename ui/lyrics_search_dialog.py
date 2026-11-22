@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QCheckBox,
+    QSpinBox,
     QTabBar,
     QFileDialog,
     QTableWidget,
@@ -45,6 +46,7 @@ from core.chinese_lyrics import (
     fetch_lyrics as fetch_chinese_lyrics,
 )
 from core.synclrc import SyncLRCError, search as search_synclrc, fetch_lyrics as fetch_synclrc_lyrics
+from core import public_lyrics
 from core.music_library import LibraryTrack, read_track
 from core.search_history import (
     clean_lyrics_history, load_lyrics_search_history, save_lyrics_search_history,
@@ -54,7 +56,12 @@ from ui.lyrics_preview import LyricsPreview
 from ui.search_history import SearchHistoryLineEdit
 from core.file_io import atomic_write_text
 from core.fonts import content_font, library_font
+from core.settings import get_lyrics_attachment, set_lyrics_attachment
 from lyrics.writer import serialize_lrcx
+from lyrics.provider_credit import add_provider_credit, credit_markup, provider_credit
+
+
+_FETCH_ON_PREVIEW = ("Musixmatch", "SyncLRC", *CHINESE_LYRICS_PROVIDERS, *public_lyrics.FETCH_ON_PREVIEW)
 
 
 def _lyrics_search_track(audio_path):
@@ -112,11 +119,12 @@ class LyricsSearchDialogMixin:
         dialog.setWindowTitle("Search Lyrics")
         dialog.resize(900, 650)
         audio_path = Path(self.current_audio_path) if self.current_audio_path else None
-        track_title = track_artist = ""
+        track_title = track_artist = track_album = ""
         track_duration = 0
         if audio_path:
             track = _lyrics_search_track(audio_path)
             track_title, track_artist = _lyrics_search_fields(audio_path, track=track)
+            track_album = getattr(track, "album", "") or ""
             track_duration = _duration_seconds(getattr(track, "duration", None))
         from core.onboarding_events import onboarding_events
         dialog.finished.connect(lambda _result: onboarding_events(self).occurred.emit("lyrics_search_closed"))
@@ -134,7 +142,7 @@ class LyricsSearchDialogMixin:
         provider_row = QHBoxLayout()
         provider_row.addWidget(QLabel("Lyrics source"))
         provider = QComboBox(dialog)
-        provider.addItems(["LRCLIB", "SyncLRC", *CHINESE_LYRICS_PROVIDERS, "Musixmatch"])
+        provider.addItems(["LRCLIB", "SyncLRC", *public_lyrics.PROVIDERS, *CHINESE_LYRICS_PROVIDERS, "Musixmatch"])
         provider.setAccessibleName("Lyrics source")
         provider_row.addWidget(provider)
         provider_row.addStretch()
@@ -150,6 +158,13 @@ class LyricsSearchDialogMixin:
         artist_input.setObjectName("lyricsSearchArtist")
         title_input.setPlaceholderText("Song title")
         artist_input.setPlaceholderText("Artist name")
+        contact_email = QLineEdit(dialog)
+        contact_email.setAccessibleName("lrc.red contact email")
+        contact_email.setPlaceholderText("Contact email (sent to lrc.red with requests)")
+        contact_email.setToolTip("lrc.red requires a reachable contact email in the request User-Agent.")
+        contact_email.setText(getattr(self, "_lrc_red_contact", os.environ.get("LRCRED_CONTACT_EMAIL", "")))
+        contact_email.hide()
+        layout.addWidget(contact_email)
         for column, label, field in (
             (0, "&Title", title_input), (1, "&Artist (optional)", artist_input),
         ):
@@ -198,6 +213,42 @@ class LyricsSearchDialogMixin:
         search_form.setColumnStretch(0, 2)
         search_form.setColumnStretch(1, 1)
         layout.addLayout(search_form)
+
+        server_values = dict(getattr(self, "_lyrics_server_urls", {}))
+        server_input = QLineEdit(dialog)
+        server_input.setAccessibleName("Lyrics server URL")
+        server_input.hide()
+        layout.addWidget(server_input)
+
+        matching_fields = QWidget(dialog)
+        matching_layout = QHBoxLayout(matching_fields)
+        matching_layout.setContentsMargins(0, 0, 0, 0)
+        album_input = QLineEdit(matching_fields)
+        album_input.setAccessibleName("Search album")
+        duration_input = QSpinBox(matching_fields)
+        duration_input.setRange(0, 86_400)
+        duration_input.setSpecialValueText("Duration (optional)")
+        duration_input.setSuffix(" s")
+        duration_input.setAccessibleName("Search duration in seconds")
+        matching_layout.addWidget(album_input, 1)
+        matching_layout.addWidget(duration_input)
+        matching_fields.hide()
+        layout.addWidget(matching_fields)
+
+        def matches_open_track(fields):
+            return (bool(track_title) and fields[0].casefold() == track_title.casefold()
+                    and fields[1].casefold() == track_artist.casefold())
+
+        def refresh_matching_fields():
+            local = matches_open_track(search_fields())
+            album_input.setPlaceholderText(f"Album (using {track_album})" if local and track_album else "Album (optional)")
+            duration_input.setSpecialValueText(
+                f"Duration (using {round(track_duration)} s)" if local and track_duration else "Duration (optional)"
+            )
+
+        title_input.textChanged.connect(refresh_matching_fields)
+        artist_input.textChanged.connect(refresh_matching_fields)
+        refresh_matching_fields()
 
         recovery_row = QHBoxLayout()
         title_only_button = QPushButton("Search title only", dialog)
@@ -309,6 +360,7 @@ class LyricsSearchDialogMixin:
         attribution = QLabel(preview_panel)
         attribution.setTextFormat(Qt.TextFormat.PlainText)
         attribution.setWordWrap(True)
+        attribution.setOpenExternalLinks(True)
         preview_layout.addWidget(attribution)
 
         splitter.addWidget(results)
@@ -423,18 +475,27 @@ class LyricsSearchDialogMixin:
                 "QQ Music": "_qqmusic_search_ready_at",
                 "KuGou": "_kugou_search_ready_at",
                 "Kuwo": "_kuwo_search_ready_at",
+                public_lyrics.LRC_RED: "_lrc_red_search_ready_at",
+                public_lyrics.UNISON: "_unison_search_ready_at",
+                public_lyrics.LYRICS_OVH: "_lyrics_ovh_search_ready_at",
+                public_lyrics.AMLL: "_amll_search_ready_at",
+                public_lyrics.BETTER: "_better_lyrics_search_ready_at",
+                public_lyrics.LIRIQO: "_liriqo_search_ready_at",
+                public_lyrics.VOCADB: "_vocadb_search_ready_at",
+                public_lyrics.LYRICA: "_lyrica_search_ready_at",
+                public_lyrics.FETCH_LYRICS: "_fetch_lyrics_search_ready_at",
             }[provider.currentText()]
 
         def timing_label(item):
             if item.get("_preview_error"):
                 return "Unavailable" if item.get("_preview_unavailable") else "Error"
-            if item.get("lyricsFormat") == "lrcx":
+            if item.get("lyricsFormat") == "lrcx" and item.get("hasWordTiming", True):
                 return "Word-synced"
             if item.get("syncedLyrics") or item.get("hasSyncedLyrics"):
                 return "Line-synced"
             if item.get("plainLyrics"):
                 return "Plain text"
-            if item.get("source") in ("Musixmatch", "SyncLRC", *CHINESE_LYRICS_PROVIDERS):
+            if item.get("source") in _FETCH_ON_PREVIEW:
                 return "Checking"
             return "Unknown" if item.get("hasSyncedLyrics", False) is None else "No"
 
@@ -486,6 +547,7 @@ class LyricsSearchDialogMixin:
                 and preview_tabs.currentIndex() == 1
             )
             attribution.clear()
+            attribution.setTextFormat(Qt.TextFormat.PlainText)
             item = selected_record()
             has_translation = bool(item and item.get("translatedLyrics"))
             translation_script.setEnabled(has_translation)
@@ -495,10 +557,15 @@ class LyricsSearchDialogMixin:
                 preview.clear()
                 return
 
+            links = provider_credit(item)
+            if links:
+                attribution.setFont(content_font(attribution.font(), " ".join(links)))
+                attribution.setTextFormat(Qt.TextFormat.RichText)
+                attribution.setText(credit_markup(links))
             if item.get("_preview_error"):
                 preview.setPlainText(item["_preview_error"])
                 return
-            if item.get("source") in ("Musixmatch", "SyncLRC", *CHINESE_LYRICS_PROVIDERS) and not item.get("syncedLyrics") and not item.get("plainLyrics"):
+            if item.get("source") in _FETCH_ON_PREVIEW and not item.get("syncedLyrics") and not item.get("plainLyrics"):
                 preview.setPlainText(f"Loading lyrics from {item['source']}...")
                 preview_queue.prioritize(item)
                 return
@@ -538,7 +605,7 @@ class LyricsSearchDialogMixin:
                 destination_label.setToolTip(tooltip)
             elif not audio_path and (synced or plain):
                 destination_label.setText("Open an audio file to save lyrics.")
-            if item.get("source"):
+            if not links and item.get("source"):
                 notes = [f"Lyrics provided by {item['source']}", item.get("copyright"), item.get("sourceUrl")]
                 if item["source"] == "Kuwo":
                     notes.append("Kuwo may include original and translated lines together.")
@@ -556,6 +623,8 @@ class LyricsSearchDialogMixin:
 
         def fetch_preview(item, key, mode, cancel):
             try:
+                if item.get("source") in public_lyrics.PROVIDERS:
+                    return public_lyrics.fetch_lyrics(item, cancel, contact=key)
                 if item.get("source") == "SyncLRC":
                     return fetch_synclrc_lyrics(item, cancel)
                 if item.get("source") in CHINESE_LYRICS_PROVIDERS:
@@ -566,10 +635,12 @@ class LyricsSearchDialogMixin:
 
         def check_result_timing():
             pending = [item for item in records
-                       if item.get("source") in ("Musixmatch", "SyncLRC", *CHINESE_LYRICS_PROVIDERS)
+                       if item.get("source") in _FETCH_ON_PREVIEW
                        and not item.get("syncedLyrics") and not item.get("plainLyrics")
                        and not item.get("_preview_error")]
-            preview_queue.start(fetch_preview, pending, api_key.text().strip(), auth_method.currentData())
+            key = (getattr(self, "_lrc_red_contact", "") if provider.currentText() == public_lyrics.LRC_RED
+                   else api_key.text().strip())
+            preview_queue.start(fetch_preview, pending, key, auth_method.currentData())
             remaining = preview_retry_at.get(provider.currentText(), 0) - monotonic()
             if remaining > 0:
                 preview_queue.pause(remaining)
@@ -611,6 +682,8 @@ class LyricsSearchDialogMixin:
             update_preview()
             status.clear()
             key_panel.setVisible(provider.currentText() == "Musixmatch")
+            contact_email.setVisible(provider.currentText() == public_lyrics.LRC_RED)
+            matching_fields.setVisible(provider.currentText() == public_lyrics.BETTER)
             preview_controls_widget.setVisible(
                 provider.currentText() in CHINESE_LYRICS_PROVIDERS
             )
@@ -618,6 +691,8 @@ class LyricsSearchDialogMixin:
 
         def switch_provider():
             nonlocal active_provider, records, submitted_fields
+            if active_provider in public_lyrics.SERVER_DEFAULTS:
+                server_values[active_provider] = server_input.text()
             provider_states[active_provider] = {
                 "records": list(records), "fields": (title_input.text(), artist_input.text()),
                 "submitted_fields": submitted_fields,
@@ -630,6 +705,11 @@ class LyricsSearchDialogMixin:
             }
             reset_provider()
             active_provider = provider.currentText()
+            default_server = public_lyrics.SERVER_DEFAULTS.get(active_provider)
+            server_input.setVisible(default_server is not None)
+            if default_server:
+                server_input.setText(server_values.get(active_provider, default_server))
+                server_input.setPlaceholderText(f"{active_provider} server URL")
             saved = provider_states.get(active_provider)
             if saved is not None:
                 records = list(saved["records"])
@@ -680,6 +760,13 @@ class LyricsSearchDialogMixin:
 
             source = provider.currentText()
             key = api_key.text().strip()
+            if source == public_lyrics.LRC_RED:
+                key = contact_email.text().strip()
+                if not public_lyrics.valid_contact_email(key):
+                    status.setText("Enter a contact email for lrc.red.")
+                    contact_email.setFocus()
+                    return
+                self._lrc_red_contact = key
             if source == "Musixmatch" and not key:
                 status.setText(
                     "Paste an authentication token before searching."
@@ -690,6 +777,20 @@ class LyricsSearchDialogMixin:
                 return
             if source == "Musixmatch":
                 setattr(self, credential_attribute(), key)
+            server = ""
+            if source in public_lyrics.SERVER_DEFAULTS:
+                server = public_lyrics.server_url(server_input.text())
+                if not server:
+                    status.setText(f"Enter a valid {source} server URL.")
+                    server_input.setFocus()
+                    return
+                self._lyrics_server_urls = {**getattr(self, "_lyrics_server_urls", {}), source: server}
+            local = matches_open_track(fields)
+            album = track_album if local else ""
+            duration = round(track_duration) if local else 0
+            if source == public_lyrics.BETTER:
+                album = album_input.text().strip() or album
+                duration = duration_input.value() or duration
             title_input.remember_search(fields)
             search_cancel.set()
             preview_queue.cancel()
@@ -706,7 +807,8 @@ class LyricsSearchDialogMixin:
             update_search_button()
             from core.onboarding_events import onboarding_events
             onboarding_events(self).occurred.emit("lyrics_search_started")
-            search_job.start(fetch_results, fields, source, key, search_cancel, auth_method.currentData())
+            search_job.start(fetch_results, fields, source, key, search_cancel, auth_method.currentData(),
+                             server, album, duration)
 
         def search_title_only():
             if all(search_fields()):
@@ -740,10 +842,14 @@ class LyricsSearchDialogMixin:
 
         other_sources.aboutToShow.connect(update_other_sources)
 
-        def fetch_results(fields, source, key, cancel, mode):
+        def fetch_results(fields, source, key, cancel, mode, server, album, duration):
             title, artist = fields
             query = f"{artist} - {title}" if artist else title
             try:
+                if source in public_lyrics.PROVIDERS:
+                    return public_lyrics.search(
+                        source, title, artist, cancel, contact=key, server=server, album=album, duration=duration,
+                    )
                 if source == "SyncLRC":
                     return search_synclrc(query, cancel)
                 if source == "Musixmatch":
@@ -799,6 +905,8 @@ class LyricsSearchDialogMixin:
                     or item.get("name")
                     or "Unknown"
                 )
+                if item.get("variant"):
+                    title = f"{title} ({item['variant']})"
                 album = item.get("albumName") or ""
                 artist = item.get("artistName") or "Unknown artist"
                 seconds = _duration_seconds(item.get("duration"))
@@ -914,7 +1022,7 @@ class LyricsSearchDialogMixin:
                 status.setText("That result contains no lyrics.")
                 return
 
-            content = synced or plain
+            content = synced or item.get("plainDocument") or plain
             try:
                 current_lyrics = getattr(self, "current_lyrics_path", None)
                 destination_exists = destination.exists()
@@ -970,7 +1078,11 @@ class LyricsSearchDialogMixin:
                         content = f"[re:{credit}]\n{content}"
                     else:
                         content = f"{content.rstrip()}\n\n{credit}"
+                content = add_provider_credit(content, provider_credit(item), synced=bool(synced))
                 atomic_write_text(destination, content.rstrip() + "\n", backup=True)
+                if not only_translation and (item.get("source") in public_lyrics.PROVIDERS
+                                             or get_lyrics_attachment(audio_path)):
+                    set_lyrics_attachment(audio_path, destination)
                 self.clear_lyrics_search_index()
                 self.load_lrc_file(str(destination))
                 self.current_lyrics_path = destination
@@ -988,6 +1100,9 @@ class LyricsSearchDialogMixin:
         search_job.failed.connect(search_failed)
         title_input.returnPressed.connect(submit_title)
         artist_input.returnPressed.connect(run_search)
+        contact_email.returnPressed.connect(run_search)
+        server_input.returnPressed.connect(run_search)
+        album_input.returnPressed.connect(run_search)
         results.itemSelectionChanged.connect(update_preview)
         provider.currentTextChanged.connect(switch_provider)
         api_key.textEdited.connect(credential_edited)

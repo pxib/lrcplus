@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt, QObject, Signal, QTimer
 from PySide6.QtWidgets import QListWidget, QListWidgetItem, QMessageBox, QCheckBox
 
 from lyrics.loader import load_lyrics, get_lyrics_generation_mode, PLAYER_LYRIC_LINE_LIMIT
+from lyrics.provider_credit import credit_markup, read_provider_credit
 from lyrics.furigana import (
     prefetch_furigana_batches,
     set_active_parser,
@@ -524,6 +525,9 @@ class LyricsController(LyricsSearchMixin):
         print("[Furigana] Batch prefetch complete")
 
     def _clear_loaded_lyrics(self):
+        credit_label = getattr(self, "lyrics_credit_label", None)
+        if credit_label is not None:
+            credit_label.hide()
         cancelled = getattr(self, "_furigana_prefetch_cancel", None)
         if cancelled is not None:
             cancelled.set()
@@ -571,6 +575,7 @@ class LyricsController(LyricsSearchMixin):
         if stream_status is not None:
             stream_status.hide()
         path = Path(path)
+        plain = path.suffix.lower() == ".txt"
         self.current_lyrics_path = path
         self.lyrics_offset_seconds = (
             get_lrcx_offset(path) / 1000.0
@@ -590,6 +595,9 @@ class LyricsController(LyricsSearchMixin):
             persisted_generation_mode = get_lyrics_generation_mode(path) or "auto"
             set_reading_mode(persisted_generation_mode)
             self.lyric_lines = load_lyrics(path)
+            credit = read_provider_credit(path)
+            if plain and credit:
+                self.lyric_lines = self.lyric_lines[:-len(credit)]
             if len(self.lyric_lines) > PLAYER_LYRIC_LINE_LIMIT:
                 raise ValueError(
                     f"This file contains {len(self.lyric_lines):,} lyric rows; "
@@ -657,7 +665,11 @@ class LyricsController(LyricsSearchMixin):
             self.statusBar().clearMessage()
             self._lyrics_load_error = False
 
-        self._present_loaded_lyrics(plain=path.suffix.lower() == ".txt")
+        credit_label = getattr(self, "lyrics_credit_label", None)
+        if credit_label is not None:
+            credit_label.setText(credit_markup(credit))
+            credit_label.setVisible(bool(credit))
+        self._present_loaded_lyrics(plain=plain)
         print(
             f"[Lyrics] Loaded {len(self.lyric_lines)} lines "
             f"from: {path.name}"

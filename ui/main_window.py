@@ -6,12 +6,13 @@ import random
 from core.idle_cache import IdleCache
 from concurrent.futures import ThreadPoolExecutor
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtMultimedia import QAudioBuffer, QAudioBufferOutput, QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.pcm_playback import PcmPlayback
+from core.playback_audio_tap import PlaybackAudioTap
 from core.gapless import GaplessMediaPlayer
 from core.audio_controller import AudioController, snap_volume_percentage
 from core.queue_controller import QueueControllerMixin
@@ -138,8 +140,13 @@ class Player(
 
             self._equalizer = (plugin_manager.get_service("playback_equalizer")
                                if plugin_manager is not None else None)
+            self.playback_audio_tap = PlaybackAudioTap()
+            self._playback_audio_requested = False
+            self._native_playback_output = None
+            self._observed_playback_output = None
             self.media_player = GaplessMediaPlayer(
                 self, equalizer=self._equalizer.create_processor() if self._equalizer else None,
+                audio_tap=self.playback_audio_tap,
             )
             self.media_player.next_path = self._gapless_next_path
             self.media_player.prepare_resume = self._prepare_playback_resume
@@ -154,6 +161,7 @@ class Player(
             self._pcm_pending = bytearray()
             self._pcm_worker = PcmPlayback(
                 self, equalizer=self._equalizer.create_processor() if self._equalizer else None,
+                audio_tap=self.playback_audio_tap,
             )
             self._pcm_worker.route_started.connect(self._activate_pcm_route)
             self._pcm_worker.failed.connect(self._pcm_output_failed)
@@ -650,13 +658,9 @@ class Player(
             self.current_time_label.setObjectName("timeLabel")
             self.duration_label.setObjectName("timeLabel")
 
-            seek_layout = QHBoxLayout()
-            seek_layout.setContentsMargins(0, 0, 0, 0)
-            seek_layout.setSpacing(10)
-            seek_layout.addWidget(self.current_time_label)
             self.seek_track = CatSeekTrack(self.seek_slider, self.media_player)
-            seek_layout.addWidget(self.seek_track, 1)
-            seek_layout.addWidget(self.duration_label)
+            self.seek_extensions_layout = QVBoxLayout()
+            self.seek_extensions_layout.setSpacing(0)
 
             volume_layout = QHBoxLayout()
             volume_layout.setContentsMargins(0, 0, 0, 0)
@@ -698,17 +702,25 @@ class Player(
             volume_layout.addWidget(self.volume_slider)
             volume_layout.addWidget(self.volume_percentage_label)
 
-            player_controls_layout = QHBoxLayout()
+            transport_layout = QHBoxLayout()
+            transport_layout.setSpacing(6)
+            transport_layout.addWidget(self.previous_button)
+            transport_layout.addWidget(self.rewind_button)
+            transport_layout.addWidget(self.play_button)
+            transport_layout.addWidget(self.stop_button)
+            transport_layout.addWidget(self.forward_button)
+            transport_layout.addWidget(self.next_button)
+            transport_layout.addSpacing(10)
+            player_controls_layout = QGridLayout()
             player_controls_layout.setContentsMargins(0, 0, 0, 0)
-            player_controls_layout.setSpacing(6)
-            player_controls_layout.addWidget(self.previous_button)
-            player_controls_layout.addWidget(self.rewind_button)
-            player_controls_layout.addWidget(self.play_button)
-            player_controls_layout.addWidget(self.stop_button)
-            player_controls_layout.addWidget(self.forward_button)
-            player_controls_layout.addWidget(self.next_button)
-            player_controls_layout.addSpacing(14)
-            player_controls_layout.addLayout(seek_layout, 1)
+            player_controls_layout.setHorizontalSpacing(10)
+            player_controls_layout.setVerticalSpacing(0)
+            player_controls_layout.setColumnStretch(2, 1)
+            player_controls_layout.addLayout(transport_layout, 0, 0)
+            player_controls_layout.addWidget(self.current_time_label, 0, 1)
+            player_controls_layout.addWidget(self.seek_track, 0, 2)
+            player_controls_layout.addWidget(self.duration_label, 0, 3)
+            player_controls_layout.addLayout(self.seek_extensions_layout, 1, 2)
 
             player_dock = QWidget()
             player_dock.setObjectName("playerDock")
@@ -801,6 +813,12 @@ class Player(
             self.stream_lyrics_status_label.hide()
             lyrics_page_layout.addWidget(self.stream_lyrics_status_label, 0)
             lyrics_page_layout.addWidget(self.lyrics_background, 1)
+            self.lyrics_credit_label = QLabel(self.lyrics_page)
+            self.lyrics_credit_label.setTextFormat(Qt.TextFormat.RichText)
+            self.lyrics_credit_label.setWordWrap(True)
+            self.lyrics_credit_label.setOpenExternalLinks(True)
+            self.lyrics_credit_label.hide()
+            lyrics_page_layout.addWidget(self.lyrics_credit_label, 0)
             lyrics_page_layout.addWidget(self.furigana_progress_bar, 0)
             lyrics_page_layout.addWidget(self.lyrics_list_toggle, 0)
             lyrics_page_layout.addWidget(self.lyrics_list_widget, 0)
@@ -1625,6 +1643,60 @@ class Player(
                     state=state.name if hasattr(state, "name") else str(state),
                 )
 
+        def set_playback_audio_observation(self, enabled):
+            if enabled == self._playback_audio_requested:
+                return
+            self._playback_audio_requested = enabled
+            connections = (
+                (self.media_player.playbackStateChanged, self._sync_native_playback_tap),
+                (self.media_player.audioBufferOutputChanged, self._sync_native_playback_tap),
+                (self.media_player.seekStarting, self.playback_audio_tap.clear),
+                (self.media_player.sourceChanged, self.playback_audio_tap.clear),
+            )
+            if enabled:
+                for signal, callback in connections:
+                    signal.connect(callback)
+                self._sync_native_playback_tap()
+            else:
+                for signal, callback in connections:
+                    signal.disconnect(callback)
+                self._sync_native_playback_tap()
+                self.playback_audio_tap.set_collecting(False)
+                output = self._native_playback_output
+                if output is not None and self.media_player.audioBufferOutput() is output:
+                    self.media_player.setAudioBufferOutput(None)
+                if output is not None:
+                    output.deleteLater()
+                    self._native_playback_output = None
+
+        def _sync_native_playback_tap(self, *_args):
+            output = None
+            if self._playback_audio_requested and not self.media_player._gapless_active:
+                output = self.media_player.audioBufferOutput()
+                if output is None:
+                    output = self._native_playback_output
+                    if output is None:
+                        output = self._native_playback_output = QAudioBufferOutput(self)
+                    self.media_player.setAudioBufferOutput(output)
+                    return
+            previous = self._observed_playback_output
+            if output is previous:
+                return
+            if previous is not None:
+                previous.audioBufferReceived.disconnect(self._capture_native_playback_audio)
+            self._observed_playback_output = output
+            if output is not None:
+                output.audioBufferReceived.connect(
+                    self._capture_native_playback_audio, Qt.ConnectionType.QueuedConnection,
+                )
+
+        @Slot(QAudioBuffer)
+        def _capture_native_playback_audio(self, buffer):
+            tap = self.playback_audio_tap
+            if (tap.collecting and not getattr(self, "_pcm_route_active", False)
+                    and not self.media_player._gapless_active and buffer.isValid()):
+                tap.capture(buffer.data(), buffer.format(), "native")
+
 
         def open_audio(self):
             paths, _ = QFileDialog.getOpenFileNames(
@@ -2000,6 +2072,7 @@ class Player(
                 self.sleep_timer.cancel()
                 self._close_audio_device_dialog()
                 self.audio_output.setMuted(True)
+                self.set_playback_audio_observation(False)
                 # Stop accepting decoded audio before stop() can report EOF
                 # and resume the processed tail of a paused track.
                 self._pcm_worker.close()

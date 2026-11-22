@@ -41,8 +41,9 @@ class PcmPlayback(QObject):
     _error = Signal(int, str)
     _drained = Signal(int)
 
-    def __init__(self, parent=None, *, sink_factory=QAudioSink, equalizer=None):
+    def __init__(self, parent=None, *, sink_factory=QAudioSink, equalizer=None, audio_tap=None):
         super().__init__(parent)
+        self._audio_tap = audio_tap
         self._lock = Lock()
         self._controls = _Controls()
         self._generation = 0
@@ -488,13 +489,18 @@ class _PlaybackEngine(QObject):
             if len(self._pending) < reserve and not force:
                 return
             self._primed = True
-        frame_size = self._sink.format().bytesPerFrame()
+        audio_format = self._sink.format()
+        frame_size = audio_format.bytesPerFrame()
         count = min(max(0, self._sink.bytesFree()), len(self._pending))
         count -= count % frame_size
         if count:
-            written = self._io.write(bytes(self._pending[:count]))
+            chunk = bytes(self._pending[:count])
+            written = self._io.write(chunk)
             if written < 0:
                 raise RuntimeError("The PCM audio sink rejected audio data.")
+            tap = self._mailbox._audio_tap
+            if written and tap is not None and tap.collecting:
+                tap.capture(memoryview(chunk)[:written], audio_format, "processed")
             del self._pending[:written]
             self._written_bytes += written
             if written and not self._active:

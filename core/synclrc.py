@@ -60,7 +60,7 @@ def _text(value):
     return value if isinstance(value, str) else ""
 
 
-def _timed(value, karaoke=False):
+def normalize_lrc(value, karaoke=False):
     """Expand repeated timestamps, bake in LRC offsets, and escape LRCX styles."""
     value = _text(value)
     offset = OFFSET.search(value)
@@ -97,10 +97,10 @@ def _timed(value, karaoke=False):
 def _lyrics(document):
     fields = document.get("lyrics")
     fields = fields if isinstance(fields, dict) else document
-    karaoke, has_words = _timed(fields.get("karaoke"), karaoke=True)
+    karaoke, has_words = normalize_lrc(fields.get("karaoke"), karaoke=True)
     if not has_words:
-        karaoke, _ = _timed(fields.get("karaoke"))
-    synced, _ = _timed(fields.get("synced"))
+        karaoke, _ = normalize_lrc(fields.get("karaoke"))
+    synced, _ = normalize_lrc(fields.get("synced"))
     plain = _text(fields.get("plain"))
     return {
         "syncedLyrics": karaoke if has_words else synced or karaoke,

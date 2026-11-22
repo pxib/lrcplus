@@ -131,8 +131,9 @@ class GaplessMediaPlayer(QMediaPlayer):
     playbackRestarting = Signal()
 
     def __init__(self, parent=None, *, sink_factory=QAudioSink, decoder_factory=TrackDecoder,
-                 equalizer=None):
+                 equalizer=None, audio_tap=None):
         super().__init__(parent)
+        self._audio_tap = audio_tap
         self._sink_factory = sink_factory
         self._decoder_factory = decoder_factory
         self._equalizer = equalizer
@@ -422,9 +423,13 @@ class GaplessMediaPlayer(QMediaPlayer):
             count = min(self._sink.bytesFree(), len(self._pending))
             count -= count % self._format.bytesPerFrame()
             if count:
-                written = self._io.write(self._pending[:count])
+                chunk = self._pending[:count]
+                written = self._io.write(chunk)
                 if written < 0:
                     raise RuntimeError("Gapless audio output rejected data.")
+                tap = self._audio_tap
+                if written and tap is not None and tap.collecting:
+                    tap.capture(memoryview(chunk)[:written], self._format, "gapless")
                 self._pending = self._pending[written:]
                 self._written += written
             if self._pending:

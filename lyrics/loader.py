@@ -3,6 +3,7 @@ from pathlib import Path
 from lyrics.lrcx_parser import load_lrcx, get_lrcx_generation_mode
 from lyrics.models import LyricLine
 from lyrics.parser import load_lrc, get_lrc_generation_mode
+from lyrics.plain_ruby import load_plain_rows
 
 # Keep malformed subtitle imports from overwhelming the lyric list and reading
 # prefetch. The scrolling view separately bounds its widgets to the viewport.
@@ -31,8 +32,7 @@ def load_lyrics(path, *, infer_ends=True):
 
     if path.suffix.lower() == ".txt":
         with open(path, "r", encoding="utf-8-sig") as file:
-            return [LyricLine(start=float(index), text=line.rstrip("\r\n"))
-                    for index, line in enumerate(file) if line.rstrip("\r\n")]
+            return load_plain_rows(file)
 
     raise ValueError(f"Unsupported lyrics format: {path.suffix}")
 

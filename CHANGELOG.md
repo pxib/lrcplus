@@ -1,6 +1,28 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [2026-11-22]
+
+### Added
+
+- Add lrc.red, Unison, and lyrics.ovh to **LRC > Search Lyrics**. Preserve available timing from lrc.red and Unison, show linked source credits, and save lyrics.ovh results as plain text. lrc.red requires a contact email.
+- Add AMLL TTML DB, Better Lyrics, LiriQo, and VocaDB to **Search Lyrics**. Preserve available karaoke timing and offer separate VocaDB results for original lyrics, romanization, and translations.
+- Add Lyrica and Fetch-Lyrics with configurable server URLs. Fetch-Lyrics defaults to a local server and preserves UtaTen furigana in untimed imports when available.
+- Add **Open > Network Playback…** for direct HTTP(S) audio streams and a searchable Radio Browser directory. **Station History** remembers the last 20 stations that played successfully. Save stations from the directory or history and tune in again from **Favorites**. The **Stations** view in Statistics shows radio listening when recording is enabled.
+- Add optional automatic lyrics for live radio. Use the artist and title from station metadata to find a match on LRCLIB and display it as scrollable plain lyrics. **Download audio from metadata…** passes the current song to the yt-dlp Audio Import plugin for search and preview.
+- Add a core **Equalizer** under **Plugins > Equalizer…** with Graphic and Parametric modes, 10 or 31 bands, preamp, a themed frequency-response graph, and built-in and named custom presets. Preview edits during playback and use **Bypass** to compare the sound. **Cancel** restores the saved EQ.
+- Add FFmpeg-powered ReplayGain scans to the Library context menu. Scan selected tracks individually or measure all library tracks in each selected album. LRCPlus stores gain and peak results in its local database for Track or Album playback mode.
+- Add the **Audio Visualizer** community plugin under **Plugins > Audio Visualizer**. Choose edge-to-edge glowing curves over the artwork in Lyrics or a full-width strip with peak markers below the seekbar. The spectrum adapts to quiet audio and responds quickly to short hits.
+
+### Changed
+
+- Give live streams a fixed 1× speed, a red seekbar with no handle, and a read-only elapsed-time label. Resume at the live edge by default or enable **Keep buffered audio on resume** to continue from the paused position. Choose **Go Live** to resume automatic lyrics and metadata search after buffered playback.
+
+### Fixed
+
+- Render plain lyrics at full contrast for easier reading.
+- Clear the previous track’s artwork and MIDI selection in Karaoke Screen when switching to a network stream.
+
 ## [2026-11-21]
 
 ### Added
