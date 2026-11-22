@@ -25,6 +25,7 @@ def test_statistics_metadata_uses_glyph_checked_rendering_and_numeric_sort(qapp)
                            listened_ms=n * 1000, last_played=stamp) for n in (2, 10)],
             "artists": [dict(name=text, plays=12, listened_ms=12000)],
             "albums": [dict(name=text, artist=text, plays=12, listened_ms=12000)],
+            "stations": [dict(name=text, country=text, plays=12, listened_ms=12000, last_played=stamp)],
         })
         for table in page.tables.values():
             assert table.font().family() == window.library_table.font().family()

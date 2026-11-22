@@ -1,5 +1,6 @@
 import random
 import math
+from html import escape
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from core.recent import add_to_recent_songs
 from core.network_stream import parse_stream_url
+from core.radio_history import remember_station
 from core.background_job import BackgroundJob
 from core.audio_sink import dispose_audio_sink
 from core.settings import save_playback_settings
@@ -36,6 +38,8 @@ from core.audio_dsp import (
 class AudioController:
         _stream_url = None
         _stream_error = False
+        _station = None
+        _station_history_pending = False
 
         def _replaygain_options(self):
             settings = getattr(self, "playback_settings", {})
@@ -128,9 +132,13 @@ class AudioController:
 
             self.current_audio_path = audio_path
             if self._stream_url is not None:
+                self._stream_lyrics.reset()
                 self._stream_url = None
                 self._stream_error = False
+                self._station = None
+                self._station_history_pending = False
                 self.statusBar().clearMessage()
+                self._show_network_source("")
                 self._sync_waveform_visibility()
                 self.seek_slider.setEnabled(True)
                 self._set_live_transport(False)
@@ -221,7 +229,11 @@ class AudioController:
             return allow_autoplay
 
 
-        def load_stream(self, text, *, title=None):
+        def play_radio_station(self, station):
+            self.load_stream(station.url, station=station)
+
+
+        def load_stream(self, text, *, station=None):
             url = parse_stream_url(text)
 
             allow_autoplay = self._sleep_before_track_load()
@@ -234,6 +246,8 @@ class AudioController:
             self.current_index = -1
             self._stream_url = url
             self._stream_error = False
+            self._station = station
+            self._station_history_pending = False
             self._clear_track_lyrics()
             self.current_line = -1
             self.last_lyric_text = None
@@ -243,13 +257,14 @@ class AudioController:
             self.refresh_lyrics_settings_for_current_file()
             self._refresh_repeat()
             self._refresh_ab_loop()
-            self._statistics_track_started()
             self.is_seeking = False
             self.seek_slider.setSliderDown(False)
             self.waveform_widget.load_audio(None)
             self.waveform_widget.set_lyric_times([])
             self._sync_waveform_visibility()
-            self.setWindowTitle(f"LRCPlus — {title or url.host()}")
+            name = station.name if station else url.host()
+            self.setWindowTitle(f"LRCPlus — {name}")
+            self._show_network_source(name)
             self.duration_changed(0)
             self._update_stream_seekability()
             self._load_replaygain()
@@ -259,15 +274,36 @@ class AudioController:
             self._open_stream_source(autoplay=allow_autoplay)
 
 
+        def _show_network_source(self, name):
+            self.network_source_label.setText(name)
+            self.network_source_label.setToolTip(f"<qt>{escape(name)}</qt>" if name else "")
+
+
         def _open_stream_source(self, *, autoplay=True):
+            self._stream_lyrics.reset()
             self._stream_error = False
             if self.media_player.source() == self._stream_url:
                 self.media_player.setSource(QUrl())
             self.statusBar().showMessage(f"Connecting to {self._stream_url.host()}…")
             self.media_player.setSource(self._stream_url)
+            self._statistics_track_started()
             self._set_native_pitch_compensation()
+            self._station_history_pending = self._station is not None
             if autoplay and not self._stream_error:
                 self.media_player.play()
+
+
+        def _record_station_history(self, position_ms):
+            if (not self._station_history_pending or position_ms <= 0 or self._stream_error
+                    or not self.media_player.isPlaying() or self.media_player.source() != self._stream_url):
+                return
+            self._station_history_pending = False
+            try:
+                remember_station(self._station)
+            except OSError:
+                self.statusBar().showMessage("Could not save station history.", 5000)
+            else:
+                self.station_history_changed.emit()
 
 
         def _handle_stream_error(self, error, _detail):
@@ -275,6 +311,7 @@ class AudioController:
                     or getattr(self, "_closing", False)):
                 return
             self._stream_error = True
+            self._stream_lyrics.reset()
             self._flush_pcm_output()
             self._update_stream_seekability()
             reason = {
@@ -354,6 +391,7 @@ class AudioController:
                 timer.cancel()
             self._flush_pcm_output()
             if self._stream_url is not None:
+                self._stream_lyrics.reset()
                 self.media_player.setSource(QUrl())
                 self.statusBar().clearMessage()
             else:
@@ -1172,6 +1210,8 @@ class AudioController:
 
 
         def update_play_button(self, state):
+            if self._stream_url is not None and state != QMediaPlayer.PlaybackState.PlayingState:
+                self._stream_lyrics.suspend()
             if state == QMediaPlayer.PlaybackState.PlayingState and (
                 getattr(self, "_audio_output_unavailable", False)
                 or getattr(self, "_audio_device_dialog", None) is not None
@@ -1219,6 +1259,7 @@ class AudioController:
                 return
 
             if self._stream_url is not None:
+                self._stream_lyrics.reset()
                 self.media_player.setSource(QUrl())
                 self.statusBar().showMessage("Network stream ended. Press Play to reconnect.")
                 return
@@ -1285,6 +1326,9 @@ class AudioController:
                 self.stop_playback()
 
         def position_changed(self, position_ms):
+            if self._stream_url is not None:
+                self._stream_lyrics.observe()
+            self._record_station_history(position_ms)
             timer = getattr(self, "sleep_timer", None)
             if timer is not None:
                 timer.check()
@@ -1382,3 +1426,21 @@ class AudioController:
                 )
                 return f"-{self.format_time(remaining_ms)}"
             return self.format_time(position_ms)
+
+
+        def set_radio_auto_lyrics(self, enabled):
+            self.playback_settings["radio_auto_lyrics"] = enabled
+            self._schedule_playback_settings_save()
+            self._apply_radio_lyrics_preference()
+
+
+        def _apply_radio_lyrics_preference(self):
+            enabled = self.playback_settings.get("radio_auto_lyrics", False)
+            dialog = getattr(self, "_network_playback_dialog", None)
+            if dialog is not None:
+                with QSignalBlocker(dialog.auto_lyrics_checkbox):
+                    dialog.auto_lyrics_checkbox.setChecked(enabled)
+            if enabled:
+                self._stream_lyrics.observe()
+            else:
+                self._stream_lyrics.reset()

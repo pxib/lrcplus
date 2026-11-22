@@ -10,7 +10,9 @@ from PySide6.QtGui import QColor
 from PySide6.QtMultimedia import QAudioBufferOutput, QMediaPlayer
 from PySide6.QtTest import QSignalSpy, QTest
 
-from core.settings import save_playback_settings
+from core.radio_browser import Station
+from core.radio_history import load_station_history, remember_station
+from core.settings import get_playback_settings, save_playback_settings, save_statistics_settings
 from ui.main_window import Player
 
 
@@ -27,14 +29,22 @@ def stream_server():
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path == "/live.wav":
+            if self.path in {"/live.wav", "/icy.wav"}:
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/wav")
+                icy = self.path == "/icy.wav" and self.headers.get("Icy-MetaData") == "1"
+                if icy:
+                    self.send_header("icy-metaint", "32000")
                 self.end_headers()
                 try:
-                    self.wfile.write(live_header)
+                    audio = live_header + payload[44:32000] if icy else live_header
                     while not stop_live.is_set():
-                        self.wfile.write(payload[44:])
+                        self.wfile.write(audio)
+                        if icy:
+                            title = f"StreamTitle='{self.server.icy_title}';".encode()
+                            size = (len(title) + 15) // 16
+                            self.wfile.write(bytes([size]) + title.ljust(size * 16, b"\0"))
+                        audio = payload[44:32044] if icy else payload[44:]
                         stop_live.wait(0.1)
                 except ConnectionError:
                     pass
@@ -56,6 +66,7 @@ def stream_server():
     except PermissionError:
         pytest.skip("Loopback server is unavailable")
     server.available = False
+    server.icy_title = "Test Artist - First Song"
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -71,6 +82,7 @@ def wait_for(predicate, player):
     deadline = time.monotonic() + 6
     while not predicate() and time.monotonic() < deadline:
         QTest.qWait(10)
+        time.sleep(0.001)
     assert predicate(), player.errorString()
 
 
@@ -101,6 +113,7 @@ def test_network_stream_can_retry_decode_and_reconnect(qapp, stream_server, monk
         assert window._network_playback_dialog is None
         wait_for(lambda: window._stream_error, player)
         assert "Press Play to retry" in window.statusBar().currentMessage()
+        assert not window.statusBar().isHidden()
         server.available = True
         window.toggle_playback()
         wait_for(lambda: any(buffers), player)
@@ -122,6 +135,7 @@ def test_network_stream_can_retry_decode_and_reconnect(qapp, stream_server, monk
         wait_for(lambda: any(buffers), player)
         wait_for(lambda: player.source().isEmpty(), player)
         assert "Network stream ended" in window.statusBar().currentMessage()
+        assert load_station_history() == []
 
         original.write_bytes(b"")
         monkeypatch.setattr(window, "update_background_for_audio", lambda *_: None)
@@ -129,6 +143,8 @@ def test_network_stream_can_retry_decode_and_reconnect(qapp, stream_server, monk
         assert window._stream_url is None
         assert player.source().isLocalFile()
         assert window.seek_slider.isEnabled()
+        assert not window.network_source_label.text()
+        assert window.statusBar().isHidden()
     finally:
         window.close()
         window.deleteLater()
@@ -166,6 +182,9 @@ def test_live_network_stream_disables_seeking(qapp, stream_server, monkeypatch):
         window.load_stream(url.replace("/audio.wav", "/live.wav"))
         wait_for(lambda: any(buffers), player)
         assert window.duration_label.text() == "Live"
+        assert window.network_source_label.text() == "127.0.0.1"
+        assert window.network_source_label.width() > 0
+        assert window.statusBar().isHidden()
         assert not window.seek_slider.isEnabled()
         assert not window.forward_button.isEnabled()
         assert not window.rewind_button.isEnabled()
@@ -191,6 +210,97 @@ def test_live_network_stream_disables_seeking(qapp, stream_server, monkeypatch):
         assert label.toolTip() == "Click to show elapsed time"
         QTest.mouseClick(label, Qt.MouseButton.LeftButton)
         assert clicks.count() == 2
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_live_lyrics_follow_station_titles_and_remain_plain(qapp, stream_server, monkeypatch):
+    server, url = stream_server
+    window = Player()
+    player = window.media_player
+    monkeypatch.setattr(window, "_audio_output_unavailable", False)
+    output = QAudioBufferOutput(window)
+    player.setAudioBufferOutput(output)
+    requests = []
+    errors = []
+    window._stream_lyrics._monitor.failed.connect(errors.append)
+
+    def lookup(song, cancelled):
+        requests.append(song)
+        return (f"Lyrics for {song[1]}",)
+
+    monkeypatch.setattr("ui.stream_lyrics.find_stream_lyrics", lookup)
+    try:
+        window.open_network_playback()
+        option = window._network_playback_dialog.auto_lyrics_checkbox
+        assert not option.isChecked()
+        option.click()
+        assert window.playback_settings["radio_auto_lyrics"]
+        window.load_stream(url.replace("/audio.wav", "/icy.wav"))
+        wait_for(lambda: player.position() > 0, player)
+        assert window._is_live_stream(), (player.duration(), player.source().toString(), player.isPlaying())
+        assert window._stream_lyrics._monitor_cancel is not None
+        wait_for(lambda: bool(window.lyric_lines) or bool(errors), player)
+        assert not errors
+        assert window.lyric_lines[0].text == "Lyrics for First Song"
+        assert window.plain_lyrics_mode and window.current_lyrics_path is None
+        assert window.current_line == -1
+        seeks = QSignalSpy(player.seekStarting)
+        window.jump_to_lyric_item(window.lyrics_list_widget.item(0))
+        assert seeks.count() == 0
+        assert get_playback_settings()["radio_auto_lyrics"]
+
+        server.icy_title = "Test Artist - Second Song"
+        wait_for(lambda: window.lyric_lines and window.lyric_lines[0].text == "Lyrics for Second Song", player)
+        assert requests == [("Test Artist", "First Song"), ("Test Artist", "Second Song")]
+        option.click()
+        assert not window.lyric_lines
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+@pytest.mark.parametrize("tracking", [False, True])
+def test_radio_history_and_statistics_follow_actual_playback(qapp, stream_server, monkeypatch, tracking):
+    server, url = stream_server
+    save_statistics_settings({"enabled": tracking})
+    window = Player()
+    player = window.media_player
+    monkeypatch.setattr(window, "_audio_output_unavailable", False)
+    output = QAudioBufferOutput(window)
+    player.setAudioBufferOutput(output)
+    station = Station("Test Station", url, "Vietnam", station_id="test-station")
+    try:
+        window.open_network_playback()
+        history = window._network_playback_dialog.history
+        window.play_radio_station(station)
+        assert window.network_source_label.text() == station.name
+        wait_for(lambda: window._stream_error, player)
+        assert not load_station_history()
+        assert history.results.topLevelItemCount() == 0
+
+        server.available = True
+        window.toggle_playback()
+        wait_for(lambda: history.results.topLevelItemCount() == 1, player)
+        assert history.results.topLevelItem(0).text(0) == station.name
+        wait_for(lambda: player.source().isEmpty(), player)
+        result = window.statistics_store.snapshot().result(timeout=5)
+        assert result["songs"] == []
+        assert bool(result["stations"]) is tracking
+        if tracking:
+            assert result["stations"][0]["listened_ms"] > 0
+            assert result["stations"][0]["name"] == station.name
+            window.statistics_page._apply(result)
+            assert window.statistics_page.tables["stations"].item(0, 0).text() == station.name
+
+        refreshed = Station("Updated Station", url + "?new", station_id=station.station_id)
+        remember_station(refreshed)
+        assert [entry[0] for entry in load_station_history()] == [refreshed]
+        window.station_history_changed.emit()
+        window._network_playback_dialog.tabs.setCurrentWidget(history)
+        history.play_button.click()
+        assert player.source().toString() == refreshed.url
     finally:
         window.close()
         window.deleteLater()

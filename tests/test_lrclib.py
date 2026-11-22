@@ -48,6 +48,14 @@ def test_503_retries_after_server_delay_then_returns_lyrics(monkeypatch):
     assert APP_VERSION in calls[0]["headers"]["User-Agent"]
 
 
+def test_structured_song_search_passes_artist_and_title(monkeypatch):
+    calls = []
+    monkeypatch.setattr(lrclib.requests, "get", lambda *args, **kwargs:
+                        calls.append(kwargs["params"]) or response())
+    assert lrclib.search("Song", Cancel(), artist="Artist") == []
+    assert calls == [{"track_name": "Song", "artist_name": "Artist"}]
+
+
 @pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
 def test_transient_failures_stop_after_three_attempts(monkeypatch, status):
     calls = []

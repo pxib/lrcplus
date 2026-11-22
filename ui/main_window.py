@@ -69,7 +69,7 @@ from ui.queue_actions import QueueActionsMixin
 from ui.library_lyrics_search import LibraryLyricsSearchMixin
 from ui.audio_devices import AudioDeviceControllerMixin
 from ui.artwork_background import ArtworkBackgroundWidget, extract_embedded_cover
-from ui.player_dialogs import ClickableSlider, ClickableTimeLabel, PitchChangerDialog
+from ui.player_dialogs import ClickableSlider, ClickableTimeLabel, NetworkSourceLabel, PitchChangerDialog
 from ui.settings_controls import ThemedComboBox, use_native_controls
 from core.booru_artwork import fetch_booru_artwork
 from core.theme import build_theme_palette
@@ -82,6 +82,7 @@ from ui.player_sleep_timer import PlayerSleepTimerMixin
 from ui.player_statistics import PlayerStatisticsMixin
 from ui.statistics_page import StatisticsPage
 from ui.lyrics_search_dialog import LyricsSearchDialogMixin
+from ui.stream_lyrics import StreamLyricsController
 
 
 class Player(
@@ -102,6 +103,7 @@ class Player(
     QMainWindow,
 ):
         queue_changed = Signal()
+        station_history_changed = Signal()
         lyrics_renderers_created = Signal()
         favorites_changed = Signal()
 
@@ -680,7 +682,9 @@ class Player(
             volume_layout.addWidget(self.favorite_button)
             volume_layout.addWidget(self.sleep_timer_button)
             volume_layout.addWidget(self.ab_loop_button)
-            volume_layout.addStretch(1)
+            self.network_source_label = NetworkSourceLabel()
+            self.network_source_label.setObjectName("networkSourceLabel")
+            volume_layout.addWidget(self.network_source_label, 1)
             volume_layout.addWidget(self.mute_button)
             volume_layout.addWidget(QLabel("Volume"))
             volume_layout.addWidget(self.volume_slider)
@@ -808,6 +812,10 @@ class Player(
             container.setLayout(layout)
             self.setCentralWidget(container)
             self._apply_main_window_style()
+            status_bar = self.statusBar()
+            status_bar.setSizeGripEnabled(False)
+            status_bar.setVisible(bool(status_bar.currentMessage()))
+            status_bar.messageChanged.connect(lambda message: status_bar.setVisible(bool(message)))
 
             self._furigana_prefetch_id = 0
             self._furigana_progress_bridge = _FuriganaProgressBridge(self)
@@ -822,6 +830,7 @@ class Player(
             # AUDIO SIGNALS
             # --------------------------------------------------
 
+            self._stream_lyrics = StreamLyricsController(self)
             self.media_player.positionChanged.connect(
                 self.position_changed
             )
@@ -1156,7 +1165,7 @@ class Player(
                     width: 0;
                     height: 0;
                 }
-                QLabel#timeLabel {
+                QLabel#timeLabel, QLabel#networkSourceLabel {
                     color: @DOCK_TEXT@;
                     font-weight: 600;
                 }
@@ -1732,6 +1741,7 @@ class Player(
                     self.shuffle_enabled = self.playback_settings.get("shuffle_enabled", False)
                     self._clear_shuffle_history()
                     save_playback_settings(self.playback_settings)
+                    self._apply_radio_lyrics_preference()
                     self._sync_waveform_visibility()
                     self._apply_output_device(self.playback_settings)
                     self._load_replaygain()
@@ -1967,6 +1977,7 @@ class Player(
                 network_dialog = getattr(self, "_network_playback_dialog", None)
                 if network_dialog is not None:
                     network_dialog.close()
+                self._stream_lyrics.close()
                 self._suspend_ab_loop()
                 self._ab_loop_memory.clear()
                 self._close_statistics()

@@ -64,6 +64,8 @@ def rankings(count=100):
         "artists": [dict(name=name(i), plays=i, listened_ms=i * 1000) for i in range(count)],
         "albums": [dict(name=name(i), artist=name(i + 100), plays=i,
                         listened_ms=i * 1000) for i in range(count)],
+        "stations": [dict(name=name(i), country=name(i + 100), plays=i,
+                          listened_ms=i * 1000, last_played=stamp) for i in range(count)],
     }
 
 
@@ -89,7 +91,9 @@ def test_populated_refresh_does_not_measure_all_ranking_cells(page, qapp, monkey
     assert not measured
     for key, table in page.tables.items():
         assert table.rowCount() == 100
-        assert table.item(0, table.columnCount() - (2 if key == "songs" else 1)).sort_value == 104000
+        column = next(index for index in range(table.columnCount())
+                      if table.horizontalHeaderItem(index).text() == "Listening time")
+        assert table.item(0, column).sort_value == 104000
         # Full metadata remains available when a column elides its text.
         assert table.item(0, 0).text() == table.item(0, 0).toolTip()
 

@@ -53,6 +53,27 @@ def test_date_filters_artist_album_aggregation_and_distinct_files(store):
     assert len(all_time["albums"]) == 2  # Same album title, different artists.
 
 
+def test_existing_database_adds_station_rankings_without_counting_stations_as_songs(store):
+    store.record([record()])
+    assert snapshot(store)["summary"]["songs"] == 1
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DROP TABLE stations")
+        connection.execute("PRAGMA user_version=1")
+
+    station = dict(station=True, title="Radio One", country="UK")
+    store.record([record("radio:one", **station),
+                  record("radio:one", day="2026-11-14", milliseconds=15000, plays=0, **station)])
+    today = snapshot(store, 1)
+    assert today["summary"] == {"listened_ms": 120000, "plays": 2, "songs": 1}
+    assert len(today["artists"]) == len(today["albums"]) == len(today["songs"]) == 1
+    assert today["stations"][0]["listened_ms"] == 60000
+    result = snapshot(store)
+    assert result["stations"][0]["listened_ms"] == 75000
+    assert result["stations"][0]["name"] == "Radio One"
+    store.clear().result(timeout=5)
+    assert snapshot(store)["stations"] == []
+
+
 def test_clear_discards_pending_old_generations_and_preserves_new_records(store):
     entered, release = Event(), Event()
     future = store._executor.submit(lambda: (entered.set(), release.wait(3)))

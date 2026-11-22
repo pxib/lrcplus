@@ -29,14 +29,15 @@ def _retry_after(value):
             return None
 
 
-def search(query, cancel=None):
+def search(query, cancel=None, *, artist=None):
     cancel = cancel if cancel is not None else Event()
+    params = {"q": query} if artist is None else {"track_name": query, "artist_name": artist}
     for attempt in range(3):
         if cancel.is_set():
             return []
         try:
             response = requests.get(
-                "https://lrclib.net/api/search", params={"q": query},
+                "https://lrclib.net/api/search", params=params,
                 headers={
                     "User-Agent": f"{APP_NAME}/{APP_VERSION} ({PROJECT_URL})",
                     "Lrclib-App-Id": "zTywhWzql6kFvrFMcWui-xuV0qYCVO3FzKQKPwZGf7U",

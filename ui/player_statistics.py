@@ -127,6 +127,14 @@ class PlayerStatisticsMixin:
     def _statistics_track_started(self):
         if self._statistics_closed:
             return
+        station = getattr(self, "_station", None)
+        if station is not None:
+            self.statistics.start_track({
+                "path_key": station.key, "station": True, "title": station.name,
+                "country": station.country,
+            }, **self._statistics_snapshot())
+            self._statistics_state_changed()
+            return
         if not self.current_audio_path:
             self.statistics.start_track(None, **self._statistics_snapshot())
             return
@@ -165,7 +173,7 @@ class PlayerStatisticsMixin:
     def _clear_statistics(self):
         answer = QMessageBox.question(
             self, "Clear listening statistics",
-            "Delete all listening statistics? Your library, playlists, and Recent list will be kept.",
+            "Delete all listening statistics? Your library, playlists, Recent list, and station history will be kept.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

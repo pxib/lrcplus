@@ -24,7 +24,7 @@ from lyrics.furigana import (
     set_auto_language_context,
     detect_lyrics_collection_language,
 )
-from lyrics.models import LyricSegment
+from lyrics.models import LyricLine, LyricSegment
 from lyrics.line_breaks import reading_source
 from core.settings import (
     get_lyrics_attachment,
@@ -566,6 +566,7 @@ class LyricsController(LyricsSearchMixin):
         cancel_search = getattr(self, "_cancel_lyrics_search", None)
         if cancel_search is not None:
             cancel_search()
+        self._auto_stream_lyrics = False
         path = Path(path)
         self.current_lyrics_path = path
         self.lyrics_offset_seconds = (
@@ -653,6 +654,35 @@ class LyricsController(LyricsSearchMixin):
             self.statusBar().clearMessage()
             self._lyrics_load_error = False
 
+        self._present_loaded_lyrics(plain=path.suffix.lower() == ".txt")
+        print(
+            f"[Lyrics] Loaded {len(self.lyric_lines)} lines "
+            f"from: {path.name}"
+        )
+
+        if path.suffix.lower() == ".lrcx":
+            segment_count = sum(
+                len(line.segments)
+                for line in self.lyric_lines
+            )
+            karaoke_lines = sum(bool(line.has_karaoke) for line in self.lyric_lines)
+            print(f"[LRCX] Ready: {segment_count} content segments; {karaoke_lines} karaoke lines")
+
+    def _show_auto_stream_lyrics(self, lines):
+        self._auto_stream_lyrics = True
+        self.lyrics_offset_seconds = 0.0
+        set_reading_mode("auto")
+        set_auto_language_context(detect_lyrics_collection_language(lines))
+        self.lyric_lines = [LyricLine(start=float(index), text=text) for index, text in enumerate(lines)]
+        self._present_loaded_lyrics(plain=True, prefetch=False)
+
+    def _clear_auto_stream_lyrics(self):
+        if getattr(self, "_auto_stream_lyrics", False):
+            self._auto_stream_lyrics = False
+            self._clear_loaded_lyrics()
+            self.lyric_display_stack.setCurrentIndex(int(self.scrolling_lyrics_enabled))
+
+    def _present_loaded_lyrics(self, *, plain, prefetch=True):
         # Compatibility layer for the existing displays.
         self.lyrics = [
             (line.start, line.text)
@@ -672,7 +702,7 @@ class LyricsController(LyricsSearchMixin):
         if hasattr(self, "waveform_widget"):
             self.waveform_widget.set_lyric_times(self.lyric_times)
 
-        self.plain_lyrics_mode = path.suffix.lower() == ".txt"
+        self.plain_lyrics_mode = plain
         self.current_line = -1
         self.last_lyric_text = None
         self.lyric_widget.set_lyric("")
@@ -686,7 +716,8 @@ class LyricsController(LyricsSearchMixin):
             .replace("  ", " ")
             .strip()
         )
-        self._start_furigana_prefetch()
+        if prefetch:
+            self._start_furigana_prefetch()
         self.scrolling_lyrics_widget.set_lyrics(self.lyric_lines)
         if self.plain_lyrics_mode:
             self.scrolling_lyrics_widget.set_scrolling_mode("continuous")
@@ -700,26 +731,13 @@ class LyricsController(LyricsSearchMixin):
         # manual reload. Render the active line at the existing position now.
         self.update_lyrics(self.media_player.position())
 
-        print(
-            f"[Lyrics] Loaded {len(self.lyric_lines)} lines "
-            f"from: {path.name}"
-        )
-
-        if path.suffix.lower() == ".lrcx":
-            segment_count = sum(
-                len(line.segments)
-                for line in self.lyric_lines
-            )
-            karaoke_lines = sum(bool(line.has_karaoke) for line in self.lyric_lines)
-            print(f"[LRCX] Ready: {segment_count} content segments; {karaoke_lines} karaoke lines")
-
     def _refresh_playback_lyric_timing(self):
         self.update_lyrics(self.media_player.position())
         if getattr(self, "plugin_manager", None) is not None:
             self.plugin_manager.emit("lyric_timing_changed")
 
     def update_lyrics(self, position_ms):
-        if not self.lyrics:
+        if not self.lyrics or getattr(self, "_auto_stream_lyrics", False):
             return
 
         # Continuous scrolling advances from playback elapsed time only. It
@@ -957,6 +975,8 @@ class LyricsController(LyricsSearchMixin):
             )
 
     def jump_to_lyric_item(self, item):
+        if getattr(self, "_auto_stream_lyrics", False):
+            return
         idx = item.data(Qt.ItemDataRole.UserRole)
         if 0 <= idx < len(self.lyrics):
             timestamp = self.lyrics[idx][0]

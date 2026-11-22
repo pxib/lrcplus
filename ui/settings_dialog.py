@@ -2263,6 +2263,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             "output_device": self.output_device_combo.currentData(),
             "device_lyric_delays_ms": dict(self._device_lyric_delays),
             "show_waveform": self.show_waveform_checkbox.isChecked(),
+            "radio_auto_lyrics": self.playback_settings.get("radio_auto_lyrics", False),
             "volume": self.playback_settings.get("volume", 80),
             "pitch_mode": self.playback_settings.get("pitch_mode", "Semitones"),
             "pitch_value": self.playback_settings.get("pitch_value", 0),

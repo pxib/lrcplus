@@ -5,6 +5,7 @@ from PySide6.QtTest import QTest
 
 from core import radio_browser
 from core.radio_browser import PAGE_SIZE, Station, StationPage
+from core.radio_history import LIMIT, clear_station_history, load_station_history, remember_station
 from ui.main_window import Player
 
 
@@ -31,6 +32,16 @@ def test_search_uses_resolved_urls_filters_and_mirror_fallback(monkeypatch):
         "offset": PAGE_SIZE, "name": "Local", "country": "Canada", "tag": "rock",
     }
     assert second.kwargs["headers"]["User-Agent"].startswith("LRCPlus/")
+
+
+def test_station_history_retains_only_the_latest_stations_and_can_be_cleared():
+    stations = [Station(f"Station {index}", f"https://radio.example/{index}")
+                for index in range(LIMIT + 1)]
+    for station in stations:
+        remember_station(station)
+    assert [station for station, _ in load_station_history()] == stations[:0:-1]
+    clear_station_history()
+    assert load_station_history() == []
 
 
 def test_radio_menu_searches_and_plays_selected_station(qapp, monkeypatch):
@@ -64,7 +75,7 @@ def test_radio_menu_searches_and_plays_selected_station(qapp, monkeypatch):
         assert radio.results.topLevelItem(0).text(0) == station.name
         search.assert_called_with("Example", "Japan", "jazz", 0)
         radio.play_button.click()
-        play.assert_called_once_with(station.url, title=station.name)
+        play.assert_called_once_with(station.url, station=station)
         assert dialog.isVisible()
 
         radio.next_button.click()

@@ -151,6 +151,7 @@ class StatisticsPage(QWidget):
             ("songs", "Songs", ["Title", "Artist", "Album", "Plays", "Listening time", "Last played"]),
             ("artists", "Artists", ["Artist", "Plays", "Listening time"]),
             ("albums", "Albums", ["Album", "Artist", "Plays", "Listening time"]),
+            ("stations", "Stations", ["Station", "Country", "Plays", "Listening time", "Last played"]),
         ):
             table = QTableWidget(0, len(headers))
             # Metadata needs the same glyph-checked rendering as the library;
@@ -180,7 +181,7 @@ class StatisticsPage(QWidget):
                 width = (max(metrics.horizontalAdvance(heading), metrics.horizontalAdvance(sample)) + 32
                          if sample else 160)
                 table.setColumnWidth(column, width)
-            header.setSortIndicator(len(headers) - (2 if key == "songs" else 1),
+            header.setSortIndicator(headers.index("Listening time"),
                                     Qt.SortOrder.DescendingOrder)
             table.setAccessibleName(f"Top 100 {label.lower()} by listening time")
             self.tables[key] = table
@@ -285,9 +286,9 @@ class StatisticsPage(QWidget):
         if self._storage_error:
             self.status_label.setText(self._storage_error)
         elif summary["listened_ms"]:
-            self.status_label.setText("Stored locally · top 100 in each list. A play counts after 30 seconds or half the song, whichever is shorter.")
+            self.status_label.setText("Stored locally · top 100 in each list. Live station plays count after 30 seconds. Songs can qualify sooner at half their duration.")
         else:
-            self.status_label.setText("No listening recorded in this range. Play a song with tracking enabled; earlier listening cannot be recovered.")
+            self.status_label.setText("No listening recorded in this range. Play a song or radio station with tracking enabled.")
 
     def _apply_table(self, key, table, rows):
         table.setUpdatesEnabled(False)
@@ -295,12 +296,16 @@ class StatisticsPage(QWidget):
         try:
             table.setRowCount(len(rows))
             for row, entry in enumerate(rows):
-                if key == "songs":
+                if key in ("songs", "stations"):
                     stamp = datetime.fromisoformat(entry["last_played"]).astimezone()
-                    cells = [(entry["title"], None), (entry["artist"] or "Unknown artist", None),
-                             (entry["album"] or "Unknown album", None), (entry["plays"], entry["plays"]),
-                             (listening_time(entry["listened_ms"]), entry["listened_ms"]),
-                             (stamp.strftime("%d %b %Y, %H:%M"), entry["last_played"])]
+                    if key == "songs":
+                        cells = [(entry["title"], None), (entry["artist"] or "Unknown artist", None),
+                                 (entry["album"] or "Unknown album", None)]
+                    else:
+                        cells = [(entry["name"], None), (entry["country"] or "Unknown country", None)]
+                    cells += [(entry["plays"], entry["plays"]),
+                              (listening_time(entry["listened_ms"]), entry["listened_ms"]),
+                              (stamp.strftime("%d %b %Y, %H:%M"), entry["last_played"])]
                 else:
                     cells = [(entry["name"] or ("Unknown artist" if key == "artists" else "Unknown album"), None)]
                     if key == "albums":

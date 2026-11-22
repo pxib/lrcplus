@@ -1,6 +1,7 @@
 """Search the public Radio Browser station directory."""
 
 from dataclasses import dataclass
+from hashlib import sha256
 
 from core.app_info import APP_NAME, APP_VERSION, PROJECT_URL
 from core.http_client import requests
@@ -19,6 +20,11 @@ class Station:
     tags: str = ""
     codec: str = ""
     bitrate: int = 0
+    station_id: str = ""
+
+    @property
+    def key(self):
+        return "radio:" + (self.station_id or sha256(self.url.encode("utf-8")).hexdigest())
 
 
 @dataclass(frozen=True)
@@ -32,7 +38,7 @@ def _text(row, key):
     return " ".join(value.split())[:240] if isinstance(value, str) else ""
 
 
-def _station(row):
+def station_from_entry(row):
     if not isinstance(row, dict):
         return None
     for key in ("url_resolved", "url"):
@@ -45,8 +51,10 @@ def _station(row):
             continue
         bitrate = row.get("bitrate")
         tags = ", ".join(tag.strip() for tag in _text(row, "tags").split(",") if tag.strip())
+        station_id = _text(row, "stationuuid") or _text(row, "station_id")
         return Station(_text(row, "name") or parsed.host(), url.strip(), _text(row, "country"),
-                       tags, _text(row, "codec"), bitrate if type(bitrate) is int and bitrate > 0 else 0)
+                       tags, _text(row, "codec"), bitrate if type(bitrate) is int and bitrate > 0 else 0,
+                       station_id)
     return None
 
 
@@ -66,7 +74,7 @@ def search_stations(name="", country="", tag="", offset=0):
         except (requests.RequestException, ValueError):
             continue
         if isinstance(rows, list):
-            stations = tuple(station for row in rows[:PAGE_SIZE] if (station := _station(row)) is not None)
+            stations = tuple(station for row in rows[:PAGE_SIZE] if (station := station_from_entry(row)) is not None)
             return StationPage(stations, len(rows) > PAGE_SIZE)
 
     raise RuntimeError("Could not reach the Radio Browser directory. Try searching again.")

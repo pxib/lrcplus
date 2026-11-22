@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QStyle,
     QStyleOptionSlider,
@@ -202,6 +203,21 @@ class ClickableTimeLabel(QLabel):
         if self._clickable and event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
+
+
+class NetworkSourceLabel(QLabel):
+    def __init__(self):
+        super().__init__()
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setContentsMargins(8, 0, 0, 0)
+
+    def paintEvent(self, event):
+        rect = self.contentsRect()
+        text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight, max(0, rect.width()))
+        painter = QPainter(self)
+        self.style().drawItemText(painter, rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeading,
+                                  self.palette(), self.isEnabled(), text, QPalette.ColorRole.WindowText)
 
 
 class AlbumCoverDelegate(QStyledItemDelegate):
