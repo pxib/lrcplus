@@ -83,6 +83,7 @@ class KaraokeScreenPlugin(QObject):
             self.midi_offsets = {}
         context.on("app_ready", self.on_app_ready)
         context.on("track_changed", self.on_track_changed)
+        context.on("stream_changed", self.on_stream_changed)
         context.on("karaoke_settings_changed", self.on_karaoke_settings_changed)
         context.on("lyrics_settings_changed", self.on_lyrics_settings_changed)
         context.api.register_settings_widget(
@@ -205,6 +206,15 @@ class KaraokeScreenPlugin(QObject):
                     self.screen.set_background_pixmap(
                         getattr(background, "_source_pixmap", None)
                     )
+
+    def on_stream_changed(self):
+        self._screen_line_index = self._screen_next_line_index = None
+        self._screen_next_text = None
+        self.current_midi = self.selected_midi_track = None
+        self._populate_midi_tracks()
+        self._apply_saved_alignment_offset(None)
+        if self.screen is not None:
+            self.screen.set_background_pixmap(None)
 
     def load_midi_for_track(self, audio_path):
         """Use an assigned MIDI file, or a same-name sidecar when present."""

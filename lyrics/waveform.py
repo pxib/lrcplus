@@ -230,8 +230,8 @@ class WaveformWidget(QWidget):
         self._loading = False
         self._stop_worker(wait=False)
         self._audio_path = path
-        self._audio_load_pending = self._defer_hidden_load and not self.isVisible()
-        if self._audio_load_pending:
+        self._audio_load_pending = bool(path) and self._defer_hidden_load and not self.isVisible()
+        if not path or self._audio_load_pending:
             self.update()
             return
         self._start_audio_worker()

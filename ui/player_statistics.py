@@ -18,7 +18,8 @@ class PlayerStatisticsMixin:
         from lyrics.waveform import find_ffmpeg
 
         self.waveform_widget.setVisible(
-            self.workspace_stack.currentWidget() is not self.statistics_page
+            self._stream_url is None
+            and self.workspace_stack.currentWidget() is not self.statistics_page
             and self.playback_settings.get("show_waveform", True)
             and find_ffmpeg() is not None
         )

@@ -107,10 +107,10 @@ def close(worker):
 
 
 def test_equalizer_processes_audio_at_normal_speed_pitch_and_volume(qapp):
-    from plugins.core.equalizer.dsp import FREQUENCIES, EqualizerProcessor
+    from plugins.core.equalizer.dsp import EqualizerProcessor
 
     sinks = []
-    equalizer = EqualizerProcessor(lambda: (-6, (0,) * len(FREQUENCIES)))
+    equalizer = EqualizerProcessor(lambda: (-6, ()))
     worker = PcmPlayback(
         equalizer=equalizer, sink_factory=lambda *args: sinks.append(Sink(*args)) or sinks[-1],
     )

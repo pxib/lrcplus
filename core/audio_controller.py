@@ -12,6 +12,7 @@ from PySide6.QtMultimedia import (
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from core.recent import add_to_recent_songs
+from core.network_stream import parse_stream_url
 from core.background_job import BackgroundJob
 from core.audio_sink import dispose_audio_sink
 from core.settings import save_playback_settings
@@ -33,6 +34,9 @@ from core.audio_dsp import (
 
 
 class AudioController:
+        _stream_url = None
+        _stream_error = False
+
         def _replaygain_options(self):
             settings = getattr(self, "playback_settings", {})
             return (settings.get("replaygain_mode", "off"),
@@ -123,20 +127,17 @@ class AudioController:
                 self.media_player.stop()
 
             self.current_audio_path = audio_path
+            if self._stream_url is not None:
+                self._stream_url = None
+                self._stream_error = False
+                self.statusBar().clearMessage()
+                self._sync_waveform_visibility()
+                self.seek_slider.setEnabled(True)
+                self._set_live_transport(False)
             if hasattr(self, "_refresh_repeat"):
                 self._refresh_repeat()
 
-            self._cancel_lyrics_search()
-            self.lyric_lines = []
-            self.lyrics = []
-            self.lyric_times = []
-            self._playback_line_indices = []
-            self.current_lyrics_path = None
-            self.plain_lyrics_mode = False
-            self._furigana_prefetch_id = getattr(self, "_furigana_prefetch_id", 0) + 1
-            self.scrolling_lyrics_widget.clear()
-            self.lyrics_list_widget.clear()
-            self.furigana_progress_bar.hide()
+            self._clear_track_lyrics()
 
             if getattr(self, "plugin_manager", None) is not None:
                 self.plugin_manager.emit("track_changed", path=str(audio_path))
@@ -220,6 +221,84 @@ class AudioController:
             return allow_autoplay
 
 
+        def load_stream(self, text, *, title=None):
+            url = parse_stream_url(text)
+
+            allow_autoplay = self._sleep_before_track_load()
+            self._statistics_checkpoint()
+            self._clear_counted_repeat()
+            self._suspend_ab_loop()
+            self._flush_pcm_output()
+            self.media_player.stop()
+            self.current_audio_path = None
+            self.current_index = -1
+            self._stream_url = url
+            self._stream_error = False
+            self._clear_track_lyrics()
+            self.current_line = -1
+            self.last_lyric_text = None
+            self.lyric_widget.set_lyric("")
+            self._invalidate_booru_request()
+            self.lyrics_background.clear_artwork()
+            self.refresh_lyrics_settings_for_current_file()
+            self._refresh_repeat()
+            self._refresh_ab_loop()
+            self._statistics_track_started()
+            self.is_seeking = False
+            self.seek_slider.setSliderDown(False)
+            self.waveform_widget.load_audio(None)
+            self.waveform_widget.set_lyric_times([])
+            self._sync_waveform_visibility()
+            self.setWindowTitle(f"LRCPlus — {title or url.host()}")
+            self.duration_changed(0)
+            self._update_stream_seekability()
+            self._load_replaygain()
+            if self.plugin_manager is not None:
+                self.plugin_manager.emit("stream_changed")
+            self._notify_queue_changed()
+            self._open_stream_source(autoplay=allow_autoplay)
+
+
+        def _open_stream_source(self, *, autoplay=True):
+            self._stream_error = False
+            if self.media_player.source() == self._stream_url:
+                self.media_player.setSource(QUrl())
+            self.statusBar().showMessage(f"Connecting to {self._stream_url.host()}…")
+            self.media_player.setSource(self._stream_url)
+            self._set_native_pitch_compensation()
+            if autoplay and not self._stream_error:
+                self.media_player.play()
+
+
+        def _handle_stream_error(self, error, _detail):
+            if (self._stream_url is None or self.media_player.source() != self._stream_url
+                    or getattr(self, "_closing", False)):
+                return
+            self._stream_error = True
+            self._flush_pcm_output()
+            self._update_stream_seekability()
+            reason = {
+                QMediaPlayer.Error.FormatError: "Unsupported audio format",
+                QMediaPlayer.Error.AccessDeniedError: "Access denied",
+                QMediaPlayer.Error.NetworkError: "Network error",
+            }.get(error, "Could not open the audio stream")
+            self.statusBar().showMessage(f"{reason} ({self._stream_url.host()}). Press Play to retry.")
+
+
+        def _clear_track_lyrics(self):
+            self._cancel_lyrics_search()
+            self.lyric_lines = []
+            self.lyrics = []
+            self.lyric_times = []
+            self._playback_line_indices = []
+            self.current_lyrics_path = None
+            self.plain_lyrics_mode = False
+            self._furigana_prefetch_id = getattr(self, "_furigana_prefetch_id", 0) + 1
+            self.scrolling_lyrics_widget.clear()
+            self.lyrics_list_widget.clear()
+            self.furigana_progress_bar.hide()
+
+
         def _cancel_lyrics_search(self):
             job = getattr(self, "_lyrics_search_job", None)
             if job is not None:
@@ -248,14 +327,18 @@ class AudioController:
             add_to_recent_songs(audio_path, lrc_path)
 
         def toggle_playback(self):
-            if not self.current_audio_path:
+            if not self.current_audio_path and self._stream_url is None:
                 paths = self._playback_paths()
                 if paths:
                     index = self._choose_shuffle_index(paths, -1) if self.shuffle_enabled else 0
                     self._load_playback_index(paths, index)
                 return
 
-            if self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            if self._stream_url is not None and (
+                self._stream_error or self.media_player.source() != self._stream_url
+            ):
+                self._open_stream_source()
+            elif self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
                 self.media_player.pause()
             else:
                 self.media_player.play()
@@ -270,7 +353,11 @@ class AudioController:
             if timer is not None:
                 timer.cancel()
             self._flush_pcm_output()
-            self.media_player.stop()
+            if self._stream_url is not None:
+                self.media_player.setSource(QUrl())
+                self.statusBar().clearMessage()
+            else:
+                self.media_player.stop()
             if hasattr(self, "statistics"):
                 self._statistics_track_started()
             self.current_line = -1
@@ -283,7 +370,7 @@ class AudioController:
 
         def skip_seconds(self, seconds):
             duration = self.media_player.duration()
-            if duration <= 0:
+            if duration <= 0 or not self._can_seek_source():
                 return
             new_position = max(0, min(duration, self.media_player.position() + int(seconds * 1000)))
             self._flush_pcm_output()
@@ -409,6 +496,8 @@ class AudioController:
 
 
         def previous_track(self):
+            if self._stream_url is not None:
+                return
             paths = self._playback_paths()
             if not paths:
                 return
@@ -481,12 +570,47 @@ class AudioController:
             for button in (self.previous_button, self.rewind_button, self.play_button, self.stop_button, self.forward_button):
                 button.setEnabled(has_track)
             paths = self._playback_paths()
-            self.play_button.setEnabled(has_track or bool(paths))
+            if self._stream_url is not None:
+                self.stop_button.setEnabled(True)
+                self.play_button.setEnabled(True)
+                self._update_stream_seekability()
+            else:
+                self.play_button.setEnabled(has_track or bool(paths))
             current = self._active_index(paths)
             priority = (getattr(self, "playback_settings", {}).get("play_mode", "library") == "playlist"
                         and bool(getattr(self, "_priority_queue_indices", [])))
             can_next = has_track and (priority or self.shuffle_enabled and len(paths) > 1 or current + 1 < len(paths))
             self.next_button.setEnabled(can_next)
+
+
+        def _can_seek_source(self):
+            return self._stream_url is None or (
+                not self._stream_error and self.media_player.source() == self._stream_url
+                and self.media_player.isSeekable()
+                and self.media_player.duration() > 0
+            )
+
+
+        def _update_stream_seekability(self):
+            if self._stream_url is not None:
+                enabled = self._can_seek_source()
+                for control in (self.seek_slider, self.rewind_button, self.forward_button):
+                    control.setEnabled(enabled)
+                live = self._is_live_stream()
+                self._set_live_transport(live)
+                self.duration_label.setText("Live" if live else self.format_time(self.media_player.duration()))
+
+
+        def _is_live_stream(self):
+            return (self._stream_url is not None and not self._stream_error
+                    and self.media_player.source() == self._stream_url
+                    and self.media_player.duration() <= 0)
+
+
+        def _set_live_transport(self, live):
+            self.seek_slider.set_live(live)
+            self.current_time_label.set_clickable(not live)
+            self._update_time_display_tooltip(live)
 
 
         def cycle_shuffle_mode(self):
@@ -518,6 +642,8 @@ class AudioController:
 
         def finish_seeking(self):
             try:
+                if not self._can_seek_source():
+                    return
                 self._flush_pcm_output()
                 self.media_player.setPosition(
                     self.seek_slider.value()
@@ -1064,6 +1190,11 @@ class AudioController:
         def handle_media_status(self, status):
             if getattr(self, "_closing", False) or getattr(self, "_sleep_expired", False):
                 return
+            if self._stream_url is not None and not self._stream_error:
+                if status == QMediaPlayer.MediaStatus.StalledMedia:
+                    self.statusBar().showMessage(f"Buffering audio from {self._stream_url.host()}…")
+                elif status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia):
+                    self.statusBar().clearMessage()
             if (
                 status != QMediaPlayer.MediaStatus.EndOfMedia
                 or self.media_player.mediaStatus()
@@ -1085,6 +1216,11 @@ class AudioController:
                 return
 
             if timer is not None and self._sleep_before_advance():
+                return
+
+            if self._stream_url is not None:
+                self.media_player.setSource(QUrl())
+                self.statusBar().showMessage("Network stream ended. Press Play to reconnect.")
                 return
 
             if hasattr(self, "_check_ab_loop") and self._check_ab_loop(at_end=True):
@@ -1194,9 +1330,10 @@ class AudioController:
                 0,
                 duration_ms
             )
-            self.duration_label.setText(
-                self.format_time(duration_ms)
-            )
+            if self._stream_url is None:
+                self.duration_label.setText(self.format_time(duration_ms))
+            else:
+                self._update_stream_seekability()
             self.current_time_label.setText(
                 self._format_position_time(self.media_player.position())
             )
@@ -1220,22 +1357,26 @@ class AudioController:
 
 
         def toggle_time_display(self):
+            if self._is_live_stream():
+                return
             self.show_remaining_time = not getattr(
                 self, "show_remaining_time", False
             )
             if hasattr(self, "current_time_label"):
-                remaining = self.show_remaining_time
-                self.current_time_label.setToolTip(
-                    "Click to show elapsed time" if remaining
-                    else "Click to show remaining time"
-                )
+                self._update_time_display_tooltip()
                 self.current_time_label.setText(
                     self._format_position_time(self.media_player.position())
                 )
 
+        def _update_time_display_tooltip(self, live=False):
+            remaining = getattr(self, "show_remaining_time", False)
+            text = "Click to show elapsed time" if remaining else "Click to show remaining time"
+            self.current_time_label.setToolTip("" if live else text)
+
 
         def _format_position_time(self, position_ms):
-            if getattr(self, "show_remaining_time", False):
+            if (getattr(self, "show_remaining_time", False)
+                    and (self._stream_url is None or self.media_player.duration() > 0)):
                 remaining_ms = max(
                     0, self.media_player.duration() - int(position_ms)
                 )

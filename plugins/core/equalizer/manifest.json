@@ -1,6 +1,6 @@
 {
   "name": "Equalizer",
-  "version": "1.0.0",
-  "description": "Adjust the frequency balance of music playback.",
+  "version": "1.2.0",
+  "description": "Adjust playback with a graphic or parametric equalizer.",
   "api_version": 6
 }

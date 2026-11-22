@@ -20,6 +20,9 @@ class PlayerSleepTimerMixin:
         self.media_player.playbackStateChanged.connect(self._sleep_playback_state_changed)
 
     def _sleep_audio_playing(self):
+        if getattr(self, "_stream_url", None) is not None and self.media_player.duration() <= 0:
+            # A live stream may never reach EOF, so the deadline acts as Pause.
+            return False
         return not self._sleep_gapless_boundary_reached() and (
             self.media_player.isPlaying() or getattr(self, "_pcm_end_pending", False)
         )

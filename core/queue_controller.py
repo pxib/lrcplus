@@ -32,7 +32,7 @@ class QueueControllerMixin:
         self._priority_queue_indices = priority
         if self.current_index >= index:
             self.current_index += len(paths)
-        if self.current_audio_path is None:
+        if self.current_audio_path is None and getattr(self, "_stream_url", None) is None:
             self.current_index = 0
             self.load_audio(str(self.playlist[0]))
             self._priority_queue_indices = [i for i in priority if i != 0]
@@ -98,7 +98,8 @@ class QueueControllerMixin:
         self.playlist = []
         self.current_index = -1
         self._priority_queue_indices = []
-        if self.playback_settings.get("play_mode", "library") == "library":
+        if (self.playback_settings.get("play_mode", "library") == "library"
+                or getattr(self, "_stream_url", None) is not None):
             self._notify_queue_changed()
             return
         self._cancel_lyrics_search()
@@ -126,7 +127,7 @@ class QueueControllerMixin:
             return
         self.current_index = next((i for i, path in enumerate(paths) if path_key(path) == current), -1)
         # Keep playing when the current file also exists in the replacement.
-        if self.current_index < 0:
+        if self.current_index < 0 and getattr(self, "_stream_url", None) is None:
             self.current_index = 0
             self.load_audio(str(paths[0]))
         self._notify_queue_changed()

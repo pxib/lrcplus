@@ -438,6 +438,12 @@ class Player(
             )
             self.open_menu.addAction(open_audio_action)
 
+            open_stream_action = QAction("Network Playback…", self)
+            open_stream_action.setShortcut(QKeySequence("Ctrl+Shift+U"))
+            open_stream_action.triggered.connect(self.open_network_playback)
+            self.addAction(open_stream_action)
+            self.open_menu.addAction(open_stream_action)
+
             add_queue_action = QAction("Add to Queue…", self)
             add_queue_action.setShortcut(QKeySequence("Ctrl+Shift+O"))
             add_queue_action.triggered.connect(self.add_files_to_queue)
@@ -837,6 +843,9 @@ class Player(
             self.media_player.mediaStatusChanged.connect(
                 self.handle_media_status
             )
+            self.media_player.seekableChanged.connect(self._update_stream_seekability)
+            self.media_player.sourceChanged.connect(self._update_stream_seekability)
+            self.media_player.errorOccurred.connect(self._handle_stream_error)
 
             self._configure_pcm_volume(self.last_volume)
             self._watch_audio_devices()
@@ -937,7 +946,7 @@ class Player(
 
 
         def _seek_from_waveform(self, position_ms):
-            if self.media_player.duration() <= 0:
+            if self.media_player.duration() <= 0 or not self._can_seek_source():
                 return
             position_ms = max(0, min(int(position_ms), self.media_player.duration()))
             self._flush_pcm_output()
@@ -1615,6 +1624,17 @@ class Player(
             self.load_audio(str(self.playlist[self.current_index]))
 
 
+        def open_network_playback(self):
+            from ui.network_playback import NetworkPlaybackDialog
+
+            dialog = getattr(self, "_network_playback_dialog", None)
+            if dialog is None:
+                dialog = self._network_playback_dialog = NetworkPlaybackDialog(self)
+                dialog.finished.connect(lambda: setattr(self, "_network_playback_dialog", None))
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+
         def open_lrc(self):
             if not self.current_audio_path:
                 directory = ""
@@ -1944,6 +1964,9 @@ class Player(
         def closeEvent(self, event):
             if not getattr(self, "_closing", False):
                 self._closing = True
+                network_dialog = getattr(self, "_network_playback_dialog", None)
+                if network_dialog is not None:
+                    network_dialog.close()
                 self._suspend_ab_loop()
                 self._ab_loop_memory.clear()
                 self._close_statistics()

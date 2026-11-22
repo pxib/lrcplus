@@ -177,7 +177,7 @@ class AudioDeviceControllerMixin:
         self._apply_output_device({**self.playback_settings, "output_device": device_id})
         dialog.deleteLater()
         if (result == dialog.CONTINUE and not self._audio_output_unavailable
-                and self.current_audio_path):
+                and (self.current_audio_path or getattr(self, "_stream_url", None) is not None)):
             self.media_player.play()
 
     def _close_audio_device_dialog(self):

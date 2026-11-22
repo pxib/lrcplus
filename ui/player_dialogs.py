@@ -1,6 +1,6 @@
 import math
 
-from PySide6.QtCore import Qt, QTimer, Signal, QThread, QRect
+from PySide6.QtCore import Qt, QTimer, Signal, QThread, QRect, QRectF
 from PySide6.QtGui import QPixmap, QPainter, QColor, QPalette, QPen, QLinearGradient, QBrush
 from PySide6.QtWidgets import (
     QDialog,
@@ -26,6 +26,12 @@ class ClickableSlider(QSlider):
     """Click or drag to seek, using the current style's handle geometry."""
 
     wheelSeekRequested = Signal(int)
+    _live = False
+
+    def set_live(self, live):
+        if self._live != live:
+            self._live = live
+            self.update()
 
     def set_loop_colors(self, start, end):
         self._loop_colors = (QColor(start), QColor(end))
@@ -54,6 +60,18 @@ class ClickableSlider(QSlider):
         return option, groove, markers
 
     def paintEvent(self, event):
+        if self._live:
+            option = QStyleOptionSlider()
+            self.initStyleOption(option)
+            groove = self.style().subControlRect(
+                QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderGroove, self,
+            )
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#ef4444"))
+            painter.drawRoundedRect(QRectF(groove.x(), (self.height() - 4) / 2, groove.width(), 4), 2, 2)
+            return
         super().paintEvent(event)
         if self.orientation() != Qt.Orientation.Horizontal or self.maximum() <= self.minimum():
             return
@@ -173,9 +191,15 @@ class ClickableTimeLabel(QLabel):
     """A time label that emits a click for switching its display mode."""
 
     clicked = Signal()
+    _clickable = True
+
+    def set_clickable(self, clickable):
+        if self._clickable != clickable:
+            self._clickable = clickable
+            self.setCursor(Qt.CursorShape.PointingHandCursor if clickable else Qt.CursorShape.ArrowCursor)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
+        if self._clickable and event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
 

@@ -98,11 +98,11 @@ def transport(qapp):
 
 @pytest.mark.parametrize("preamp", [0, -6])
 def test_continuity_and_audible_track_boundary_use_single_sink(transport, preamp):
-    from plugins.core.equalizer.dsp import FREQUENCIES, EqualizerProcessor
+    from plugins.core.equalizer.dsp import EqualizerProcessor
 
     player = transport
     if preamp:
-        player._equalizer = EqualizerProcessor(lambda: (preamp, (0,) * len(FREQUENCIES)))
+        player._equalizer = EqualizerProcessor(lambda: (preamp, ()))
     sources = []
 
     def advance(status):
@@ -511,11 +511,11 @@ def test_statistics_split_audible_gapless_tracks_and_repeats(sleep_window, monke
 @pytest.mark.parametrize("partial", [False, True])
 @pytest.mark.parametrize("preamp", [0, -6])
 def test_crossfade_mixes_overlap_and_preserves_successor_clock(transport, partial, preamp):
-    from plugins.core.equalizer.dsp import FREQUENCIES, EqualizerProcessor
+    from plugins.core.equalizer.dsp import EqualizerProcessor
 
     player = transport
     if preamp:
-        player._equalizer = EqualizerProcessor(lambda: (preamp, (0,) * len(FREQUENCIES)))
+        player._equalizer = EqualizerProcessor(lambda: (preamp, ()))
     player._crossfade_seconds = 1
     def advance(status):
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
