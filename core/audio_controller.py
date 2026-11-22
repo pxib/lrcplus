@@ -56,15 +56,16 @@ class AudioController:
         def _replaygain_multiplier(self):
             return getattr(self, "_replaygain_tags", ReplayGain()).multiplier(*self._replaygain_options())
 
-        def _load_replaygain(self):
+        def _load_replaygain(self, *, refresh=False):
             job = getattr(self, "_replaygain_job", None)
             if job is not None:
                 job.cancel()
-            self._replaygain_tags = ReplayGain()
-            self._configure_pcm_volume(self.volume_slider.value())
+            if not refresh:
+                self._replaygain_tags = ReplayGain()
+                self._configure_pcm_volume(self.volume_slider.value())
             path = getattr(self, "current_audio_path", None)
             if (path is None or self._replaygain_options()[0] == "off"
-                    or getattr(self.media_player, "_gapless_active", False)):
+                    or (not refresh and getattr(self.media_player, "_gapless_active", False))):
                 return
             if job is None:
                 job = self._replaygain_job = BackgroundJob(self, "replaygain-tags")
@@ -74,6 +75,10 @@ class AudioController:
         def _apply_replaygain(self, result):
             path, tags = result
             if path == self.current_audio_path:
+                if getattr(self.media_player, "_gapless_active", False):
+                    decoder = self.media_player._decoder
+                    if decoder is not None and path_key(decoder.path) == path_key(path):
+                        decoder.tags = tags
                 self._replaygain_tags = tags
                 self._configure_pcm_volume(self.volume_slider.value())
 

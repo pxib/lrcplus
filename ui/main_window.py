@@ -1990,6 +1990,9 @@ class Player(
                 network_dialog = getattr(self, "_network_playback_dialog", None)
                 if network_dialog is not None:
                     network_dialog.close()
+                replaygain_dialog = getattr(self, "_replaygain_scan_dialog", None)
+                if replaygain_dialog is not None:
+                    replaygain_dialog.close()
                 self._stream_lyrics.close()
                 self._suspend_ab_loop()
                 self._ab_loop_memory.clear()

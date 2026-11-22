@@ -3,7 +3,7 @@
 from html import escape
 from threading import Event
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -11,18 +11,78 @@ from PySide6.QtWidgets import (
 
 from core.background_job import BackgroundJob
 from core.radio_browser import PAGE_SIZE, search_stations
+from core.radio_favorites import load_station_favorites, save_station_favorites
 from core.radio_history import clear_station_history, load_station_history
 from core.stream_lyrics import watch_icy_titles
 
 
+def _selected_station(results):
+    selected = results.selectedItems()
+    return selected[0].data(0, Qt.ItemDataRole.UserRole) if selected else None
+
+
+class StationFavorites(QObject):
+    changed = Signal()
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self._stations = load_station_favorites()
+
+    def stations(self):
+        return sorted(self._stations.values(), key=lambda station: (station.name.casefold(), station.key))
+
+    def contains(self, station):
+        return station.key in self._stations
+
+    def toggle(self, station):
+        stations = self._stations.copy()
+        if station.key in stations:
+            del stations[station.key]
+        else:
+            stations[station.key] = station
+        save_station_favorites(stations.values())
+        self._stations = stations
+        self.changed.emit()
+
+
+class StationFavoriteButton(QPushButton):
+    _save_error = "Could not save station favorites."
+
+    def __init__(self, parent, favorites, results, status):
+        super().__init__(parent)
+        self.setAutoDefault(False)
+        self._favorites = favorites
+        self._results = results
+        self._status = status
+        self.clicked.connect(self._toggle)
+        favorites.changed.connect(self._refresh)
+        results.itemSelectionChanged.connect(self._refresh)
+        self._refresh()
+
+    def _refresh(self):
+        station = _selected_station(self._results)
+        self.setText("Remove Favorite" if station and self._favorites.contains(station) else "Add Favorite")
+        self.setEnabled(station is not None)
+
+    def _toggle(self):
+        station = _selected_station(self._results)
+        if station is not None:
+            try:
+                self._favorites.toggle(station)
+            except OSError:
+                self._status.setText(self._save_error)
+            else:
+                if self._status.text() == self._save_error:
+                    self._status.clear()
+
+
 class InternetRadioPage(QWidget):
-    def __init__(self, parent, player):
+    def __init__(self, parent, player, favorites):
         super().__init__(parent)
         self._player = player
         self._job = BackgroundJob(self, "radio-directory")
         self._job.finished.connect(self._show_results)
         self._job.failed.connect(self._show_error)
-        self._stations = ()
         self._query = ("", "", "")
         self._offset = 0
         self._started = False
@@ -87,6 +147,8 @@ class InternetRadioPage(QWidget):
         self.download_button.setToolTip("Search YouTube for the song on the station currently playing")
         self.download_button.clicked.connect(self._search_current_song)
         buttons.addWidget(self.download_button)
+        self.favorite_button = StationFavoriteButton(self, favorites, self.results, self.status)
+        buttons.addWidget(self.favorite_button)
         self.play_button = QPushButton("Play Station", self)
         self.play_button.clicked.connect(self._play_selected)
         buttons.addWidget(self.play_button)
@@ -107,7 +169,6 @@ class InternetRadioPage(QWidget):
     def _load_page(self, offset):
         self._offset = offset
         self.results.clear()
-        self._stations = ()
         self._update_play_button()
         self.previous_button.setEnabled(False)
         self.next_button.setEnabled(False)
@@ -115,12 +176,11 @@ class InternetRadioPage(QWidget):
         self._job.start(search_stations, *self._query, offset)
 
     def _show_results(self, page):
-        self._stations = page.stations
-        for index, station in enumerate(page.stations):
+        for station in page.stations:
             bitrate = f"{station.bitrate} kbps" if station.bitrate else ""
             item = QTreeWidgetItem((station.name, station.country, station.tags,
                                     " ".join(filter(None, (station.codec, bitrate)))))
-            item.setData(0, Qt.ItemDataRole.UserRole, index)
+            item.setData(0, Qt.ItemDataRole.UserRole, station)
             if station.tags:
                 item.setToolTip(2, f"<qt>{escape(station.tags)}</qt>")
             self.results.addTopLevelItem(item)
@@ -142,9 +202,8 @@ class InternetRadioPage(QWidget):
         self.play_button.setEnabled(bool(self.results.selectedItems()))
 
     def _play_selected(self):
-        selected = self.results.selectedItems()
-        if selected:
-            station = self._stations[selected[0].data(0, Qt.ItemDataRole.UserRole)]
+        station = _selected_station(self.results)
+        if station is not None:
             self._player.play_radio_station(station)
             self.status.setText(f"Selected station · {station.name}")
 
@@ -208,15 +267,14 @@ class InternetRadioPage(QWidget):
         self._job.close()
 
 
-class StationHistoryPage(QWidget):
-    def __init__(self, parent, play_station):
+class StationListPage(QWidget):
+    def __init__(self, parent, play_station, favorites, *, accessible_name, detail_heading):
         super().__init__(parent)
         self._play_station = play_station
-        self._history = []
         layout = QVBoxLayout(self)
         self.results = QTreeWidget(self)
-        self.results.setAccessibleName("Recently played radio stations")
-        self.results.setHeaderLabels(("Station", "Country", "Last played"))
+        self.results.setAccessibleName(accessible_name)
+        self.results.setHeaderLabels(("Station", "Country", detail_heading))
         self.results.setRootIsDecorated(False)
         self.results.setUniformRowHeights(True)
         header = self.results.header()
@@ -228,41 +286,57 @@ class StationHistoryPage(QWidget):
         self.results.itemActivated.connect(self._play_selected)
         layout.addWidget(self.results, 1)
 
-        buttons = QHBoxLayout()
+        self.buttons = QHBoxLayout()
         self.status = QLabel(self)
-        buttons.addWidget(self.status, 1)
-        self.clear_button = QPushButton("Clear History…", self)
-        self.clear_button.clicked.connect(self._clear_history)
-        buttons.addWidget(self.clear_button)
+        self.status.setWordWrap(True)
+        self.buttons.addWidget(self.status, 1)
+        self.favorite_button = StationFavoriteButton(self, favorites, self.results, self.status)
+        self.buttons.addWidget(self.favorite_button)
         self.play_button = QPushButton("Play Station", self)
+        self.play_button.setAutoDefault(False)
         self.play_button.clicked.connect(self._play_selected)
-        buttons.addWidget(self.play_button)
-        for button in (self.clear_button, self.play_button):
-            button.setAutoDefault(False)
-        layout.addLayout(buttons)
-        self.refresh()
+        self.buttons.addWidget(self.play_button)
+        layout.addLayout(self.buttons)
 
-    def refresh(self):
-        self._history = load_station_history()
+    def _set_stations(self, rows):
+        selected = _selected_station(self.results)
+        selected_row = None
         self.results.clear()
-        for index, (station, played) in enumerate(self._history):
-            item = QTreeWidgetItem((station.name, station.country, played.astimezone().strftime("%d %b %Y, %H:%M")))
-            item.setData(0, Qt.ItemDataRole.UserRole, index)
+        for station, detail in rows:
+            item = QTreeWidgetItem((station.name, station.country, detail))
+            item.setData(0, Qt.ItemDataRole.UserRole, station)
             self.results.addTopLevelItem(item)
-        if self._history:
-            self.results.setCurrentItem(self.results.topLevelItem(0))
-        self.status.setText("" if self._history else "No stations played yet.")
-        self.clear_button.setEnabled(bool(self._history))
+            if selected is not None and station.key == selected.key:
+                selected_row = item
+        if self.results.topLevelItemCount():
+            self.results.setCurrentItem(selected_row or self.results.topLevelItem(0))
         self._update_play_button()
 
     def _update_play_button(self):
         self.play_button.setEnabled(bool(self.results.selectedItems()))
 
     def _play_selected(self):
-        selected = self.results.selectedItems()
-        if selected:
-            station, _ = self._history[selected[0].data(0, Qt.ItemDataRole.UserRole)]
+        station = _selected_station(self.results)
+        if station is not None:
             self._play_station(station)
+
+
+class StationHistoryPage(StationListPage):
+    def __init__(self, parent, play_station, favorites):
+        super().__init__(parent, play_station, favorites,
+                         accessible_name="Recently played radio stations", detail_heading="Last played")
+        self.clear_button = QPushButton("Clear History…", self)
+        self.clear_button.setAutoDefault(False)
+        self.clear_button.clicked.connect(self._clear_history)
+        self.buttons.insertWidget(1, self.clear_button)
+        self.refresh()
+
+    def refresh(self):
+        history = load_station_history()
+        self._set_stations((station, played.astimezone().strftime("%d %b %Y, %H:%M"))
+                           for station, played in history)
+        self.status.setText("" if history else "No stations played yet.")
+        self.clear_button.setEnabled(bool(history))
 
     def _clear_history(self):
         answer = QMessageBox.question(
@@ -277,3 +351,17 @@ class StationHistoryPage(QWidget):
                 self.status.setText("Could not clear station history.")
             else:
                 self.refresh()
+
+
+class StationFavoritesPage(StationListPage):
+    def __init__(self, parent, play_station, favorites):
+        super().__init__(parent, play_station, favorites,
+                         accessible_name="Favorite radio stations", detail_heading="Genre or tags")
+        self._favorites = favorites
+        favorites.changed.connect(self.refresh)
+        self.refresh()
+
+    def refresh(self):
+        stations = self._favorites.stations()
+        self._set_stations((station, station.tags) for station in stations)
+        self.status.setText("" if stations else "Add favorites from Internet Radio or Station History.")

@@ -16,7 +16,7 @@ from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaPlayer
 
 from core.audio_dsp import apply_pcm_gain_to_bytes
 from core.audio_sink import dispose_audio_sink
-from core.replaygain import ReplayGain, parse_replaygain
+from core.replaygain import ReplayGain, parse_replaygain, replaygain_with_scan
 
 
 class TrackDecoder:
@@ -55,6 +55,7 @@ class TrackDecoder:
                 self.tags = parse_replaygain(getattr(audio, "tags", None))
             except (OSError, ValueError, TypeError, MutagenError):
                 pass  # FFmpeg can decode formats whose tags Mutagen cannot read.
+            self.tags = replaygain_with_scan(self.path, self.tags)
             with self._condition:
                 if self._closed:
                     return

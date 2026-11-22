@@ -9,9 +9,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtMultimedia import QAudioBufferOutput, QMediaPlayer
 from PySide6.QtTest import QSignalSpy, QTest
+from PySide6.QtWidgets import QMessageBox
 
 from core.plugin_manager import PluginManager
 from core.radio_browser import Station, StationPage
+from core.radio_favorites import load_station_favorites
 from core.radio_history import load_station_history, remember_station
 from core.settings import get_playback_settings, save_playback_settings, save_statistics_settings
 from ui.main_window import Player
@@ -410,6 +412,55 @@ def test_radio_history_and_statistics_follow_actual_playback(qapp, stream_server
         window._network_playback_dialog.tabs.setCurrentWidget(history)
         history.play_button.click()
         assert player.source().toString() == refreshed.url
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_station_favorites_can_be_played_and_survive_clearing_history(qapp, stream_server, monkeypatch):
+    server, url = stream_server
+    server.available = True
+    station = Station("Anime FM", url, "Japan", "anime", station_id="anime-fm")
+    recent = Station("Chill Radio", url + "?chill", station_id="chill-radio")
+    same_station = Station("Anime FM HD", url + "?hd", station_id=station.station_id)
+    monkeypatch.setattr("ui.internet_radio.search_stations", lambda *_: StationPage((station, same_station), False))
+    monkeypatch.setattr(QMessageBox, "question", lambda *_: QMessageBox.StandardButton.Yes)
+    remember_station(recent)
+    window = Player()
+    player = window.media_player
+    monkeypatch.setattr(window, "_audio_output_unavailable", False)
+    player.setAudioBufferOutput(QAudioBufferOutput(window))
+    try:
+        window.open_network_playback()
+        dialog = window._network_playback_dialog
+        dialog.tabs.setCurrentWidget(dialog.radio)
+        wait_for(lambda: dialog.radio.favorite_button.isEnabled(), player)
+        dialog.radio.favorite_button.click()
+        assert dialog.favorites.results.topLevelItem(0).text(0) == station.name
+        dialog.radio.results.setCurrentItem(dialog.radio.results.topLevelItem(1))
+        assert dialog.radio.favorite_button.text() == "Remove Favorite"
+        assert load_station_favorites() == {station.key: station}
+
+        dialog.tabs.setCurrentWidget(dialog.history)
+        dialog.history.favorite_button.click()
+        dialog.history.clear_button.click()
+        assert load_station_history() == []
+        assert load_station_favorites() == {station.key: station, recent.key: recent}
+        dialog.close()
+
+        window.open_network_playback()
+        reopened = window._network_playback_dialog
+        reopened.tabs.setCurrentWidget(reopened.favorites)
+        assert reopened.favorites.results.topLevelItemCount() == 2
+        reopened.favorites.play_button.click()
+        assert player.source().toString() == station.url
+        wait_for(lambda: bool(load_station_history()), player)
+        assert load_station_history()[0][0] == station
+
+        reopened.favorites.favorite_button.click()
+        assert load_station_favorites() == {recent.key: recent}
+        assert reopened.favorites.results.topLevelItem(0).text(0) == recent.name
+        assert reopened.history.favorite_button.text() == "Add Favorite"
     finally:
         window.close()
         window.deleteLater()

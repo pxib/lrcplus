@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QVBoxLayout, QWidget,
 )
 
-from ui.internet_radio import InternetRadioPage, StationHistoryPage
+from ui.internet_radio import InternetRadioPage, StationFavorites, StationFavoritesPage, StationHistoryPage
 
 
 class NetworkPlaybackDialog(QDialog):
@@ -44,9 +44,12 @@ class NetworkPlaybackDialog(QDialog):
         direct_layout.addStretch()
         self.tabs.addTab(direct, "Direct URL")
 
-        self.radio = InternetRadioPage(self.tabs, player)
+        favorites = StationFavorites(self)
+        self.radio = InternetRadioPage(self.tabs, player, favorites)
         self.tabs.addTab(self.radio, "Internet Radio")
-        self.history = StationHistoryPage(self.tabs, player.play_radio_station)
+        self.favorites = StationFavoritesPage(self.tabs, player.play_radio_station, favorites)
+        self.tabs.addTab(self.favorites, "Favorites")
+        self.history = StationHistoryPage(self.tabs, player.play_radio_station, favorites)
         self.tabs.addTab(self.history, "Station History")
         player.station_history_changed.connect(self.history.refresh)
         self.tabs.currentChanged.connect(self._start_radio_if_selected)

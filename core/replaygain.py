@@ -1,4 +1,4 @@
-"""Read existing ReplayGain tags; never scan or modify audio files."""
+"""Read ReplayGain from local scans and embedded tags."""
 
 from dataclasses import dataclass
 import math
@@ -52,10 +52,25 @@ def parse_replaygain(tags):
     )))
 
 
+def replaygain_with_scan(path, tags):
+    from core.replaygain_cache import read_scan
+
+    scan = read_scan(path)
+    if scan is None:
+        return tags
+    track_gain, track_peak, album_gain, album_peak = scan
+    if track_gain is None:
+        track_gain, track_peak = tags.track_gain, tags.track_peak
+    if album_gain is None:
+        album_gain, album_peak = tags.album_gain, tags.album_peak
+    return ReplayGain(track_gain, track_peak, album_gain, album_peak)
+
+
 def read_replaygain(path):
     from mutagen import File, MutagenError
     try:
         audio = File(path)
-        return parse_replaygain(getattr(audio, "tags", None))
+        tags = parse_replaygain(getattr(audio, "tags", None))
     except (OSError, ValueError, TypeError, MutagenError):
-        return ReplayGain()
+        tags = ReplayGain()
+    return replaygain_with_scan(path, tags)

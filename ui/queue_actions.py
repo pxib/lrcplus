@@ -1,6 +1,7 @@
 """Connect the library and queue manager to core queue operations."""
 
 from pathlib import Path
+import shutil
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFileDialog, QMenu, QMessageBox
@@ -93,6 +94,9 @@ class QueueActionsMixin:
         if hasattr(self, "favorite_paths"):
             add_favorite_action(menu, paths, self.favorite_paths, self._set_tracks_favorite)
         menu.addSeparator()
+        replaygain = menu.addMenu("ReplayGain")
+        replaygain.addAction("Scan selected tracks…", lambda: self._open_replaygain_scan(paths))
+        replaygain.addAction("Scan selected albums…", lambda: self._open_replaygain_scan(paths, album=True))
         add_track_file_actions(menu, paths, self)
         remove = menu.addAction("Remove from library", lambda: self.remove_library_tracks(paths))
         remove.setToolTip("Keep files on disk and leave the queue and saved playlists unchanged. Exclude from future rescans.")
@@ -102,6 +106,45 @@ class QueueActionsMixin:
             menu.exec(self.library_table.viewport().mapToGlobal(pos))
         finally:
             menu.deleteLater()
+
+    def _replaygain_album_groups(self, paths):
+        selected = set(paths)
+        groups = []
+        for index in range(self.library_table.topLevelItemCount()):
+            parent = self.library_table.topLevelItem(index)
+            tracks = [parent.child(row).track for row in range(parent.childCount())]
+            album = tuple(track.path for track in tracks if track.album)
+            if selected.intersection(album):
+                groups.append(album)
+        return groups
+
+    def _open_replaygain_scan(self, paths, *, album=False):
+        from ui.replaygain_dialog import ReplayGainDialog
+
+        dialog = getattr(self, "_replaygain_scan_dialog", None)
+        if dialog is not None:
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        executable = shutil.which("ffmpeg")
+        if executable is None:
+            QMessageBox.warning(self, "ReplayGain Scan", "FFmpeg is required to scan ReplayGain. Add FFmpeg to PATH and try again.")
+            return
+        groups = self._replaygain_album_groups(paths) if album else [(path,) for path in dict.fromkeys(paths)]
+        if not groups:
+            QMessageBox.information(self, "ReplayGain Scan", "Select a track with album metadata to scan an album.")
+            return
+        dialog = self._replaygain_scan_dialog = ReplayGainDialog(self, executable, groups, album=album)
+        dialog.scanned.connect(self._replaygain_scans_saved)
+        dialog.finished.connect(lambda: setattr(self, "_replaygain_scan_dialog", None))
+        dialog.show()
+
+    def _replaygain_scans_saved(self, paths):
+        if not paths:
+            return
+        self._invalidate_gapless_preload()
+        if self.current_audio_path is not None and path_key(self.current_audio_path) in {path_key(path) for path in paths}:
+            self._load_replaygain(refresh=True)
 
     def _play_library_selection(self, paths):
         result = available_tracks(paths)

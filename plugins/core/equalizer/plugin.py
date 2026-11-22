@@ -3,10 +3,11 @@
 from dataclasses import asdict, dataclass
 from math import ceil, isfinite
 
-from PySide6.QtCore import Signal, Qt, QTimer
+from PySide6.QtCore import QSignalBlocker, Signal, Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QCheckBox, QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout,
-    QLabel, QMenu, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    QInputDialog, QLabel, QMenu, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
+    QSlider, QVBoxLayout, QWidget,
 )
 
 from plugins.core.equalizer.dsp import Band, EqualizerProcessor, FREQUENCIES_BY_COUNT, graphic_bands
@@ -21,6 +22,7 @@ FILTER_LABELS = {"bell": "Bell", "low_shelf": "Low shelf", "high_shelf": "High s
 FREQUENCY_RANGE = (20, 20000)
 GAIN_RANGE = (-18, 18)
 Q_RANGE = (0.1, 18)
+PRESET_NAME_LIMIT = 64
 
 
 def bounded_number(value, minimum, maximum, default):
@@ -39,6 +41,16 @@ def read_band(saved, default):
         q=round(bounded_number(saved.get("q"), *Q_RANGE, default.q), 2),
         shape=shape if isinstance(shape, str) and shape in FILTER_LABELS else "bell",
     )
+
+
+def eq_configuration(enabled, preamp, bands):
+    active_bands = tuple(band for band in bands if band.gain)
+    return (preamp, active_bands) if enabled and (preamp or active_bands) else None
+
+
+def clean_preset_name(value):
+    name = value.strip() if isinstance(value, str) else ""
+    return name if 0 < len(name) <= PRESET_NAME_LIMIT and name.isprintable() else None
 
 
 @dataclass(frozen=True)
@@ -62,6 +74,33 @@ class Curve:
 
     def to_settings(self):
         return {"gains": list(self.gains), "parametric": [asdict(band) for band in self.parametric]}
+
+
+@dataclass(frozen=True)
+class SavedPreset:
+    mode: str
+    count: int
+    preamp: int
+    curve: Curve
+
+    @classmethod
+    def from_settings(cls, saved):
+        if not isinstance(saved, dict):
+            return None
+        mode, count = saved.get("mode"), saved.get("band_count")
+        if mode not in ("graphic", "parametric") or type(count) is not int or count not in FREQUENCIES_BY_COUNT:
+            return None
+        values = saved.get("gains" if mode == "graphic" else "parametric")
+        if not isinstance(values, list) or len(values) != count:
+            return None
+        preamp = saved.get("preamp")
+        return cls(mode, count, max(-24, min(0, preamp)) if type(preamp) is int else 0,
+                   Curve.from_settings(saved, count))
+
+    def to_settings(self):
+        key = "gains" if self.mode == "graphic" else "parametric"
+        return {"mode": self.mode, "band_count": self.count, "preamp": self.preamp,
+                key: self.curve.to_settings()[key]}
 
 
 class GraphicControls(QWidget):
@@ -104,6 +143,10 @@ class GraphicControls(QWidget):
 
     def gains(self):
         return tuple(slider.value() for slider in self.sliders)
+
+    def set_gains(self, gains):
+        for slider, gain in zip(self.sliders, gains):
+            slider.setValue(gain)
 
 
 class ParametricControls(QWidget):
@@ -165,7 +208,10 @@ class ParametricControls(QWidget):
 
 
 class EqualizerPanel(QWidget):
-    def __init__(self, parent, enabled, preamp, curves, mode, count):
+    preview_changed = Signal(object)
+    preview_ended = Signal()
+
+    def __init__(self, parent, enabled, preamp, curves, mode, count, *, get_presets, store_presets):
         super().__init__(parent)
         self.setObjectName("equalizerPanel")
         policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
@@ -176,6 +222,9 @@ class EqualizerPanel(QWidget):
         layout.setSpacing(5)
         self._curves = curves
         self._controls = {}
+        self._previewing = False
+        self._get_presets = get_presets
+        self._store_presets = store_presets
         self.enabled = QCheckBox("Enable equalizer", self)
         self.enabled.setChecked(enabled)
 
@@ -205,6 +254,10 @@ class EqualizerPanel(QWidget):
         response_header = QHBoxLayout()
         response_header.addWidget(QLabel("<b>Frequency response</b>", self))
         response_header.addStretch()
+        self.bypass = QCheckBox("Bypass", self)
+        self.bypass.setEnabled(enabled)
+        self.bypass.setToolTip("Temporarily listen without equalization. This does not affect Save.")
+        response_header.addWidget(self.bypass)
         self.preamp = ThemedSpinBox(self)
         self.preamp.setRange(-24, 0)
         self.preamp.setSuffix(" dB")
@@ -224,6 +277,9 @@ class EqualizerPanel(QWidget):
         self._response_timer.setInterval(24)
         self._response_timer.timeout.connect(self._refresh_response)
         self.preamp.valueChanged.connect(self._queue_response)
+        self.enabled.toggled.connect(self.bypass.setEnabled)
+        self.enabled.toggled.connect(self._refresh_response)
+        self.bypass.toggled.connect(self._refresh_response)
 
         actions = QHBoxLayout()
         self._band_heading = QLabel(self)
@@ -234,13 +290,21 @@ class EqualizerPanel(QWidget):
         self._copy_graphic.clicked.connect(self._copy_graphic_bands)
         actions.addWidget(self._copy_graphic)
         self.presets = QPushButton("Presets", self)
-        self.presets.setToolTip("Load a curve into the current mode and band count. Save to apply it.")
+        self.presets.setToolTip("Try a preset in the current mode and band count. Save to keep it.")
         presets_menu = QMenu(self.presets)
         presets_menu.setObjectName("equalizerPresets")
         presets_menu.addAction("Flat", self._reset)
         presets_menu.addSeparator()
         for name in PRESETS:
             presets_menu.addAction(name, lambda _checked=False, preset=name: self._apply_preset(preset))
+        presets_menu.addSeparator()
+        self._my_presets_menu = presets_menu.addMenu("My Presets")
+        presets_menu.addAction("Save current as…", self._save_preset)
+        self._delete_preset_menu = presets_menu.addMenu("Delete preset")
+        for menu in (self._my_presets_menu, self._delete_preset_menu):
+            menu.setObjectName("equalizerPresets")
+        presets_menu.aboutToShow.connect(self._refresh_preset_menus)
+        self._refresh_preset_menus()
         self.presets.setMenu(presets_menu)
         actions.addWidget(self.presets)
         layout.addLayout(actions)
@@ -293,7 +357,22 @@ class EqualizerPanel(QWidget):
         self._response_timer.stop()
         bands = (graphic_bands(self.graphic.gains()) if self.mode() == "graphic"
                  else self.parametric.bands())
-        self.response.set_response(self.preamp.value(), bands)
+        preamp = self.preamp.value()
+        self.response.set_response(preamp, bands)
+        if self._previewing:
+            enabled = self.enabled.isChecked() and not self.bypass.isChecked()
+            self.preview_changed.emit(eq_configuration(enabled, preamp, bands))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._previewing = True
+        self._refresh_response()
+
+    def hideEvent(self, event):
+        self._previewing = False
+        self._response_timer.stop()
+        self.preview_ended.emit()
+        super().hideEvent(event)
 
     def _copy_graphic_bands(self):
         self.parametric.set_bands(graphic_bands(self.graphic.gains()))
@@ -302,14 +381,78 @@ class EqualizerPanel(QWidget):
         gains = preset_gains(name, self.count())
         bands = graphic_bands(gains)
         if self.mode() == "graphic":
-            for slider, gain in zip(self.graphic.sliders, gains):
-                slider.setValue(gain)
+            self.graphic.set_gains(gains)
         else:
             self.parametric.set_bands(bands)
         # Leave headroom for the combined boost, including overlapping bands.
         peak = round(float(response_db(0, bands).max()), 3)
         self.preamp.setValue(-ceil(max(0, peak)))
         self._refresh_response()
+
+    def _refresh_preset_menus(self):
+        self._my_presets_menu.clear()
+        self._delete_preset_menu.clear()
+        presets = self._get_presets()
+        for name in sorted(presets, key=str.casefold):
+            label = name.replace("&", "&&")
+            self._my_presets_menu.addAction(label, lambda _checked=False, key=name: self._load_preset(key))
+            self._delete_preset_menu.addAction(label, lambda _checked=False, key=name: self._delete_preset(key))
+        self._my_presets_menu.setEnabled(bool(presets))
+        self._delete_preset_menu.setEnabled(bool(presets))
+
+    def _save_preset(self):
+        name, accepted = QInputDialog.getText(self, "Save EQ Preset", "Preset name")
+        if not accepted:
+            return
+        name = clean_preset_name(name)
+        if name is None:
+            QMessageBox.warning(self, "Save EQ Preset", f"Enter a name of 1 to {PRESET_NAME_LIMIT} printable characters.")
+            return
+        presets = self._get_presets()
+        existing = next((key for key in presets if key.casefold() == name.casefold()), None)
+        if existing is not None:
+            answer = QMessageBox.question(self, "Replace EQ Preset", "Replace the preset with this name?",
+                                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                          QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            name = existing
+        curve = Curve(self.graphic.gains(), self.parametric.bands())
+        preset = SavedPreset(self.mode(), self.count(), self.preamp.value(), curve)
+        self._save_preset_collection(presets | {name: preset}, "Save EQ Preset")
+
+    def _load_preset(self, name):
+        preset = self._get_presets().get(name)
+        if preset is None:
+            return
+        with QSignalBlocker(self.modes), QSignalBlocker(self.counts):
+            self.modes.setCurrentIndex(self.modes.findData(preset.mode))
+            self.counts.setCurrentIndex(self.counts.findData(preset.count))
+        if preset.count not in self._controls:
+            self._create_controls(preset.count)
+        if preset.mode == "graphic":
+            self.graphic.set_gains(preset.curve.gains)
+        else:
+            self.parametric.set_bands(preset.curve.parametric)
+        self.preamp.setValue(preset.preamp)
+        self._show_active_mode()
+
+    def _delete_preset(self, name):
+        answer = QMessageBox.question(self, "Delete EQ Preset", "Delete the selected preset?",
+                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                      QMessageBox.StandardButton.No)
+        if answer == QMessageBox.StandardButton.Yes:
+            presets = self._get_presets().copy()
+            presets.pop(name, None)
+            self._save_preset_collection(presets, "Delete EQ Preset")
+
+    def _save_preset_collection(self, presets, title):
+        try:
+            self._store_presets(presets)
+        except OSError:
+            QMessageBox.warning(self, title, "Could not write your EQ presets.")
+        else:
+            self._refresh_preset_menus()
 
     @property
     def graphic(self):
@@ -348,6 +491,15 @@ class EqualizerPlugin:
     def on_load(self, context):
         self._api = context.api
         self._plugin_id = context.plugin_id
+        self._preview_owner = None
+        stored_presets = self._api.get_setting("custom_presets", {})
+        self._custom_presets = {}
+        if isinstance(stored_presets, dict):
+            for name, data in stored_presets.items():
+                name = clean_preset_name(name)
+                preset = SavedPreset.from_settings(data)
+                if name is not None and preset is not None:
+                    self._custom_presets[name] = preset
         saved = self._api.get_setting("equalizer", {})
         if not isinstance(saved, dict):
             saved = {}
@@ -385,38 +537,62 @@ class EqualizerPlugin:
         return EqualizerProcessor(lambda: self.configuration)
 
     def _create_panel(self, parent):
-        return EqualizerPanel(parent, self._enabled, self._preamp, self._curves, self._mode, self._count)
+        panel = EqualizerPanel(
+            parent, self._enabled, self._preamp, self._curves, self._mode, self._count,
+            get_presets=lambda: self._custom_presets, store_presets=self._store_custom_presets,
+        )
+        owner = object()
+        panel.preview_changed.connect(lambda configuration: self._preview(owner, configuration))
+        panel.preview_ended.connect(lambda: self._end_preview(owner))
+        panel.destroyed.connect(lambda: self._end_preview(owner))
+        return panel
+
+    def _store_custom_presets(self, presets):
+        self._api.set_setting("custom_presets", {name: preset.to_settings() for name, preset in presets.items()})
+        self._custom_presets = presets
 
     def _apply_panel(self, panel):
-        self._enabled = panel.enabled.isChecked()
-        self._preamp = panel.preamp.value()
-        self._mode = panel.mode()
-        self._count = panel.count()
-        self._curves = panel.curves()
+        enabled = panel.enabled.isChecked()
+        preamp = panel.preamp.value()
+        mode, count = panel.mode(), panel.count()
+        curves = panel.curves()
         self._api.set_setting("equalizer", {
-            **self._curves[10].to_settings(),
-            "enabled": self._enabled, "preamp": self._preamp, "mode": self._mode,
-            "band_count": self._count, "expanded": self._curves[31].to_settings(),
+            **curves[10].to_settings(),
+            "enabled": enabled, "preamp": preamp, "mode": mode,
+            "band_count": count, "expanded": curves[31].to_settings(),
         })
+        self._enabled, self._preamp = enabled, preamp
+        self._mode, self._count, self._curves = mode, count, curves
         self._update_configuration()
 
     def _update_configuration(self):
-        was_active = self.configuration is not None
         curve = self._curves[self._count]
         bands = curve.parametric if self._mode == "parametric" else graphic_bands(curve.gains)
-        active_bands = tuple(band for band in bands if band.gain)
-        self.configuration = ((self._preamp, active_bands)
-                              if self._enabled and (self._preamp or active_bands) else None)
-        self._refresh_route(was_active)
+        self._set_configuration(eq_configuration(self._enabled, self._preamp, bands))
 
-    def _refresh_route(self, was_active):
-        if self._window is not None and was_active != (self.configuration is not None):
+    def _set_configuration(self, configuration):
+        was_active = self.configuration is not None
+        self.configuration = configuration
+        if self._window is not None and was_active != (configuration is not None):
             self._window._refresh_equalizer_route()
 
+    def _preview(self, owner, configuration):
+        if self._window is None:
+            return
+        self._preview_owner = owner
+        if configuration is None and self.configuration is not None:
+            # Keep the PCM route warm for A/B switching with an identity filter.
+            configuration = (0, ())
+        self._set_configuration(configuration)
+
+    def _end_preview(self, owner):
+        if owner is self._preview_owner:
+            self._preview_owner = None
+            self._update_configuration()
+
     def on_unload(self, context):
-        was_active = self.configuration is not None
-        self.configuration = None
-        self._refresh_route(was_active)
+        self._preview_owner = None
+        self._set_configuration(None)
         self._window = None
 
 

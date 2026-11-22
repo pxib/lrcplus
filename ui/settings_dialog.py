@@ -1342,7 +1342,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         self.replaygain_combo.setCurrentIndex(max(0, self.replaygain_combo.findData(
             self.playback_settings.get("replaygain_mode", "off"))))
         self.replaygain_combo.setToolTip(
-            "Use existing ReplayGain tags to balance loudness. Album mode preserves "
+            "Use ReplayGain scans or embedded tags to balance loudness. Album mode preserves "
             "relative track levels and falls back to track tags. Untagged files are unchanged."
         )
         self._add_labeled(layout, "ReplayGain:", self.replaygain_combo)
