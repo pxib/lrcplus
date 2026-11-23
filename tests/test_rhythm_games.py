@@ -11,8 +11,8 @@ import wave
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
-from PySide6.QtGui import QTextDocumentFragment
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
+from PySide6.QtGui import QColor, QImage, QTextDocumentFragment
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QMainWindow, QMenu, QStackedWidget, QWidget
@@ -1224,7 +1224,8 @@ def test_mania_neon_bursts_outlast_key_feedback_and_overlap_in_a_lane(qapp, monk
         board.deleteLater()
 
 
-def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch):
+def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch, tmp_path):
+    monkeypatch.setattr(rhythm_games, "RESULT_MEDIA_DIR", tmp_path)
     host = QMainWindow()
     host.media_player = SimpleNamespace(playbackState=lambda: QMediaPlayer.PlaybackState.StoppedState)
     host.volume_slider = SimpleNamespace(value=lambda: 25)
@@ -1332,6 +1333,54 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch):
         assert dialog.tabs.isTabEnabled(0)
         dialog.tabs.setCurrentIndex(0)
         assert dialog.board is dialog.circle_board and dialog.start.text() == "Start"
+    finally:
+        dialog.reject()
+        host.deleteLater()
+        qapp.processEvents()
+
+
+def test_neon_result_frame_unmult_preserves_visible_color_and_soft_edges():
+    image = QImage(3, 1, QImage.Format.Format_RGB32)
+    image.setPixelColor(0, 0, QColor(0, 0, 0))
+    image.setPixelColor(1, 0, QColor(128, 64, 32))
+    image.setPixelColor(2, 0, QColor(20, 100, 255))
+
+    frame = mania.unmult_black(image)
+
+    assert frame.pixelColor(0, 0).alpha() == 0
+    assert frame.pixelColor(1, 0).getRgb() == (255, 128, 64, 128)
+    assert frame.pixelColor(2, 0).getRgb() == (20, 100, 255, 255)
+
+
+@pytest.mark.parametrize("dismiss", ("ended", "tab_changed"))
+def test_neon_result_dim_and_delay_clear_when_dismissed(qapp, monkeypatch, tmp_path, dismiss):
+    (tmp_path / "maniaallperfect.mp4").touch()
+    monkeypatch.setattr(rhythm_games, "RESULT_MEDIA_DIR", tmp_path)
+    host = QMainWindow()
+    api = SimpleNamespace(get_current_track=lambda: None, get_setting=lambda _key, default: default)
+    dialog = RhythmDialog(host, api, ())
+    monkeypatch.setattr(dialog.result_player, "setSource", Mock())
+    try:
+        dialog.show()
+        dialog.tabs.setCurrentIndex(1)
+        round_ = ManiaRound((ManiaNote(1000, 0),))
+        round_.press(1000, 0)
+        dialog.round = round_
+        dialog._finish_round()
+
+        assert dialog.result_overlay.isVisible() and dialog.result_overlay.geometry() == dialog.rect()
+        assert dialog.result_delay.isActive() and dialog.result_delay.interval() == 1000
+        assert dialog.result_player.playbackState() == QMediaPlayer.PlaybackState.StoppedState
+        assert dialog.start.isEnabled()
+
+        if dismiss == "ended":
+            dialog._result_media_status(QMediaPlayer.MediaStatus.EndOfMedia)
+        else:
+            dialog.tabs.setCurrentIndex(0)
+
+        assert dialog.result_overlay.isHidden()
+        assert not dialog.result_delay.isActive()
+        assert dialog.result_overlay.frame.isNull()
     finally:
         dialog.reject()
         host.deleteLater()
@@ -1447,6 +1496,42 @@ def test_mania_theme_selector_restores_the_saved_skin(qapp, monkeypatch):
             second.reject()
     finally:
         first.reject()
+        host.deleteLater()
+        qapp.processEvents()
+
+
+def test_only_neon_mania_uses_landscape_window_size(qapp, monkeypatch):
+    host = QMainWindow()
+    api = SimpleNamespace(get_current_track=lambda: None, get_setting=lambda _key, default: default, set_setting=Mock())
+    dialog = RhythmDialog(host, api, ())
+    try:
+        dialog.show()
+        monkeypatch.setattr(dialog, "screen", lambda: SimpleNamespace(availableGeometry=lambda: QRect(0, 0, 1280, 720)))
+        dialog.resize(910, 510)
+        regular_size = dialog.size()
+        dialog.tabs.setCurrentIndex(1)
+        landscape_size = dialog.size()
+        assert landscape_size != regular_size
+        assert abs(landscape_size.width() - landscape_size.height() * 16 / 9) <= 2
+
+        dialog.resize(920, 497)
+        dialog._select_passage()
+        assert dialog.width() == 920 and dialog.height() == 497
+        dialog.mania_theme.setCurrentIndex(dialog.mania_theme.findData("classic"))
+        assert dialog.size() == regular_size
+
+        dialog.mania_theme.setCurrentIndex(dialog.mania_theme.findData("neon"))
+        assert dialog.size() == landscape_size
+        dialog.tabs.setCurrentIndex(0)
+        assert dialog.size() == regular_size
+
+        dialog.resize(760, 520)
+        regular_size = dialog.size()
+        dialog.tabs.setCurrentIndex(1)
+        dialog.tabs.setCurrentIndex(0)
+        assert dialog.size() == regular_size
+    finally:
+        dialog.reject()
         host.deleteLater()
         qapp.processEvents()
 

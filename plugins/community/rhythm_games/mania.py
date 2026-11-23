@@ -5,9 +5,10 @@ from itertools import cycle, groupby, pairwise
 from math import sin, tau
 from time import monotonic
 
+import numpy as np
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
-    QBrush, QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPainterPathStroker,
+    QBrush, QColor, QFont, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPainterPathStroker,
     QPen, QPixmap, QPolygonF, QRadialGradient,
 )
 from PySide6.QtMultimedia import QSoundEffect
@@ -104,6 +105,54 @@ def assign_lanes(notes):
     return tuple(result)
 
 
+def mania_result_name(counts, *, failed):
+    if failed:
+        return "fail"
+    if counts[0] or counts.get(MANIA_BAD, 0) or counts[50]:
+        return "clear"
+    if counts[100]:
+        return "fullcombo"
+    return "allperfect"
+
+
+def unmult_black(image):
+    image = image.convertToFormat(QImage.Format.Format_RGBA8888)
+    pixels = np.ndarray((image.height(), image.width(), 4), dtype=np.uint8,
+                        buffer=image.bits(), strides=(image.bytesPerLine(), 4, 1))
+    # The source RGB is already multiplied by alpha against black.
+    alpha = pixels[..., 3]
+    np.maximum(pixels[..., 0], pixels[..., 1], out=alpha)
+    np.maximum(alpha, pixels[..., 2], out=alpha)
+    image.reinterpretAsFormat(QImage.Format.Format_RGBA8888_Premultiplied)
+    return image
+
+
+class ManiaResultOverlay(QWidget):
+    def __init__(self, parent, board):
+        super().__init__(parent)
+        self.board = board
+        self.frame = QImage()
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.hide()
+
+    def set_frame(self, image):
+        self.frame = image if image.isNull() else unmult_black(image)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 128))
+        if self.frame.isNull():
+            return
+        origin = self.board.mapTo(self.parentWidget(), self.board.rect().topLeft())
+        size = self.frame.size().scaled(self.board.size(), Qt.AspectRatioMode.KeepAspectRatio)
+        target = QRectF(origin.x() + (self.board.width() - size.width()) / 2,
+                        origin.y() + (self.board.height() - size.height()) / 2,
+                        size.width(), size.height())
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.drawImage(target, self.frame)
+
+
 class ManiaSounds:
     def __init__(self, parent, directory):
         def load(name):
@@ -163,15 +212,7 @@ class ManiaSounds:
         self.holds[lane].stop()
         self.golden_holds[lane].stop()
 
-    def play_result(self, counts, *, failed):
-        if failed:
-            name = "fail"
-        elif counts[0] or counts.get(MANIA_BAD, 0) or counts[50]:
-            name = "clear"
-        elif counts[100]:
-            name = "fullcombo"
-        else:
-            name = "allperfect"
+    def play_result(self, name):
         self.play(self.results[name])
 
 

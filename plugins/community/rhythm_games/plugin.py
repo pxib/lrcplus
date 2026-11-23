@@ -14,9 +14,9 @@ from threading import Event
 from time import monotonic
 import wave
 
-from PySide6.QtCore import QBuffer, QIODevice, QPointF, QRectF, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QCursor, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QSoundEffect
+from PySide6.QtCore import QBuffer, QIODevice, QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QCursor, QImage, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QSoundEffect, QVideoSink
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QSpinBox, QTabWidget,
     QVBoxLayout, QWidget,
@@ -25,7 +25,8 @@ from PySide6.QtWidgets import (
 from core.background_job import BackgroundJob
 from core.rhythm_analysis import BeatGrid, beat_grid, load_audio_rhythm
 from plugins.community.rhythm_games.mania import (
-    LANE_KEYS, MANIA_BAD, MANIA_DEMO, MAX_LIFE, SCORE_METER_MAX, SCORE_RANKS, ManiaBoard, ManiaSounds, assign_lanes,
+    LANE_KEYS, MANIA_BAD, MANIA_DEMO, MAX_LIFE, SCORE_METER_MAX, SCORE_RANKS, ManiaBoard, ManiaResultOverlay,
+    ManiaSounds, assign_lanes, mania_result_name,
 )
 
 
@@ -33,6 +34,7 @@ from plugins.community.rhythm_games.mania import (
 OVERALL_DIFFICULTY = 5
 CIRCLE_SIZE = 4
 LEAD_IN_MS = 1200
+NEON_WINDOW_SIZE = QSize(960, 540)
 FADE_IN_MS = 400
 MAX_VISIBLE_TARGETS = 5
 DENSE_PREVIEW_MS = 450
@@ -107,7 +109,9 @@ PATTERN_ALTERNATIVES = {
     "zigzag": ("s_curve", "arc"),
 }
 SLIDER_DISTANCE_PER_BEAT = 135
-HIT_SOUND_PATH = Path(__file__).resolve().parents[3] / "assets" / "rhythm" / "hit.wav"
+PLUGIN_DIR = Path(__file__).resolve().parent
+HIT_SOUND_PATH = PLUGIN_DIR / "rhythm" / "hit.wav"
+RESULT_MEDIA_DIR = PLUGIN_DIR / "media"
 HIT_SOUND_GAIN = 0.5
 HOW_TO_PLAY = (
     "Aim and tap Z, X, Space, or either mouse button as the ring closes. "
@@ -1801,13 +1805,24 @@ class RhythmDialog(QDialog):
         self._waiting_for_rhythm = False
         self._mania_source = None
         self._mania_notes = ()
+        self._pre_neon_size = None
         self.setWindowTitle("Rhythm Games")
         self.setModal(True)
-        self.resize(760, 520)
 
         self.player = QMediaPlayer(self)
         self.output = QAudioOutput(self)
         self.player.setAudioOutput(self.output)
+        self._result_name = None
+        self.result_player = QMediaPlayer(self)
+        self.result_output = QAudioOutput(self)
+        self.result_sink = QVideoSink(self)
+        self.result_player.setAudioOutput(self.result_output)
+        self.result_player.setVideoSink(self.result_sink)
+        self.result_player.mediaStatusChanged.connect(self._result_media_status)
+        self.result_player.errorOccurred.connect(self._result_playback_error)
+        self.result_sink.videoFrameChanged.connect(self._show_result_frame)
+        self.result_delay = QTimer(self, interval=1000, singleShot=True, timerType=Qt.TimerType.PreciseTimer)
+        self.result_delay.timeout.connect(self.result_player.play)
         self.hit_sound = QSoundEffect(self)
         self.hit_sound.setSource(QUrl.fromLocalFile(str(HIT_SOUND_PATH)))
         self.mania_sounds = None
@@ -1891,14 +1906,20 @@ class RhythmDialog(QDialog):
         close = QPushButton("Close")
         close.clicked.connect(self.reject)
         buttons.addWidget(close)
+        self.result_overlay = ManiaResultOverlay(self, self.mania_board)
         self.passage.currentIndexChanged.connect(self._select_passage)
         self.tabs.currentChanged.connect(self._select_passage)
         self.mania_theme.currentIndexChanged.connect(self._change_mania_theme)
         self._show_passage()
+        self.resize(760, 520)
 
     @property
     def board(self):
         return self.tabs.currentWidget()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.result_overlay.setGeometry(self.rect())
 
     def analyze_track(self):
         job = self._rhythm_job = BackgroundJob(self, "rhythm-analysis")
@@ -1941,9 +1962,11 @@ class RhythmDialog(QDialog):
                 self.status.setText(self.board.instructions)
 
     def _select_passage(self):
+        previous_size = self.size()
         show_theme = self.board is self.mania_board
         self.mania_theme_label.setVisible(show_theme)
         self.mania_theme.setVisible(show_theme)
+        self._stop_result_video()
         if self.mania_sounds is not None:
             self.mania_sounds.stop()
         self.mania_board.clear_feedback()
@@ -1953,6 +1976,22 @@ class RhythmDialog(QDialog):
         self._show_passage()
         self.start.setText("Start")
         self.status.setText(self.board.instructions if self._selected_passage().notes else "Analyzing rhythm…")
+        self._resize_for_neon(show_theme and self.mania_board.theme == "neon", previous_size)
+
+    def _resize_for_neon(self, neon, previous_size):
+        if neon and self._pre_neon_size is None:
+            self._pre_neon_size = previous_size
+            size = NEON_WINDOW_SIZE
+            screen = self.screen()
+            if screen is not None:
+                frame = self.frameGeometry().size() - self.size()
+                available = screen.availableGeometry().size() - frame
+                size = size.scaled(size.boundedTo(available), Qt.AspectRatioMode.KeepAspectRatio)
+            self.resize(size)
+        elif not neon and self._pre_neon_size is not None:
+            self.layout().activate()
+            self.resize(self._pre_neon_size)
+            self._pre_neon_size = None
 
     def _change_mania_theme(self):
         theme = self.mania_theme.currentData()
@@ -2277,9 +2316,52 @@ class RhythmDialog(QDialog):
         self._set_controls_running(False)
         if mania and result.life is not None:
             self._stop_effects()
-            self.mania_sounds.play_result(result.counts, failed=result.failed)
+            self._play_result(mania_result_name(result.counts, failed=result.failed))
+
+    def _play_result(self, name):
+        path = RESULT_MEDIA_DIR / f"mania{name}.mp4"
+        if not path.is_file():
+            self.mania_sounds.play_result(name)
+            return
+        self._result_name = name
+        self.result_output.setDevice(self.output.device())
+        self.result_output.setVolume(self.output.volume() * HIT_SOUND_GAIN)
+        self.result_overlay.setGeometry(self.rect())
+        self.result_overlay.show()
+        self.result_overlay.raise_()
+        self.result_delay.start()
+        self.result_player.setSource(QUrl.fromLocalFile(str(path)))
+
+    def _show_result_frame(self, frame):
+        if self._result_name is not None and not self.result_delay.isActive() and frame.isValid():
+            self.result_overlay.set_frame(frame.toImage())
+
+    def _result_media_status(self, status):
+        if self._result_name is None:
+            return
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            self._stop_result_video()
+        elif status == QMediaPlayer.MediaStatus.InvalidMedia:
+            self._result_playback_error()
+
+    def _result_playback_error(self, *_error):
+        name = self._result_name
+        if name is not None:
+            self._stop_result_video()
+            self.mania_sounds.play_result(name)
+
+    def _stop_result_video(self):
+        if self._result_name is None:
+            return
+        self._result_name = None
+        self.result_delay.stop()
+        self.result_overlay.hide()
+        self.result_overlay.set_frame(QImage())
+        self.result_player.stop()
+        self.result_player.setSource(QUrl())
 
     def _stop_effects(self):
+        self._stop_result_video()
         self.hit_sound.stop()
         if self.mania_sounds is not None:
             self.mania_sounds.stop()
