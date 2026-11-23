@@ -5,6 +5,7 @@
   "api_version": 4,
   "dependencies": [
     {"requirement": "yt-dlp[default]>=2026.3.3", "import_name": "yt_dlp"},
-    {"requirement": "mutagen>=1,<2", "import_name": "mutagen"}
+    {"requirement": "mutagen>=1,<2", "import_name": "mutagen"},
+    {"requirement": "spotapi>=2.1.3,<3", "import_name": "spotapi", "optional": true}
   ]
 }

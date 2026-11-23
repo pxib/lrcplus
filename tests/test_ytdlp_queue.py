@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, Signal, Qt
+from PySide6.QtTest import QTest
 
 from plugins.community.ytdlp_import.queue import DownloadQueue
 from plugins.community.ytdlp_import.dialog import ImportDialog
@@ -309,6 +310,89 @@ def test_batch_dialog_validates_before_enqueuing(queue, qapp, tmp_path):
     assert dialog.tabs.currentIndex() == 0
     qapp.processEvents()
     assert len(queue.jobs) == 2
+    dialog.close()
+    dialog.deleteLater()
+
+
+def test_import_window_reveals_options_and_actions_when_relevant(queue, qapp, tmp_path, monkeypatch):
+    dialog = ImportDialog(queue.api, dict(DEFAULTS, download_folder=str(tmp_path)), download_queue=queue)
+    assert dialog.options_panel.isHidden()
+    assert dialog.track_preview.isHidden()
+    assert dialog.result_actions.isHidden()
+    assert dialog.download_button.isHidden()
+    assert dialog.cancel_button.isHidden()
+    assert [action.text() for action in dialog.actions_button.menu().actions() if not action.isSeparator()] == [
+        "Load playlist", "Paste batch", "Check setup",
+    ]
+    dialog.show()
+    qapp.processEvents()
+    search_height = dialog.height()
+    dialog.tabs.setCurrentWidget(dialog.queue_view)
+    qapp.processEvents()
+    assert dialog.height() > search_height
+    dialog.tabs.setCurrentIndex(0)
+    qapp.processEvents()
+    assert dialog.height() == search_height
+
+    dialog.options_button.click()
+    assert not dialog.options_panel.isHidden()
+    dialog.options_button.click()
+    assert dialog.options_panel.isHidden()
+
+    starts = []
+    monkeypatch.setattr(dialog, "_start", starts.append)
+    dialog.actions_button.menu().actions()[-1].trigger()
+    assert starts == ["check"]
+    dialog.url.setText("https://www.youtube.com/watch?v=example&list=example")
+    assert dialog.preview_button.text() == "Preview"
+    dialog.url.setText("https://www.youtube.com/playlist?list=example")
+    assert dialog.preview_button.text() == "Load playlist"
+    dialog.preview_button.click()
+    assert starts == ["check", "playlist"]
+    dialog._succeeded("playlist", {"results": [{"title": "Song", "url": "https://example.com/song"}]})
+    assert not dialog.result_actions.isHidden()
+
+    dialog._succeeded("preview", {"identity": "Youtube:song", "title": "Song"})
+    assert not dialog.track_preview.isHidden()
+    assert not dialog.download_button.isHidden()
+    dialog.url.clear()
+    assert dialog.track_preview.isHidden()
+    assert dialog.result_actions.isHidden()
+    assert dialog.download_button.isHidden()
+    dialog.close()
+    dialog.deleteLater()
+
+
+def test_spotify_playlist_fills_search_and_stays_available_between_searches(queue, qapp, tmp_path, monkeypatch):
+    dialog = ImportDialog(queue.api, dict(DEFAULTS, download_folder=str(tmp_path)), download_queue=queue)
+    actions = []
+    monkeypatch.setattr(dialog, "_start", actions.append)
+    dialog.url.setText("spotify:playlist:37i9dQZF1DWWQRwui0ExPn")
+    assert dialog.preview_button.text() == "Load playlist"
+    dialog.preview()
+    assert actions == ["spotify_playlist"]
+    dialog._event({"event": "spotify_playlist_page", "loaded": 2, "total": 2, "entries": [
+        {"title": "Song", "artist": "Artist", "query": "Artist Song"},
+        {"title": "Unavailable song at position 2"},
+    ]})
+    dialog._succeeded("spotify_playlist", {"title": "Mix", "loaded": 2, "searchable": 1})
+    dialog._finished()
+    assert dialog.spotify_results.count() == 2
+    assert not dialog.spotify_results.item(1).flags() & Qt.ItemFlag.ItemIsEnabled
+    dialog.show()
+    dialog.spotify_results.setCurrentRow(0)
+    dialog.spotify_results.setFocus()
+    QTest.keyClick(dialog.spotify_results, Qt.Key.Key_Return)
+    assert dialog.url.text() == "Artist Song"
+    assert actions == ["spotify_playlist"]
+    dialog._enqueue_selected()
+    assert not queue.items
+    dialog.preview()
+    assert actions == ["spotify_playlist", "search"]
+    assert dialog.spotify_results.isHidden()
+    dialog.spotify_playlist_toggle.click()
+    assert not dialog.spotify_results.isHidden()
+    assert dialog.spotify_results.count() == 2
     dialog.close()
     dialog.deleteLater()
 

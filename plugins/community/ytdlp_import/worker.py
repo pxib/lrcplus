@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from html import unescape
 import json
 from itertools import islice
 import os
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import time
 from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
 PREFIX = "LRCPLUS_YTDLP "
 
@@ -20,11 +22,15 @@ if __package__:
     from .artwork import find_cover, embed_cover, search_terms
     from .lyrics import find_lyrics
 else:
-    # Isolated Python excludes the script directory from its import path.
+    # Use the script directory for sibling imports only. The plugin's queue.py
+    # would otherwise shadow the standard library queue used by async workers.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from captions import convert_caption_file, caption_style_warning
-    from artwork import find_cover, embed_cover, search_terms
-    from lyrics import find_lyrics
+    try:
+        from captions import convert_caption_file, caption_style_warning
+        from artwork import find_cover, embed_cover, search_terms
+        from lyrics import find_lyrics
+    finally:
+        sys.path.pop(0)
 
 
 def emit(event, **values):
@@ -39,6 +45,95 @@ def validate_url(value):
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("URLs containing login credentials are not supported.")
     return value
+
+
+def _spotify_url(value, kind):
+    value = value.strip()
+    spotify_id = r"([a-zA-Z0-9]{22})"
+    match = re.fullmatch(f"spotify:{kind}:{spotify_id}", value, re.IGNORECASE)
+    if match is None:
+        try:
+            parsed = urlsplit(value)
+        except ValueError:
+            return None
+        if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != "open.spotify.com":
+            return None
+        owner = r"(?:user/[^/]+/)?" if kind == "playlist" else ""
+        match = re.fullmatch(rf"/(?:intl-[a-zA-Z-]+/)?{owner}{kind}/{spotify_id}/?", parsed.path)
+    return f"https://open.spotify.com/{kind}/{match[1]}" if match else None
+
+
+def spotify_track_url(value):
+    return _spotify_url(value, "track")
+
+
+def spotify_playlist_url(value):
+    return _spotify_url(value, "playlist")
+
+
+def _track_query(artist, title):
+    return " ".join(f"{artist} {title}".split())[:500].rstrip()
+
+
+def spotify_search_query(url):
+    url = spotify_track_url(url)
+    if url is None:
+        raise ValueError("Paste a Spotify song link to fill the search box.")
+    request = Request(url, headers={"Accept-Language": "en", "Accept": "text/html"})
+    try:
+        with urlopen(request, timeout=8) as response:
+            page = response.read(256 * 1024).decode("utf-8", errors="replace")
+    except OSError as error:
+        raise ValueError("Could not open the Spotify track page. Try again or enter the song and artist manually.") from error
+
+    # The public English track page title includes the song and credited artists.
+    match = re.search(r"<title>([^<]*)</title>", page, re.IGNORECASE)
+    if match:
+        display_title = " ".join(unescape(match[1]).split())
+        credits = re.fullmatch(r"(.+) - (?:song and lyrics|song, lyrics, and music video) by (.+) \| Spotify",
+                               display_title, re.IGNORECASE)
+        if credits:
+            title, artist = credits.groups()
+            return {"query": _track_query(artist, title)}
+    raise ValueError("Could not read the song and artist from Spotify. Enter them in the search box to continue.")
+
+
+def spotify_playlist(url):
+    import asyncio
+
+    url = spotify_playlist_url(url)
+    if url is None:
+        raise ValueError("Paste a public Spotify playlist link.")
+    try:
+        from spotapi import Catalogue
+        from spotapi.models import PlaylistTrack
+    except ImportError as error:
+        raise ValueError("Install or repair SpotAPI in Settings > Dependencies, then restart to load Spotify playlists.") from error
+
+    async def load():
+        loaded = searchable = 0
+        async with Catalogue() as spotify:
+            playlist = await spotify.get_playlist(url)
+            async for page in spotify.get_playlist_items(url):
+                results = []
+                for entry in page:
+                    loaded += 1
+                    song = entry.item
+                    if not isinstance(song, PlaylistTrack) or not song.name.strip():
+                        results.append({"title": f"Unavailable song at position {loaded}"})
+                        continue
+                    artists = song.artists.items if song.artists else ()
+                    artist = ", ".join(credit.profile.name for credit in artists if credit.profile and credit.profile.name)
+                    results.append({"title": song.name, "artist": artist, "query": _track_query(artist, song.name)})
+                    searchable += 1
+                emit("spotify_playlist_page", entries=results, loaded=loaded, total=playlist.total_count)
+        return {"title": playlist.name, "loaded": loaded, "searchable": searchable}
+
+    try:
+        return asyncio.run(load())
+    except Exception as error:
+        emit("log", message=f"Spotify playlist lookup failed: {error}"[:1000])
+        raise ValueError("Could not load the Spotify playlist. Check that it is public and try again.") from error
 
 
 def identity(info):
@@ -582,6 +677,10 @@ def main():
         action = request["action"]
         if action == "search":
             result = search(request["query"], request["config"])
+        elif action == "spotify_search_query":
+            result = spotify_search_query(request["url"])
+        elif action == "spotify_playlist":
+            result = spotify_playlist(request["url"])
         elif action == "playlist":
             result = playlist(request["url"], request["config"], start=request.get("start", 1))
         elif action == "preview":

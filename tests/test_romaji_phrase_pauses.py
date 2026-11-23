@@ -66,6 +66,7 @@ def test_grammatical_spaces_are_not_phrase_pauses():
 @pytest.mark.parametrize("source_key", ["ruby_source", "reading_source"])
 def test_explicit_nani_reading_edits_are_preserved(source_key):
     _, tokens = phrase_tokens(" ")
+    tokens[2]["reading"] = "なん"
     tokens[2][source_key] = "manual"
     assert "".join(all_romaji_texts(tokens)) == "aa, nan mo nai"
 

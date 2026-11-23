@@ -1,5 +1,6 @@
 import base64
 from io import BytesIO
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -82,6 +83,89 @@ def test_search_rejects_empty_or_excessive_queries(youtube, query):
     assert not youtube.calls
 
 
+@pytest.mark.parametrize("label", ["song and lyrics", "Song, Lyrics, and Music Video"])
+def test_spotify_track_lookup_uses_public_song_title_and_credits(monkeypatch, label):
+    track_id = "6oh7sJRadSp6vjb5Qy4mVx"
+
+    def open_page(request, *, timeout):
+        assert request.full_url == f"https://open.spotify.com/track/{track_id}"
+        assert request.get_header("Accept-language") == "en"
+        assert timeout > 0
+        return BytesIO(f"<title>Live &amp; Loud - {label} by Artist A, Artist B | Spotify</title>".encode())
+
+    monkeypatch.setattr(worker, "urlopen", open_page)
+    assert worker.spotify_search_query(f"https://open.spotify.com/intl-de/track/{track_id}?si=share") == {
+        "query": "Artist A, Artist B Live & Loud",
+    }
+    assert worker.spotify_track_url(f"spotify:track:{track_id}") == f"https://open.spotify.com/track/{track_id}"
+    assert worker.spotify_track_url(f"https://open.spotify.com.example.com/track/{track_id}") is None
+    assert worker.spotify_track_url(f"https://open.spotify.com/album/{track_id}") is None
+
+
+def test_spotify_lookup_without_artist_prompts_for_manual_search(monkeypatch):
+    monkeypatch.setattr(worker, "urlopen", lambda *args, **kwargs: BytesIO(b"<title>Spotify</title>"))
+    with pytest.raises(ValueError, match="Could not read the song and artist"):
+        worker.spotify_search_query("spotify:track:6oh7sJRadSp6vjb5Qy4mVx")
+
+
+def test_spotify_playlist_reports_pages_with_duplicate_and_unavailable_entries(monkeypatch):
+    playlist_id = "37i9dQZF1DWWQRwui0ExPn"
+    canonical_url = f"https://open.spotify.com/playlist/{playlist_id}"
+    events = []
+
+    class PlaylistTrack:
+        name = "Track"
+        artists = SimpleNamespace(items=[SimpleNamespace(profile=SimpleNamespace(name="Artist"))])
+
+    class Catalogue:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get_playlist(self, url):
+            assert url == canonical_url
+            return SimpleNamespace(name="Mix", total_count=3)
+
+        async def get_playlist_items(self, url):
+            assert url == canonical_url
+            yield [SimpleNamespace(item=PlaylistTrack()), SimpleNamespace(item=None)]
+            yield [SimpleNamespace(item=PlaylistTrack())]
+
+    monkeypatch.setitem(sys.modules, "spotapi", SimpleNamespace(Catalogue=Catalogue))
+    monkeypatch.setitem(sys.modules, "spotapi.models", SimpleNamespace(PlaylistTrack=PlaylistTrack))
+    monkeypatch.setattr(worker, "emit", lambda event, **data: events.append((event, data)))
+
+    assert worker.spotify_playlist(f"spotify:playlist:{playlist_id}") == {"title": "Mix", "loaded": 3, "searchable": 2}
+    song = {"title": "Track", "artist": "Artist", "query": "Artist Track"}
+    assert events == [
+        ("spotify_playlist_page", {"entries": [song, {"title": "Unavailable song at position 2"}], "loaded": 2, "total": 3}),
+        ("spotify_playlist_page", {"entries": [song], "loaded": 3, "total": 3}),
+    ]
+    assert worker.spotify_playlist_url(f"https://open.spotify.com/intl-en/user/spotify/playlist/{playlist_id}?si=share") == canonical_url
+
+
+def test_spotify_playlist_dependency_is_loaded_only_when_needed(monkeypatch):
+    monkeypatch.setitem(sys.modules, "spotapi", None)
+    with pytest.raises(ValueError, match="Install or repair SpotAPI in Settings > Dependencies"):
+        worker.spotify_playlist("spotify:playlist:37i9dQZF1DWWQRwui0ExPn")
+
+
+def test_isolated_worker_can_start_an_async_thread():
+    script = """
+import asyncio
+import runpy
+import sys
+
+runpy.run_path(sys.argv[1])
+assert asyncio.run(asyncio.to_thread(lambda: True))
+"""
+    result = subprocess.run([sys.executable, "-I", "-c", script, worker.__file__],
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.fixture
 def dialog(qapp):
     settings = {}
@@ -92,6 +176,23 @@ def dialog(qapp):
     window.close()
     window.deleteLater()
     qapp.processEvents()
+
+
+def test_spotify_link_fills_editable_search_without_running_it(dialog, monkeypatch):
+    actions = []
+    monkeypatch.setattr(dialog, "_start", actions.append)
+    dialog.url.setText("spotify:track:6oh7sJRadSp6vjb5Qy4mVx")
+    assert dialog.preview_button.text() == "Fill search"
+    dialog.preview()
+    assert actions == ["spotify_search_query"]
+    dialog._succeeded("spotify_search_query", {"query": "Artist Song"})
+    dialog._finished()
+    assert dialog.url.text() == "Artist Song"
+    assert dialog.preview_button.text() == "Search"
+    assert dialog.url.isEnabled()
+    assert actions == ["spotify_search_query"]
+    dialog.preview()
+    assert actions == ["spotify_search_query", "search"]
 
 
 def test_query_url_routing_and_selection_preserve_results(dialog, monkeypatch):

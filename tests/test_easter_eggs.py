@@ -7,6 +7,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QMessageBox
 
 from ui.easter_eggs import EasterEggs
+from ui.input_events import ControlWheelFilter
 from ui.main_window import Player
 
 
@@ -25,6 +26,8 @@ def test_brand_keeps_only_the_display_sized_logo(qapp):
 
 @pytest.fixture
 def player(qapp):
+    volume_filter = ControlWheelFilter(qapp)
+    qapp.installEventFilter(volume_filter)
     window = Player()
     window.show()
     qapp.processEvents()
@@ -33,11 +36,33 @@ def player(qapp):
     window.deleteLater()
     qapp.processEvents()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qapp.removeEventFilter(volume_filter)
+    volume_filter.deleteLater()
 
 
 def konami(widget):
     for key in EasterEggs.KONAMI:
         QTest.keyClick(widget, key)
+
+
+def test_cat_sequence_allows_arrow_taps_to_adjust_volume(player):
+    slider = player.volume_slider
+    slider.setValue(50)
+    start = slider.value()
+
+    for key, expected in (
+        (Qt.Key.Key_Up, start + slider.singleStep()),
+        (Qt.Key.Key_Up, start + 2 * slider.singleStep()),
+        (Qt.Key.Key_Down, start + slider.singleStep()),
+        (Qt.Key.Key_Down, start),
+    ):
+        QTest.keyClick(player.play_button, key)
+        assert slider.value() == expected
+
+    assert not player.seek_track.cat_enabled
+    for key in EasterEggs.KONAMI[4:]:
+        QTest.keyClick(player.play_button, key)
+    assert player.seek_track.cat_enabled
 
 
 def test_cat_unlock_ignores_typing_and_does_not_seek(player, qapp, monkeypatch):

@@ -46,7 +46,7 @@ def test_other_annotations_and_source_whitespace_are_preserved():
         {"text": "君", "reading": "きみ", "_romaji_word_start": True},
     ]
     original = deepcopy(tokens)
-    result = readings._with_number_readings(source, tokens)
+    result = readings._with_local_readings(source, tokens)
     assert "".join(token["text"] for token in result) == source
     assert [(token["text"], token.get("reading")) for token in result if token.get("reading")] == [
         ("歌", "うた"), ("3回", "さんかい"), ("20歳", "はたち"), ("君", "きみ"),
@@ -57,7 +57,7 @@ def test_other_annotations_and_source_whitespace_are_preserved():
 @pytest.mark.parametrize("source", ["12:30", "2026/11/01", "003", "I love you 3000", "ああ3.14", "ああ100%"])
 def test_ambiguous_numbers_receive_no_generated_ruby(source):
     segments = [{"text": source, "reading": None}]
-    assert readings._with_number_readings(source, segments) == segments
+    assert readings._with_local_readings(source, segments) == segments
 
 
 @pytest.mark.parametrize("unavailable", [False, True])

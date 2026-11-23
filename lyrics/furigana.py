@@ -481,47 +481,17 @@ def token_to_furigana_segments(surface, reading):
 
     reading = katakana_to_hiragana(reading)
 
+    if surface == "々" and is_kana(reading):
+        return [{"text": surface, "reading": reading}]
+
     if not reading or reading == "*" or not any(map(is_kanji, surface)):
         return [{"text": surface, "reading": None}]
-
-    # Handle repetition mark tokens such as 図々しく.  The okurigana (しく)
-    # belongs after the repeated kanji, so first align the trailing kana with
-    # the *end* of the reading.  Only then split the repeated-kanji reading.
-    # This also avoids confusing an earlier occurrence, e.g. the first い in
-    # 痛い -> いたい, with the visible trailing い.
-    if "々" in surface:
-        trailing_match = re.search(r"([\u3040-\u309f\u30a0-\u30ff\u30fc]+)$", surface)
-        trailing = trailing_match.group(1) if trailing_match else ""
-        core_surface = surface[:-len(trailing)] if trailing else surface
-        core_reading = reading
-        if trailing:
-            hiragana_trailing = katakana_to_hiragana(trailing)
-            suffix_position = reading.rfind(hiragana_trailing)
-            if suffix_position >= 0 and suffix_position + len(hiragana_trailing) == len(reading):
-                core_reading = reading[:suffix_position]
-        if core_surface.endswith("々") and len(core_surface) >= 2:
-            base = core_surface[:-1]
-            if base and core_reading:
-                # For the common repetition pattern, split the reading into
-                # the first-kanji and repeated-kanji portions.
-                if len(core_reading) % 2 == 0:
-                    split = len(core_reading) // 2
-                    first_reading = core_reading[:split]
-                    second_reading = core_reading[split:]
-                    if first_reading and second_reading:
-                        result = [
-                            {"text": base, "reading": first_reading},
-                            {"text": "々", "reading": second_reading},
-                        ]
-                        if trailing:
-                            result.append({"text": trailing, "reading": None})
-                        return result
 
     segments = []
     text_position = 0
     reading_position = 0
     pattern = re.compile(
-        r"([\u3400-\u9fff]+)([\u3040-\u309f\u30a0-\u30ff\u30fc]*)"
+        r"((?:[\u3400-\u9fff]々?)+)([\u3040-\u309f\u30a0-\u30ff\u30fc]*)"
     )
 
     for match in pattern.finditer(surface):
@@ -573,7 +543,21 @@ def token_to_furigana_segments(surface, reading):
             ruby = reading[reading_position:]
             reading_position = len(reading)
 
-        segments.append({"text": kanji, "reading": ruby or None})
+        if ruby and re.fullmatch(r"(?:[\u3400-\u9fff]々)+", kanji):
+            pieces = split_reading_by_text_ranges(
+                kanji, ruby, [(i, i + 1) for i in range(len(kanji))]
+            )
+            # Repetition can voice the first kana of the second half (人々).
+            # Preserve whole-word ruby for readings with unclear boundaries.
+            if all(pieces) and all(
+                _without_initial_voicing(first) == _without_initial_voicing(second)
+                for first, second in zip(pieces[::2], pieces[1::2])
+            ):
+                segments.extend({"text": char, "reading": piece} for char, piece in zip(kanji, pieces))
+            else:
+                segments.append({"text": kanji, "reading": ruby})
+        else:
+            segments.append({"text": kanji, "reading": ruby or None})
 
         if suffix:
             segments.append({"text": suffix, "reading": None})
@@ -587,6 +571,11 @@ def token_to_furigana_segments(surface, reading):
         })
 
     return segments
+
+
+def _without_initial_voicing(reading):
+    return unicodedata.normalize("NFD", reading[0])[0] + reading[1:]
+
 
 def build_pinyin_segments(text):
     """Build ruby-compatible pinyin segments, one reading per Han character."""
@@ -1097,33 +1086,73 @@ def _romaji_joins_previous(word, previous):
     return False
 
 
-def _with_number_readings(text, segments):
-    """Annotate each complete Japanese quantity, independently of token splits.
+_KANJI_ITERATION = re.compile(r"[\u3400-\u9fff]々")
 
-    These are automatic reading tokens, before karaoke timestamps and manual
-    ruby are applied by the renderer. Grouping 1人 and 20歳 keeps their irregular
-    readings on the full base rather than leaving a second counter reading.
-    """
+
+def _recover_iteration_readings(text, offsets, occupied_spans):
+    """Retry split or omitted marks using the expanded spelling of each pair."""
+    candidates = {}
+    for match in _KANJI_ITERATION.finditer(text):
+        start, end = match.span()
+        if any(a < end and start < b for a, b in occupied_spans):
+            continue
+        owners = [(a, b, part) for a, b, part in offsets if a < end and start < b]
+        if len(owners) != 2:
+            continue
+        a, b, base = owners[0]
+        reading = base.get("reading")
+        if (a, b) == (start, end - 1) and reading and not owners[1][2].get("reading"):
+            expanded = text[start] * 2
+            candidates.setdefault(expanded, []).append((start, end, reading))
+
+    if not candidates:
+        return []
+
+    recovered = []
+    for word in _analyze("\n".join(candidates)) or ():
+        spelled_out = word.get("surface", "")
+        if spelled_out not in candidates:
+            continue
+        reading = katakana_to_hiragana(str(word.get("reading_raw") or word.get("reading") or ""))
+        if not is_kana(reading):
+            continue
+        for start, end, base_reading in candidates.pop(spelled_out):
+            # An intact pair can supply its own reading, including rendaku.
+            # Check it against the base in the original lyric before using it.
+            if reading.startswith(base_reading) and len(reading) > len(base_reading):
+                recovered.append((start, end, token_to_furigana_segments(text[start:end], reading)))
+    return recovered
+
+
+def _with_local_readings(text, segments, *, retry_iterations=False):
+    """Apply known Japanese readings across tokenizer boundaries."""
     if "".join(str(segment.get("text", "")) for segment in segments) != text:
         return segments
+    # Quantities keep their ruby grouped (e.g. 1人). The rare kanji in
+    # 磊々落々 can leave the first iteration mark unread by the analyzer.
+    replacements = [
+        (start, end, [{"text": text[start:end], "reading": reading}])
+        for start, end, reading in number_spans(text) if reading is not None
+    ]
+    replacements.extend(
+        (match.start(), match.end(), token_to_furigana_segments(match[0], "らいらいらくらく"))
+        for match in re.finditer("磊々落々", text)
+    )
+    if not replacements and not retry_iterations:
+        return segments
+
     offsets = []
     position = 0
     for segment in segments:
         end = position + len(str(segment.get("text", "")))
         offsets.append((position, end, segment))
         position = end
-    numbers = []
-    for start, end, reading in number_spans(text):
-        if reading is None:
-            continue
-        owners = [segment for a, b, segment in offsets if a < end and start < b]
-        if any(segment.get("reading") and (
-                segment.get("ruby_source") == "manual" or segment.get("reading_source") == "manual") for segment in owners):
-            continue
-        numbers.append((start, end, reading))
-    if not numbers:
+    if retry_iterations:
+        replacements.extend(_recover_iteration_readings(
+            text, offsets, [(start, end) for start, end, _ in replacements]
+        ))
+    if not replacements:
         return segments
-
     result = []
 
     def append_original(start, end):
@@ -1143,19 +1172,23 @@ def _with_number_readings(text, segments):
             result.append(piece)
 
     cursor = 0
-    for start, end, reading in numbers:
+    for start, end, parts in sorted(replacements, key=lambda replacement: replacement[0]):
+        owners = [segment for a, b, segment in offsets if a < end and start < b]
+        if any(segment.get("reading") and (
+                segment.get("ruby_source") == "manual" or segment.get("reading_source") == "manual") for segment in owners):
+            continue
         append_original(cursor, start)
         owner_start, _, owner = next(item for item in offsets if item[0] <= start < item[1])
         _, owner_end, last_owner = next(item for item in offsets if item[0] < end <= item[1])
-        result.append({
-            **owner,
-            "text": text[start:end],
-            "reading": reading,
-            "_romaji_word_start": bool(owner.get("_romaji_word_start", False)) if start == owner_start else True,
-            "_romaji_particle": False,
-            "_dictionary_word_start": bool(owner.get("_dictionary_word_start")) and start == owner_start,
-            "_dictionary_word_end": bool(last_owner.get("_dictionary_word_end")) and end == owner_end,
-        })
+        for i, part in enumerate(parts):
+            result.append({
+                **owner,
+                **part,
+                "_romaji_word_start": i == 0 and (start != owner_start or bool(owner.get("_romaji_word_start"))),
+                "_romaji_particle": False,
+                "_dictionary_word_start": i == 0 and start == owner_start and bool(owner.get("_dictionary_word_start")),
+                "_dictionary_word_end": i == len(parts) - 1 and end == owner_end and bool(last_owner.get("_dictionary_word_end")),
+            })
         cursor = end
     append_original(cursor, len(text))
     return result
@@ -1213,10 +1246,20 @@ def _build_segments_from_words(text, words, should_continue=None):
             segments.append({"text": text[source_position:found_at], "reading": None})
             previous_word = None
         reading = word.get("reading_raw") or word.get("reading")
-        if isinstance(reading, str) and reading and reading != "*":
+        attached_iteration = surface == "々" and found_at > 0 and is_kanji(text[found_at - 1])
+        if (isinstance(reading, str) and reading and reading != "*"
+                and (surface != "々" or attached_iteration)):
             parts = token_to_furigana_segments(surface, reading)
         else:
             parts = [{"text": surface, "reading": None}]
+
+        # Resolve common particle contexts before caching so ruby and romaji
+        # use the same reading. Counters such as 何か月 still use なん.
+        if (parts[0]["text"] == "何" and parts[0]["reading"] == "なん"
+                and surface != "何がし"
+                and re.match(r"[がをも]|に(?!も)|か(?![月国所条年])",
+                             katakana_to_hiragana(text[found_at + 1:found_at + 3]))):
+            parts[0]["reading"] = "なに"
 
         # Keep the tokenizer's word boundaries available to the display layer.
         # All-Romaji needs these boundaries because ordinary Japanese lyrics
@@ -1226,7 +1269,7 @@ def _build_segments_from_words(text, words, should_continue=None):
             for index, part in enumerate(parts):
                 part["_dictionary_word_start"] = index == 0
                 part["_dictionary_word_end"] = index == len(parts) - 1
-            parts[0]["_romaji_word_start"] = not _romaji_joins_previous(word, previous_word)
+            parts[0]["_romaji_word_start"] = not attached_iteration and not _romaji_joins_previous(word, previous_word)
             pos = _word_pos(word)
             particle = surface in {"は", "へ", "を"} and (not pos or "助詞" in pos)
             for part in parts:
@@ -1238,7 +1281,8 @@ def _build_segments_from_words(text, words, should_continue=None):
         previous_word = word if surface.strip() and not any(char.isspace() for char in surface) else None
     if source_position < len(text):
         segments.append({"text": text[source_position:], "reading": None})
-    return _with_number_readings(text, segments or _fallback(text))
+    retry_iterations = "々" in text and (should_continue is None or should_continue())
+    return _with_local_readings(text, segments or _fallback(text), retry_iterations=retry_iterations)
 
 def _split_segments_by_lines(segments, line_count):
     result = [[] for _ in range(line_count)]
@@ -1356,7 +1400,7 @@ def prefetch_furigana_batches(lines, batch_size=10, progress_callback=None, shou
             if should_continue and not should_continue():
                 break
             words = _analyze(text)
-            segments = _build_segments_from_words(text, words, should_continue) if words else _with_number_readings(text, _fallback(text))
+            segments = _build_segments_from_words(text, words, should_continue) if words else _with_local_readings(text, _fallback(text))
             _cache_furigana_segments(text, segments or _fallback(text))
             completed += 1
             if progress_callback:
@@ -1385,7 +1429,7 @@ def prefetch_furigana_batches(lines, batch_size=10, progress_callback=None, shou
                     _cache_furigana_segments(text, segments or _fallback(text))
             else:
                 for text in batch:
-                    _cache_furigana_segments(text, _with_number_readings(text, _fallback(text)))
+                    _cache_furigana_segments(text, _with_local_readings(text, _fallback(text)))
             completed += len(batch)
             if progress_callback: progress_callback(completed,total)
     return completed,total
@@ -1445,7 +1489,7 @@ def build_furigana_segments(text, progress_callback=None, should_continue=None, 
         elif mode == "furigana" or (mode == "auto" and language == "japanese"):
             words = _analyze(text)
             segments = (_build_segments_from_words(text, words, should_continue)
-                        if words else _with_number_readings(text, _fallback(text)))
+                        if words else _with_local_readings(text, _fallback(text)))
         else:
             segments = _fallback(text)
 

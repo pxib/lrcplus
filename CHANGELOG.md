@@ -1,6 +1,25 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [2026-11-23]
+
+### Added
+
+- Add eight artwork styles to **Audio Visualizer** in Lyrics. Choose Aurora, Particle Sphere, Radial, Mirror, Spectrogram, Stereo Oscilloscope, Waveform Ribbon, or Waterfall.
+- The yt-dlp plugin now supports Spotify playlists and individual songs, it relies on the SpotAPI dependency. If anything goes wrong, do not contact me /srs
+
+### Changed
+
+- Simplify the yt-dlp Audio Import window. Start with a compact search view and show preview and download controls as needed. Put folder, format, lyrics, and artwork settings under **Download options**, and move batch paste and setup checks under **More**.
+- Improve rendering performance for Aurora, Stereo Oscilloscope, Waveform Ribbon, and Waterfall, especially in large windows.
+- Flatten the artwork and seekbar visualizers when playback pauses or stops. The flat line starts fading after five seconds, and the live display returns when playback resumes.
+
+### Fixed
+
+- Use なに in furigana and romaji for common phrases such as 何を, 何が, and 何も. Keep なん in counter phrases such as 何か月.
+- Correct the ruby for 磊々落々 and recover missing readings for kanji iteration marks (々) when the analyzer can confirm them.
+- Make single Up and Down Arrow taps adjust volume immediately while keeping the Konami code available.
+
 ## [2026-11-22]
 
 ### Added

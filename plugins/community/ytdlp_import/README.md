@@ -31,7 +31,7 @@ and `"mutagen>=1,<2"` in their Python environment.
 
 ## Usage
 
-Open **Plugins > Search and import audio…**. Use **Check setup** to inspect the
+Open **Plugins > Search and import audio…**. Use **More > Check setup** to inspect the
 downloader, FFmpeg, and runtime. Enter a title or artist and select **Search**
 to find up to ten YouTube results with titles, channels, durations, and thumbnails
 when available. Live and upcoming broadcasts are excluded. Double-click a result (or
@@ -44,23 +44,33 @@ sessions. Use its history icon to recall an entry or clear history; typing
 also offers matching recent entries.
 
 You can also paste a URL and select **Preview** to see the
-title, creator, duration, and artwork when supplied by the source. Choose a
-download folder and M4A or MP3, then select **Download**.
+title, creator, duration, and artwork when supplied by the source. Select
+**Download**, or open **Download options** first to change the folder, audio
+format, artwork, lyrics, or playback queue preferences.
 
 ### Download queue, batches, and playlists
 
-Single-track downloads, **Paste batch** (one track URL per line, up to 1000),
+Single-track downloads, **More > Paste batch** (one track URL per line, up to 1000),
 and **Add selected to downloads** all use the same persistent queue. Use Ctrl
 or Shift to select multiple search results. Batch settings are captured when
 you add tracks; changing the format, destination, artwork, lyrics, or playback
 option later affects future additions.
 
-For a playlist URL, choose **Load playlist**, select the tracks you want, and
-choose **Add selected to downloads**. Playlists load 100 entries at a time;
+For a YouTube playlist URL, choose **Load playlist**. For other yt-dlp sources,
+use **More > Load playlist**. Select the tracks you want and choose
+**Add selected to downloads**. Playlists load 100 entries at a time;
 **Load more playlist tracks** fetches the next page. Private, unavailable,
 live, and upcoming entries are disabled when the listing identifies them.
 Other extraction failures are reported per track and do not stop the batch.
 Playlist order is preserved when adding completed tracks to playback.
+
+To read a public Spotify playlist, install **SpotAPI** in **Settings > Dependencies**
+and restart LRCPlus. Source installations can install `"spotapi>=2.1.3,<3"` in
+their Python environment. Paste the Spotify playlist link and select **Load playlist**.
+Double-click a song or press Enter on it to fill the search box with its artist and
+title. Edit the text if needed and select **Search** to find YouTube results.
+Use **Show Spotify playlist** to return to the list and pick another song.
+Public playlist lookup uses Spotify's web player and requires no Spotify login.
 
 The **Downloads** tab defaults to two concurrent tracks, adjustable from one
 to four. Each slot includes metadata, downloading, conversion, artwork, and
@@ -104,8 +114,9 @@ without another download. **Download again** creates a separate file.
 
 ## Album covers from MusicBrainz
 
-Enable **Use MusicBrainz for album cover** before selecting **Preview** to look
-up a release by track title and artist (and album, when the source supplies it).
+In **Download options**, enable **Use MusicBrainz for album cover** before
+selecting **Preview** to look up a release by track title and artist. The lookup
+also uses the album when the source supplies it.
 Matching front covers come from the [Cover Art Archive](https://musicbrainz.org/doc/Cover_Art_Archive/API).
 When a source lists several artists, the primary artist is used if the uploader
 confirms that name; auto-generated YouTube credits can also list composers.
@@ -123,9 +134,9 @@ source metadata, so some video titles and channel names will not match.
 
 ## Subtitles and synced lyrics
 
-Enable **Automatically find lyrics** to search [LRCLIB](https://lrclib.net/)
-when importing audio. The plugin matches the title and artist, checks the
-duration when available (within three seconds), and prefers synced `.lrc`
+In **Download options**, enable **Automatically find lyrics** to search
+[LRCLIB](https://lrclib.net/) when importing audio. The plugin matches the title
+and artist, checks the duration when available (within three seconds), and prefers synced `.lrc`
 lyrics over plain `.txt` lyrics. Matching lyrics are saved beside the audio
 and attached automatically, independently of **Use subtitles as synced lyrics**.
 Selected subtitle lyrics take precedence. No match or a lookup failure still
@@ -138,9 +149,10 @@ again. Existing remembered lyrics and `.lrcx`, `.lrc`, or `.txt` files beside
 that audio are reused. Files are never overwritten. The lookup runs in the
 cancellable worker and requires no additional dependency or account.
 
-After **Preview**, the **Subtitles** selector lists available languages with
-separate **Uploaded** and **Automatic** sources. Choose one to keep its original
-VTT/SRT file beside the audio. The default is audio only; your last subtitle
+After **Preview**, the **Subtitles** selector in **Download options** lists
+available languages with separate **Uploaded** and **Automatic** sources.
+Choose one to keep its original VTT/SRT file beside the audio. The default is
+audio only. Your last subtitle
 language/source is remembered for future previews when it is available.
 
 Enable **Use subtitles as synced lyrics (.lrc)** to create and attach line-timed

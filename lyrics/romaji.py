@@ -118,15 +118,6 @@ def all_romaji_texts(segments):
     their opening/closing role until the final punctuation-spacing pass.
     """
     raw_sources = ["\n" if segment.get("_line_break") else romaji_source(segment) for segment in segments]
-    for index, segment in enumerate(segments[:-1]):
-        # Prefer the requested nani reading in generated 何も. A dictionary
-        # may choose nan; explicit readings remain authoritative.
-        if (segment.get("text") == "何"
-                and raw_sources[index] in {"なん", "ナン"}
-                and segment.get("ruby_source") != "manual"
-                and segment.get("reading_source") != "manual"
-                and str(segments[index + 1].get("text", "")).startswith("も")):
-            raw_sources[index] = "なに"
     raw_sources, word_starts = _number_sources(segments, raw_sources)
     pauses = _authored_pause_offsets(raw_sources)
     sources = []

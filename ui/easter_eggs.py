@@ -206,8 +206,9 @@ class EasterEggs(QObject):
         if event.isAutoRepeat():
             return False
         key = event.key()
+        volume_key = key in (Qt.Key.Key_Up, Qt.Key.Key_Down)
         if event.type() == QEvent.Type.ShortcutOverride:
-            if key == self.KONAMI[0] or (self._sequence and key == self.KONAMI[len(self._sequence)]):
+            if not volume_key and self._sequence and key == self.KONAMI[len(self._sequence)]:
                 event.accept()
                 return True
             return False
@@ -222,7 +223,8 @@ class EasterEggs(QObject):
             self._sequence = ()
             self.host.seek_track.toggle_cat()
             return True
-        return bool(self._sequence)
+        # Let the volume filter handle Up and Down even within the sequence.
+        return bool(self._sequence) and not volume_key
 
     def show_budget_dialog(self):
         if self.minus_player is not None:

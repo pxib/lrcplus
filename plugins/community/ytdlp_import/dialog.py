@@ -2,17 +2,18 @@ import base64
 import math
 from pathlib import Path
 import time
+from urllib.parse import urlsplit
 
 from PySide6.QtCore import QDate, QEvent, QLocale, QSize, Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout,
-    QAbstractItemView, QTabWidget, QWidget,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout,
+    QAbstractItemView, QStyle, QStyleOptionTabWidgetFrame, QTabWidget, QToolButton, QWidget,
 )
 
 from plugins.community.ytdlp_import.job import ImportJob
-from plugins.community.ytdlp_import.worker import validate_url
+from plugins.community.ytdlp_import.worker import spotify_playlist_url, spotify_track_url, validate_url
 from ui.search_history import SearchHistoryLineEdit
 from plugins.community.ytdlp_import.queue_view import DownloadQueueView
 
@@ -60,6 +61,38 @@ def estimated_download_bytes(info, codec):
     return None
 
 
+class _ImportTabs(QTabWidget):
+    """Fit the current page so an idle search can use less space than Downloads."""
+
+    def _frame_size(self):
+        option = QStyleOptionTabWidgetFrame()
+        self.initStyleOption(option)
+        padding = self.style().sizeFromContents(QStyle.ContentsType.CT_TabWidget, option, QSize(0, 0), self)
+        return padding + QSize(0, self.tabBar().sizeHint().height())
+
+    def sizeHint(self):
+        size = super().sizeHint()
+        page = self.currentWidget()
+        if page is not None:
+            size.setHeight(page.sizeHint().height() + self._frame_size().height())
+        return size
+
+    def minimumSizeHint(self):
+        size = super().minimumSizeHint()
+        page = self.currentWidget()
+        if page is not None:
+            size.setHeight(page.minimumSizeHint().height() + self._frame_size().height())
+        return size
+
+    def heightForWidth(self, width):
+        page = self.currentWidget()
+        if page is None:
+            return super().heightForWidth(width)
+        frame = self._frame_size()
+        height = page.heightForWidth(max(0, width - frame.width()))
+        return (height if height >= 0 else page.sizeHint().height()) + frame.height()
+
+
 class ImportDialog(QDialog):
     _artwork_available_at = 0.0
 
@@ -69,6 +102,7 @@ class ImportDialog(QDialog):
         self.download_queue = download_queue
         self._playlist_url = None
         self._playlist_next = None
+        self._spotify_entries = []
         self.config = dict(settings)
         self.job = None
         self.info = None
@@ -95,13 +129,18 @@ class ImportDialog(QDialog):
         url_row = QHBoxLayout()
         url_row.addWidget(self.url, 1)
         url_row.addWidget(self.preview_button)
+        self.actions_button = QToolButton()
+        self.actions_button.setText("More")
+        self.actions_button.setAccessibleName("More import actions")
+        self.actions_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        actions = QMenu(self.actions_button)
         if self.download_queue is not None:
-            self.playlist_button = QPushButton("Load playlist")
-            self.playlist_button.clicked.connect(self._load_playlist)
-            url_row.addWidget(self.playlist_button)
-            self.batch_button = QPushButton("Paste batch")
-            self.batch_button.clicked.connect(self._paste_batch)
-            url_row.addWidget(self.batch_button)
+            actions.addAction("Load playlist", self._load_playlist)
+            actions.addAction("Paste batch", self._paste_batch)
+            actions.addSeparator()
+        actions.addAction("Check setup", lambda: self._start("check"))
+        self.actions_button.setMenu(actions)
+        url_row.addWidget(self.actions_button)
         self.search_results = QListWidget()
         self.search_results.setAccessibleName("Tracks. Select tracks to download; double-click or press Enter to preview.")
         self.search_results.setIconSize(QSize(80, 50))
@@ -115,13 +154,28 @@ class ImportDialog(QDialog):
             self.search_results.itemDoubleClicked.connect(self._select_result)
         self.search_results.itemActivated.connect(self._select_result)
         self.search_results.hide()
+        self.spotify_playlist_toggle = QPushButton("Show Spotify playlist")
+        self.spotify_playlist_toggle.setCheckable(True)
+        self.spotify_playlist_toggle.setAutoDefault(False)
+        self.spotify_playlist_toggle.toggled.connect(self._show_spotify_playlist)
+        self.spotify_playlist_toggle.hide()
+        self.spotify_results = QListWidget()
+        self.spotify_results.setAccessibleName("Spotify playlist. Double-click or press Enter on a song to fill search.")
+        self.spotify_results.setMaximumHeight(165)
+        self.spotify_results.itemDoubleClicked.connect(self._fill_spotify_search)
+        self.spotify_results.itemActivated.connect(self._fill_spotify_search)
+        self.spotify_results.installEventFilter(self)
+        self.spotify_results.hide()
         self.thumbnail = QLabel()
         self.thumbnail.setFixedSize(140, 100)
         self.thumbnail.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.thumbnail.setText("No artwork")
-        self.title = QLabel("Preview a track to begin.")
+        self.thumbnail.hide()
+        self.title = QLabel()
         self.title.setTextFormat(Qt.TextFormat.PlainText)
         self.title.setWordWrap(True)
+        title_font = self.title.font()
+        title_font.setBold(True)
+        self.title.setFont(title_font)
         self.album_details = QLabel()
         self.album_details.setTextFormat(Qt.TextFormat.PlainText)
         self.album_details.setWordWrap(True)
@@ -138,12 +192,14 @@ class ImportDialog(QDialog):
         text.setSpacing(3)
         text.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         text.addWidget(self.title)
-        text.addWidget(self.album_details)
-        text.addWidget(self.audio_quality)
         text.addWidget(self.artist)
-        info_row = QHBoxLayout()
+        text.addWidget(self.album_details)
+        self.track_preview = QWidget()
+        info_row = QHBoxLayout(self.track_preview)
+        info_row.setContentsMargins(0, 4, 0, 4)
         info_row.addWidget(self.thumbnail)
         info_row.addLayout(text, 1)
+        self.track_preview.hide()
 
         self.folder = QLineEdit(str(settings["download_folder"]))
         self.browse_button = QPushButton("Browse…")
@@ -213,14 +269,13 @@ class ImportDialog(QDialog):
         self.details_button.toggled.connect(self._sync_details)
         self.details.textChanged.connect(self._sync_details)
         self.details_button.hide()
-        self.setup_button = QPushButton("Check setup")
-        self.setup_button.clicked.connect(lambda: self._start("check"))
         self.retry_button = QPushButton("Retry")
         self.retry_button.clicked.connect(self._retry)
         self.retry_button.hide()
         self.download_button = QPushButton("Download")
         self.download_button.clicked.connect(self.download)
         self.download_button.setEnabled(False)
+        self.download_button.hide()
         self.download_size = QLabel()
         self.download_size.setToolTip(
             "Estimated source download size before audio conversion. Artwork and subtitles are extra."
@@ -232,18 +287,34 @@ class ImportDialog(QDialog):
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.cancel)
         self.cancel_button.setEnabled(False)
+        self.cancel_button.hide()
         close_button = QPushButton("Close")
         close_button.clicked.connect(self.reject)
+        self.options_button = QToolButton()
+        self.options_button.setText("Download options")
+        self.options_button.setCheckable(True)
+        self.options_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.options_button.setArrowType(Qt.ArrowType.RightArrow)
+        self.options_panel = QWidget()
+        options = QVBoxLayout(self.options_panel)
+        options.setContentsMargins(12, 2, 0, 6)
+        options.addLayout(form)
+        for widget in (self.subtitles_as_lyrics, self.subtitle_hint, self.automatically_find_lyrics,
+                       self.use_musicbrainz_cover, self.artwork_hint, self.add_to_queue,
+                       self.audio_quality, self.download_size):
+            options.addWidget(widget)
+        self.options_panel.hide()
+        self.options_button.toggled.connect(self._show_download_options)
         buttons = QHBoxLayout()
-        for button in (self.setup_button, self.details_button, self.retry_button):
+        for button in (self.options_button, self.details_button, self.retry_button):
             buttons.addWidget(button)
         buttons.addStretch()
-        for button in (self.again_button, self.download_size, self.download_button, self.cancel_button, close_button):
+        for button in (self.again_button, self.download_button, self.cancel_button, close_button):
             buttons.addWidget(button)
 
         outer = QVBoxLayout(self)
         if self.download_queue is not None:
-            self.tabs = QTabWidget()
+            self.tabs = _ImportTabs()
             outer.addWidget(self.tabs)
             search_page = QWidget()
             layout = QVBoxLayout(search_page)
@@ -253,9 +324,13 @@ class ImportDialog(QDialog):
         else:
             layout = outer
         layout.addLayout(url_row)
+        layout.addWidget(self.spotify_playlist_toggle, alignment=Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.spotify_results)
         layout.addWidget(self.search_results)
         if self.download_queue is not None:
-            selection_row = QHBoxLayout()
+            self.result_actions = QWidget()
+            selection_row = QHBoxLayout(self.result_actions)
+            selection_row.setContentsMargins(0, 0, 0, 0)
             self.enqueue_selected_button = QPushButton("Add selected to downloads")
             self.enqueue_selected_button.clicked.connect(self._enqueue_selected)
             selection_row.addWidget(self.enqueue_selected_button)
@@ -266,16 +341,11 @@ class ImportDialog(QDialog):
             self.more_button.clicked.connect(lambda: self._load_playlist(more=True))
             self.more_button.hide()
             selection_row.addWidget(self.more_button)
-            layout.addLayout(selection_row)
-        layout.addLayout(info_row)
-        layout.addLayout(form)
-        layout.addWidget(self.use_musicbrainz_cover)
-        layout.addWidget(self.artwork_hint)
-        layout.addWidget(self.subtitles_as_lyrics)
-        layout.addWidget(self.subtitle_hint)
+            selection_row.addStretch()
+            self.result_actions.hide()
+            layout.addWidget(self.result_actions)
+        layout.addWidget(self.track_preview)
         layout.addWidget(self.subtitle_warning)
-        layout.addWidget(self.automatically_find_lyrics)
-        layout.addWidget(self.add_to_queue)
         layout.addWidget(self.progress)
         if self.download_queue is None:
             layout.addWidget(self.status)
@@ -292,12 +362,19 @@ class ImportDialog(QDialog):
             self._update_downloads_tab()
         layout.addWidget(self.details)
         layout.addLayout(buttons)
+        layout.addWidget(self.options_panel)
+        if self.download_queue is not None:
+            self.tabs.currentChanged.connect(self.tabs.updateGeometry)
         self._fit_content()
 
     def _sync_details(self):
         has_details = bool(self.details.toPlainText().strip())
         self.details_button.setVisible(has_details)
         self.details.setVisible(has_details and self.details_button.isChecked())
+
+    def _show_download_options(self, visible):
+        self.options_button.setArrowType(Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow)
+        self.options_panel.setVisible(visible)
 
     def _refresh_preview_metadata(self):
         info = self.info or {}
@@ -331,6 +408,15 @@ class ImportDialog(QDialog):
             self._fit_content()
         return handled
 
+    def eventFilter(self, watched, event):
+        if (watched is self.spotify_results and event.type() == QEvent.Type.KeyPress
+                and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)):
+            item = self.spotify_results.currentItem()
+            if item is not None:
+                self._fill_spotify_search(item)
+            return True
+        return super().eventFilter(watched, event)
+
     def apply_settings(self, settings):
         self.config.update(settings)
         if self.job is None:
@@ -350,13 +436,47 @@ class ImportDialog(QDialog):
         if hasattr(self, "more_button"):
             self.more_button.hide()
         self.search_results.clear()
-        self.search_results.hide()
-        self.preview_button.setText("Preview" if self._is_url() else "Search")
+        self._show_search_results(False)
+        if spotify_track_url(self.url.text()):
+            self.preview_button.setText("Fill search")
+        elif self._is_playlist_link():
+            self.preview_button.setText("Load playlist")
+        else:
+            self.preview_button.setText("Preview" if self._is_url() else "Search")
         self._url_changed()
 
     def _is_url(self):
         value = self.url.text().strip().lower()
         return value.startswith(("http:", "https:")) or "://" in value
+
+    def _is_playlist_link(self):
+        value = self.url.text().strip()
+        if spotify_playlist_url(value):
+            return True
+        if self.download_queue is None or not self._is_url():
+            return False
+        try:
+            url = urlsplit(value)
+        except ValueError:
+            return False
+        return (url.scheme in {"http", "https"} and url.path.rstrip("/") == "/playlist"
+                and url.hostname in {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"})
+
+    def _show_search_results(self, visible):
+        self.search_results.setVisible(visible)
+        if self.download_queue is not None:
+            self.result_actions.setVisible(visible)
+
+    def _show_spotify_playlist(self, visible):
+        self.spotify_playlist_toggle.setText("Hide Spotify playlist" if visible else "Show Spotify playlist")
+        self.spotify_results.setVisible(visible)
+
+    def _fill_spotify_search(self, item):
+        query = item.data(Qt.ItemDataRole.UserRole)
+        if self.job is None and query:
+            self.url.setText(query)
+            self.url.setFocus()
+            self.status.setText("Search text filled in from Spotify. Edit it or select Search.")
 
     def _add_search_result(self, result):
         parts = [str(result.get("artist") or "")]
@@ -378,7 +498,7 @@ class ImportDialog(QDialog):
         except (ValueError, TypeError):
             pass
         self.search_results.addItem(item)
-        self.search_results.show()
+        self._show_search_results(True)
 
     def _select_result(self, item):
         if self.download_queue is not None and len(self.search_results.selectedItems()) > 1:
@@ -389,7 +509,6 @@ class ImportDialog(QDialog):
         self.url.setText(item.data(Qt.ItemDataRole.UserRole))
         self.url.blockSignals(False)
         self.preview_button.setText("Preview")
-        self._url_changed()
         self.preview()
 
     def _url_changed(self):
@@ -397,16 +516,19 @@ class ImportDialog(QDialog):
         self.preview_url = None
         self._existing = None
         self._caption_warning = ""
-        self.title.setText("Preview a track to begin.")
+        self.track_preview.hide()
+        self.title.clear()
         self._refresh_preview_metadata()
         self.artist.clear()
         self.artist.hide()
-        self.thumbnail.setText("No artwork")
+        self.thumbnail.clear()
+        self.thumbnail.hide()
         self.artwork_hint.clear()
         self.artwork_hint.hide()
         self.progress.hide()
         self.download_button.setText("Download")
         self.download_button.setEnabled(False)
+        self.download_button.hide()
         self.again_button.hide()
         self.retry_button.hide()
         self._populate_subtitles([])
@@ -419,6 +541,8 @@ class ImportDialog(QDialog):
     def _queue_options(self):
         folder = self.folder.text().strip()
         if not folder:
+            self.options_button.setChecked(True)
+            self.folder.setFocus()
             raise ValueError("Choose a download folder first.")
         selected = self.subtitle_combo.currentData()
         values = dict(self.config, download_folder=folder, codec=self.codec.currentData(),
@@ -508,14 +632,22 @@ class ImportDialog(QDialog):
         if self.job is not None:
             return
         if not more:
+            if spotify_playlist_url(self.url.text()):
+                self._url_changed()
+                self.url.remember_search()
+                self._start("spotify_playlist")
+                return
             try:
                 self._playlist_url = validate_url(self.url.text())
             except ValueError as error:
                 self.status.setText(str(error))
                 return
             self._playlist_next = 1
+            self.spotify_playlist_toggle.setChecked(False)
             self._url_changed()
             self.search_results.clear()
+            self._show_search_results(False)
+            self.more_button.hide()
             self.url.remember_search()
         if self._playlist_url:
             self._start("playlist")
@@ -523,17 +655,24 @@ class ImportDialog(QDialog):
     def preview(self):
         if self.job is not None:
             return
+        if self._is_playlist_link():
+            self._load_playlist()
+            return
+        spotify_url = spotify_track_url(self.url.text())
+        if spotify_url:
+            self._url_changed()
+            self._start("spotify_search_query")
+            return
         if not self._is_url():
             self.search_youtube(self.url.text())
             return
         try:
-            self.preview_url = validate_url(self.url.text())
+            url = validate_url(self.url.text())
         except ValueError as error:
             self.status.setText(str(error))
             return
-        self.info = None
-        self._existing = None
-        self._refresh_preview_metadata()
+        self._url_changed()
+        self.preview_url = url
         self.url.remember_search()
         self._start("preview")
 
@@ -546,11 +685,12 @@ class ImportDialog(QDialog):
             return False
         if self.download_queue is not None:
             self.tabs.setCurrentIndex(0)
+        self.spotify_playlist_toggle.setChecked(False)
         self.url.setText(query)
         self.preview_button.setText("Search")
         self._url_changed()
         self.search_results.clear()
-        self.search_results.hide()
+        self._show_search_results(False)
         self.url.remember_search()
         self._start("search")
         return True
@@ -624,6 +764,7 @@ class ImportDialog(QDialog):
         elif self._existing and self.automatically_find_lyrics.isChecked() and not self._saved_lyrics():
             self.download_button.setText("Find lyrics")
         self.download_button.setEnabled(self.info is not None and self.job is None)
+        self.download_button.setVisible(self.info is not None)
         self.again_button.setVisible(bool(self._existing))
         self._refresh_download_size()
         if self._existing:
@@ -644,6 +785,8 @@ class ImportDialog(QDialog):
             return
         self._check_existing()
         if (force or not self._existing) and not self.folder.text().strip():
+            self.options_button.setChecked(True)
+            self.folder.setFocus()
             self.status.setText("Choose a download folder first.")
             return
         try:
@@ -686,6 +829,10 @@ class ImportDialog(QDialog):
             request.update(url=self._playlist_url, start=self._playlist_next or 1)
         if action == "search":
             request["query"] = self.url.text().strip()
+        if action == "spotify_search_query":
+            request["url"] = spotify_track_url(self.url.text())
+        if action == "spotify_playlist":
+            request["url"] = spotify_playlist_url(self.url.text())
         request["config"]["use_musicbrainz_cover"] = self.use_musicbrainz_cover.isChecked()
         request["config"]["automatically_find_lyrics"] = self.automatically_find_lyrics.isChecked()
         if action == "preview":
@@ -707,6 +854,8 @@ class ImportDialog(QDialog):
         self.status.setText({"preview": "Reading track information…", "download": "Starting download…",
                              "playlist": "Loading playlist tracks…",
                              "search": "Searching YouTube…",
+                             "spotify_search_query": "Reading Spotify track information…",
+                             "spotify_playlist": "Loading Spotify playlist…",
                              "lyrics": "Looking for lyrics for the existing audio…",
                              "subtitles": "Downloading subtitles for the existing audio…", "check": "Checking tools…"}[action])
         job = ImportJob(request, self)
@@ -721,14 +870,15 @@ class ImportDialog(QDialog):
 
     def _set_busy(self, busy):
         if self.download_queue is not None:
-            for widget in (self.playlist_button, self.batch_button, self.enqueue_selected_button,
-                           self.select_all_button, self.more_button):
+            for widget in (self.enqueue_selected_button, self.select_all_button, self.more_button):
                 widget.setEnabled(not busy)
         for widget in (self.url, self.folder, self.browse_button, self.codec, self.preview_button,
-                       self.setup_button, self.add_to_queue, self.again_button, self.use_musicbrainz_cover,
-                       self.automatically_find_lyrics, self.search_results):
+                       self.actions_button, self.add_to_queue, self.again_button, self.use_musicbrainz_cover,
+                       self.automatically_find_lyrics, self.search_results, self.spotify_playlist_toggle,
+                       self.spotify_results):
             widget.setEnabled(not busy)
         self.cancel_button.setEnabled(busy)
+        self.cancel_button.setVisible(busy)
         self.progress.setVisible(busy)
         self.download_button.setEnabled(not busy and self.info is not None)
         self._sync_subtitle_controls()
@@ -737,6 +887,11 @@ class ImportDialog(QDialog):
         kind = event.get("event")
         if kind == "search_result":
             self._add_search_result(event["result"])
+        elif kind == "spotify_playlist_page":
+            self._spotify_entries.extend(event["entries"])
+            loaded, total = event["loaded"], event["total"]
+            count = f"{loaded} of {total}" if total else str(loaded)
+            self.status.setText(f"Read {count} Spotify playlist entries…")
         elif kind == "log":
             self.details.appendPlainText(str(event.get("message", "")))
         elif kind == "subtitle_warning":
@@ -774,13 +929,35 @@ class ImportDialog(QDialog):
             for entry in result.get("results", []):
                 self._add_search_result(entry)
             count = self.search_results.count()
-            self.search_results.setVisible(bool(count))
+            self._show_search_results(bool(count))
             self.status.setText(f"{count} results. Select a track to preview." if count
                                 else "No finished tracks found. Try another search.")
+        elif action == "spotify_search_query":
+            self.url.setText(result["query"])
+            self.status.setText("Search text filled in from Spotify. Edit it or select Search.")
+        elif action == "spotify_playlist":
+            self.spotify_results.clear()
+            for entry in self._spotify_entries:
+                text = entry["title"]
+                if entry.get("artist"):
+                    text += " — " + entry["artist"]
+                item = QListWidgetItem(text)
+                item.setData(Qt.ItemDataRole.UserRole, entry.get("query"))
+                if not entry.get("query"):
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled & ~Qt.ItemFlag.ItemIsSelectable)
+                self.spotify_results.addItem(item)
+            self.spotify_playlist_toggle.setVisible(bool(result["loaded"]))
+            self.spotify_playlist_toggle.setChecked(bool(result["loaded"]))
+            title, count = result["title"], result["searchable"]
+            if count:
+                self.status.setText(f"{title} · {count} searchable songs. Double-click a song or press Enter to fill search.")
+            else:
+                self.status.setText(f"{title} has no searchable songs.")
         elif action == "check":
             self.status.setText(str(result.get("message", "Setup check complete.")))
         elif action == "preview":
             self.info = result
+            self.track_preview.show()
             self._refresh_preview_metadata()
             self.title.setText(str(result.get("title", "")))
             duration = result.get("duration")
@@ -796,12 +973,12 @@ class ImportDialog(QDialog):
                 if cover else str(result.get("artwork_message", ""))
             )
             self.artwork_hint.setVisible(bool(self.artwork_hint.text().strip()))
-            self.thumbnail.setText("No artwork")
             try:
                 pixmap = QPixmap()
                 if pixmap.loadFromData(base64.b64decode(result.get("thumbnail", ""))):
                     self.thumbnail.setPixmap(pixmap.scaled(self.thumbnail.size(), Qt.AspectRatioMode.KeepAspectRatio,
                                                           Qt.TransformationMode.SmoothTransformation))
+                    self.thumbnail.show()
             except (ValueError, TypeError):
                 pass
             self.status.setText("Ready to download.")
@@ -872,6 +1049,7 @@ class ImportDialog(QDialog):
             # Workers are short-lived, so keep request pacing across previews.
             ImportDialog._artwork_available_at = time.time() + 1.1
         self.job = None
+        self._spotify_entries.clear()
         self._set_busy(False)
         if self.progress.maximum() == 0:
             self.progress.setRange(0, 100)
@@ -886,7 +1064,7 @@ class ImportDialog(QDialog):
             self.download()
         elif self._last_action == "playlist":
             self._load_playlist(more=True)
-        elif self._last_action in {"preview", "search"}:
+        elif self._last_action in {"preview", "search", "spotify_search_query", "spotify_playlist"}:
             self.preview()
         else:
             self._start("check")
