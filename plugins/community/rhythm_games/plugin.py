@@ -3,7 +3,7 @@
 from array import array
 from bisect import bisect_left, bisect_right
 from collections import deque
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from heapq import nsmallest
 from io import BytesIO
 from itertools import accumulate, cycle, pairwise
@@ -25,8 +25,8 @@ from PySide6.QtWidgets import (
 from core.background_job import BackgroundJob
 from core.rhythm_analysis import BeatGrid, beat_grid, load_audio_rhythm
 from plugins.community.rhythm_games.mania import (
-    LANE_KEYS, MANIA_BAD, MANIA_DEMO, MAX_LIFE, SCORE_METER_MAX, SCORE_RANKS, ManiaBoard, ManiaResultOverlay,
-    ManiaSounds, assign_lanes, mania_result_name,
+    LANE_KEYS, MANIA_BAD, MANIA_DEMO, MAX_LIFE, SCORE_METER_MAX, SCORE_RANKS, ManiaBoard, ManiaControlsDialog,
+    ManiaSounds, assign_lanes, mania_controls, mania_result_name, mirror_mania_notes, neon_speed_multiplier,
 )
 
 
@@ -34,7 +34,7 @@ from plugins.community.rhythm_games.mania import (
 OVERALL_DIFFICULTY = 5
 CIRCLE_SIZE = 4
 LEAD_IN_MS = 1200
-NEON_WINDOW_SIZE = QSize(960, 540)
+NEON_WINDOW_SIZE = QSize(1024, 768)
 FADE_IN_MS = 400
 MAX_VISIBLE_TARGETS = 5
 DENSE_PREVIEW_MS = 450
@@ -48,6 +48,9 @@ MANIA_CHORD_GAP_MS = 900
 MANIA_RELEASE_WINDOW_MS = 80
 MANIA_BAD_DAMAGE = 50
 MANIA_MISS_DAMAGE = 100
+MANIA_LIFE_RECOVERY = 200
+MANIA_FLICK_CHORD_MS = 75
+MANIA_TRACE_START_GRACE_MS = 100
 # Project Sekai's windows may differ before and after the note, in units of 1/60 second.
 SEKAI_FRAME_MS = 1000 / 60
 SEKAI_TAP_WINDOWS = ((300, 2.5, 2.5), (100, 5, 5), (50, 6.5, 6.5), (MANIA_BAD, 7.5, 7.5))
@@ -1080,6 +1083,8 @@ def fit_chart_aim(notes, proposed, field, radius):
 class Judgement:
     index: int
     value: int
+    timing: str | None = field(default=None, compare=False)
+    checkpoint: bool = field(default=False, compare=False)
 
 
 def hit_grade(delta):
@@ -1139,7 +1144,7 @@ class RoundScore:
         value = self._judgement_weight(value)
         return value + value * max(0, combo - 1) * self.score_multiplier // 25
 
-    def _record_judgement(self, index, value, increment_combo=True):
+    def _record_judgement(self, index, value, increment_combo=True, *, timing=None, checkpoint=False):
         self.judged += 1
         self.counts[value] += 1
         self.score += self._judgement_points(value, self.combo)
@@ -1147,7 +1152,7 @@ class RoundScore:
             self.combo = 0
         elif increment_combo:
             self._increment_combo()
-        return Judgement(index, value)
+        return Judgement(index, value, timing, checkpoint)
 
 
 class Round(RoundScore):
@@ -1258,17 +1263,32 @@ class Round(RoundScore):
 
 
 class ManiaRound(RoundScore):
-    def __init__(self, notes, *, theme="neon"):
+    def __init__(self, notes, *, theme="neon", directional_flicks=True):
         super().__init__(notes)
         self.life = MAX_LIFE if theme == "neon" else None
+        self.directional_flicks = theme == "neon" and directional_flicks
+        self._life_recovery_ms = None
+        self._pending_life_recovery = 0
+        if self.life is not None and notes and self.finish_ms > notes[0].time_ms:
+            self._life_recovery_ms = (notes[0].time_ms + self.finish_ms) / 2
         tap_windows = SEKAI_TAP_WINDOWS if theme == "neon" else CLASSIC_MANIA_WINDOWS
         self.counts = dict.fromkeys([value for value, _, _ in tap_windows] + [0], 0)
+        self.timing_counts = {"Early": 0, "Late": 0, "Wrong Way": 0}
         self.hit_window_ms = SEKAI_FLICK_WINDOWS[-1][2] * SEKAI_FRAME_MS if theme == "neon" else tap_windows[-1][2]
-        self.max_score = sum(self._judgement_points(300, combo) for combo in range(len(notes)))
+        self._checkpoints = deque()
+        if self.life is not None:
+            self._checkpoints.extend(sorted((time, index) for index, note in enumerate(notes)
+                                            for time in note.checkpoints if note.time_ms < time < note.finish_ms))
+        self.max_score = sum(self._judgement_points(300, combo) for combo in range(len(notes) + len(self._checkpoints)))
         self._lanes = tuple(deque() for _ in LANE_KEYS)
         for index, note in enumerate(notes):
             self._lanes[note.lane].append(index)
         self._heads = {}
+        self._hold_spans = {}
+        self._held_since = [None] * len(LANE_KEYS)
+        self._flick_presses = {}
+        self._direction_times = {}
+        self._used_directions = {}
         self._resolved = [False] * len(notes)
 
     def is_judged(self, index):
@@ -1300,6 +1320,10 @@ class ManiaRound(RoundScore):
     def failed(self):
         return self.life == 0
 
+    @property
+    def all_perfect(self):
+        return 0 < self.judged == self.counts[300] and all(value == 300 for value, _ in self._heads.values())
+
     def caption_note(self, position_ms):
         if self.current is None:
             return None
@@ -1316,60 +1340,169 @@ class ManiaRound(RoundScore):
         return tuple((value, early * SEKAI_FRAME_MS, late * SEKAI_FRAME_MS)
                      for value, early, late in SEKAI_HIT_WINDOWS[note.flick, note.golden])
 
-    def _judge_lane(self, index, value, *, bad=False):
-        self._resolved[index] = True
-        while self.index < len(self.notes) and self._resolved[self.index]:
-            self.index += 1
+    def _judge_lane(self, index, value, *, bad=False, timing=None, checkpoint=False):
+        if not checkpoint:
+            self._resolved[index] = True
+            while self.index < len(self.notes) and self._resolved[self.index]:
+                self.index += 1
         breaks_combo = self.life is not None and value == 50
-        judgement = self._record_judgement(index, value, increment_combo=not breaks_combo)
+        judgement = self._record_judgement(index, value, increment_combo=not breaks_combo,
+                                           timing=timing, checkpoint=checkpoint)
+        if timing is not None:
+            self.timing_counts[timing] += 1
         if breaks_combo:
             self.combo = 0
         if self.life is not None and value <= 0:
-            damage = MANIA_BAD_DAMAGE if bad or value == MANIA_BAD else MANIA_MISS_DAMAGE
+            damage = MANIA_BAD_DAMAGE if bad or checkpoint or value == MANIA_BAD else MANIA_MISS_DAMAGE
             self.life = max(0, self.life - damage)
         return judgement
 
     def press(self, position_ms, lane):
+        self.keep_lane_held(position_ms, lane)
         pending = self._lanes[lane]
         if not pending or self.is_holding(pending[0]):
             return None, False
         index = pending[0]
         note = self.notes[index]
+        if self.life is not None and note.trace:
+            if note.time_ms <= position_ms <= min(note.end_ms, note.time_ms + MANIA_TRACE_START_GRACE_MS):
+                self._start_hold(index, position_ms, 300, None)
+            return None, False
         value = next((value for value, early, late in self._timing_windows(note)
                       if note.time_ms - early <= position_ms <= note.time_ms + late), 0)
         if not value:
             return None, False
+        timing = None
+        if self.life is not None and value != 300:
+            timing = "Early" if position_ms < note.time_ms else "Late"
+        if self.directional_flicks and note.flick_direction is not None:
+            attempt = position_ms, index, value, timing
+            recent = [direction for direction, pressed_at in self._direction_times.items()
+                      if 0 <= position_ms - pressed_at <= MANIA_FLICK_CHORD_MS
+                      and (direction not in self._used_directions or (
+                          direction == note.flick_direction and self._used_directions[direction] == note.time_ms
+                      ))]
+            if recent:
+                direction = (note.flick_direction if note.flick_direction in recent
+                             else max(recent, key=self._direction_times.__getitem__))
+                return self._judge_flick(lane, attempt, direction)
+            self._flick_presses[lane] = attempt
+            return None, False
         if value == MANIA_BAD:
             pending.popleft()
-            return self._judge_lane(index, value), False
+            return self._judge_lane(index, value, timing=timing), False
         if note.end_ms is not None:
-            self._heads[index] = value
+            self._start_hold(index, position_ms, value, timing)
             return None, True
         pending.popleft()
-        return self._judge_lane(index, value), True
+        return self._judge_lane(index, value, timing=timing), True
 
     def release(self, position_ms, lane):
+        self._held_since[lane] = None
         pending = self._lanes[lane]
         if not pending or not self.is_holding(pending[0]):
             return None
         index = pending.popleft()
-        value = self._heads.pop(index)
-        bad = position_ms < self.notes[index].end_ms - MANIA_RELEASE_WINDOW_MS
-        return self._judge_lane(index, 0 if bad else value, bad=bad)
+        value, timing = self._heads.pop(index)
+        start, _ = self._hold_spans[index]
+        self._hold_spans[index] = start, position_ms
+        note = self.notes[index]
+        if self.life is not None and note.trace:
+            return self._judge_lane(index, 0 if position_ms < note.end_ms else value)
+        bad = position_ms < note.end_ms - MANIA_RELEASE_WINDOW_MS
+        if bad:
+            return self._judge_lane(index, 0, bad=True, timing="Early" if self.life is not None else None)
+        return self._judge_lane(index, value, timing=timing)
+
+    def keep_lane_held(self, position_ms, lane):
+        if self._held_since[lane] is None:
+            self._held_since[lane] = position_ms
+
+    def clear_flick_inputs(self):
+        self._flick_presses.clear()
+        self._direction_times.clear()
+        self._used_directions.clear()
+
+    def press_direction(self, position_ms, direction):
+        if not self.directional_flicks:
+            return []
+        self._direction_times[direction] = position_ms
+        self._used_directions.pop(direction, None)
+        candidates = [(lane, attempt) for lane, attempt in self._flick_presses.items()
+                      if 0 <= position_ms - attempt[0] <= MANIA_FLICK_CHORD_MS]
+        matches = [(lane, attempt) for lane, attempt in candidates if self.notes[attempt[1]].flick_direction == direction]
+        if not matches and candidates:
+            matches = [max(candidates, key=lambda entry: entry[1][0])]
+        return [self._judge_flick(lane, attempt, direction) for lane, attempt in matches]
+
+    def _judge_flick(self, lane, attempt, direction):
+        _, index, value, timing = attempt
+        self._lanes[lane].popleft()
+        self._flick_presses.pop(lane, None)
+        note = self.notes[index]
+        self._used_directions[direction] = note.time_ms
+        if note.flick_direction != direction:
+            value, timing = min(value, 100), "Wrong Way"
+        return self._judge_lane(index, value, timing=timing), value > 0
+
+    def _start_hold(self, index, position_ms, value, timing):
+        self._heads[index] = value, timing
+        self._hold_spans[index] = position_ms, None
+
+    def _recover_life(self, position_ms):
+        if self._life_recovery_ms is None or position_ms < self._life_recovery_ms:
+            return
+        self._life_recovery_ms = None
+        if self.life:
+            self._pending_life_recovery = min(MANIA_LIFE_RECOVERY, MAX_LIFE - self.life)
+            self.life += self._pending_life_recovery
+
+    def take_life_recovery(self):
+        recovered = self._pending_life_recovery
+        self._pending_life_recovery = 0
+        return recovered
 
     def advance(self, position_ms):
         due = []
-        for pending in self._lanes:
+        playing = isfinite(position_ms)
+        for lane, pending in enumerate(self._lanes):
             while pending:
                 index = pending[0]
                 note = self.notes[index]
                 holding = self.is_holding(index)
-                deadline = note.end_ms if holding else note.time_ms + self._timing_windows(note)[-1][2]
+                trace = self.life is not None and note.trace
+                if trace and not holding and playing and position_ms >= note.time_ms:
+                    held_since = self._held_since[lane]
+                    if held_since is not None and held_since <= min(note.end_ms, note.time_ms + MANIA_TRACE_START_GRACE_MS):
+                        self._start_hold(index, max(note.time_ms, held_since), 300, None)
+                        holding = True
+                if holding:
+                    deadline = note.end_ms
+                elif trace:
+                    deadline = note.time_ms + MANIA_TRACE_START_GRACE_MS
+                else:
+                    deadline = note.time_ms + self._timing_windows(note)[-1][2]
+                    if (flick_press := self._flick_presses.get(lane)) is not None:
+                        deadline = max(deadline, flick_press[0] + MANIA_FLICK_CHORD_MS)
                 if position_ms < deadline or (position_ms == deadline and not holding):
                     break
-                value = self._heads.pop(index) if holding else 0
-                due.append((deadline, pending.popleft(), value if isfinite(position_ms) else 0))
-        return [self._judge_lane(index, value) for _, index, value in sorted(due)]
+                value, timing = self._heads.pop(index) if holding else (0, None)
+                self._flick_presses.pop(lane, None)
+                due.append((deadline, pending.popleft(), value, timing, False))
+        while self._checkpoints and self._checkpoints[0][0] <= position_ms:
+            time, index = self._checkpoints.popleft()
+            start, end = self._hold_spans.get(index, (float("inf"), None))
+            hit = start <= time and (end is None or time <= end)
+            due.append((time, index, 300 if hit else 0, None, True))
+        judgements = []
+        for deadline, index, value, timing, checkpoint in sorted(due):
+            if playing:
+                self._recover_life(deadline)
+            judgements.append(self._judge_lane(index, value if playing else 0,
+                                               timing=timing if playing else None, checkpoint=checkpoint))
+        if playing:
+            self._recover_life(position_ms)
+        return judgements
 
 
 def demo_wave():
@@ -1805,6 +1938,8 @@ class RhythmDialog(QDialog):
         self._waiting_for_rhythm = False
         self._mania_source = None
         self._mania_notes = ()
+        self._mania_mirror_source = None
+        self._mirrored_mania_notes = ()
         self._pre_neon_size = None
         self.setWindowTitle("Rhythm Games")
         self.setModal(True)
@@ -1821,7 +1956,7 @@ class RhythmDialog(QDialog):
         self.result_player.mediaStatusChanged.connect(self._result_media_status)
         self.result_player.errorOccurred.connect(self._result_playback_error)
         self.result_sink.videoFrameChanged.connect(self._show_result_frame)
-        self.result_delay = QTimer(self, interval=1000, singleShot=True, timerType=Qt.TimerType.PreciseTimer)
+        self.result_delay = QTimer(self, interval=500, singleShot=True, timerType=Qt.TimerType.PreciseTimer)
         self.result_delay.timeout.connect(self.result_player.play)
         self.hit_sound = QSoundEffect(self)
         self.hit_sound.setSource(QUrl.fromLocalFile(str(HIT_SOUND_PATH)))
@@ -1877,8 +2012,11 @@ class RhythmDialog(QDialog):
         self.circle_board.pointer_changed.connect(self._pointer_changed)
         self.mania_board = ManiaBoard(self.tabs, LEAD_IN_MS)
         self.mania_board.set_theme(self.mania_theme.currentData())
+        self._mania_controls = mania_controls(api.get_setting("mania_controls", None))
+        self._apply_mania_controls()
         self.mania_board.pressed.connect(lambda lane: self._lane_input(lane, True))
         self.mania_board.released.connect(lambda lane: self._lane_input(lane, False))
+        self.mania_board.direction_pressed.connect(self._direction_input)
         self.mania_board.pause_button.clicked.connect(self._toggle_mania_pause)
         self.tabs.addTab(self.circle_board, "Circles")
         self.tabs.addTab(self.mania_board, "Mania")
@@ -1900,13 +2038,17 @@ class RhythmDialog(QDialog):
         layout.addLayout(buttons)
         self.score = QLabel()
         buttons.addWidget(self.score, 1)
+        self.mania_controls_button = QPushButton("Controls…")
+        self.mania_controls_button.setAccessibleName("Mania controls")
+        self.mania_controls_button.clicked.connect(self._edit_mania_controls)
+        self.mania_controls_button.hide()
+        buttons.addWidget(self.mania_controls_button)
         self.start = QPushButton("Start")
         self.start.clicked.connect(self._start_round)
         buttons.addWidget(self.start)
         close = QPushButton("Close")
         close.clicked.connect(self.reject)
         buttons.addWidget(close)
-        self.result_overlay = ManiaResultOverlay(self, self.mania_board)
         self.passage.currentIndexChanged.connect(self._select_passage)
         self.tabs.currentChanged.connect(self._select_passage)
         self.mania_theme.currentIndexChanged.connect(self._change_mania_theme)
@@ -1916,10 +2058,6 @@ class RhythmDialog(QDialog):
     @property
     def board(self):
         return self.tabs.currentWidget()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.result_overlay.setGeometry(self.rect())
 
     def analyze_track(self):
         job = self._rhythm_job = BackgroundJob(self, "rhythm-analysis")
@@ -1966,6 +2104,7 @@ class RhythmDialog(QDialog):
         show_theme = self.board is self.mania_board
         self.mania_theme_label.setVisible(show_theme)
         self.mania_theme.setVisible(show_theme)
+        self.mania_controls_button.setVisible(show_theme)
         self._stop_result_video()
         if self.mania_sounds is not None:
             self.mania_sounds.stop()
@@ -1996,8 +2135,47 @@ class RhythmDialog(QDialog):
     def _change_mania_theme(self):
         theme = self.mania_theme.currentData()
         self.mania_board.set_theme(theme)
+        self._apply_mania_controls()
         self.api.set_setting("mania_theme", theme)
         self._select_passage()
+
+    def _apply_mania_controls(self):
+        controls = self._mania_controls
+        speed = (neon_speed_multiplier(controls["neon_note_speed"]) if self.mania_board.theme == "neon"
+                 else controls["note_speed"])
+        self.mania_board.set_controls(speed, tuple(controls["lane_keys"]),
+                                      flick_keys=tuple(controls["flick_keys"]),
+                                      directional_flicks=controls["directional_flicks"],
+                                      show_timing_feedback=controls["show_timing_feedback"],
+                                      show_ap_effect=controls["show_ap_effect"])
+
+    def _edit_mania_controls(self):
+        board = self.mania_board
+        neon = board.theme == "neon"
+        speed_setting = "neon_note_speed" if neon else "note_speed"
+        editor = ManiaControlsDialog(self, self._mania_controls[speed_setting], board.lane_keys, neon=neon,
+                                     flick_keys=board.flick_keys, mirror_lanes=self._mania_controls["mirror_lanes"],
+                                     directional_flicks=board.directional_flicks,
+                                     show_timing_feedback=board.show_timing_feedback, show_ap_effect=board.show_ap_effect)
+        if editor.exec() == QDialog.DialogCode.Accepted:
+            controls = {**self._mania_controls, speed_setting: editor.speed.value(), "lane_keys": list(editor.lane_keys())}
+            if editor.timing_feedback is not None:
+                controls["show_timing_feedback"] = editor.timing_feedback.isChecked()
+                controls["show_ap_effect"] = editor.ap_effect.isChecked()
+                controls["mirror_lanes"] = editor.mirror_lanes.isChecked()
+                controls["directional_flicks"] = editor.directional_flicks.isChecked()
+                controls["flick_keys"] = list(editor.flick_keys())
+            controls = mania_controls(controls)
+            self.api.set_setting("mania_controls", controls)
+            self._mania_controls = controls
+            self._apply_mania_controls()
+            if board.round is None:
+                self._show_passage()
+                if self._selected_passage().notes:
+                    self.status.setText(board.instructions)
+            else:
+                self._show_result_counts(board.round)
+        editor.deleteLater()
 
     def _selected_passage(self):
         return self.passages[self.passage.currentIndex()]
@@ -2006,16 +2184,25 @@ class RhythmDialog(QDialog):
         if self.board is self.circle_board:
             return passage.notes
         if passage is DEMO:
-            return MANIA_DEMO
-        if self._mania_source is not passage.notes:
-            self._mania_source = passage.notes
-            self._mania_notes = mania_chart(passage.notes)
-        return self._mania_notes
+            notes = MANIA_DEMO
+        else:
+            if self._mania_source is not passage.notes:
+                self._mania_source = passage.notes
+                self._mania_notes = mania_chart(passage.notes)
+            notes = self._mania_notes
+        if self.mania_board.theme != "neon" or not self._mania_controls["mirror_lanes"]:
+            return notes
+        if self._mania_mirror_source is not notes:
+            self._mania_mirror_source = notes
+            self._mirrored_mania_notes = mirror_mania_notes(notes)
+        return self._mirrored_mania_notes
 
     def _show_passage(self):
         passage = self._selected_passage()
         notes = self._chart_notes(passage)
-        position = notes[0].time_ms - LEAD_IN_MS + FADE_IN_MS if notes else 0
+        lead_ms = self.mania_board.lead_ms if self.board is self.mania_board else LEAD_IN_MS
+        preview_ms = lead_ms * (LEAD_IN_MS - FADE_IN_MS) / LEAD_IN_MS
+        position = notes[0].time_ms - preview_ms if notes else 0
         self.board.set_frame(notes, 0, position)
         self.caption.clear()
         self.progress.setRange(0, 1)
@@ -2052,7 +2239,7 @@ class RhythmDialog(QDialog):
                 if self.mania_sounds is None:
                     self.mania_sounds = ManiaSounds(self, HIT_SOUND_PATH.parent)
                 self.mania_sounds.configure(device, volume * HIT_SOUND_GAIN)
-            self.round = ManiaRound(notes, theme=theme)
+            self.round = ManiaRound(notes, theme=theme, directional_flicks=self.mania_board.directional_flicks)
         else:
             self.round = Round(notes)
         self.board.clear_inputs()
@@ -2097,7 +2284,10 @@ class RhythmDialog(QDialog):
         self.anchor = None
         delay = getattr(self.host, "_device_lyric_delay_ms", 0)
         self.offset_ms = delay + self.calibration.value()
-        start_ms = self.round.notes[0].time_ms + self.offset_ms - LEAD_IN_MS
+        lead_ms = LEAD_IN_MS
+        if isinstance(self.round, ManiaRound):
+            lead_ms = max(lead_ms, round(self.mania_board.lead_ms))
+        start_ms = self.round.notes[0].time_ms + self.offset_ms - lead_ms
         if self._selected_passage().full_song:
             start_ms = min(0, start_ms)
             self.progress.setRange(0, max(1, self.player.duration()))
@@ -2170,6 +2360,7 @@ class RhythmDialog(QDialog):
             if self.round is None:
                 return
             self._paused_at = monotonic()
+            round_.clear_flick_inputs()
             self.timer.stop()
             self.player.pause()
             self._stop_effects()
@@ -2180,12 +2371,14 @@ class RhythmDialog(QDialog):
         # A hold can be picked back up while paused, before the chart moves again.
         judgements = []
         for lane in range(len(LANE_KEYS)):
-            if not board.is_pressed(lane):
+            if board.is_pressed(lane):
+                round_.keep_lane_held(self._paused_position, lane)
+            else:
                 judgement = round_.release(self._paused_position, lane)
                 if judgement is not None:
                     judgements.append(judgement)
         if judgements:
-            self._show_frame(self._paused_position, judgements, early_releases=judgements)
+            self._show_frame(self._paused_position, judgements)
             if self.round is None:
                 return
         paused_seconds = monotonic() - self._paused_at
@@ -2199,7 +2392,7 @@ class RhythmDialog(QDialog):
         board.set_pause_state(enabled=True)
         board.setFocus(Qt.FocusReason.OtherFocusReason)
         for lane in range(len(LANE_KEYS)):
-            if (note := round_.held_note(lane)) is not None:
+            if (note := round_.held_note(lane)) is not None and not note.trace:
                 self.mania_sounds.play_note(note, None, self.hit_sound)
         self.timer.start()
 
@@ -2241,16 +2434,13 @@ class RhythmDialog(QDialog):
         judgements = self.round.advance(position)
         neon = self.round.life is not None
         play_sound = False
-        early_release = None
         if pressed:
             judgement, play_sound = self.round.press(position, lane)
         else:
             judgement = self.round.release(position, lane)
-            if judgement is not None and judgement.value == 0:
-                early_release = judgement
         if judgement is not None:
             judgements.append(judgement)
-        self._show_frame(position, judgements, early_releases=(early_release,) if early_release is not None else ())
+        self._show_frame(position, judgements)
         if play_sound and self.round is not None:
             if neon:
                 note = self.round.held_note(lane) if judgement is None else self.round.notes[judgement.index]
@@ -2258,19 +2448,32 @@ class RhythmDialog(QDialog):
             elif self.hit_sound.isLoaded():
                 self.hit_sound.play()
 
-    def _show_frame(self, position, judgements, *, early_releases=()):
+    def _direction_input(self, direction):
+        round_ = self.round
+        if not isinstance(round_, ManiaRound) or not round_.directional_flicks or not self._playing_round():
+            return
+        position = self._position()
+        judgements = round_.advance(position)
+        flicks = round_.press_direction(position, direction)
+        judgements.extend(judgement for judgement, _ in flicks)
+        self._show_frame(position, judgements)
+        for judgement, play_sound in flicks:
+            if play_sound:
+                self.mania_sounds.play_note(round_.notes[judgement.index], judgement.value, self.hit_sound)
+
+    def _show_frame(self, position, judgements):
         round_ = self.round
         board = self.board
         mania = isinstance(round_, ManiaRound)
         board.set_frame(round_.notes, round_.index, position, round_)
+        if mania and (recovered := round_.take_life_recovery()):
+            board.show_life_recovery(recovered)
         for judgement in judgements:
+            board.animate(judgement)
             if mania:
-                board.animate(judgement, early_release=not judgement.value and judgement in early_releases)
                 note = round_.notes[judgement.index]
-                if note.end_ms is not None and round_.life is not None:
+                if note.end_ms is not None and round_.life is not None and not judgement.checkpoint and not note.trace:
                     self.mania_sounds.stop_hold(note.lane)
-            else:
-                board.animate(judgement)
         if judgements:
             if mania:
                 self.status.clear()
@@ -2279,6 +2482,18 @@ class RhythmDialog(QDialog):
                 self.status.setText(str(value) if value else "Miss")
         note = round_.caption_note(position) if mania else round_.current
         caption = note.text if note else ""
+        mirrored_demo = self._mania_mirror_source is MANIA_DEMO and round_.notes is self._mirrored_mania_notes
+        if mania and note and (round_.notes is MANIA_DEMO or mirrored_demo):
+            labels = board.lane_labels[::-1] if mirrored_demo else board.lane_labels
+            caption = caption.format(*labels)
+            if board.theme == "neon" and board.directional_flicks:
+                chord = [entry for entry in round_.notes if entry.time_ms == note.time_ms]
+                if (flick := next((entry for entry in chord if entry.flick_direction is not None), None)) is not None:
+                    key = QKeySequence(board.flick_keys[flick.flick_direction + 1]).toString(QKeySequence.SequenceFormat.NativeText)
+                    caption = f"Flick {board.lane_labels[flick.lane]} + {key}"
+                    taps = [board.lane_labels[entry.lane] for entry in chord if entry.flick_direction is None]
+                    if taps:
+                        caption += f" and tap {' + '.join(taps)}"
         if note and note.reading:
             caption += f"  /  {note.reading}"
         self.caption.setText(self.caption.fontMetrics().elidedText(
@@ -2310,13 +2525,20 @@ class RhythmDialog(QDialog):
         grade = "Failed" if mania and result.failed else f"Grade {result.grade}"
         self.score.setText(f"{grade}   ·   Score {result.display_score:,}   ·   {result.accuracy:.2%}"
                            f"   ·   Best combo {result.best_combo}×")
-        labels = {320: "MAX", MANIA_BAD: "Bad", 0: "Miss"}
-        self.status.setText("   ·   ".join(f"{count} {labels.get(value, value)}" for value, count in result.counts.items()))
+        self._show_result_counts(result)
         self.start.setText("Retry")
         self._set_controls_running(False)
         if mania and result.life is not None:
             self._stop_effects()
             self._play_result(mania_result_name(result.counts, failed=result.failed))
+
+    def _show_result_counts(self, result):
+        labels = {320: "MAX", MANIA_BAD: "Bad", 0: "Miss"}
+        counts = [f"{count} {labels.get(value, value)}" for value, count in result.counts.items()]
+        if isinstance(result, ManiaRound) and result.life is not None and self.mania_board.show_timing_feedback:
+            counts.extend(f"{count} {timing}" for timing, count in result.timing_counts.items()
+                          if timing != "Wrong Way" or count)
+        self.status.setText("   ·   ".join(counts))
 
     def _play_result(self, name):
         path = RESULT_MEDIA_DIR / f"mania{name}.mp4"
@@ -2326,15 +2548,15 @@ class RhythmDialog(QDialog):
         self._result_name = name
         self.result_output.setDevice(self.output.device())
         self.result_output.setVolume(self.output.volume() * HIT_SOUND_GAIN)
-        self.result_overlay.setGeometry(self.rect())
-        self.result_overlay.show()
-        self.result_overlay.raise_()
+        overlay = self.mania_board.result_overlay
+        overlay.show()
+        overlay.raise_()
         self.result_delay.start()
         self.result_player.setSource(QUrl.fromLocalFile(str(path)))
 
     def _show_result_frame(self, frame):
         if self._result_name is not None and not self.result_delay.isActive() and frame.isValid():
-            self.result_overlay.set_frame(frame.toImage())
+            self.mania_board.result_overlay.set_frame(frame.toImage())
 
     def _result_media_status(self, status):
         if self._result_name is None:
@@ -2355,8 +2577,9 @@ class RhythmDialog(QDialog):
             return
         self._result_name = None
         self.result_delay.stop()
-        self.result_overlay.hide()
-        self.result_overlay.set_frame(QImage())
+        overlay = self.mania_board.result_overlay
+        overlay.hide()
+        overlay.set_frame(QImage())
         self.result_player.stop()
         self.result_player.setSource(QUrl())
 
@@ -2382,6 +2605,7 @@ class RhythmDialog(QDialog):
         self.passage.setEnabled(not running)
         self.calibration.setEnabled(not running)
         self.mania_theme.setEnabled(not running)
+        self.mania_controls_button.setEnabled(not running)
         self.tabs.setTabEnabled(1 - self.tabs.currentIndex(), not running)
         if running:
             if self.board is self.circle_board:

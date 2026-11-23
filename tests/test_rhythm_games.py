@@ -207,7 +207,15 @@ def test_mania_chords_use_available_density_budget():
         )
 
 
-def test_mania_flicks_use_phrase_ending_taps_and_judge_as_single_presses():
+def test_mania_generates_interior_checkpoints_and_occasional_traces():
+    notes = mania_chart(tuple(Note(time, "", end_ms=time + 1000, beat_length_ms=500)
+                              for time in (1000, 2500, 4000)))
+    assert [note.trace for note in notes] == [False, False, True]
+    for note in notes:
+        assert note.checkpoints == (note.time_ms + 250, note.time_ms + 500, note.time_ms + 750)
+
+
+def test_mania_flicks_use_phrase_endings_and_accept_both_chord_orders():
     source = (
         Note(1000, ""), Note(1500, ""), Note(2100, ""), Note(2500, ""),
         Note(3500, "", accented=True), Note(4000, "", end_ms=4800, accented=True),
@@ -217,9 +225,70 @@ def test_mania_flicks_use_phrase_ending_taps_and_judge_as_single_presses():
     assert [(note.time_ms, note.golden) for note in flicks] == [(1500, False), (3500, True)]
 
     round_ = ManiaRound(flicks)
-    for index, note in enumerate(flicks):
-        assert round_.press(note.time_ms, note.lane) == (Judgement(index, 300), True)
-        assert round_.release(note.time_ms, note.lane) is None
+    first, second = flicks
+    assert round_.press_direction(first.time_ms - 30, first.flick_direction) == []
+    assert round_.press(first.time_ms, first.lane) == (Judgement(0, 300), True)
+    assert round_.press(second.time_ms, second.lane) == (None, False)
+    assert round_.press_direction(second.time_ms + 30, second.flick_direction) == [(Judgement(1, 300), True)]
+
+
+def test_neon_flick_chord_can_finish_near_deadline_and_reports_wrong_way():
+    notes = (ManiaNote(1000, 0, flick=True, flick_direction=-1), ManiaNote(2000, 1, flick=True, flick_direction=1),
+             ManiaNote(3000, 2, flick=True, flick_direction=0))
+    round_ = ManiaRound(notes)
+    assert round_.press(1120, 0) == (None, False)
+    assert round_.advance(1170) == []
+    assert round_.press_direction(1170, -1)[0][0].timing == "Late"
+    round_.press(2000, 1)
+    (wrong, play_sound), = round_.press_direction(2040, -1)
+    assert wrong.value == 100 and wrong.timing == "Wrong Way" and play_sound
+    round_.press_direction(2900, 0)
+    round_.press(3000, 2)
+    assert round_.advance(3200) == [Judgement(2, 0)]
+    assert round_.timing_counts["Wrong Way"] == 1
+
+
+def test_neon_simultaneous_flicks_accept_their_own_directions():
+    notes = (ManiaNote(1000, 0, flick=True, flick_direction=-1), ManiaNote(1000, 3, flick=True, flick_direction=1))
+    round_ = ManiaRound(notes)
+    for lane in (0, 3):
+        assert round_.press(1000, lane) == (None, False)
+    assert round_.press_direction(1020, 1) == [(Judgement(1, 300), True)]
+    assert round_.press_direction(1030, -1) == [(Judgement(0, 300), True)]
+    assert round_.all_perfect and round_.combo == 2
+
+
+def test_neon_hold_checkpoints_score_while_held_and_leave_the_tail_live():
+    notes = (ManiaNote(1000, 0, end_ms=1900, checkpoints=(1250, 1500, 1750)),)
+    round_ = ManiaRound(notes)
+    assert round_.press(1000, 0) == (None, True)
+    (tick,) = round_.advance(1250)
+    assert tick.checkpoint and tick.value == 300
+    assert round_.index == 0 and round_.combo == 1
+    round_.release(1300, 0)
+    ticks = round_.advance(1900)
+    assert [(tick.value, tick.checkpoint) for tick in ticks] == [(0, True), (0, True)]
+    assert round_.counts[0] == 3
+
+    classic = ManiaRound(notes, theme="classic")
+    assert classic.press(1000, 0) == (None, True)
+    assert classic.advance(1750) == []
+    assert not classic.advance(1900)[0].checkpoint
+
+
+def test_neon_traces_accept_an_already_held_key_and_use_no_endpoint_timing():
+    notes = (ManiaNote(1000, 0, end_ms=1800, trace=True, checkpoints=(1250, 1500)),)
+    round_ = ManiaRound(notes)
+    assert round_.press(400, 0) == (None, False)
+    assert round_.advance(1000) == [] and round_.is_holding(0)
+    assert [judgement.value for judgement in round_.advance(1800)] == [300, 300, 300]
+    assert round_.accuracy == 1 and round_.score == round_.max_score
+    assert not any(round_.timing_counts.values())
+
+    round_ = ManiaRound(notes)
+    round_.press(1080, 0)
+    judgement = round_.release(1200, 0)
+    assert judgement.value == 0 and judgement.timing is None
 
 
 @pytest.mark.parametrize(("previous", "lead_strength", "backing_strength"), [
@@ -650,7 +719,33 @@ def test_mania_life_and_good_combo_break_are_neon_only(theme, value):
     assert round_.release(1900, 0) == Judgement(2, 0)
     assert round_.life == (950 if theme == "neon" else None)
     assert round_.advance(2800) == [Judgement(3, 0)]
-    assert round_.life == (850 if theme == "neon" else None)
+    assert round_.life == (900 if theme == "neon" else None)
+    assert round_.take_life_recovery() == (50 if theme == "neon" else 0)
+
+
+def test_neon_recovers_life_once_at_the_chart_midpoint():
+    notes = (ManiaNote(1000, 0), ManiaNote(1600, 0), ManiaNote(5000, 0))
+    round_ = ManiaRound(notes)
+    round_.advance(2999)
+    assert round_.life == 800 and round_.take_life_recovery() == 0
+    assert round_.advance(3000) == []
+    assert round_.life == 1000 and round_.take_life_recovery() == 200
+    round_.advance(5200)
+    assert round_.life == 900 and round_.take_life_recovery() == 0
+
+
+def test_neon_applies_recovery_in_order_with_misses():
+    notes = tuple(ManiaNote(time, 0) for time in (1000, 1600, 4400, 5000))
+    round_ = ManiaRound(notes)
+    round_.life = 350
+    round_.advance(5200)
+    assert round_.life == 150 and round_.take_life_recovery() == 200
+
+    for position, life in ((5200, 200), (float("inf"), 350)):
+        round_ = ManiaRound(notes)
+        round_.life = life
+        round_.advance(position)
+        assert round_.failed and round_.take_life_recovery() == 0
 
 
 def test_mania_neon_timing_varies_by_note_type_and_direction():
@@ -667,6 +762,83 @@ def test_mania_neon_timing_varies_by_note_type_and_direction():
     assert round_.advance(1126) == [Judgement(0, 0), Judgement(1, 0)]
     assert round_.press(1135, 3) == (Judgement(3, rhythm_games.MANIA_BAD), False)
     assert round_.life == 700 and round_.accuracy == 0 and round_.combo == 0
+
+
+def test_neon_timing_feedback_distinguishes_hits_holds_and_untimed_misses():
+    notes = (ManiaNote(1000, 0), ManiaNote(2000, 0), ManiaNote(3000, 0, end_ms=4000),
+             ManiaNote(5000, 0, end_ms=6000), ManiaNote(7000, 0), ManiaNote(8000, 0))
+    round_ = ManiaRound(notes)
+    assert round_.press(945, 0)[0].timing == "Early"
+    assert round_.press(2095, 0)[0].timing == "Late"
+    assert round_.press(3055, 0) == (None, True)
+    assert round_.release(3700, 0).timing == "Early"
+    assert round_.press(5055, 0) == (None, True)
+    assert round_.advance(6000)[0].timing == "Late"
+    assert round_.press(7000, 0)[0].timing is None
+    assert round_.advance(8200)[0].timing is None
+    assert round_.timing_counts == {"Early": 2, "Late": 2, "Wrong Way": 0}
+
+
+def test_neon_results_toggle_early_and_late_counts(qapp, monkeypatch):
+    host = QMainWindow()
+    settings = {}
+    api = SimpleNamespace(get_current_track=lambda: None, get_setting=settings.get, set_setting=settings.__setitem__)
+    dialog = RhythmDialog(host, api, ())
+    try:
+        dialog.tabs.setCurrentIndex(1)
+        round_ = ManiaRound((ManiaNote(1000, 0), ManiaNote(2000, 1)))
+        round_.press(945, 0)
+        round_.press(2055, 1)
+        dialog.round = round_
+        monkeypatch.setattr(dialog, "_play_result", Mock())
+        dialog._finish_round()
+        results = dialog.status.text()
+        assert "1 Early" in results and "1 Late" in results
+
+        def hide_timing(editor):
+            editor.timing_feedback.setChecked(False)
+            editor.ok.click()
+            return editor.result()
+
+        monkeypatch.setattr(mania.ManiaControlsDialog, "exec", hide_timing)
+        dialog.mania_controls_button.click()
+        assert dialog.status.text() == results.removesuffix("   ·   1 Early   ·   1 Late")
+    finally:
+        dialog.reject()
+        host.deleteLater()
+        qapp.processEvents()
+
+
+def test_neon_all_perfect_effect_ends_on_great_even_when_combo_continues(qapp):
+    board = mania.ManiaBoard(None, 1200)
+    notes = (ManiaNote(1000, 0), ManiaNote(2000, 1, end_ms=2500), ManiaNote(3000, 2))
+    round_ = ManiaRound(notes)
+    try:
+        board.set_frame(notes, 0, 0, round_)
+        assert not board.combo_number.all_perfect
+        round_.press(1000, 0)
+        board.set_frame(notes, round_.index, 1000, round_)
+        assert board.combo_number.all_perfect
+        board.set_controls(1, mania.LANE_KEYS, show_ap_effect=False)
+        assert not board.combo_number.all_perfect
+        board.set_controls(1, mania.LANE_KEYS)
+        assert board.combo_number.all_perfect
+
+        assert round_.press(2055, 1) == (None, True)
+        board.set_frame(notes, round_.index, 2055, round_)
+        assert board.combo_number.text() == "1" and not board.combo_number.all_perfect
+        assert round_.advance(2500)[0].value == 100
+        round_.press(3000, 2)
+        board.set_frame(notes, round_.index, 3000, round_)
+        assert board.combo_number.text() == "3" and not board.combo_number.all_perfect
+
+        retry = ManiaRound(notes)
+        retry.press(1000, 0)
+        board.set_frame(notes, retry.index, 1000, retry)
+        assert board.combo_number.all_perfect
+    finally:
+        board.deleteLater()
+        qapp.processEvents()
 
 
 @pytest.mark.parametrize(("offset", "value"), (
@@ -1292,6 +1464,7 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch, tmp_path)
         clock = 3500
         play = Mock()
         monkeypatch.setattr(dialog.mania_sounds, "play", play)
+        QTest.keyClick(board, Qt.Key.Key_Up)
         QTest.keyPress(board, Qt.Key.Key_K)
         QTest.keyClick(board, Qt.Key.Key_D)
         QTest.keyRelease(board, Qt.Key.Key_K)
@@ -1301,6 +1474,7 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch, tmp_path)
         assert golden_flick.args[0].source().fileName() == "maniahitflickcritical.wav"
 
         clock = 3750
+        QTest.keyClick(board, Qt.Key.Key_Left)
         QTest.keyClick(board, Qt.Key.Key_J)
         assert play.call_args.args[0].source().fileName() == "maniahitflick.wav"
         clock = 4500
@@ -1311,6 +1485,11 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch, tmp_path)
         assert dialog.round.counts[0] == 1
         assert board.life_meter.value() == 950 and board._judgement_label[0] == "Bad"
         assert board.life_number.text() == "950" and board.combo_hud.isHidden()
+
+        clock = 7900
+        dialog._tick()
+        assert board.life_recovery.text() == "+200 LIFE"
+        assert board.life_recovery.isVisible()
 
         clock = 13000
         dialog._tick()
@@ -1329,6 +1508,7 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch, tmp_path)
         assert play.call_args.args[0].source().fileName() == "fail.wav"
         dialog.start.click()
         assert dialog.round.life == board.life_meter.value() == 1000
+        assert board.life_recovery.isHidden()
         dialog._finish_round()
         assert dialog.tabs.isTabEnabled(0)
         dialog.tabs.setCurrentIndex(0)
@@ -1337,6 +1517,44 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch, tmp_path)
         dialog.reject()
         host.deleteLater()
         qapp.processEvents()
+
+
+def test_neon_note_approach_accelerates_and_reaches_the_hit_line_on_time():
+    field = mania.Playfield(400, 600, 8, 500, top_scale=0.14)
+    points = [field.note_y(progress) for progress in (0, 0.25, 0.5, 0.75, 1)]
+    steps = [end - start for start, end in pairwise(points)]
+    assert points[0] == field.top and points[-1] == field.hit_y
+    assert all(previous < following for previous, following in pairwise(steps))
+    assert field.note_y(-0.1) < field.top
+    assert field.scale_at(points[0]) == pytest.approx(0.14)
+    assert field.scale_at(points[-1]) == pytest.approx(1)
+    for y in points:
+        lane_width = field.x(1, y) - field.x(0, y)
+        assert lane_width == pytest.approx(field.width / len(mania.LANE_KEYS) * field.scale_at(y))
+        head = field.note_head(0, y)
+        assert head.center().y() == pytest.approx(y)
+        assert head.width() == pytest.approx(lane_width * 0.90)
+        assert head.height() == pytest.approx(field.judgement_height * 0.84 * field.scale_at(y))
+
+    classic = replace(field, top_scale=1)
+    assert classic.note_y(0.5) == (classic.top + classic.hit_y) / 2
+
+
+def test_neon_note_head_follows_its_lane_perspective():
+    field = mania.Playfield(400, 600, 8, 500, top_scale=0.14)
+    lane = 3
+    head = field.note_head(lane, field.hit_y)
+    transform = field.note_projection(lane, head)
+    top_left, top_right, bottom_right, bottom_left = (
+        transform.map(corner) for corner in (head.topLeft(), head.topRight(), head.bottomRight(), head.bottomLeft())
+    )
+    assert top_left.y() == pytest.approx(head.top())
+    assert bottom_left.y() == pytest.approx(head.bottom())
+    assert top_left.x() < bottom_left.x()
+    assert top_right.x() - top_left.x() < bottom_right.x() - bottom_left.x()
+    for left, right in ((top_left, top_right), (bottom_left, bottom_right)):
+        assert left.x() == pytest.approx(field.x(lane + 0.05, left.y()))
+        assert right.x() == pytest.approx(field.x(lane + 0.95, right.y()))
 
 
 def test_neon_result_frame_unmult_preserves_visible_color_and_soft_edges():
@@ -1350,6 +1568,31 @@ def test_neon_result_frame_unmult_preserves_visible_color_and_soft_edges():
     assert frame.pixelColor(0, 0).alpha() == 0
     assert frame.pixelColor(1, 0).getRgb() == (255, 128, 64, 128)
     assert frame.pixelColor(2, 0).getRgb() == (20, 100, 255, 255)
+
+
+def test_neon_result_video_fills_playfield_and_keeps_frame_edges(qapp):
+    board = mania.ManiaBoard(None, 1200)
+    try:
+        board.resize(640, 480)
+        board.show()
+        frame = QImage(16, 9, QImage.Format.Format_RGB32)
+        frame.fill(Qt.GlobalColor.white)
+        for y in range(frame.height()):
+            frame.setPixelColor(0, y, QColor(Qt.GlobalColor.red))
+            frame.setPixelColor(frame.width() - 1, y, QColor(Qt.GlobalColor.blue))
+        board.result_overlay.set_frame(frame)
+        board.result_overlay.show()
+        board.result_overlay.raise_()
+
+        rendered = board.result_overlay.grab().toImage()
+        assert rendered.pixelColor(rendered.width() // 2, 0) == QColor(Qt.GlobalColor.white)
+        assert rendered.pixelColor(rendered.width() // 2, rendered.height() - 1) == QColor(Qt.GlobalColor.white)
+        assert rendered.pixelColor(0, rendered.height() // 2) == QColor(Qt.GlobalColor.red)
+        assert rendered.pixelColor(rendered.width() - 1, rendered.height() // 2) == QColor(Qt.GlobalColor.blue)
+    finally:
+        board.close()
+        board.deleteLater()
+        qapp.processEvents()
 
 
 @pytest.mark.parametrize("dismiss", ("ended", "tab_changed"))
@@ -1368,8 +1611,10 @@ def test_neon_result_dim_and_delay_clear_when_dismissed(qapp, monkeypatch, tmp_p
         dialog.round = round_
         dialog._finish_round()
 
-        assert dialog.result_overlay.isVisible() and dialog.result_overlay.geometry() == dialog.rect()
-        assert dialog.result_delay.isActive() and dialog.result_delay.interval() == 1000
+        board = dialog.mania_board
+        overlay = board.result_overlay
+        assert overlay.isVisible() and overlay.geometry() == board.rect()
+        assert dialog.result_delay.isActive() and dialog.result_delay.interval() == 500
         assert dialog.result_player.playbackState() == QMediaPlayer.PlaybackState.StoppedState
         assert dialog.start.isEnabled()
 
@@ -1378,9 +1623,9 @@ def test_neon_result_dim_and_delay_clear_when_dismissed(qapp, monkeypatch, tmp_p
         else:
             dialog.tabs.setCurrentIndex(0)
 
-        assert dialog.result_overlay.isHidden()
+        assert overlay.isHidden()
         assert not dialog.result_delay.isActive()
-        assert dialog.result_overlay.frame.isNull()
+        assert overlay.frame.isNull()
     finally:
         dialog.reject()
         host.deleteLater()
@@ -1506,13 +1751,12 @@ def test_only_neon_mania_uses_landscape_window_size(qapp, monkeypatch):
     dialog = RhythmDialog(host, api, ())
     try:
         dialog.show()
-        monkeypatch.setattr(dialog, "screen", lambda: SimpleNamespace(availableGeometry=lambda: QRect(0, 0, 1280, 720)))
+        monkeypatch.setattr(dialog, "screen", lambda: SimpleNamespace(availableGeometry=lambda: QRect(0, 0, 1280, 900)))
         dialog.resize(910, 510)
         regular_size = dialog.size()
         dialog.tabs.setCurrentIndex(1)
         landscape_size = dialog.size()
-        assert landscape_size != regular_size
-        assert abs(landscape_size.width() - landscape_size.height() * 16 / 9) <= 2
+        assert landscape_size.toTuple() == (1024, 768)
 
         dialog.resize(920, 497)
         dialog._select_passage()
@@ -1531,6 +1775,180 @@ def test_only_neon_mania_uses_landscape_window_size(qapp, monkeypatch):
         dialog.tabs.setCurrentIndex(0)
         assert dialog.size() == regular_size
     finally:
+        dialog.reject()
+        host.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize(("multiplier", "level"), ((0.5, 1), (1, 6), (2.75, 11.25), (3, 12)))
+def test_neon_note_speed_preserves_legacy_multiplier(multiplier, level):
+    controls = mania.mania_controls({"note_speed": multiplier})
+    assert controls["note_speed"] == multiplier
+    assert controls["neon_note_speed"] == level
+    assert mania.neon_speed_multiplier(level) == pytest.approx(multiplier)
+
+
+def test_mania_controls_save_speed_and_use_remapped_lane_keys(qapp, monkeypatch):
+    host = QMainWindow()
+    settings = {}
+    api = SimpleNamespace(get_current_track=lambda: None, get_setting=settings.get, set_setting=settings.__setitem__)
+    dialog = RhythmDialog(host, api, ())
+    restored = None
+    try:
+        assert dialog.mania_controls_button.isHidden()
+        dialog.tabs.setCurrentIndex(1)
+        assert not dialog.mania_controls_button.isHidden()
+
+        def edit_controls(editor):
+            assert (editor.speed.minimum(), editor.speed.maximum(), editor.speed.suffix()) == (1.0, 12.0, "")
+            assert editor.speed.value() == 6.0
+            editor.speed.setValue(1.0)
+            assert editor.timing_feedback.isChecked()
+            editor.timing_feedback.setChecked(False)
+            assert editor.ap_effect.isChecked()
+            editor.ap_effect.setChecked(False)
+            QTest.keyClick(editor.key_edits[0], Qt.Key.Key_F)
+            assert not editor.ok.isEnabled()
+            QTest.keyClick(editor.key_edits[0], Qt.Key.Key_A)
+            assert editor.ok.isEnabled()
+            editor.ok.click()
+            return editor.result()
+
+        monkeypatch.setattr(mania.ManiaControlsDialog, "exec", edit_controls)
+        dialog.mania_controls_button.click()
+        keys = [key.value for key in (Qt.Key.Key_A, Qt.Key.Key_F, Qt.Key.Key_J, Qt.Key.Key_K)]
+        assert settings["mania_controls"] == {"note_speed": 1.0, "neon_note_speed": 1.0,
+                                             "show_timing_feedback": False, "show_ap_effect": False,
+                                             "mirror_lanes": False, "directional_flicks": True, "lane_keys": keys,
+                                             "flick_keys": [key.value for key in mania.FLICK_KEYS]}
+        assert dialog.mania_board.lead_ms == 2400
+        assert "Tap A, F, J, or K" in dialog.status.text()
+
+        restored = RhythmDialog(host, api, ())
+        restored.tabs.setCurrentIndex(1)
+        board = restored.mania_board
+        assert board.lane_labels == ("A", "F", "J", "K")
+        assert board.lead_ms == 2400
+        assert not board.show_timing_feedback
+        assert not board.show_ap_effect
+        restored.mania_theme.setCurrentIndex(restored.mania_theme.findData("classic"))
+        assert board.lead_ms == 1200 and board.lane_labels == ("A", "F", "J", "K")
+        restored.mania_theme.setCurrentIndex(restored.mania_theme.findData("neon"))
+        assert board.lead_ms == 2400
+
+        restored.round = ManiaRound(MANIA_DEMO)
+        restored.mania_sounds = Mock()
+        restored._play_round()
+        restored.timer.stop()
+        assert restored.last_position_ms == -1400
+        restored._set_controls_running(True)
+        assert not restored.mania_controls_button.isEnabled()
+        monkeypatch.setattr(restored, "_position", lambda: 1000)
+        QTest.keyClick(board, Qt.Key.Key_D)
+        assert restored.round.counts[300] == 0
+        QTest.keyClick(board, Qt.Key.Key_A)
+        assert restored.round.counts[300] == 1
+        assert restored.caption.text() == "Tap A"
+    finally:
+        if restored is not None:
+            restored.reject()
+        dialog.reject()
+        host.deleteLater()
+        qapp.processEvents()
+
+
+def test_neon_mirror_and_rebound_flick_use_physical_lane_keys(qapp, monkeypatch):
+    host = QMainWindow()
+    settings = {}
+    api = SimpleNamespace(get_current_track=lambda: None, get_setting=settings.get, set_setting=settings.__setitem__)
+    dialog = RhythmDialog(host, api, ())
+    try:
+        dialog.tabs.setCurrentIndex(1)
+        board = dialog.mania_board
+        assert board.notes is MANIA_DEMO
+
+        def edit_controls(editor):
+            editor.mirror_lanes.setChecked(True)
+            QTest.keyClick(editor.flick_edits[0], Qt.Key.Key_F)
+            assert not editor.ok.isEnabled()
+            QTest.keyClick(editor.flick_edits[0], Qt.Key.Key_A)
+            assert editor.ok.isEnabled()
+            editor.ok.click()
+            return editor.result()
+
+        monkeypatch.setattr(mania.ManiaControlsDialog, "exec", edit_controls)
+        dialog.mania_controls_button.click()
+        assert settings["mania_controls"]["mirror_lanes"]
+        assert board.lane_labels == ("D", "F", "J", "K")
+        for original, mirrored in zip(MANIA_DEMO, board.notes):
+            assert mirrored.lane == 3 - original.lane
+            assert (mirrored.time_ms, mirrored.end_ms, mirrored.checkpoints, mirrored.trace) == (
+                original.time_ms, original.end_ms, original.checkpoints, original.trace
+            )
+        flick = next(note for note in board.notes if note.time_ms == 12500)
+        assert flick.lane == 1 and flick.flick_direction == -1
+
+        dialog.round = ManiaRound(board.notes)
+        dialog.mania_sounds = Mock()
+        dialog.preroll_until = float("inf")
+        monkeypatch.setattr(dialog, "_position", lambda: flick.time_ms - 20)
+        QTest.keyClick(board, Qt.Key.Key_A)
+        assert dialog.round.counts[300] == 0
+        monkeypatch.setattr(dialog, "_position", lambda: flick.time_ms)
+        QTest.keyClick(board, Qt.Key.Key_F)
+        assert dialog.round.counts[300] == 1
+        assert dialog.caption.text() == "Flick F + A"
+    finally:
+        dialog.reject()
+        host.deleteLater()
+        qapp.processEvents()
+
+
+def test_neon_directional_flicks_toggle_persists_and_uses_lane_only(qapp, monkeypatch):
+    host = QMainWindow()
+    host.media_player = SimpleNamespace(playbackState=lambda: QMediaPlayer.PlaybackState.StoppedState)
+    host.volume_slider = SimpleNamespace(value=lambda: 25)
+    settings = {}
+    api = SimpleNamespace(get_current_track=lambda: None, get_setting=settings.get, set_setting=settings.__setitem__,
+                          pause=Mock())
+    dialog = RhythmDialog(host, api, ())
+    restored = None
+    try:
+        dialog.tabs.setCurrentIndex(1)
+
+        def disable_flicks(editor):
+            assert editor.directional_flicks.isChecked()
+            editor.directional_flicks.setChecked(False)
+            assert all(not edit.isEnabled() for edit in editor.flick_edits)
+            QTest.keyClick(editor.key_edits[0], Qt.Key.Key_Left)
+            assert editor.ok.isEnabled()
+            editor.ok.click()
+            return editor.result()
+
+        monkeypatch.setattr(mania.ManiaControlsDialog, "exec", disable_flicks)
+        dialog.mania_controls_button.click()
+        assert not settings["mania_controls"]["directional_flicks"]
+        assert settings["mania_controls"]["flick_keys"][0] == Qt.Key.Key_Left.value
+
+        restored = RhythmDialog(host, api, ())
+        restored.tabs.setCurrentIndex(1)
+        board = restored.mania_board
+        assert not board.directional_flicks
+        assert "direction key" not in board.instructions
+        host.audio_output = restored.output
+        monkeypatch.setattr(restored.player, "setSourceDevice", Mock())
+        restored.start.click()
+        restored._media_status(QMediaPlayer.MediaStatus.LoadedMedia)
+        restored.timer.stop()
+        assert not restored.round.directional_flicks
+
+        monkeypatch.setattr(restored, "_position", lambda: 12500)
+        QTest.keyClick(board, Qt.Key.Key_J)
+        assert restored.round.counts[300] == 1
+        assert restored.caption.text() == "Tap J"
+    finally:
+        if restored is not None:
+            restored.reject()
         dialog.reject()
         host.deleteLater()
         qapp.processEvents()

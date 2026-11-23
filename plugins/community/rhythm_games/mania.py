@@ -1,26 +1,41 @@
 """Four-lane charts and a keyboard playfield for Rhythm Games."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import cycle, groupby, pairwise
 from math import sin, tau
 from time import monotonic
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QBrush, QColor, QFont, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPainterPathStroker,
-    QPen, QPixmap, QPolygonF, QRadialGradient,
+    QKeySequence, QPen, QPixmap, QPolygonF, QRadialGradient, QTransform,
 )
 from PySide6.QtMultimedia import QSoundEffect
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QKeySequenceEdit, QLabel, QProgressBar,
+    QPushButton, QSizePolicy, QVBoxLayout, QWidget,
+)
 
 
 LANE_KEYS = (Qt.Key.Key_D, Qt.Key.Key_F, Qt.Key.Key_J, Qt.Key.Key_K)
-LANE_LABELS = ("D", "F", "J", "K")
+FLICK_KEYS = (Qt.Key.Key_Left, Qt.Key.Key_Up, Qt.Key.Key_Right)
+FLICK_DIRECTIONS = (-1, 0, 1)
+NOTE_LANE_INSET = 0.05
+MIN_NOTE_SPEED = 0.5
+MAX_NOTE_SPEED = 3.0
+NEON_MIN_NOTE_SPEED = 1.0
+NEON_DEFAULT_NOTE_SPEED = 6.0
+NEON_MAX_NOTE_SPEED = 12.0
+RESERVED_LANE_KEYS = (
+    Qt.Key.Key_Escape, Qt.Key.Key_Tab, Qt.Key.Key_Backtab, Qt.Key.Key_Return, Qt.Key.Key_Enter,
+    Qt.Key.Key_Shift, Qt.Key.Key_Control, Qt.Key.Key_Meta, Qt.Key.Key_Alt, Qt.Key.Key_AltGr,
+)
 LANE_PATTERN = (0, 2, 1, 3, 2, 0, 3, 1, 3, 1, 2, 0, 1, 3, 0, 2)
 LANE_COLORS = (QColor("#81f9dd"), QColor("#b0a8ff"), QColor("#b0a8ff"), QColor("#81f9dd"))
 CLASSIC_LANE_COLORS = (QColor("#4c99a5"), QColor("#d28d5f"), QColor("#d28d5f"), QColor("#4c99a5"))
 HOLD_COLOR = QColor("#71edb2")
+TRACE_COLOR = QColor("#8ce9fa")
 GOLD_NOTE_COLOR = QColor("#ffcf60")
 FLICK_NOTE_COLOR = QColor("#ff9dc8")
 PERFECT_EFFECT_COLOR = QColor("#ffdd91")
@@ -40,7 +55,6 @@ HIT_SPARKS = ((-0.08, -0.40, 35, 0.00), (0.10, 0.35, 45, 0.03),
               (-0.04, -0.14, 68, 0.05), (0.04, 0.15, 54, 0.01),
               (-0.21, -0.33, 21, 0.09), (0.17, 0.35, 25, 0.07),
               (-0.02, 0.23, 82, 0.13), (0.13, -0.35, 59, 0.15))
-MANIA_INSTRUCTIONS = "Tap D, F, J, or K at the hit line, including arrow notes. Hold long notes until their tails reach the line."
 FLICK_GAP_MS = 1700
 MAX_LIFE = 1000
 SCORE_METER_MAX = 1_300_000
@@ -56,6 +70,9 @@ class ManiaNote:
     end_ms: int | None = None
     golden: bool = False
     flick: bool = False
+    flick_direction: int | None = None
+    trace: bool = False
+    checkpoints: tuple[int, ...] = ()
 
     @property
     def finish_ms(self):
@@ -64,21 +81,22 @@ class ManiaNote:
 
 # Use the same original click track as the Circles demo.
 MANIA_DEMO = (
-    ManiaNote(1000, 0, "Tap D"), ManiaNote(1125, 1, "Tap F"),
-    ManiaNote(1500, 2, "Tap J"),
-    ManiaNote(2000, 3, "Hold K", end_ms=3000),
-    ManiaNote(2500, 1, "Tap F while holding K"),
-    ManiaNote(3500, 0, "Tap D and K together", golden=True, flick=True),
-    ManiaNote(3500, 3, "Tap D and K together", golden=True),
-    ManiaNote(3750, 2, "Tap J", flick=True),
-    ManiaNote(4500, 1, "Hold F", end_ms=6000, golden=True),
+    ManiaNote(1000, 0, "Tap {0}"), ManiaNote(1125, 1, "Tap {1}"),
+    ManiaNote(1500, 2, "Tap {2}"),
+    ManiaNote(2000, 3, "Hold {3}", end_ms=3000),
+    ManiaNote(2500, 1, "Tap {1} while holding {3}"),
+    ManiaNote(3500, 0, "Tap {0} and {3} together", golden=True, flick=True, flick_direction=0),
+    ManiaNote(3500, 3, "Tap {0} and {3} together", golden=True),
+    ManiaNote(3750, 2, "Tap {2}", flick=True, flick_direction=-1),
+    ManiaNote(4500, 1, "Hold {1}", end_ms=6000, golden=True),
     ManiaNote(5000, 2), ManiaNote(5500, 3),
     *(ManiaNote(time, lane) for time, lane in zip(range(6750, 7251, 125), (0, 2, 1, 3, 0))),
     ManiaNote(7750, 1), ManiaNote(7750, 2), ManiaNote(8000, 3), ManiaNote(8250, 0),
     *(ManiaNote(time, lane) for time, lane in zip(range(9000, 9751, 250), (2, 0, 3, 1))),
     *(ManiaNote(time, lane) for time, lane in zip(range(10500, 11001, 100), (0, 2, 1, 3, 2, 0))),
-    ManiaNote(11500, 0, end_ms=12500), ManiaNote(11750, 2), ManiaNote(12000, 1),
-    ManiaNote(12250, 3), ManiaNote(12500, 2),
+    ManiaNote(11500, 0, "Hold {0}", end_ms=12500, trace=True, checkpoints=(11750, 12000, 12250)),
+    ManiaNote(11750, 2), ManiaNote(12000, 1),
+    ManiaNote(12250, 3), ManiaNote(12500, 2, "Tap {2}", flick=True, flick_direction=1),
     *(ManiaNote(time, lane) for time, lane in zip(range(13250, 14626, 125), cycle(LANE_PATTERN))),
 )
 
@@ -88,6 +106,8 @@ def assign_lanes(notes):
     free_at = [float("-inf")] * len(LANE_KEYS)
     result = []
     next_flick = 0
+    directions = cycle(FLICK_DIRECTIONS)
+    hold_count = 0
     for (note, following), preferred in zip(pairwise((*notes, None)), cycle(LANE_PATTERN)):
         available = [lane for lane, time in enumerate(free_at) if time <= note.time_ms]
         if not available:
@@ -99,10 +119,25 @@ def assign_lanes(notes):
                  and gap >= max(400, note.beat_length_ms or 500))
         if flick:
             next_flick = note.time_ms + FLICK_GAP_MS
+        checkpoints = ()
+        trace = False
+        if end_ms is not None:
+            # Use half-beat checkpoints when tempo is known and leave room for the tail.
+            step = max(180, min(375, round((note.beat_length_ms or 500) / 2)))
+            checkpoints = tuple(range(round(note.time_ms) + step, round(end_ms) - 90, step))
+            hold_count += bool(checkpoints)
+            trace = bool(checkpoints and hold_count % 3 == 0 and not note.accented)
         result.append(ManiaNote(note.time_ms, lane, note.text, note.reading, end_ms,
-                               golden=note.accented, flick=flick))
+                               golden=note.accented, flick=flick, flick_direction=next(directions) if flick else None,
+                               trace=trace, checkpoints=checkpoints))
         free_at[lane] = max(note.time_ms + 1, note.finish_ms)
     return tuple(result)
+
+
+def mirror_mania_notes(notes):
+    return tuple(replace(note, lane=len(LANE_KEYS) - 1 - note.lane,
+                         flick_direction=-note.flick_direction if note.flick_direction is not None else None)
+                 for note in notes)
 
 
 def mania_result_name(counts, *, failed):
@@ -113,6 +148,157 @@ def mania_result_name(counts, *, failed):
     if counts[100]:
         return "fullcombo"
     return "allperfect"
+
+
+def valid_mania_keys(keys, count):
+    return (isinstance(keys, (list, tuple)) and len(keys) == count
+            and all(type(key) is int and 0 < key < Qt.Key.Key_unknown and key not in RESERVED_LANE_KEYS for key in keys)
+            and len(set(keys)) == count)
+
+
+def mania_flick_keys(keys, lane_keys):
+    if not valid_mania_keys(keys, len(FLICK_KEYS)):
+        keys = [key.value for key in FLICK_KEYS]
+    occupied = set(lane_keys) | set(keys)
+    alternatives = (ord(key) for key in "AWEQRZXCVB" if ord(key) not in occupied)
+    return [key if key not in lane_keys else next(alternatives) for key in keys]
+
+
+def mania_controls(settings):
+    settings = settings if isinstance(settings, dict) else {}
+    speed = settings.get("note_speed")
+    keys = settings.get("lane_keys")
+    if type(speed) not in (int, float) or not MIN_NOTE_SPEED <= speed <= MAX_NOTE_SPEED:
+        speed = 1.0
+    neon_speed = settings.get("neon_note_speed")
+    if type(neon_speed) not in (int, float) or not NEON_MIN_NOTE_SPEED <= neon_speed <= NEON_MAX_NOTE_SPEED:
+        # Preserve the previous multiplier when first opening the numbered scale.
+        neon_speed = NEON_DEFAULT_NOTE_SPEED + (speed - 1.0) * (10 if speed <= 1.0 else 3)
+    keys = list(keys) if valid_mania_keys(keys, len(LANE_KEYS)) else [key.value for key in LANE_KEYS]
+    directional_flicks = settings.get("directional_flicks") is not False
+    return {"note_speed": speed, "neon_note_speed": neon_speed,
+            "show_timing_feedback": settings.get("show_timing_feedback") is not False,
+            "show_ap_effect": settings.get("show_ap_effect") is not False,
+            "mirror_lanes": settings.get("mirror_lanes") is True,
+            "directional_flicks": directional_flicks, "lane_keys": keys,
+            "flick_keys": mania_flick_keys(settings.get("flick_keys"), keys if directional_flicks else ())}
+
+
+def neon_speed_multiplier(speed):
+    # Levels 1, 6, and 12 correspond to 0.5×, 1×, and 3× travel speed.
+    return 1.0 + (speed - NEON_DEFAULT_NOTE_SPEED) / (10 if speed <= NEON_DEFAULT_NOTE_SPEED else 3)
+
+
+class ManiaControlsDialog(QDialog):
+    def __init__(self, parent, speed, keys, *, neon, flick_keys=FLICK_KEYS, mirror_lanes=False,
+                 directional_flicks=True, show_timing_feedback=True, show_ap_effect=True):
+        super().__init__(parent)
+        self.setWindowTitle("Mania Controls")
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        layout.addLayout(form)
+        self.speed = QDoubleSpinBox()
+        self.default_speed = NEON_DEFAULT_NOTE_SPEED if neon else 1.0
+        if neon:
+            self.speed.setRange(NEON_MIN_NOTE_SPEED, NEON_MAX_NOTE_SPEED)
+            self.speed.setSingleStep(0.1)
+        else:
+            self.speed.setRange(MIN_NOTE_SPEED, MAX_NOTE_SPEED)
+            self.speed.setSingleStep(0.25)
+            self.speed.setSuffix("×")
+        self.speed.setValue(speed)
+        self.speed.setToolTip("Changes note travel speed on screen.")
+        form.addRow("Note speed", self.speed)
+        self.timing_feedback = None
+        self.ap_effect = None
+        self.mirror_lanes = None
+        self.directional_flicks = None
+        if neon:
+            self.timing_feedback = QCheckBox("Show Early/Late feedback")
+            self.timing_feedback.setChecked(show_timing_feedback)
+            form.addRow(self.timing_feedback)
+            self.ap_effect = QCheckBox("All Perfect combo effect")
+            self.ap_effect.setChecked(show_ap_effect)
+            form.addRow(self.ap_effect)
+            self.mirror_lanes = QCheckBox("Mirror lanes")
+            self.mirror_lanes.setChecked(mirror_lanes)
+            form.addRow(self.mirror_lanes)
+            self.directional_flicks = QCheckBox("Directional flicks")
+            self.directional_flicks.setChecked(directional_flicks)
+            form.addRow(self.directional_flicks)
+        self.key_edits = []
+        for lane, key in enumerate(keys, start=1):
+            edit = QKeySequenceEdit(QKeySequence(key))
+            edit.setMaximumSequenceLength(1)
+            form.addRow(f"Lane {lane}", edit)
+            self.key_edits.append(edit)
+        self.flick_edits = []
+        if neon:
+            for label, key in zip(("Flick left", "Flick up", "Flick right"), flick_keys):
+                edit = QKeySequenceEdit(QKeySequence(key))
+                edit.setMaximumSequenceLength(1)
+                form.addRow(label, edit)
+                self.flick_edits.append(edit)
+
+        self.hint = QLabel()
+        self.hint.setWordWrap(True)
+        layout.addWidget(self.hint)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+                                   | QDialogButtonBox.StandardButton.RestoreDefaults)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.StandardButton.RestoreDefaults).clicked.connect(self._restore_defaults)
+        self.ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        layout.addWidget(buttons)
+        for edit in (*self.key_edits, *self.flick_edits):
+            edit.keySequenceChanged.connect(self._validate_keys)
+        if self.directional_flicks is not None:
+            self.directional_flicks.toggled.connect(self._update_flick_controls)
+        self._update_flick_controls()
+
+    def lane_keys(self):
+        return self._keys(self.key_edits)
+
+    def flick_keys(self):
+        return self._keys(self.flick_edits)
+
+    @staticmethod
+    def _keys(edits):
+        keys = []
+        for edit in edits:
+            sequence = edit.keySequence()
+            combination = sequence[0] if not sequence.isEmpty() else None
+            keys.append(combination.key().value if combination is not None
+                        and combination.keyboardModifiers() == Qt.KeyboardModifier.NoModifier else 0)
+        return tuple(keys)
+
+    def _update_flick_controls(self):
+        enabled = self.directional_flicks is not None and self.directional_flicks.isChecked()
+        for edit in self.flick_edits:
+            edit.setEnabled(enabled)
+        self._validate_keys()
+
+    def _validate_keys(self, _sequence=None):
+        directional = self.directional_flicks is not None and self.directional_flicks.isChecked()
+        keys = (*self.lane_keys(), *self.flick_keys()) if directional else self.lane_keys()
+        count = len(LANE_KEYS) + (len(FLICK_KEYS) if directional else 0)
+        valid = valid_mania_keys(keys, count)
+        self.ok.setEnabled(valid)
+        instructions = ("Press a lane key with its flick direction." if directional
+                        else "Use a different key for each lane.")
+        self.hint.setText(instructions if valid else "Use a different single key for every binding. Tab, Enter, and Esc are reserved.")
+
+    def _restore_defaults(self):
+        self.speed.setValue(self.default_speed)
+        if self.timing_feedback is not None:
+            self.timing_feedback.setChecked(True)
+            self.ap_effect.setChecked(True)
+            self.mirror_lanes.setChecked(False)
+            self.directional_flicks.setChecked(True)
+        for edit, key in zip(self.key_edits, LANE_KEYS):
+            edit.setKeySequence(QKeySequence(key))
+        for edit, key in zip(self.flick_edits, FLICK_KEYS):
+            edit.setKeySequence(QKeySequence(key))
 
 
 def unmult_black(image):
@@ -128,9 +314,8 @@ def unmult_black(image):
 
 
 class ManiaResultOverlay(QWidget):
-    def __init__(self, parent, board):
+    def __init__(self, parent):
         super().__init__(parent)
-        self.board = board
         self.frame = QImage()
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.hide()
@@ -144,13 +329,8 @@ class ManiaResultOverlay(QWidget):
         painter.fillRect(self.rect(), QColor(0, 0, 0, 128))
         if self.frame.isNull():
             return
-        origin = self.board.mapTo(self.parentWidget(), self.board.rect().topLeft())
-        size = self.frame.size().scaled(self.board.size(), Qt.AspectRatioMode.KeepAspectRatio)
-        target = QRectF(origin.x() + (self.board.width() - size.width()) / 2,
-                        origin.y() + (self.board.height() - size.height()) / 2,
-                        size.width(), size.height())
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        painter.drawImage(target, self.frame)
+        painter.drawImage(self.rect(), self.frame)
 
 
 class ManiaSounds:
@@ -238,12 +418,36 @@ class Playfield:
     def travel(self):
         return self.hit_y - self.top
 
-    def depth(self, y):
-        return max(0, min(1, (y - self.top) / self.travel))
+    @property
+    def judgement_height(self):
+        return max(15, min(30, self.travel * 0.055))
+
+    def scale_at(self, y):
+        depth = max(0, (y - self.top) / self.travel)
+        return self.top_scale + (1 - self.top_scale) * depth
+
+    def note_y(self, progress):
+        if self.top_scale < 1:
+            # Ease in from the far end while keeping the hit line at progress 1.
+            progress *= (1 + max(0, progress)) / 2
+        return self.top + self.travel * progress
 
     def x(self, lane, y):
         offset = (lane / len(LANE_KEYS) - 0.5) * self.width
-        return self.center + offset * (self.top_scale + (1 - self.top_scale) * self.depth(y))
+        return self.center + offset * self.scale_at(y)
+
+    def note_head(self, lane, y):
+        height = self.judgement_height * 0.84 * self.scale_at(y)
+        left = self.x(lane + NOTE_LANE_INSET, y)
+        right = self.x(lane + 1 - NOTE_LANE_INSET, y)
+        return QRectF(left, y - height / 2, right - left, height)
+
+    def note_projection(self, lane, head):
+        corners = QPolygonF([head.topLeft(), head.topRight(), head.bottomRight(), head.bottomLeft()])
+        surface = self.strip(lane + NOTE_LANE_INSET, lane + 1 - NOTE_LANE_INSET, head.top(), head.bottom())
+        transform = QTransform()
+        QTransform.quadToQuad(corners, surface, transform)
+        return transform
 
     def strip(self, left, right, top, bottom):
         return QPolygonF([
@@ -259,6 +463,8 @@ def tinted(color, alpha):
 
 
 def neon_note_color(note):
+    if note.trace:
+        return TRACE_COLOR
     if note.golden:
         return GOLD_NOTE_COLOR
     if note.flick:
@@ -357,6 +563,7 @@ class ComboNumber(QLabel):
         self.setObjectName("comboNumber")
         self.setAccessibleName("Combo")
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.all_perfect = False
         self._pulses = []
         self._timer = QTimer(self, interval=16)
         self._timer.timeout.connect(self._advance)
@@ -365,9 +572,13 @@ class ComboNumber(QLabel):
         hint = super().sizeHint()
         return QSize(hint.width(), round(hint.height() * COMBO_ECHO_SCALE))
 
-    def set_combo(self, combo):
+    def set_combo(self, combo, *, all_perfect=False):
         previous = int(self.text())
+        effect_changed = self.all_perfect != all_perfect
+        self.all_perfect = all_perfect
         if combo == previous:
+            if effect_changed:
+                self.update()
             return
         text = str(combo)
         self.setText(text)
@@ -416,20 +627,41 @@ class ComboNumber(QLabel):
         painter.setOpacity(opacity)
         painter.translate(self.width() / 2, self.height() / 2)
         painter.scale(scale * fit, scale * fit)
-        bounds = QRectF(-self.width() / 2, -self.height() / 2, self.width(), self.height())
-        painter.drawText(bounds, Qt.AlignmentFlag.AlignCenter, text)
+        if self.all_perfect:
+            self._draw_perfect_number(painter, text)
+        else:
+            bounds = QRectF(-self.width() / 2, -self.height() / 2, self.width(), self.height())
+            painter.drawText(bounds, Qt.AlignmentFlag.AlignCenter, text)
         painter.restore()
+
+    def _draw_perfect_number(self, painter, text):
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        glyphs = QPainterPath()
+        glyphs.addText(QPointF(), painter.font(), text)
+        bounds = glyphs.boundingRect()
+        glyphs.translate(-bounds.center())
+        for width, color in ((7, QColor(157, 137, 255, 52)), (3, QColor(103, 236, 255, 125))):
+            pen = QPen(color, width)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.strokePath(glyphs, pen)
+        fill = QLinearGradient(-bounds.width() / 2, -bounds.height() / 2, bounds.width() / 2, bounds.height() / 2)
+        fill.setColorAt(0, QColor("#a6f5ff"))
+        fill.setColorAt(0.5, QColor("#f6eeff"))
+        fill.setColorAt(1, QColor("#ffe2a0"))
+        painter.fillPath(glyphs, QBrush(fill))
 
 
 class ManiaBoard(QWidget):
     pressed = Signal(int)
     released = Signal(int)
+    direction_pressed = Signal(int)
 
     @property
     def instructions(self):
-        if self.theme == "classic":
-            return "Tap D, F, J, or K at the hit line. Hold long notes until their tails reach the line."
-        return MANIA_INSTRUCTIONS
+        keys = ", ".join(self.lane_labels[:-1]) + f", or {self.lane_labels[-1]}"
+        flicks = (" Press a direction key with the lane key for directional flicks."
+                  if self.theme == "neon" and self.directional_flicks else "")
+        return f"Tap {keys} at the hit line. Hold long notes until their tails reach the line.{flicks}"
 
     def __init__(self, parent, lead_ms):
         super().__init__(parent)
@@ -437,7 +669,7 @@ class ManiaBoard(QWidget):
         self.setAccessibleName("Four-key rhythm playfield")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.theme = "neon"
-        self.lead_ms = lead_ms
+        self._base_lead_ms = lead_ms
         self.notes = ()
         self.first = self.position_ms = 0
         self.round = None
@@ -449,7 +681,10 @@ class ManiaBoard(QWidget):
         self._feedback_timer = QTimer(self, interval=16)
         self._feedback_timer.timeout.connect(self._advance_feedback)
         self._build_hud()
-        self._update_hud()
+        self._life_recovery_timer = QTimer(self, interval=1400, singleShot=True)
+        self._life_recovery_timer.timeout.connect(self.life_recovery.hide)
+        self.result_overlay = ManiaResultOverlay(self)
+        self.set_controls(1.0, LANE_KEYS)
 
     def _build_hud(self):
         self.score_hud = QWidget(self)
@@ -517,6 +752,9 @@ class ManiaBoard(QWidget):
         hud.addWidget(heart)
         hud.addLayout(meter, 1)
         hud.addWidget(self.pause_button)
+        self.life_recovery = QLabel(alignment=Qt.AlignmentFlag.AlignRight)
+        self.life_recovery.setStyleSheet("color: #89ff99; font-weight: bold; padding-right: 8px;")
+        self.life_recovery.hide()
         self.combo_hud = QWidget(self)
         self.combo_hud.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.combo_hud.setStyleSheet("""
@@ -533,7 +771,12 @@ class ManiaBoard(QWidget):
         header = QHBoxLayout()
         header.addWidget(self.score_hud)
         header.addStretch()
-        header.addWidget(self.life_hud, alignment=Qt.AlignmentFlag.AlignTop)
+        life_column = QVBoxLayout()
+        life_column.setSpacing(3)
+        life_column.addWidget(self.life_hud)
+        life_column.addWidget(self.life_recovery)
+        header.addLayout(life_column)
+        header.setAlignment(life_column, Qt.AlignmentFlag.AlignTop)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 55)
         layout.addLayout(header)
@@ -541,6 +784,7 @@ class ManiaBoard(QWidget):
         layout.addWidget(self.combo_hud, alignment=Qt.AlignmentFlag.AlignRight)
 
     def resizeEvent(self, event):
+        self.result_overlay.setGeometry(self.rect())
         width = self.width()
         hud_width = min(330, round(width * 0.35))
         self.score_hud.setFixedWidth(hud_width)
@@ -561,7 +805,7 @@ class ManiaBoard(QWidget):
         self.score_meter.setValue(min(score, self.score_meter.maximum()))
         self._update_score_number(score)
         self.score_rank.setText(rank)
-        self.combo_number.set_combo(combo)
+        self.combo_number.set_combo(combo, all_perfect=bool(combo and self.show_ap_effect and round_.all_perfect))
         self.life_hud.setVisible(neon)
         self.score_hud.setVisible(neon)
         self.combo_hud.setVisible(neon and combo > 0)
@@ -600,6 +844,18 @@ class ManiaBoard(QWidget):
         self._update_hud()
         self.clear_feedback()
 
+    def set_controls(self, speed, lane_keys, *, flick_keys=FLICK_KEYS, directional_flicks=True,
+                     show_timing_feedback=True, show_ap_effect=True):
+        self.lead_ms = self._base_lead_ms / speed
+        self.show_timing_feedback = show_timing_feedback
+        self.show_ap_effect = show_ap_effect
+        self.lane_keys = lane_keys
+        self.flick_keys = flick_keys
+        self.directional_flicks = directional_flicks
+        self.lane_labels = tuple(QKeySequence(key).toString(QKeySequence.SequenceFormat.NativeText) for key in lane_keys)
+        self.clear_inputs()
+        self._update_hud()
+
     def set_frame(self, notes, first, position_ms, round_=None):
         if notes is not self.notes:
             self.clear_feedback()
@@ -619,10 +875,17 @@ class ManiaBoard(QWidget):
         self._bursts.clear()
         self._judgement_label = None
         self._feedback_timer.stop()
+        self._life_recovery_timer.stop()
+        self.life_recovery.hide()
         self.combo_number.clear_animation()
         self.update()
 
-    def animate(self, judgement, *, early_release=False):
+    def show_life_recovery(self, amount):
+        self.life_recovery.setText(f"+{amount} LIFE")
+        self.life_recovery.show()
+        self._life_recovery_timer.start()
+
+    def animate(self, judgement):
         note = self.notes[judgement.index]
         now = monotonic()
         hit = HitFeedback(note, judgement.value, now)
@@ -630,8 +893,10 @@ class ManiaBoard(QWidget):
         if self.theme == "neon":
             if judgement.value > 0:
                 self._bursts.append(hit)
+            early_release = judgement.value == 0 and judgement.timing == "Early"
             label = "Bad" if early_release else JUDGEMENT_LABELS[judgement.value]
-            self._judgement_label = label, now
+            if not judgement.checkpoint:
+                self._judgement_label = label, now, judgement.timing
         if not self._feedback_timer.isActive():
             self._feedback_timer.start()
         self.update()
@@ -646,11 +911,24 @@ class ManiaBoard(QWidget):
             self._feedback_timer.stop()
         self.update()
 
+    def event(self, event):
+        if event.type() == QEvent.Type.ShortcutOverride and (
+            event.key() in self.lane_keys or (self.theme == "neon" and self.directional_flicks and event.key() in self.flick_keys)
+        ):
+            event.accept()
+            return True
+        return super().event(event)
+
     def keyPressEvent(self, event):
-        if event.key() not in LANE_KEYS:
+        if self.theme == "neon" and self.directional_flicks and event.key() in self.flick_keys:
+            if not event.isAutoRepeat():
+                self.direction_pressed.emit(FLICK_DIRECTIONS[self.flick_keys.index(event.key())])
+            event.accept()
+            return
+        if event.key() not in self.lane_keys:
             super().keyPressEvent(event)
             return
-        lane = LANE_KEYS.index(event.key())
+        lane = self.lane_keys.index(event.key())
         if not event.isAutoRepeat() and lane not in self._held:
             self._held.add(lane)
             self.pressed.emit(lane)
@@ -658,10 +936,13 @@ class ManiaBoard(QWidget):
         event.accept()
 
     def keyReleaseEvent(self, event):
-        if event.key() not in LANE_KEYS:
+        if self.theme == "neon" and self.directional_flicks and event.key() in self.flick_keys:
+            event.accept()
+            return
+        if event.key() not in self.lane_keys:
             super().keyReleaseEvent(event)
             return
-        lane = LANE_KEYS.index(event.key())
+        lane = self.lane_keys.index(event.key())
         if not event.isAutoRepeat() and lane in self._held:
             self._held.remove(lane)
             self.released.emit(lane)
@@ -681,13 +962,14 @@ class ManiaBoard(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        center, hit_y = self.width() / 2, self.height() - 49
+        center = self.width() / 2
         if self.theme == "classic":
-            field = Playfield(center, min(408, self.width() - 32), 10, hit_y, top_scale=1)
+            field = Playfield(center, min(408, self.width() - 32), 10, self.height() - 49, top_scale=1)
             self._draw_classic_playfield(painter, field)
             self._draw_notes(painter, field)
             return
 
+        hit_y = round(self.height() * 0.80)
         field = Playfield(center, self._neon_lane_width(), 8, hit_y, top_scale=0.14)
         now = monotonic()
         bursts = [(hit, (now - hit.started) / BURST_SECONDS) for hit in self._bursts]
@@ -704,7 +986,7 @@ class ManiaBoard(QWidget):
     def _draw_judgement(self, painter, field):
         if self._judgement_label is None:
             return
-        label, started = self._judgement_label
+        label, started, timing = self._judgement_label
         age = monotonic() - started
         if not 0 < age < JUDGEMENT_SECONDS:
             return
@@ -743,6 +1025,15 @@ class ManiaBoard(QWidget):
             painter.fillPath(path, QBrush(fill))
         else:
             painter.fillPath(path, QColor(JUDGEMENT_COLORS[label]))
+        if timing is not None and self.show_timing_feedback:
+            font.setPixelSize(max(11, round(font.pixelSize() * 0.46)))
+            cue = QPainterPath()
+            cue.addText(QPointF(), font, timing.upper())
+            cue_bounds = cue.boundingRect()
+            cue.translate(center.x() - cue_bounds.center().x(), bounds.top() - 5 - cue_bounds.bottom())
+            painter.strokePath(cue, QPen(QColor("#101525"), 2.5))
+            cue_color = {"Early": "#a1e8ff", "Late": "#ffc19a", "Wrong Way": "#ff9dbb"}
+            painter.fillPath(cue, QColor(cue_color[timing]))
         painter.restore()
 
     def _draw_playfield(self, painter, field):
@@ -757,7 +1048,7 @@ class ManiaBoard(QWidget):
             track.setColorAt(0, QColor("#171d30"))
             track.setColorAt(1, QColor("#172b38") if lane in (0, 3) else QColor("#22263f"))
             painter.setBrush(track)
-            painter.drawPolygon(field.strip(lane, lane + 1, field.top, field.hit_y))
+            painter.drawPolygon(field.strip(lane, lane + 1, field.top, self.height()))
             if lane in self._held:
                 light = QLinearGradient(0, field.top, 0, field.hit_y)
                 light.setColorAt(0, tinted(color, 0))
@@ -768,7 +1059,8 @@ class ManiaBoard(QWidget):
         for lane in range(len(LANE_KEYS) + 1):
             outer_edge = lane in (0, len(LANE_KEYS))
             painter.setPen(QPen(QColor("#71acb8" if outer_edge else "#485575"), 1.5 if outer_edge else 1))
-            painter.drawLine(QPointF(field.x(lane, field.top), field.top), QPointF(field.x(lane, field.hit_y), field.hit_y))
+            painter.drawLine(QPointF(field.x(lane, field.top), field.top),
+                             QPointF(field.x(lane, self.height()), self.height()))
 
     def _draw_classic_playfield(self, painter, field):
         palette = self.palette()
@@ -777,7 +1069,7 @@ class ManiaBoard(QWidget):
         font.setBold(True)
         painter.setFont(font)
         now = monotonic()
-        for lane, (label, color) in enumerate(zip(LANE_LABELS, CLASSIC_LANE_COLORS)):
+        for lane, (label, color) in enumerate(zip(self.lane_labels, CLASSIC_LANE_COLORS)):
             x = field.x(lane, field.hit_y)
             width = field.width / len(LANE_KEYS)
             track = QRectF(x + 1, field.top, width - 2, field.travel)
@@ -808,13 +1100,16 @@ class ManiaBoard(QWidget):
                 break
             if self.round is not None and self.round.is_judged(index):
                 continue
-            y = field.hit_y - until * field.travel / self.lead_ms
+            y = field.note_y(1 - until / self.lead_ms)
             holding = self.round is not None and self.round.is_holding(index)
             visible.append((note, y, holding))
 
-        painter.save()
-        painter.setClipRect(QRectF(0, field.top, self.width(), field.travel + 10))
         classic = self.theme == "classic"
+        clip_height = field.travel + 10
+        if not classic:
+            clip_height += field.judgement_height / 2
+        painter.save()
+        painter.setClipRect(QRectF(0, field.top, self.width(), clip_height))
         if not classic:
             self._draw_chord_guides(painter, field, visible)
         painter.setPen(Qt.PenStyle.NoPen)
@@ -822,12 +1117,12 @@ class ManiaBoard(QWidget):
             lane = note.lane
             is_hold = note.end_ms is not None
             color = CLASSIC_LANE_COLORS[lane] if classic else neon_note_color(note)
-            if not classic and note.flick:
-                self._draw_flick_chevron(painter, field, lane, y, color)
+            if not classic and note.flick and self.directional_flicks:
+                self._draw_flick_chevron(painter, field, lane, y, color, note.flick_direction)
             if is_hold:
                 if holding:
                     y = min(y, field.hit_y)
-                tail = field.hit_y - (note.end_ms - self.position_ms) * field.travel / self.lead_ms
+                tail = field.note_y(1 - (note.end_ms - self.position_ms) / self.lead_ms)
                 ribbon_top = min(y, max(field.top, tail))
                 if classic:
                     left = field.x(lane + 0.32, y)
@@ -839,7 +1134,14 @@ class ManiaBoard(QWidget):
                     painter.setBrush(tinted(color, 194))
                     painter.drawPolygon(field.strip(lane + 0.46, lane + 0.54, ribbon_top, y))
                     if field.top <= tail < y:
-                        painter.drawPolygon(field.strip(lane + 0.25, lane + 0.75, tail, min(y, tail + 3)))
+                        if note.trace:
+                            self._draw_hold_diamond(painter, field, lane, tail, color, 7)
+                        else:
+                            painter.drawPolygon(field.strip(lane + 0.25, lane + 0.75, tail, min(y, tail + 3)))
+                    for checkpoint in note.checkpoints:
+                        tick_y = field.note_y(1 - (checkpoint - self.position_ms) / self.lead_ms)
+                        if ribbon_top <= tick_y <= y:
+                            self._draw_hold_diamond(painter, field, lane, tick_y, color.lighter(135), 4)
                     if holding:
                         self._draw_hold_aura(painter, field, note, y, color)
 
@@ -847,9 +1149,18 @@ class ManiaBoard(QWidget):
                 left = field.x(lane, y) + 6
                 painter.setBrush(color)
                 painter.drawRoundedRect(QRectF(left, y - 7, field.x(lane + 1, y) - left - 6, 14), 4, 4)
+            elif note.trace:
+                self._draw_hold_diamond(painter, field, lane, y, color.lighter(135), 8)
             else:
                 self._draw_note_head(painter, field, lane, y, color, is_hold)
         painter.restore()
+
+    def _draw_hold_diamond(self, painter, field, lane, y, color, size):
+        center = field.x(lane + 0.5, y)
+        radius = size * field.scale_at(y)
+        painter.setBrush(color)
+        painter.drawPolygon(QPolygonF([QPointF(center, y - radius), QPointF(center + radius * 1.5, y),
+                                       QPointF(center, y + radius), QPointF(center - radius * 1.5, y)]))
 
     def _draw_chord_guides(self, painter, field, visible):
         for _, group in groupby(visible, key=lambda entry: entry[0].time_ms):
@@ -869,36 +1180,43 @@ class ManiaBoard(QWidget):
             painter.setPen(QPen(color, 1.5))
             painter.drawLine(start, end)
 
-    def _draw_flick_chevron(self, painter, field, lane, y, color):
-        scale = 0.64 + 0.36 * field.depth(y)
+    def _draw_flick_chevron(self, painter, field, lane, y, color, direction):
+        scale = field.scale_at(y)
         center = field.x(lane + 0.5, y)
         half_width = field.x(lane + 0.73, y) - center
-        chevron = QPolygonF([
-            QPointF(center - half_width, y - 9 * scale), QPointF(center, y - 22 * scale),
-            QPointF(center + half_width, y - 9 * scale), QPointF(center + half_width, y - 3 * scale),
-            QPointF(center, y - 15 * scale), QPointF(center - half_width, y - 3 * scale),
-        ])
+        y = field.note_head(lane, y).top()
+        if direction:
+            chevron = QPolygonF([
+                QPointF(center + direction * x * scale, y + dy * scale)
+                for x, dy in ((-11, -22), (1, -22), (15, -12), (1, -2), (-11, -2), (3, -12))
+            ])
+        else:
+            chevron = QPolygonF([
+                QPointF(center - half_width, y - 9 * scale), QPointF(center, y - 22 * scale),
+                QPointF(center + half_width, y - 9 * scale), QPointF(center + half_width, y - 3 * scale),
+                QPointF(center, y - 15 * scale), QPointF(center - half_width, y - 3 * scale),
+            ])
         painter.setPen(QPen(tinted(color, 95), 3 * scale))
         painter.setBrush(color.lighter(123))
         painter.drawPolygon(chevron)
         painter.setPen(Qt.PenStyle.NoPen)
 
     def _draw_note_head(self, painter, field, lane, y, color, is_hold):
-        scale = 0.64 + 0.36 * field.depth(y)
-        height = (18 if is_hold else 12) * scale
-        left = field.x(lane + 0.10, y)
-        width = field.x(lane + 0.90, y) - left
-        head = QRectF(left, y - height / 2, width, height)
+        scale = field.scale_at(y)
+        head = field.note_head(lane, y)
+        width, height = head.width(), head.height()
         radius = 3.5 * scale
+        painter.save()
+        painter.setWorldTransform(field.note_projection(lane, head), combine=True)
         for spread, opacity in ((4, 18), (2, 50)):
             glow = spread * scale
             painter.setBrush(tinted(color, opacity))
             painter.drawRoundedRect(head.adjusted(-glow, -glow, glow, glow), radius + glow, radius + glow)
 
         face = QLinearGradient(0, head.top(), 0, head.bottom())
-        face.setColorAt(0, color.lighter(138))
+        face.setColorAt(0, color.lighter(118))
         face.setColorAt(0.60, color)
-        face.setColorAt(1, color.darker(134))
+        face.setColorAt(1, color.darker(116))
         painter.setBrush(face)
         painter.drawRoundedRect(head, radius, radius)
 
@@ -911,36 +1229,55 @@ class ManiaBoard(QWidget):
             painter.setBrush(color.lighter(135))
             painter.drawRoundedRect(stripe, scale, scale)
         else:
-            glint = QRectF(left + width * 0.12, head.top() + 2 * scale, width * 0.76, 1.5 * scale)
+            glint = QRectF(head.left() + width * 0.12, head.top() + 2 * scale, width * 0.76, 1.5 * scale)
             painter.setBrush(tinted(HIT_CORE_COLOR, 214))
             painter.drawRoundedRect(glint, scale, scale)
+        painter.restore()
 
     def _draw_receptors(self, painter, field, now):
+        half_height = field.judgement_height / 2
+        top, bottom = field.hit_y - half_height, field.hit_y + half_height
+        zone = field.strip(0, len(LANE_KEYS), top, bottom)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#121b31"))
+        painter.drawPolygon(zone)
+
         font = painter.font()
         font.setBold(True)
         painter.setFont(font)
-        for lane, (label, color) in enumerate(zip(LANE_LABELS, LANE_COLORS)):
+        for lane, (label, color) in enumerate(zip(self.lane_labels, LANE_COLORS)):
             pressed = lane in self._held
             hit = self._feedback.get(lane)
             strength = hit.strength(now) if hit is not None else 0
             feedback = color
             if hit is not None:
                 feedback = neon_note_color(hit.note).lighter(125) if hit.value > 0 else QColor("#ff829e")
-            left = field.x(lane + 0.06, field.hit_y)
-            right = field.x(lane + 0.94, field.hit_y)
-            width = right - left
+            if strength or pressed:
+                painter.setPen(Qt.PenStyle.NoPen)
+                opacity = max(65 if pressed else 0, round(195 * strength))
+                painter.setBrush(tinted(feedback if strength else color, opacity))
+                painter.drawPolygon(field.strip(lane, lane + 1, top, bottom))
 
-            painter.fillRect(QRectF(left, field.hit_y - 4, width, 8), tinted(color, 75 if pressed else 38))
-            painter.fillRect(QRectF(left, field.hit_y - 1, width, 2), color)
-            if strength:
-                painter.fillRect(QRectF(left, field.hit_y - 4, width, 8), tinted(feedback, round(195 * strength)))
-
-            key = QRectF(left + 3, field.hit_y + 12, width - 6, 26)
+            left = field.x(lane + 0.06, bottom)
+            right = field.x(lane + 0.94, bottom)
+            key = QRectF(left + 3, bottom + 12, right - left - 6, 26)
             painter.setPen(QPen(feedback if strength else tinted(color, 200 if pressed else 100), 1))
             painter.setBrush(tinted(feedback, 86) if strength else tinted(color, 74 if pressed else 16))
             painter.drawRoundedRect(key, 6, 6)
             painter.setPen(QColor("#f2f8ff"))
             painter.drawText(key, Qt.AlignmentFlag.AlignCenter, label)
+
+        painter.setPen(QPen(QColor("#65719a"), 1))
+        for lane in range(1, len(LANE_KEYS)):
+            painter.drawLine(QPointF(field.x(lane, top), top), QPointF(field.x(lane, bottom), bottom))
+
+        outline = QLinearGradient(field.x(0, bottom), bottom, field.x(len(LANE_KEYS), bottom), bottom)
+        outline.setColorAt(0, LANE_COLORS[0])
+        outline.setColorAt(0.5, QColor("#c6caff"))
+        outline.setColorAt(1, LANE_COLORS[-1])
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QBrush(outline), 2.5))
+        painter.drawPolygon(zone)
 
     def _draw_lane_flash(self, painter, field, hit, phase):
         fade = max(0, 1 - phase / 0.6) ** 2
