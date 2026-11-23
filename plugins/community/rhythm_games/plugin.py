@@ -4,7 +4,7 @@ from array import array
 from bisect import bisect_left, bisect_right
 from collections import deque
 from dataclasses import dataclass, field, replace
-from heapq import nsmallest
+from heapq import heappop, heappush, nsmallest
 from io import BytesIO
 from itertools import accumulate, cycle, pairwise
 from math import asinh, atan2, cos, exp, floor, hypot, isfinite, pi, sin, sqrt, tau
@@ -1085,6 +1085,7 @@ class Judgement:
     value: int
     timing: str | None = field(default=None, compare=False)
     checkpoint: bool = field(default=False, compare=False)
+    hold_start: bool = field(default=False, compare=False)
 
 
 def hit_grade(delta):
@@ -1144,7 +1145,7 @@ class RoundScore:
         value = self._judgement_weight(value)
         return value + value * max(0, combo - 1) * self.score_multiplier // 25
 
-    def _record_judgement(self, index, value, increment_combo=True, *, timing=None, checkpoint=False):
+    def _record_judgement(self, index, value, increment_combo=True, *, timing=None, checkpoint=False, hold_start=False):
         self.judged += 1
         self.counts[value] += 1
         self.score += self._judgement_points(value, self.combo)
@@ -1152,7 +1153,7 @@ class RoundScore:
             self.combo = 0
         elif increment_combo:
             self._increment_combo()
-        return Judgement(index, value, timing, checkpoint)
+        return Judgement(index, value, timing, checkpoint, hold_start)
 
 
 class Round(RoundScore):
@@ -1279,12 +1280,14 @@ class ManiaRound(RoundScore):
         if self.life is not None:
             self._checkpoints.extend(sorted((time, index) for index, note in enumerate(notes)
                                             for time in note.checkpoints if note.time_ms < time < note.finish_ms))
-        self.max_score = sum(self._judgement_points(300, combo) for combo in range(len(notes) + len(self._checkpoints)))
+        total_judgements = len(notes) + len(self._checkpoints) + sum(self._timed_hold(note) for note in notes)
+        self.max_score = sum(self._judgement_points(300, combo) for combo in range(total_judgements))
         self._lanes = tuple(deque() for _ in LANE_KEYS)
         for index, note in enumerate(notes):
             self._lanes[note.lane].append(index)
         self._heads = {}
         self._hold_spans = {}
+        self._missed_tails = []
         self._held_since = [None] * len(LANE_KEYS)
         self._flick_presses = {}
         self._direction_times = {}
@@ -1301,6 +1304,9 @@ class ManiaRound(RoundScore):
         # Accepted holds stay at the front of their lane until release or expiry.
         pending = self._lanes[lane]
         return self.notes[pending[0]] if pending and self.is_holding(pending[0]) else None
+
+    def hold_started(self, index):
+        return index in self._hold_spans
 
     @property
     def display_score(self):
@@ -1334,20 +1340,32 @@ class ManiaRound(RoundScore):
     def _judgement_weight(value):
         return max(0, min(300, value))
 
-    def _timing_windows(self, note):
+    def _timed_hold(self, note):
+        return self.life is not None and note.end_ms is not None and not note.trace
+
+    def _timing_windows(self, note, *, tail=False):
         if self.life is None:
             return CLASSIC_MANIA_WINDOWS
         return tuple((value, early * SEKAI_FRAME_MS, late * SEKAI_FRAME_MS)
-                     for value, early, late in SEKAI_HIT_WINDOWS[note.flick, note.golden])
+                     for value, early, late in SEKAI_HIT_WINDOWS[note.flick and not tail, note.golden])
 
-    def _judge_lane(self, index, value, *, bad=False, timing=None, checkpoint=False):
-        if not checkpoint:
+    def _input_grade(self, note, position_ms, *, tail=False):
+        target = note.end_ms if tail else note.time_ms
+        value = next((value for value, early, late in self._timing_windows(note, tail=tail)
+                      if target - early <= position_ms <= target + late), 0)
+        timing = None
+        if self.life is not None and value not in (0, 300):
+            timing = "Early" if position_ms < target else "Late"
+        return value, timing
+
+    def _judge_lane(self, index, value, *, bad=False, timing=None, checkpoint=False, hold_start=False):
+        if not checkpoint and not (hold_start and self.is_holding(index)):
             self._resolved[index] = True
             while self.index < len(self.notes) and self._resolved[self.index]:
                 self.index += 1
         breaks_combo = self.life is not None and value == 50
         judgement = self._record_judgement(index, value, increment_combo=not breaks_combo,
-                                           timing=timing, checkpoint=checkpoint)
+                                           timing=timing, checkpoint=checkpoint, hold_start=hold_start)
         if timing is not None:
             self.timing_counts[timing] += 1
         if breaks_combo:
@@ -1368,13 +1386,9 @@ class ManiaRound(RoundScore):
             if note.time_ms <= position_ms <= min(note.end_ms, note.time_ms + MANIA_TRACE_START_GRACE_MS):
                 self._start_hold(index, position_ms, 300, None)
             return None, False
-        value = next((value for value, early, late in self._timing_windows(note)
-                      if note.time_ms - early <= position_ms <= note.time_ms + late), 0)
+        value, timing = self._input_grade(note, position_ms)
         if not value:
             return None, False
-        timing = None
-        if self.life is not None and value != 300:
-            timing = "Early" if position_ms < note.time_ms else "Late"
         if self.directional_flicks and note.flick_direction is not None:
             attempt = position_ms, index, value, timing
             recent = [direction for direction, pressed_at in self._direction_times.items()
@@ -1390,9 +1404,14 @@ class ManiaRound(RoundScore):
             return None, False
         if value == MANIA_BAD:
             pending.popleft()
-            return self._judge_lane(index, value, timing=timing), False
+            timed_hold = self._timed_hold(note)
+            if timed_hold:
+                self._schedule_missed_tail(index, position_ms)
+            return self._judge_lane(index, value, timing=timing, hold_start=timed_hold), False
         if note.end_ms is not None:
             self._start_hold(index, position_ms, value, timing)
+            if self._timed_hold(note):
+                return self._judge_lane(index, value, timing=timing, hold_start=True), True
             return None, True
         pending.popleft()
         return self._judge_lane(index, value, timing=timing), True
@@ -1409,9 +1428,13 @@ class ManiaRound(RoundScore):
         note = self.notes[index]
         if self.life is not None and note.trace:
             return self._judge_lane(index, 0 if position_ms < note.end_ms else value)
+        if self._timed_hold(note):
+            value, timing = self._input_grade(note, position_ms, tail=True)
+            dropped = value == 0 and position_ms < note.end_ms
+            return self._judge_lane(index, value, bad=dropped, timing="Early" if dropped else timing)
         bad = position_ms < note.end_ms - MANIA_RELEASE_WINDOW_MS
         if bad:
-            return self._judge_lane(index, 0, bad=True, timing="Early" if self.life is not None else None)
+            return self._judge_lane(index, 0, bad=True)
         return self._judge_lane(index, value, timing=timing)
 
     def keep_lane_held(self, position_ms, lane):
@@ -1449,6 +1472,18 @@ class ManiaRound(RoundScore):
         self._heads[index] = value, timing
         self._hold_spans[index] = position_ms, None
 
+    def _schedule_missed_tail(self, index, head_time):
+        heappush(self._missed_tails, (max(head_time, self.notes[index].end_ms), index))
+
+    def can_release_at(self, position_ms):
+        for index in self._heads:
+            note = self.notes[index]
+            if self._timed_hold(note):
+                _, early, late = self._timing_windows(note, tail=True)[-1]
+                if note.end_ms - early <= position_ms <= note.end_ms + late:
+                    return True
+        return False
+
     def _recover_life(self, position_ms):
         if self._life_recovery_ms is None or position_ms < self._life_recovery_ms:
             return
@@ -1470,6 +1505,7 @@ class ManiaRound(RoundScore):
                 index = pending[0]
                 note = self.notes[index]
                 holding = self.is_holding(index)
+                timed_hold = self._timed_hold(note)
                 trace = self.life is not None and note.trace
                 if trace and not holding and playing and position_ms >= note.time_ms:
                     held_since = self._held_since[lane]
@@ -1478,28 +1514,38 @@ class ManiaRound(RoundScore):
                         holding = True
                 if holding:
                     deadline = note.end_ms
+                    if timed_hold:
+                        deadline += self._timing_windows(note, tail=True)[-1][2]
                 elif trace:
                     deadline = note.time_ms + MANIA_TRACE_START_GRACE_MS
                 else:
                     deadline = note.time_ms + self._timing_windows(note)[-1][2]
                     if (flick_press := self._flick_presses.get(lane)) is not None:
                         deadline = max(deadline, flick_press[0] + MANIA_FLICK_CHORD_MS)
-                if position_ms < deadline or (position_ms == deadline and not holding):
+                if position_ms < deadline or (position_ms == deadline and (not holding or timed_hold)):
                     break
                 value, timing = self._heads.pop(index) if holding else (0, None)
+                if timed_hold and holding:
+                    value, timing = 0, None
+                if timed_hold and not holding:
+                    self._schedule_missed_tail(index, deadline)
                 self._flick_presses.pop(lane, None)
-                due.append((deadline, pending.popleft(), value, timing, False))
+                due.append((deadline, pending.popleft(), value, timing, False, timed_hold and not holding))
+        while self._missed_tails and self._missed_tails[0][0] <= position_ms:
+            time, index = heappop(self._missed_tails)
+            due.append((time, index, 0, None, False, False))
         while self._checkpoints and self._checkpoints[0][0] <= position_ms:
             time, index = self._checkpoints.popleft()
             start, end = self._hold_spans.get(index, (float("inf"), None))
             hit = start <= time and (end is None or time <= end)
-            due.append((time, index, 300 if hit else 0, None, True))
+            due.append((time, index, 300 if hit else 0, None, True, False))
         judgements = []
-        for deadline, index, value, timing, checkpoint in sorted(due):
+        for deadline, index, value, timing, checkpoint, hold_start in sorted(due, key=lambda event: event[:2]):
             if playing:
                 self._recover_life(deadline)
             judgements.append(self._judge_lane(index, value if playing else 0,
-                                               timing=timing if playing else None, checkpoint=checkpoint))
+                                               timing=timing if playing else None,
+                                               checkpoint=checkpoint, hold_start=hold_start))
         if playing:
             self._recover_life(position_ms)
         return judgements
@@ -1930,6 +1976,7 @@ class RhythmDialog(QDialog):
         self.using_demo = None
         self.anchor = None
         self.preroll_until = None
+        self._postroll_anchor = None
         self._paused_at = None
         self.resume_main = False
         self.main_paused = False
@@ -1967,6 +2014,8 @@ class RhythmDialog(QDialog):
         self.player.errorOccurred.connect(self._playback_error)
         self.timer = QTimer(self, interval=16, timerType=Qt.TimerType.PreciseTimer)
         self.timer.timeout.connect(self._tick)
+        self._resume_timer = QTimer(self, interval=1000, timerType=Qt.TimerType.PreciseTimer)
+        self._resume_timer.timeout.connect(self._tick_mania_resume)
         self.finished.connect(self._release_audio)
 
         layout = QVBoxLayout(self)
@@ -2272,16 +2321,26 @@ class RhythmDialog(QDialog):
             if self.pending_start:
                 self._play_round()
         elif status == QMediaPlayer.MediaStatus.EndOfMedia and self.round is not None and not self.pending_start:
-            if self._selected_passage().full_song:
-                self.progress.setValue(self.progress.maximum())
-            # Process a slider tail or spinner that ends on the last audio sample.
-            position = self.player.duration() - self.offset_ms
-            self._show_frame(position, self._advance_round(position))
+            self._audio_ended()
+
+    def _audio_ended(self):
+        if self._postroll_anchor is not None:
+            return
+        if self._selected_passage().full_song:
+            self.progress.setValue(self.progress.maximum())
+        # Process a slider tail or spinner that ends on the last audio sample.
+        position = self.player.duration() - self.offset_ms
+        self._show_frame(position, self._advance_round(position))
+        if isinstance(self.round, ManiaRound) and self.round.can_release_at(position):
+            self.preroll_until = None
+            self._postroll_anchor = position, monotonic()
+        else:
             self._finish_round()
 
     def _play_round(self):
         self.pending_start = False
         self.anchor = None
+        self._postroll_anchor = None
         delay = getattr(self.host, "_device_lyric_delay_ms", 0)
         self.offset_ms = delay + self.calibration.value()
         lead_ms = LEAD_IN_MS
@@ -2307,6 +2366,9 @@ class RhythmDialog(QDialog):
         self.anchor = position_ms, monotonic()
 
     def _position(self):
+        if self._postroll_anchor is not None:
+            position, started_at = self._postroll_anchor
+            return position + (monotonic() - started_at) * 1000
         if self.preroll_until is not None:
             return min(0, (monotonic() - self.preroll_until) * 1000) - self.offset_ms
         position = self.player.position()
@@ -2326,7 +2388,7 @@ class RhythmDialog(QDialog):
             if monotonic() >= self.preroll_until:
                 self.preroll_until = None
                 self.player.play()
-        elif self.player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+        elif self._postroll_anchor is None and self.player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
             return
         if self.round is None or self.pending_start:
             return
@@ -2334,19 +2396,23 @@ class RhythmDialog(QDialog):
         self._show_frame(position, self._advance_round(position))
         if self.round is None:
             return
-        if self._selected_passage().full_song:
+        if self._postroll_anchor is not None:
+            if not self.round.can_release_at(position):
+                self._finish_round()
+        elif self._selected_passage().full_song:
             audio_position = self.player.position()
             self.progress.setValue(audio_position)
             duration = self.player.duration()
             # The media backend can reach the duration without sending EndOfMedia.
             if duration > 0 and audio_position >= duration:
-                self._finish_round()
+                self._audio_ended()
         elif position > self.round.finish_ms + self.round.hit_window_ms + 200:
             self._finish_round()
 
     def _playing_round(self):
         return (self.round is not None and not self.pending_start and self._paused_at is None
                 and (self.preroll_until is not None
+                     or self._postroll_anchor is not None
                      or self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState))
 
     def _toggle_mania_pause(self):
@@ -2368,6 +2434,29 @@ class RhythmDialog(QDialog):
             self.status.setText("Paused")
             return
 
+        if not self._resume_timer.isActive():
+            board.set_pause_state(enabled=False, paused=True)
+            board.setFocus(Qt.FocusReason.OtherFocusReason)
+            self._resume_count = 3
+            self._resume_timer.start()
+            self._tick_mania_resume()
+
+    def _tick_mania_resume(self):
+        if not self._resume_timer.isActive():
+            return
+        if self._resume_count:
+            self.mania_board.set_resume_count(self._resume_count)
+            self.status.setText(f"Resuming in {self._resume_count}…")
+            self.mania_sounds.play_countdown()
+            self._resume_count -= 1
+            return
+        self._resume_timer.stop()
+        self.mania_board.set_resume_count(None)
+        self._resume_mania()
+
+    def _resume_mania(self):
+        round_ = self.round
+        board = self.mania_board
         # A hold can be picked back up while paused, before the chart moves again.
         judgements = []
         for lane in range(len(LANE_KEYS)):
@@ -2383,7 +2472,9 @@ class RhythmDialog(QDialog):
                 return
         paused_seconds = monotonic() - self._paused_at
         self._paused_at = None
-        if self.preroll_until is not None:
+        if self._postroll_anchor is not None:
+            self._postroll_anchor = self._paused_position, monotonic()
+        elif self.preroll_until is not None:
             self.preroll_until += paused_seconds
         else:
             self._record_position(self.player.position())
@@ -2444,7 +2535,8 @@ class RhythmDialog(QDialog):
         if play_sound and self.round is not None:
             if neon:
                 note = self.round.held_note(lane) if judgement is None else self.round.notes[judgement.index]
-                self.mania_sounds.play_note(note, None if judgement is None else judgement.value, self.hit_sound)
+                value = None if judgement is None or judgement.hold_start else judgement.value
+                self.mania_sounds.play_note(note, value, self.hit_sound)
             elif self.hit_sound.isLoaded():
                 self.hit_sound.play()
 
@@ -2468,11 +2560,15 @@ class RhythmDialog(QDialog):
         board.set_frame(round_.notes, round_.index, position, round_)
         if mania and (recovered := round_.take_life_recovery()):
             board.show_life_recovery(recovered)
+            self.mania_sounds.play_heal()
         for judgement in judgements:
             board.animate(judgement)
-            if mania:
+            if mania and round_.life is not None:
                 note = round_.notes[judgement.index]
-                if note.end_ms is not None and round_.life is not None and not judgement.checkpoint and not note.trace:
+                if judgement.value > 0 and (judgement.checkpoint or note.trace):
+                    self.mania_sounds.play_trace(note)
+                if (note.end_ms is not None and not note.trace and not judgement.checkpoint
+                        and not judgement.hold_start and round_.hold_started(judgement.index)):
                     self.mania_sounds.stop_hold(note.lane)
         if judgements:
             if mania:
@@ -2513,6 +2609,7 @@ class RhythmDialog(QDialog):
             return
         self.round = None
         self.preroll_until = None
+        self._postroll_anchor = None
         self._paused_at = None
         self.timer.stop()
         self.player.pause()
@@ -2584,6 +2681,8 @@ class RhythmDialog(QDialog):
         self.result_player.setSource(QUrl())
 
     def _stop_effects(self):
+        self._resume_timer.stop()
+        self.mania_board.set_resume_count(None)
         self._stop_result_video()
         self.hit_sound.stop()
         if self.mania_sounds is not None:
@@ -2596,6 +2695,7 @@ class RhythmDialog(QDialog):
         self.round = None
         self.pending_start = self.source_ready = False
         self.preroll_until = None
+        self._postroll_anchor = None
         self._paused_at = None
         self.status.setText(message or "Could not play this audio.")
         self._set_controls_running(False)
@@ -2629,6 +2729,7 @@ class RhythmDialog(QDialog):
         self.board.clear_inputs()
         self.pending_start = False
         self.preroll_until = None
+        self._postroll_anchor = None
         self._paused_at = None
         self.player.stop()
         self.player.setSource(QUrl())

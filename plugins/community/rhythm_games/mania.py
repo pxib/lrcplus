@@ -42,6 +42,7 @@ PERFECT_EFFECT_COLOR = QColor("#ffdd91")
 HIT_CORE_COLOR = QColor("#f5fffd")
 FEEDBACK_SECONDS = 0.24
 BURST_SECONDS = 0.48
+CHECKPOINT_BURST_SECONDS = 0.22
 JUDGEMENT_SECONDS = 1.0
 JUDGEMENT_SCALE_SECONDS = 0.1
 COMBO_GROW_SECONDS = 0.1
@@ -83,7 +84,7 @@ class ManiaNote:
 MANIA_DEMO = (
     ManiaNote(1000, 0, "Tap {0}"), ManiaNote(1125, 1, "Tap {1}"),
     ManiaNote(1500, 2, "Tap {2}"),
-    ManiaNote(2000, 3, "Hold {3}", end_ms=3000),
+    ManiaNote(2000, 3, "Hold {3}, then release at the tail", end_ms=3000, checkpoints=(2250, 2500, 2750)),
     ManiaNote(2500, 1, "Tap {1} while holding {3}"),
     ManiaNote(3500, 0, "Tap {0} and {3} together", golden=True, flick=True, flick_direction=0),
     ManiaNote(3500, 3, "Tap {0} and {3} together", golden=True),
@@ -352,11 +353,16 @@ class ManiaSounds:
         self.flicks = tuple(load("maniahitflick") for _ in LANE_KEYS)
         self.golden_flicks = tuple(load("maniahitflickcritical") for _ in LANE_KEYS)
         self.golden_holds = tuple(load("maniaholdcritical") for _ in LANE_KEYS)
+        self.traces = tuple(load("maniahittrace") for _ in LANE_KEYS)
+        self.golden_traces = tuple(load("maniahittracecritical") for _ in LANE_KEYS)
+        self.heal = load("maniaheal")
+        self.resume_countdown = load("maniaresumecountdown")
         for effect in (*self.holds, *self.golden_holds):
             effect.setLoopCount(QSoundEffect.Loop.Infinite.value)
         self.results = {name: load(name) for name in ("allperfect", "fullcombo", "clear", "fail")}
         self.effects = (*self.holds, *self.golden_taps, *self.flicks, *self.golden_flicks,
-                        *self.golden_holds, *self.results.values(),
+                        *self.golden_holds, *self.traces, *self.golden_traces, self.heal, self.resume_countdown,
+                        *self.results.values(),
                         *(effect for taps in self.taps.values() for effect in taps))
 
     def configure(self, device, volume):
@@ -392,6 +398,19 @@ class ManiaSounds:
         self.holds[lane].stop()
         self.golden_holds[lane].stop()
 
+    def play_trace(self, note):
+        normal = self.traces[note.lane]
+        if note.golden:
+            self.play(self.golden_traces[note.lane], normal)
+        else:
+            self.play(normal)
+
+    def play_heal(self):
+        self.play(self.heal)
+
+    def play_countdown(self):
+        self.play(self.resume_countdown)
+
     def play_result(self, name):
         self.play(self.results[name])
 
@@ -401,9 +420,16 @@ class HitFeedback:
     note: ManiaNote
     value: int
     started: float
+    checkpoint: bool = False
+
+    @property
+    def burst_seconds(self):
+        return CHECKPOINT_BURST_SECONDS if self.checkpoint else BURST_SECONDS
 
     def strength(self, now):
-        return max(0, 1 - (now - self.started) / FEEDBACK_SECONDS)
+        duration = FEEDBACK_SECONDS * (0.7 if self.checkpoint else 1)
+        intensity = 0.45 if self.checkpoint else 1
+        return intensity * max(0, 1 - (now - self.started) / duration)
 
 
 @dataclass(frozen=True)
@@ -442,9 +468,13 @@ class Playfield:
         right = self.x(lane + 1 - NOTE_LANE_INSET, y)
         return QRectF(left, y - height / 2, right - left, height)
 
-    def note_projection(self, lane, head):
-        corners = QPolygonF([head.topLeft(), head.topRight(), head.bottomRight(), head.bottomLeft()])
-        surface = self.strip(lane + NOTE_LANE_INSET, lane + 1 - NOTE_LANE_INSET, head.top(), head.bottom())
+    def surface_projection(self, bounds):
+        corners = QPolygonF([bounds.topLeft(), bounds.topRight(), bounds.bottomRight(), bounds.bottomLeft()])
+        center_scale = self.scale_at(bounds.center().y())
+        surface = QPolygonF([
+            QPointF(self.center + (point.x() - self.center) * self.scale_at(point.y()) / center_scale, point.y())
+            for point in corners
+        ])
         transform = QTransform()
         QTransform.quadToQuad(corners, surface, transform)
         return transform
@@ -474,12 +504,14 @@ def neon_note_color(note):
     return LANE_COLORS[note.lane]
 
 
-def draw_glow(painter, center, y, width, height, color, opacity):
+def draw_ground_glow(painter, field, center, y, width, height, color, opacity):
     glow = QRadialGradient(0, 0, 0.5)
     glow.setColorAt(0, tinted(color, round(opacity)))
     glow.setColorAt(0.44, tinted(color, round(opacity * 0.38)))
     glow.setColorAt(1, tinted(color, 0))
     painter.save()
+    bounds = QRectF(center - width / 2, y - height / 2, width, height)
+    painter.setWorldTransform(field.surface_projection(bounds), combine=True)
     painter.translate(center, y)
     painter.scale(width, height)
     painter.setPen(Qt.PenStyle.NoPen)
@@ -488,13 +520,19 @@ def draw_glow(painter, center, y, width, height, color, opacity):
     painter.restore()
 
 
-def draw_ripple(painter, center, y, width, height, color, opacity):
+def draw_ground_ripple(painter, field, center, y, width, height, color, opacity):
     ring = QRectF(center - width / 2, y - height / 2, width, height)
+    painter.save()
+    painter.setWorldTransform(field.surface_projection(ring), combine=True)
     painter.setBrush(Qt.BrushStyle.NoBrush)
     painter.setPen(QPen(tinted(color, round(opacity * 0.27)), 3.5))
     painter.drawEllipse(ring)
-    painter.setPen(QPen(tinted(color.lighter(135), round(opacity)), 1.25))
+    edge = QLinearGradient(0, ring.top(), 0, ring.bottom())
+    edge.setColorAt(0, tinted(color.lighter(135), round(opacity * 0.55)))
+    edge.setColorAt(1, tinted(color.lighter(135), round(opacity)))
+    painter.setPen(QPen(QBrush(edge), 1.25))
     painter.drawEllipse(ring)
+    painter.restore()
 
 
 def draw_spark(painter, x, y, size, *, glint=False):
@@ -659,9 +697,11 @@ class ManiaBoard(QWidget):
     @property
     def instructions(self):
         keys = ", ".join(self.lane_labels[:-1]) + f", or {self.lane_labels[-1]}"
+        hold_instructions = ("Release holds at the tail and keep the key down through traces." if self.theme == "neon"
+                             else "Hold long notes until their tails reach the line.")
         flicks = (" Press a direction key with the lane key for directional flicks."
                   if self.theme == "neon" and self.directional_flicks else "")
-        return f"Tap {keys} at the hit line. Hold long notes until their tails reach the line.{flicks}"
+        return f"Tap {keys} at the hit line. {hold_instructions}{flicks}"
 
     def __init__(self, parent, lead_ms):
         super().__init__(parent)
@@ -678,6 +718,7 @@ class ManiaBoard(QWidget):
         self._feedback = {}
         self._bursts = []
         self._judgement_label = None
+        self._resume_count = None
         self._feedback_timer = QTimer(self, interval=16)
         self._feedback_timer.timeout.connect(self._advance_feedback)
         self._build_hud()
@@ -885,10 +926,15 @@ class ManiaBoard(QWidget):
         self.life_recovery.show()
         self._life_recovery_timer.start()
 
+    def set_resume_count(self, count):
+        if self._resume_count != count:
+            self._resume_count = count
+            self.update()
+
     def animate(self, judgement):
         note = self.notes[judgement.index]
         now = monotonic()
-        hit = HitFeedback(note, judgement.value, now)
+        hit = HitFeedback(note, judgement.value, now, checkpoint=judgement.checkpoint)
         self._feedback[note.lane] = hit
         if self.theme == "neon":
             if judgement.value > 0:
@@ -903,8 +949,8 @@ class ManiaBoard(QWidget):
 
     def _advance_feedback(self):
         now = monotonic()
-        self._feedback = {lane: hit for lane, hit in self._feedback.items() if now - hit.started < FEEDBACK_SECONDS}
-        self._bursts = [hit for hit in self._bursts if now - hit.started < BURST_SECONDS]
+        self._feedback = {lane: hit for lane, hit in self._feedback.items() if hit.strength(now) > 0}
+        self._bursts = [hit for hit in self._bursts if now - hit.started < hit.burst_seconds]
         if self._judgement_label is not None and now - self._judgement_label[1] >= JUDGEMENT_SECONDS:
             self._judgement_label = None
         if not self._feedback and not self._bursts and self._judgement_label is None:
@@ -972,16 +1018,27 @@ class ManiaBoard(QWidget):
         hit_y = round(self.height() * 0.80)
         field = Playfield(center, self._neon_lane_width(), 8, hit_y, top_scale=0.14)
         now = monotonic()
-        bursts = [(hit, (now - hit.started) / BURST_SECONDS) for hit in self._bursts]
+        bursts = [(hit, (now - hit.started) / hit.burst_seconds) for hit in self._bursts]
         bursts = [(hit, phase) for hit, phase in bursts if phase < 1]
         self._draw_playfield(painter, field)
         for hit, phase in bursts:
-            self._draw_lane_flash(painter, field, hit, phase)
+            if not hit.checkpoint:
+                self._draw_lane_flash(painter, field, hit, phase)
         self._draw_receptors(painter, field, now)
         self._draw_notes(painter, field)
         for hit, phase in bursts:
-            self._draw_hit_burst(painter, field, hit, phase)
+            if hit.checkpoint:
+                self._draw_checkpoint_pulse(painter, field, hit, phase)
+            else:
+                self._draw_hit_burst(painter, field, hit, phase)
         self._draw_judgement(painter, field)
+        if self._resume_count is not None:
+            font = painter.font()
+            font.setWeight(QFont.Weight.Black)
+            font.setPixelSize(round(field.width * 0.12))
+            painter.setFont(font)
+            painter.setPen(QColor("#f2edff"))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, str(self._resume_count))
 
     def _draw_judgement(self, painter, field):
         if self._judgement_label is None:
@@ -1207,7 +1264,7 @@ class ManiaBoard(QWidget):
         width, height = head.width(), head.height()
         radius = 3.5 * scale
         painter.save()
-        painter.setWorldTransform(field.note_projection(lane, head), combine=True)
+        painter.setWorldTransform(field.surface_projection(head), combine=True)
         for spread, opacity in ((4, 18), (2, 50)):
             glow = spread * scale
             painter.setBrush(tinted(color, opacity))
@@ -1292,22 +1349,51 @@ class ManiaBoard(QWidget):
         beam.setColorAt(0, tinted(color, 0))
         beam.setColorAt(0.55, tinted(color, round(46 * intensity * fade)))
         beam.setColorAt(1, tinted(color, round(150 * intensity * fade)))
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(beam)
         painter.drawPolygon(field.strip(lane + 0.05, lane + 0.95, top, bottom))
+        width = field.x(lane + 1, bottom) - field.x(lane, bottom)
+        glow_y = bottom - field.judgement_height * 0.65
+        draw_ground_glow(painter, field, field.x(lane + 0.5, glow_y), glow_y,
+                         width, field.judgement_height * 1.6, color, 115 * intensity * fade)
+        painter.restore()
+
+    def _draw_checkpoint_pulse(self, painter, field, hit, phase):
+        lane = hit.note.lane
+        y = field.hit_y
+        center = field.x(lane + 0.5, y)
+        width = field.x(lane + 1, y) - field.x(lane, y)
+        height = field.judgement_height
+        color = neon_note_color(hit.note)
+        expansion = 1 - (1 - phase) ** 2
+        fade = (1 - phase) ** 2
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+        draw_ground_glow(painter, field, center, y, width * 0.52, height * 0.9, color, 120 * fade)
+        draw_ground_ripple(painter, field, center, y, width * (0.20 + 0.26 * expansion),
+                           height * (0.22 + 0.18 * expansion), color, 160 * fade)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(tinted(HIT_CORE_COLOR, round(200 * fade)))
+        spark_y = y - height * (0.18 + 0.40 * expansion)
+        draw_spark(painter, field.x(lane + 0.5, spark_y), spark_y, 3 * (1 - phase / 2), glint=True)
+        painter.restore()
 
     def _draw_hit_burst(self, painter, field, hit, phase):
         note = hit.note
         color = neon_note_color(note)
         accent = PERFECT_EFFECT_COLOR if note.golden else color.lighter(145)
-        center, y = field.x(note.lane + 0.5, field.hit_y), field.hit_y - 3
+        y = field.hit_y - 3
+        lane_center = note.lane + 0.5
+        center = field.x(lane_center, y)
         width = field.width / len(LANE_KEYS)
         scale = min(1, width / 110)
         intensity = 0.65 + hit.value / 860
         flash = max(0, 1 - phase / 0.43) ** 2 * intensity
         if flash:
-            draw_glow(painter, center, y, width * 1.45, 52 * scale, color, 235 * flash)
-            draw_glow(painter, center, y, width * 1.21, 13 * scale, HIT_CORE_COLOR, 250 * flash)
+            draw_ground_glow(painter, field, center, y, width * 1.45, 52 * scale, color, 235 * flash)
+            draw_ground_glow(painter, field, center, y, width * 1.21, 13 * scale, HIT_CORE_COLOR, 250 * flash)
 
         delays = (0, 0.15, 0.27) if note.golden else (0, 0.16)
         for index, delay in enumerate(delays):
@@ -1315,12 +1401,19 @@ class ManiaBoard(QWidget):
             if wave < 0:
                 continue
             spread = 1 - (1 - wave) ** 2
-            draw_ripple(painter, center, y - 4 * spread * scale,
-                        width * (0.33 + 0.80 * spread), (4 + 17 * spread) * scale, accent,
-                        200 * intensity * (1 - wave) ** 2 / (1 + 0.55 * index))
+            ring_y = y - 4 * spread * scale
+            draw_ground_ripple(painter, field, field.x(lane_center, ring_y), ring_y,
+                               width * (0.33 + 0.80 * spread), (4 + 17 * spread) * scale, accent,
+                               200 * intensity * (1 - wave) ** 2 / (1 + 0.55 * index))
 
+        lane_slope = (center - field.x(lane_center, field.top)) / (y - field.top)
+        painter.save()
+        painter.translate(center, y)
+        painter.shear(lane_slope, 0)
+        painter.translate(-center, -y)
         if note.flick:
-            self._draw_flick_trails(painter, center, y, width, scale, color, phase, intensity)
+            direction = note.flick_direction if self.directional_flicks else None
+            self._draw_flick_trails(painter, center, y, width, scale, color, phase, intensity, direction)
 
         sparks = HIT_SPARKS if hit.value == 300 or note.golden or note.flick else HIT_SPARKS[:6]
         lift = 1.65 if note.flick else 1
@@ -1337,12 +1430,14 @@ class ManiaBoard(QWidget):
             painter.setBrush(tinted(HIT_CORE_COLOR if glint else accent,
                                     round(255 * intensity * (1 - flight) ** 1.6)))
             draw_spark(painter, x, spark_y, size, glint=glint)
+        painter.restore()
 
-    def _draw_flick_trails(self, painter, center, y, width, scale, color, phase, intensity):
+    def _draw_flick_trails(self, painter, center, y, width, scale, color, phase, intensity, direction):
         strength = max(0, 1 - phase / 0.72) * intensity
         if not strength:
             return
         travel = 1 - (1 - phase) ** 2
+        lean = 32 * (direction or 0)
         for offset, angle, length, thickness in ((0, 0, 83, 9), (-0.16, -20, 64, 5), (0.15, 16, 69, 5)):
             tip = -(length + 62 * travel) * scale
             tail = -61 * travel * scale
@@ -1353,7 +1448,7 @@ class ManiaBoard(QWidget):
             trail.setColorAt(1, tinted(color, 0))
             painter.save()
             painter.translate(center + offset * width, y)
-            painter.rotate(angle)
+            painter.rotate(angle + lean)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(trail)
             shoulder = 0.42 * tip + 0.58 * tail
@@ -1364,7 +1459,6 @@ class ManiaBoard(QWidget):
 
     def _draw_hold_aura(self, painter, field, note, y, color):
         lane = note.lane
-        center = field.x(lane + 0.5, y)
         width = field.x(lane + 1, y) - field.x(lane, y)
         phase = max(0, self.position_ms - note.time_ms) / 520
         pulse = 0.5 + 0.5 * sin(tau * phase)
@@ -1376,12 +1470,15 @@ class ManiaBoard(QWidget):
         aura.setColorAt(1, tinted(color, round(92 + 64 * pulse)))
         painter.setBrush(aura)
         painter.drawPolygon(field.strip(lane + 0.16, lane + 0.84, top, y))
-        draw_glow(painter, center, y - 6, width * 1.25, height, color, 130 + 50 * pulse)
+        glow_y = y - 6
+        draw_ground_glow(painter, field, field.x(lane + 0.5, glow_y), glow_y,
+                         width * 1.25, height, color, 130 + 50 * pulse)
 
         for offset in (0, 0.5):
             wave = (phase + offset) % 1
-            draw_ripple(painter, center, y - 6 - 12 * wave, width * (0.40 + 0.60 * wave),
-                        6 + 8 * wave, color, 156 * sin(wave * tau / 2))
+            ring_y = y - 6 - 12 * wave
+            draw_ground_ripple(painter, field, field.x(lane + 0.5, ring_y), ring_y,
+                               width * (0.40 + 0.60 * wave), 6 + 8 * wave, color, 156 * sin(wave * tau / 2))
 
         painter.setPen(Qt.PenStyle.NoPen)
         for index, offset in enumerate((-0.26, 0.21, -0.12, 0.29, 0.07)):

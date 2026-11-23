@@ -261,10 +261,11 @@ def test_neon_simultaneous_flicks_accept_their_own_directions():
 def test_neon_hold_checkpoints_score_while_held_and_leave_the_tail_live():
     notes = (ManiaNote(1000, 0, end_ms=1900, checkpoints=(1250, 1500, 1750)),)
     round_ = ManiaRound(notes)
-    assert round_.press(1000, 0) == (None, True)
+    head, play_sound = round_.press(1000, 0)
+    assert head.hold_start and head.value == 300 and play_sound and round_.combo == 1
     (tick,) = round_.advance(1250)
     assert tick.checkpoint and tick.value == 300
-    assert round_.index == 0 and round_.combo == 1
+    assert round_.index == 0 and round_.combo == 2
     round_.release(1300, 0)
     ticks = round_.advance(1900)
     assert [(tick.value, tick.checkpoint) for tick in ticks] == [(0, True), (0, True)]
@@ -274,6 +275,36 @@ def test_neon_hold_checkpoints_score_while_held_and_leave_the_tail_live():
     assert classic.press(1000, 0) == (None, True)
     assert classic.advance(1750) == []
     assert not classic.advance(1900)[0].checkpoint
+
+
+def test_neon_hold_counts_a_perfect_head_each_checkpoint_and_timed_tail():
+    notes = (ManiaNote(1000, 0, end_ms=1900, checkpoints=(1250, 1500)),)
+    round_ = ManiaRound(notes)
+    head, _ = round_.press(1000, 0)
+    assert head.hold_start and round_.combo == 1
+    assert len(round_.advance(1900)) == 2
+    assert round_.combo == 3 and round_.is_holding(0)
+    tail = round_.release(1900, 0)
+    assert not tail.hold_start and not tail.checkpoint and tail.value == 300
+    assert round_.combo == 4 and round_.all_perfect and round_.score == round_.max_score
+    assert round_.advance(float("inf")) == []
+
+
+def test_neon_hold_missed_head_and_unreleased_tail_are_counted_once():
+    notes = (ManiaNote(1000, 0, end_ms=1800),)
+    round_ = ManiaRound(notes)
+    head, = round_.advance(1200)
+    assert head.hold_start and head.value == 0 and round_.judged == 1
+    tail, = round_.advance(1800)
+    assert not tail.hold_start and tail.value == 0 and round_.judged == 2
+    assert round_.advance(float("inf")) == []
+
+    round_ = ManiaRound(notes)
+    round_.press(1000, 0)
+    assert round_.advance(1925) == []
+    tail, = round_.advance(1926)
+    assert not tail.hold_start and tail.value == 0 and tail.timing is None
+    assert round_.release(1930, 0) is None and round_.judged == 2
 
 
 def test_neon_traces_accept_an_already_held_key_and_use_no_endpoint_timing():
@@ -685,24 +716,25 @@ def test_mania_round_judges_chords_and_overlapping_holds_independently():
     round_ = ManiaRound(notes)
     assert round_.press(600, 0) == (None, False)
     assert round_.press(1000, 3) == (None, False)
-    assert round_.press(1000, 0) == (None, True)
+    assert round_.press(1000, 0) == (Judgement(0, 300), True)
     assert round_.press(1100, 2) == (Judgement(2, 300), True)
     assert round_.press(1160, 1) == (Judgement(1, 100), True)
-    assert round_.current == notes[0] and round_.accuracy == pytest.approx(2 / 3)
-    assert round_.press(1450, 3) == (None, True)
-    assert round_.release(1520, 0) == Judgement(0, 300)
+    assert round_.current == notes[0] and round_.accuracy == pytest.approx(7 / 9)
+    assert round_.press(1450, 3) == (Judgement(3, 300), True)
+    assert round_.release(1580, 0) == Judgement(0, 300)
     assert round_.press(1600, 0) == (Judgement(4, 300), True)
     assert round_.release(1600, 3) == Judgement(3, 0)
     assert round_.advance(float("inf")) == []
-    assert round_.current is None and round_.judged == len(notes)
+    assert round_.current is None and round_.judged == len(notes) + 2
 
 
-def test_mania_round_expires_misses_and_completes_held_tails_in_time_order():
+def test_mania_round_expires_misses_and_keeps_a_timed_tail_live():
     notes = (ManiaNote(1000, 0, end_ms=1560), ManiaNote(1200, 3), ManiaNote(1250, 2))
     round_ = ManiaRound(notes)
-    assert round_.press(1000, 0) == (None, True)
-    assert round_.advance(1560) == [Judgement(1, 0), Judgement(2, 0), Judgement(0, 300)]
-    assert round_.combo == 1 and round_.accuracy == pytest.approx(1 / 3)
+    assert round_.press(1000, 0) == (Judgement(0, 300), True)
+    assert round_.advance(1560) == [Judgement(1, 0), Judgement(2, 0)]
+    assert round_.release(1560, 0) == Judgement(0, 300)
+    assert round_.combo == 1 and round_.accuracy == pytest.approx(1 / 2)
 
 
 @pytest.mark.parametrize(("theme", "value"), (("neon", 50), ("classic", 100)))
@@ -770,13 +802,14 @@ def test_neon_timing_feedback_distinguishes_hits_holds_and_untimed_misses():
     round_ = ManiaRound(notes)
     assert round_.press(945, 0)[0].timing == "Early"
     assert round_.press(2095, 0)[0].timing == "Late"
-    assert round_.press(3055, 0) == (None, True)
+    assert round_.press(3055, 0)[0].timing == "Late"
     assert round_.release(3700, 0).timing == "Early"
-    assert round_.press(5055, 0) == (None, True)
-    assert round_.advance(6000)[0].timing == "Late"
+    assert round_.press(5055, 0)[0].timing == "Late"
+    assert round_.advance(5935) == []
+    assert round_.release(5940, 0).timing == "Early"
     assert round_.press(7000, 0)[0].timing is None
     assert round_.advance(8200)[0].timing is None
-    assert round_.timing_counts == {"Early": 2, "Late": 2, "Wrong Way": 0}
+    assert round_.timing_counts == {"Early": 3, "Late": 3, "Wrong Way": 0}
 
 
 def test_neon_results_toggle_early_and_late_counts(qapp, monkeypatch):
@@ -824,13 +857,13 @@ def test_neon_all_perfect_effect_ends_on_great_even_when_combo_continues(qapp):
         board.set_controls(1, mania.LANE_KEYS)
         assert board.combo_number.all_perfect
 
-        assert round_.press(2055, 1) == (None, True)
+        assert round_.press(2055, 1) == (Judgement(1, 100), True)
         board.set_frame(notes, round_.index, 2055, round_)
-        assert board.combo_number.text() == "1" and not board.combo_number.all_perfect
-        assert round_.advance(2500)[0].value == 100
+        assert board.combo_number.text() == "2" and not board.combo_number.all_perfect
+        assert round_.release(2500, 1).value == 300
         round_.press(3000, 2)
         board.set_frame(notes, round_.index, 3000, round_)
-        assert board.combo_number.text() == "3" and not board.combo_number.all_perfect
+        assert board.combo_number.text() == "4" and not board.combo_number.all_perfect
 
         retry = ManiaRound(notes)
         retry.press(1000, 0)
@@ -1396,6 +1429,52 @@ def test_mania_neon_bursts_outlast_key_feedback_and_overlap_in_a_lane(qapp, monk
         board.deleteLater()
 
 
+def test_neon_checkpoint_pulse_expires_before_a_full_hit(qapp, monkeypatch):
+    clock = 10.0
+    monkeypatch.setattr(mania, "monotonic", lambda: clock)
+    board = mania.ManiaBoard(None, 1200)
+    try:
+        notes = (ManiaNote(1000, 0, end_ms=2000), ManiaNote(1100, 1))
+        board.set_frame(notes, 0, 1100)
+        board.animate(Judgement(1, 300))
+        label = board._judgement_label
+        board.animate(Judgement(0, 300, checkpoint=True))
+        tap, checkpoint = board._bursts
+        assert checkpoint.strength(clock) < tap.strength(clock)
+        assert board._judgement_label == label
+
+        clock += 0.25
+        board._advance_feedback()
+        assert board._bursts == [tap]
+    finally:
+        board.deleteLater()
+
+
+def test_neon_checkpoint_and_trace_completion_use_the_supplied_sounds(qapp, monkeypatch):
+    host = QMainWindow()
+    api = SimpleNamespace(get_current_track=lambda: None, get_setting=lambda _key, default: default)
+    dialog = RhythmDialog(host, api, ())
+    try:
+        dialog.tabs.setCurrentIndex(1)
+        dialog.mania_sounds = mania.ManiaSounds(dialog, rhythm_games.HIT_SOUND_PATH.parent)
+        play = Mock()
+        monkeypatch.setattr(dialog.mania_sounds, "play", play)
+        notes = (ManiaNote(1000, 0, end_ms=1600, checkpoints=(1250,)),
+                 ManiaNote(1100, 1, end_ms=1800, golden=True, trace=True, checkpoints=(1350,)))
+        round_ = dialog.round = ManiaRound(notes)
+        round_.press(1000, 0)
+        round_.press(1070, 1)
+        dialog._show_frame(1400, round_.advance(1400))
+        dialog._show_frame(1800, round_.advance(1800))
+        assert [call.args[0].source().fileName() for call in play.call_args_list] == [
+            "maniahittrace.wav", "maniahittracecritical.wav", "maniahittracecritical.wav",
+        ]
+    finally:
+        dialog.reject()
+        host.deleteLater()
+        qapp.processEvents()
+
+
 def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(rhythm_games, "RESULT_MEDIA_DIR", tmp_path)
     host = QMainWindow()
@@ -1437,7 +1516,17 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch, tmp_path)
         assert dialog.status.text() == "Paused" and not dialog.timer.isActive()
         QTest.keyClick(board, Qt.Key.Key_D)
         assert dialog.round.judged == 0
+        countdown = Mock(wraps=dialog.mania_sounds.play_countdown)
+        monkeypatch.setattr(dialog.mania_sounds, "play_countdown", countdown)
         QTest.mouseClick(board.pause_button, Qt.MouseButton.LeftButton)
+        for expected in (3, 2, 1):
+            assert board._resume_count == expected
+            assert not board.pause_button.isEnabled() and not dialog.timer.isActive()
+            QTest.keyClick(board, Qt.Key.Key_D)
+            assert dialog.round.judged == 0
+            dialog._tick_mania_resume()
+        assert countdown.call_count == 3 and board._resume_count is None
+        assert dialog.mania_sounds.resume_countdown.source().fileName() == "maniaresumecountdown.wav"
         assert board.pause_button.accessibleName() == "Pause" and dialog.timer.isActive()
         dialog.timer.stop()
         QTest.keyClick(board, Qt.Key.Key_K)
@@ -1451,16 +1540,25 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch, tmp_path)
         QTest.keyClick(board, Qt.Key.Key_F)
         clock = 1500
         QTest.keyClick(board, Qt.Key.Key_J)
+        play_note = Mock(wraps=dialog.mania_sounds.play_note)
+        stop_hold = Mock(wraps=dialog.mania_sounds.stop_hold)
+        monkeypatch.setattr(dialog.mania_sounds, "play_note", play_note)
+        monkeypatch.setattr(dialog.mania_sounds, "stop_hold", stop_hold)
         clock = 2000
         QTest.keyPress(board, Qt.Key.Key_K)
         assert dialog.round.is_holding(3)
+        assert board.combo_number.text() == "4"
+        play_note.assert_called_once_with(MANIA_DEMO[3], None, dialog.hit_sound)
+        stop_hold.assert_not_called()
         clock = 2500
         QTest.keyClick(board, Qt.Key.Key_F)
         assert dialog.caption.text() == "Tap F while holding K"
-        assert dialog.round.counts[300] == 4 and dialog.round.is_holding(3)
+        assert dialog.round.counts[300] == 7 and dialog.round.is_holding(3)
         clock = 3000
         dialog._tick()
         QTest.keyRelease(board, Qt.Key.Key_K)
+        assert board.combo_number.text() == "9"
+        stop_hold.assert_called_once_with(3)
         clock = 3500
         play = Mock()
         monkeypatch.setattr(dialog.mania_sounds, "play", play)
@@ -1468,7 +1566,7 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch, tmp_path)
         QTest.keyPress(board, Qt.Key.Key_K)
         QTest.keyClick(board, Qt.Key.Key_D)
         QTest.keyRelease(board, Qt.Key.Key_K)
-        assert dialog.round.counts[300] == 7
+        assert dialog.round.counts[300] == 11
         golden_tap, golden_flick = play.call_args_list
         assert golden_tap.args[0].source().fileName() == "maniahitcritical.wav"
         assert golden_flick.args[0].source().fileName() == "maniahitflickcritical.wav"
@@ -1490,6 +1588,7 @@ def test_mania_tab_plays_demo_keys_holds_and_chords(qapp, monkeypatch, tmp_path)
         dialog._tick()
         assert board.life_recovery.text() == "+200 LIFE"
         assert board.life_recovery.isVisible()
+        assert play.call_args.args[0].source().fileName() == "maniaheal.wav"
 
         clock = 13000
         dialog._tick()
@@ -1544,7 +1643,7 @@ def test_neon_note_head_follows_its_lane_perspective():
     field = mania.Playfield(400, 600, 8, 500, top_scale=0.14)
     lane = 3
     head = field.note_head(lane, field.hit_y)
-    transform = field.note_projection(lane, head)
+    transform = field.surface_projection(head)
     top_left, top_right, bottom_right, bottom_left = (
         transform.map(corner) for corner in (head.topLeft(), head.topRight(), head.bottomRight(), head.bottomLeft())
     )
@@ -2116,6 +2215,44 @@ def test_audio_end_judges_the_last_slider_tail(qapp, monkeypatch):
         assert round_.counts[300] == 1
         assert dialog.round is None
         assert "Grade SS" in dialog.score.text()
+    finally:
+        dialog.reject()
+        host.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("release_tail", (True, False))
+def test_neon_hold_release_window_survives_audio_end(qapp, monkeypatch, release_tail):
+    host = QMainWindow()
+    api = SimpleNamespace(get_current_track=lambda: None, get_setting=lambda _key, default: default)
+    dialog = RhythmDialog(host, api, ())
+    clock = 10.0
+    monkeypatch.setattr(rhythm_games, "monotonic", lambda: clock)
+    monkeypatch.setattr(dialog.player, "duration", lambda: 1500)
+    monkeypatch.setattr(dialog, "_play_result", Mock())
+    try:
+        dialog.tabs.setCurrentIndex(1)
+        dialog.mania_sounds = Mock()
+        round_ = ManiaRound((ManiaNote(1000, 0, end_ms=1500),))
+        dialog.round = round_
+        dialog.offset_ms = 0
+        round_.press(1000, 0)
+        board = dialog.mania_board
+        board._held.add(0)
+
+        dialog._media_status(QMediaPlayer.MediaStatus.EndOfMedia)
+        assert dialog.round is round_ and round_.is_holding(0)
+        if release_tail:
+            clock += 0.060
+            QTest.keyRelease(board, Qt.Key.Key_D)
+            assert round_.counts[100] == 1
+            assert round_.timing_counts["Late"] == 1
+        else:
+            clock += 0.140
+        dialog._tick()
+        assert dialog.round is None
+        assert round_.counts[0] == (0 if release_tail else 1)
+        assert round_.judged == 2
     finally:
         dialog.reject()
         host.deleteLater()
