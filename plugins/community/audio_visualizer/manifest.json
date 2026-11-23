@@ -1,6 +1,6 @@
 {
   "name": "Audio Visualizer",
-  "version": "1.1.0",
-  "description": "Show a live spectrum as glowing curves over Lyrics artwork or a compact strip below the seekbar.",
+  "version": "1.7.0",
+  "description": "Eight audio visualizers over Lyrics artwork, including Waterfall, plus a compact spectrum below the seekbar.",
   "api_version": 6
 }
