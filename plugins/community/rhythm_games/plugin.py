@@ -2087,6 +2087,17 @@ class RhythmDialog(QDialog):
         layout.addLayout(buttons)
         self.score = QLabel()
         buttons.addWidget(self.score, 1)
+        self.result_fps = QComboBox()
+        self.result_fps.setAccessibleName("Result video frame rate")
+        self.result_fps.addItem("30 FPS", 30)
+        self.result_fps.addItem("60 FPS", 60)
+        self.result_fps.setCurrentIndex(max(0, self.result_fps.findData(api.get_setting("mania_result_fps", 30))))
+        self.result_fps_label = QLabel("Result video")
+        self.result_fps_label.setBuddy(self.result_fps)
+        buttons.addWidget(self.result_fps_label)
+        buttons.addWidget(self.result_fps)
+        self.result_fps_label.hide()
+        self.result_fps.hide()
         self.mania_controls_button = QPushButton("Controls…")
         self.mania_controls_button.setAccessibleName("Mania controls")
         self.mania_controls_button.clicked.connect(self._edit_mania_controls)
@@ -2101,6 +2112,9 @@ class RhythmDialog(QDialog):
         self.passage.currentIndexChanged.connect(self._select_passage)
         self.tabs.currentChanged.connect(self._select_passage)
         self.mania_theme.currentIndexChanged.connect(self._change_mania_theme)
+        self.result_fps.currentIndexChanged.connect(
+            lambda: self.api.set_setting("mania_result_fps", self.result_fps.currentData())
+        )
         self._show_passage()
         self.resize(760, 520)
 
@@ -2151,9 +2165,12 @@ class RhythmDialog(QDialog):
     def _select_passage(self):
         previous_size = self.size()
         show_theme = self.board is self.mania_board
+        neon = show_theme and self.mania_board.theme == "neon"
         self.mania_theme_label.setVisible(show_theme)
         self.mania_theme.setVisible(show_theme)
         self.mania_controls_button.setVisible(show_theme)
+        self.result_fps_label.setVisible(neon)
+        self.result_fps.setVisible(neon)
         self._stop_result_video()
         if self.mania_sounds is not None:
             self.mania_sounds.stop()
@@ -2164,7 +2181,7 @@ class RhythmDialog(QDialog):
         self._show_passage()
         self.start.setText("Start")
         self.status.setText(self.board.instructions if self._selected_passage().notes else "Analyzing rhythm…")
-        self._resize_for_neon(show_theme and self.mania_board.theme == "neon", previous_size)
+        self._resize_for_neon(neon, previous_size)
 
     def _resize_for_neon(self, neon, previous_size):
         if neon and self._pre_neon_size is None:
@@ -2639,6 +2656,11 @@ class RhythmDialog(QDialog):
 
     def _play_result(self, name):
         path = RESULT_MEDIA_DIR / f"mania{name}.mp4"
+        if self.result_fps.currentData() == 60:
+            stem = "ap" if name == "allperfect" else name
+            high_fps_path = RESULT_MEDIA_DIR / f"mania{stem}60.mp4"
+            if high_fps_path.is_file():
+                path = high_fps_path
         if not path.is_file():
             self.mania_sounds.play_result(name)
             return
@@ -2705,6 +2727,7 @@ class RhythmDialog(QDialog):
         self.passage.setEnabled(not running)
         self.calibration.setEnabled(not running)
         self.mania_theme.setEnabled(not running)
+        self.result_fps.setEnabled(not running)
         self.mania_controls_button.setEnabled(not running)
         self.tabs.setTabEnabled(1 - self.tabs.currentIndex(), not running)
         if running:

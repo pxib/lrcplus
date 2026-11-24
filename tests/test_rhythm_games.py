@@ -1694,6 +1694,51 @@ def test_neon_result_video_fills_playfield_and_keeps_frame_edges(qapp):
         qapp.processEvents()
 
 
+@pytest.mark.parametrize(("result", "clip_60"), (
+    ("allperfect", "maniaap60.mp4"),
+    ("fullcombo", "maniafullcombo60.mp4"),
+    ("clear", "maniaclear60.mp4"),
+    ("fail", "maniafail60.mp4"),
+))
+def test_neon_result_fps_selects_and_falls_back_to_existing_footage(qapp, monkeypatch, tmp_path, result, clip_60):
+    clip_30 = f"mania{result}.mp4"
+    (tmp_path / clip_30).touch()
+    monkeypatch.setattr(rhythm_games, "RESULT_MEDIA_DIR", tmp_path)
+    settings = {}
+    api = SimpleNamespace(get_current_track=lambda: None, get_setting=settings.get, set_setting=settings.__setitem__)
+    host = QMainWindow()
+    dialog = RhythmDialog(host, api, ())
+    load = Mock()
+    monkeypatch.setattr(dialog.result_player, "setSource", load)
+    try:
+        assert dialog.result_fps.isHidden()
+        dialog.tabs.setCurrentIndex(1)
+        assert not dialog.result_fps.isHidden()
+        assert dialog.result_fps.currentData() == 30
+
+        dialog.result_fps.setCurrentIndex(dialog.result_fps.findData(60))
+        assert settings["mania_result_fps"] == 60
+        dialog._play_result(result)
+        assert load.call_args.args[0].fileName() == clip_30
+        dialog._stop_result_video()
+
+        (tmp_path / clip_60).touch()
+        dialog.mania_theme.setCurrentIndex(dialog.mania_theme.findData("classic"))
+        assert dialog.result_fps.isHidden()
+        dialog.mania_theme.setCurrentIndex(dialog.mania_theme.findData("neon"))
+        dialog._play_result(result)
+        assert load.call_args.args[0].fileName() == clip_60
+        dialog._stop_result_video()
+
+        dialog.result_fps.setCurrentIndex(dialog.result_fps.findData(30))
+        dialog._play_result(result)
+        assert load.call_args.args[0].fileName() == clip_30
+    finally:
+        dialog.reject()
+        host.deleteLater()
+        qapp.processEvents()
+
+
 @pytest.mark.parametrize("dismiss", ("ended", "tab_changed"))
 def test_neon_result_dim_and_delay_clear_when_dismissed(qapp, monkeypatch, tmp_path, dismiss):
     (tmp_path / "maniaallperfect.mp4").touch()
