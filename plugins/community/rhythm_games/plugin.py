@@ -18,7 +18,7 @@ from PySide6.QtCore import QBuffer, QIODevice, QPointF, QRectF, QSize, Qt, QTime
 from PySide6.QtGui import QColor, QCursor, QImage, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QSoundEffect, QVideoSink
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QSpinBox, QTabWidget,
+    QComboBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton, QSpinBox, QTabWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -2069,6 +2069,29 @@ class RhythmDialog(QDialog):
         self.mania_board.pause_button.clicked.connect(self._toggle_mania_pause)
         self.tabs.addTab(self.circle_board, "Circles")
         self.tabs.addTab(self.mania_board, "Mania")
+        self.typing_board = QWidget(self.tabs)
+        typing_layout = QVBoxLayout(self.typing_board)
+        typing_layout.addStretch(1)
+        self.typing_prompt = QLabel()
+        self.typing_prompt.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.typing_prompt.setWordWrap(True)
+        self.typing_prompt.setMinimumHeight(100)
+        self.typing_prompt.setStyleSheet("font-size: 24px; font-weight: 600;")
+        typing_layout.addWidget(self.typing_prompt)
+        self.typing_entry = QLineEdit()
+        self.typing_entry.setPlaceholderText("Type the lyric and press Enter")
+        self.typing_entry.returnPressed.connect(self._submit_typing)
+        typing_layout.addWidget(self.typing_entry)
+        self.typing_feedback = QLabel()
+        self.typing_feedback.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        typing_layout.addWidget(self.typing_feedback)
+        typing_layout.addStretch(1)
+        self.tabs.addTab(self.typing_board, "Lyrics Type")
+        self._typing_notes = ()
+        self._typing_index = 0
+        self._typing_started = 0.0
+        self._typing_score = 0
+        self._typing_hits = 0
         layout.addWidget(self.tabs, 1)
         self.progress = QProgressBar()
         self.progress.setAccessibleName("Song progress")
@@ -2160,7 +2183,8 @@ class RhythmDialog(QDialog):
         elif self.round is None and self._selected_passage() is not DEMO:
             self._show_passage()
             if self._audio_only:
-                self.status.setText(self.board.instructions)
+                self.status.setText("Type the displayed lyric phrases in rhythm." if self.board is self.typing_board
+                                    else self.board.instructions)
 
     def _select_passage(self):
         previous_size = self.size()
@@ -2175,12 +2199,17 @@ class RhythmDialog(QDialog):
         if self.mania_sounds is not None:
             self.mania_sounds.stop()
         self.mania_board.clear_feedback()
+        if self.board is self.typing_board:
+            self._prepare_typing()
         if self._waiting_for_rhythm:
             self._waiting_for_rhythm = False
             self.start.setEnabled(True)
         self._show_passage()
         self.start.setText("Start")
-        self.status.setText(self.board.instructions if self._selected_passage().notes else "Analyzing rhythm…")
+        if self.board is self.typing_board:
+            self.status.setText("Type the displayed lyric phrases in rhythm.")
+        else:
+            self.status.setText(self.board.instructions if self._selected_passage().notes else "Analyzing rhythm…")
         self._resize_for_neon(neon, previous_size)
 
     def _resize_for_neon(self, neon, previous_size):
@@ -2264,6 +2293,12 @@ class RhythmDialog(QDialog):
         return self._mirrored_mania_notes
 
     def _show_passage(self):
+        if self.board is self.typing_board:
+            self._prepare_typing()
+            self.caption.clear()
+            self.progress.setVisible(False)
+            self.score.clear()
+            return
         passage = self._selected_passage()
         notes = self._chart_notes(passage)
         lead_ms = self.mania_board.lead_ms if self.board is self.mania_board else LEAD_IN_MS
@@ -2276,7 +2311,79 @@ class RhythmDialog(QDialog):
         self.progress.setVisible(passage.full_song)
         self.score.setText(f"{len(notes)} targets" if notes else "")
 
+    def _prepare_typing(self):
+        passage = self._selected_passage()
+        seen = set()
+        unique = []
+        for note in passage.notes:
+            key = note.text.strip().casefold()
+            if key and key not in seen:
+                seen.add(key)
+                unique.append(note)
+        self._typing_notes = tuple(unique)
+        self._typing_index = 0
+        self.typing_entry.clear()
+        self.typing_entry.setEnabled(False)
+        if unique:
+            self.typing_prompt.setText(unique[0].text)
+            self.typing_feedback.setText(f"{len(unique)} lyric phrases · Enter to submit")
+        else:
+            self.typing_prompt.setText("No lyric phrases in this chart.")
+            self.typing_feedback.setText("Choose a chart with lyrics to play this mode.")
+
+    def _start_typing_round(self):
+        self._prepare_typing()
+        if not self._typing_notes:
+            return
+        self._typing_started = monotonic()
+        self._typing_score = self._typing_hits = 0
+        self.typing_entry.setEnabled(True)
+        self.typing_entry.setFocus()
+        self.start.setEnabled(False)
+        self.passage.setEnabled(False)
+        self.calibration.setEnabled(False)
+        self.tabs.setTabEnabled(0, False)
+        self.tabs.setTabEnabled(1, False)
+        self.typing_feedback.setText("Round started · type each phrase and press Enter")
+
+    def _submit_typing(self):
+        if not self.typing_entry.isEnabled() or not self._typing_notes:
+            return
+        target = self._typing_notes[self._typing_index].text.strip()
+        typed = self.typing_entry.text().strip()
+        if not typed:
+            return
+        from difflib import SequenceMatcher
+        expected = " ".join(target.casefold().split())
+        answer = " ".join(typed.casefold().split())
+        accuracy = SequenceMatcher(None, answer, expected).ratio()
+        elapsed = monotonic() - self._typing_started
+        expected_time = (self._typing_notes[self._typing_index].time_ms
+                         - self._typing_notes[0].time_ms) / 1000
+        timing = max(0.0, 1.0 - abs(elapsed - expected_time) / 2)
+        points = round(100 * accuracy * (0.6 + 0.4 * timing))
+        self._typing_score += points
+        self._typing_hits += accuracy >= 0.85
+        self._typing_index += 1
+        self.typing_entry.clear()
+        if self._typing_index == len(self._typing_notes):
+            hit_rate = self._typing_hits / len(self._typing_notes)
+            self.typing_prompt.setText("Chart complete!")
+            self.typing_feedback.setText(f"Score {self._typing_score:,} · {hit_rate:.0%} phrases accurate")
+            self.typing_entry.setEnabled(False)
+            self.start.setEnabled(True)
+            self.passage.setEnabled(True)
+            self.calibration.setEnabled(True)
+            self.tabs.setTabEnabled(0, True)
+            self.tabs.setTabEnabled(1, True)
+            return
+        self.typing_prompt.setText(self._typing_notes[self._typing_index].text)
+        self.typing_feedback.setText(f"{points} points · {self._typing_index}/{len(self._typing_notes)}")
+
     def _start_round(self):
+        if self.board is self.typing_board:
+            self._start_typing_round()
+            return
         if self.pending_start or self.round is not None:
             return
         passage = self._selected_passage()
