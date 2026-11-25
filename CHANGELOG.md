@@ -314,7 +314,7 @@ Thamk yo
 - Give the basic Green, Blue, Purple, Rose, and Orange theme presets coordinated backgrounds, surfaces, controls, borders, and player colors in both light and dark mode. Selecting a basic preset replaces colors left over from the previous theme.
 - Bundle theme presets with PyInstaller releases and check that the preset file is present before creating the release archive.
 
-thank you to my sweet bff tutel on discord for finding bugs!! <333
+(thank you to my sweet bff tutel on discord for finding bugs!! <333)
 
 ## [2026-11-13]
 

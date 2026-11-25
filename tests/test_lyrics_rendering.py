@@ -1,9 +1,10 @@
 import pytest
 from PySide6.QtCore import QRectF
-from PySide6.QtGui import QFontMetrics, QImage, QPainter
+from PySide6.QtGui import QColor, QFontMetrics, QImage, QPainter
 from PySide6.QtWidgets import QGroupBox
 
 from core.fonts import library_font
+from core.lyrics_settings import LyricShadow, lyric_text_effects
 from core.settings import (
     get_effective_lyrics_settings, get_global_lyrics_settings, get_karaoke_settings,
     save_global_lyrics_settings, save_local_lyrics_overrides,
@@ -100,6 +101,100 @@ def test_rendering_category_supports_global_and_file_specific_choices(qapp, tmp_
         assert get_effective_lyrics_settings(tmp_path / "another.mp3")["focus_transition"] is False
     finally:
         dialog.deleteLater()
+
+
+def test_text_effects_settings_follow_lyrics_scope(qapp, tmp_path):
+    path = tmp_path / "song.mp3"
+    dialog = SettingsDialog([], get_global_lyrics_settings(), current_file=str(path))
+    try:
+        dialog.global_controls["lyrics_stroke_width"].setValue(2)
+        dialog.global_controls["lyrics_shadow"].setChecked(True)
+        dialog.global_controls["lyrics_shadow_opacity"].setValue(40)
+        dialog.global_controls["lyrics_shadow_offset_x"].setValue(-3)
+        dialog.global_controls["lyrics_shadow_blur"].setValue(4)
+        save_global_lyrics_settings(dialog.get_global_lyrics_settings())
+        override, width = dialog.local_controls["lyrics_stroke_width"]
+        override.setChecked(True)
+        width.setValue(0)
+        override, offset = dialog.local_controls["lyrics_shadow_offset_x"]
+        override.setChecked(True)
+        offset.setValue(6)
+        save_local_lyrics_overrides(path, dialog.get_local_lyrics_overrides())
+        assert get_effective_lyrics_settings(path)["lyrics_stroke_width"] == 0
+        _, _, enabled, style = lyric_text_effects(get_effective_lyrics_settings(path))
+        assert enabled is True
+        assert style == LyricShadow(opacity=40, offset_x=6, blur=4)
+        assert get_global_lyrics_settings()["lyrics_shadow_offset_x"] == -3
+        assert get_global_lyrics_settings()["lyrics_stroke_width"] == 2
+    finally:
+        dialog.deleteLater()
+
+
+def test_scrolling_lyrics_paint_text_effects_on_existing_and_new_rows(qapp):
+    view = ScrollingLyricsWidget()
+
+    def render(row):
+        row.resize(210, 80)
+        image = QImage(row.size(), QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(0)
+        row.render(image)
+        return image
+
+    try:
+        view.set_focus_transition(False)
+        view.set_highlight_current(False)
+        view.set_lyrics([(0, "Lyrics")])
+        row = view.rows[0]
+        plain = render(row)
+
+        view.set_text_effects(0, "#ff0000", True)
+        shadow = render(row)
+        assert shadow != plain
+
+        view.set_text_effects(2, "#ff0000", True)
+        decorated = render(row)
+        pixels = {decorated.pixel(x, y) for x in range(decorated.width()) for y in range(decorated.height())}
+        assert QColor("#ff0000").rgba() in pixels
+        assert QColor("#ffffff").rgba() in pixels
+        assert decorated != shadow
+
+        view.set_lyrics([(0, "Lyrics"), (3, "Another line")])
+        assert view.rows[1].lyrics_shadow
+        assert view.rows[1].lyrics_stroke_pen.color() == QColor("#ff0000")
+    finally:
+        view.deleteLater()
+
+
+def test_custom_shadow_blurs_and_keeps_its_color(qapp):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QWidget
+
+    row = FuriganaWidget()
+    row.resize(280, 120)
+    row.set_focus_transition(False)
+    row.set_lyric("Custom shadow", generate=False)
+
+    def red_shadow_pixels(blur, opacity):
+        row.set_text_effects(0, "#000000", True, LyricShadow("#ff0000", opacity, -8, 10, blur))
+        image = QImage(row.size(), QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        row.render(image, renderFlags=QWidget.RenderFlag.DrawChildren)
+        return {
+            (x, y): pixel.alpha()
+            for y in range(image.height()) for x in range(image.width())
+            if (pixel := image.pixelColor(x, y)).red() > pixel.green()
+        }
+
+    try:
+        sharp = red_shadow_pixels(0, 100)
+        blurred = red_shadow_pixels(3, 100)
+        faded = red_shadow_pixels(3, 30)
+        assert sharp and blurred
+        assert set(blurred) - set(sharp)
+        assert max(faded.values()) < max(blurred.values())
+        assert red_shadow_pixels(3, 0) == {}
+    finally:
+        row.deleteLater()
 
 
 def test_static_karaoke_rows_keep_clocks_synced_without_repaints_and_seek_correctly(qapp, monkeypatch):

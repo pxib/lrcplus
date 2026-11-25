@@ -1,11 +1,123 @@
 """Furigana painting, decorations and animated karaoke highlight effects."""
 
+import math
+from collections import OrderedDict
+
 from PySide6.QtCore import Qt, QPointF, QRectF
-from PySide6.QtGui import QFontMetrics, QColor, QPainter, QPen
+from PySide6.QtGui import QFontMetrics, QFontMetricsF, QColor, QImage, QPainter, QPainterPath, QPen
 from lyrics.karaoke_effects import eased_progress, sweep_effect_pen, text_color_pen
 
 
+_TEXT_EFFECT_CACHE_BYTES = 8 * 1024 * 1024
+_text_effect_cache = OrderedDict()
+_text_effect_cache_bytes = 0
+
+
+def _paint_text_effects(painter, x, y, text, stroke, shadow):
+    painter.save()
+    if shadow is not None:
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        color = QColor(shadow.color)
+        color.setAlpha(round(shadow.opacity * 255 / 100))
+        painter.setPen(color)
+        painter.drawText(x + shadow.offset_x, y + shadow.offset_y, text)
+    if stroke is not None:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        outline = QPainterPath()
+        outline.addText(QPointF(x, y), painter.font(), text)
+        painter.strokePath(outline, stroke)
+    painter.restore()
+
+
+def _blur_text_shadow(image, shadow, dpr):
+    from PIL import Image, ImageFilter
+
+    pixels = image.convertToFormat(QImage.Format.Format_Alpha8)
+    alpha = Image.frombytes(
+        "L", (image.width(), image.height()), bytes(pixels.constBits()),
+        "raw", "L", pixels.bytesPerLine(), 1,
+    ).filter(ImageFilter.GaussianBlur(shadow.blur * dpr))
+    color = QColor(shadow.color)
+    rgba = Image.new("RGBA", alpha.size, (color.red(), color.green(), color.blue(), 0))
+    rgba.putalpha(alpha)
+    blurred = QImage(rgba.tobytes(), image.width(), image.height(), QImage.Format.Format_RGBA8888)
+    blurred.setDevicePixelRatio(dpr)
+    return blurred
+
+
+def _text_effect_image(key, text, font, device, stroke, shadow):
+    global _text_effect_cache_bytes
+    image = _text_effect_cache.get(key)
+    if image is not None:
+        _text_effect_cache.move_to_end(key)
+        return image
+
+    bounds = QFontMetricsF(font, device).boundingRect(text)
+    text_bounds = bounds
+    if stroke is not None:
+        fringe = stroke.widthF() / 2
+        bounds = bounds.adjusted(-fringe, -fringe, fringe, fringe)
+    if shadow is not None:
+        spread = shadow.spread
+        shadow_bounds = text_bounds.translated(shadow.offset_x, shadow.offset_y)
+        bounds = bounds.united(shadow_bounds.adjusted(-spread, -spread, spread, spread))
+    bounds = bounds.adjusted(-2, -2, 2, 2).toAlignedRect()
+    dpr = device.devicePixelRatioF()
+    width, height = math.ceil(bounds.width() * dpr), math.ceil(bounds.height() * dpr)
+    # Let Qt clip unusually large lyrics directly instead of allocating a large image.
+    if width * height * 4 > _TEXT_EFFECT_CACHE_BYTES:
+        return None
+    image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+    if image.isNull():
+        return None
+    image.fill(Qt.GlobalColor.transparent)
+    image.setDevicePixelRatio(dpr)
+    image.setDotsPerMeterX(round(device.logicalDpiX() / 0.0254))
+    image.setDotsPerMeterY(round(device.logicalDpiY() / 0.0254))
+    image.setOffset(bounds.topLeft())
+    painter = QPainter(image)
+    painter.setFont(font)
+    blur_shadow = shadow is not None and shadow.blur > 0
+    _paint_text_effects(painter, -bounds.x(), -bounds.y(), text, None if blur_shadow else stroke, shadow)
+    painter.end()
+    if blur_shadow:
+        blurred = _blur_text_shadow(image, shadow, dpr)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        painter.drawImage(0, 0, blurred)
+        if stroke is not None:
+            painter.setFont(font)
+            _paint_text_effects(painter, -bounds.x(), -bounds.y(), text, stroke, None)
+        painter.end()
+
+    size = image.sizeInBytes()
+    while _text_effect_cache_bytes + size > _TEXT_EFFECT_CACHE_BYTES:
+        _, oldest = _text_effect_cache.popitem(last=False)
+        _text_effect_cache_bytes -= oldest.sizeInBytes()
+    _text_effect_cache[key] = image
+    _text_effect_cache_bytes += size
+    return image
+
+
 class FuriganaPaintingMixin:
+    def _draw_lyric_text(self, painter, x, y, text):
+        shadow = self._lyric_shadow_style
+        if text and (shadow is not None or self.lyrics_stroke_pen is not None):
+            font = painter.font()
+            device = painter.device()
+            # The fill still uses the live pen, including the karaoke gradient.
+            key = (
+                text, font, self._text_effect_style, device.devicePixelRatioF(),
+                device.logicalDpiX(), device.logicalDpiY(),
+            )
+            image = _text_effect_image(key, text, font, device, self.lyrics_stroke_pen, shadow)
+            if image is None:
+                _paint_text_effects(painter, x, y, text, self.lyrics_stroke_pen, shadow)
+            else:
+                offset = image.offset()
+                painter.drawImage(x + offset.x(), y + offset.y(), image)
+        painter.drawText(x, y, text)
+
     def _paint_decoration_spans(self, painter, segment, normal, highlight, progress, timing_span, sliding, opacity=None):
         spans = segment.get("_decorations", ())
         if not spans:
@@ -372,18 +484,8 @@ class FuriganaPaintingMixin:
                 segment, progress, normal_pen, timing_spans,
                 vertical_piece_sweep, base_metrics,
             ))
-            if segment.get("_vertical"):
-                painter.drawText(
-                    int(segment.get("base_x", segment["x"])),
-                    int(segment["base_y"]),
-                    segment["text"],
-                )
-            else:
-                painter.drawText(
-                    int(base_x),
-                    int(segment["base_y"]),
-                    segment["text"],
-                )
+            draw_x = segment.get("base_x", segment["x"]) if segment.get("_vertical") else base_x
+            self._draw_lyric_text(painter, int(draw_x), int(segment["base_y"]), segment["text"])
 
             # Slide sweeps the current-line highlight across the lyric.
             if (
@@ -456,7 +558,7 @@ class FuriganaPaintingMixin:
                     reading_y = segment.get("reading_y", self.TOP_MARGIN + reading_metrics.ascent() if False else self.TOP_MARGIN)
                     cursor_y = reading_y
                     for reading_char in reading:
-                        painter.drawText(int(reading_x), int(cursor_y), reading_char)
+                        self._draw_lyric_text(painter, int(reading_x), int(cursor_y), reading_char)
                         cursor_y += segment.get("reading_step", reading_metrics.height())
                 else:
                     if self.show_romaji:
@@ -472,7 +574,8 @@ class FuriganaPaintingMixin:
                         draw_y = romaji_y
                     else:
                         draw_y = segment["reading_y"]
-                    painter.drawText(
+                    self._draw_lyric_text(
+                        painter,
                         int(reading_x),
                         int(draw_y),
                         display_reading,

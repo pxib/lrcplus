@@ -27,6 +27,7 @@ from lyrics.furigana import (
 )
 from lyrics.models import LyricLine, LyricSegment
 from lyrics.line_breaks import reading_source
+from core.lyrics_settings import lyric_text_effects
 from core.settings import (
     get_lyrics_attachment,
     load_lrc_search_folders,
@@ -211,6 +212,7 @@ class LyricsController(LyricsSearchMixin):
         ]
         self.highlight_color = effective["highlight_color"]
         self.lyrics_color = effective["lyrics_color"]
+        self.lyrics_text_effects = lyric_text_effects(effective)
         self.scrolling_mode = effective["scrolling_mode"]
         self.continuous_scroll_speed = effective["continuous_scroll_speed"]
         self.continuous_scroll_duration_based = effective["continuous_scroll_duration_based"]
@@ -263,6 +265,7 @@ class LyricsController(LyricsSearchMixin):
             self.ruby_font_size,
         )
         self.lyric_widget.set_colors(self.lyrics_color, self.highlight_color)
+        self.lyric_widget.set_text_effects(*self.lyrics_text_effects)
         self.lyric_widget.set_focus_transition(self.focus_transition)
         self.lyric_widget.set_highlight_current(self.highlight_current)
         self.lyric_widget.set_highlight_animation(
@@ -295,6 +298,7 @@ class LyricsController(LyricsSearchMixin):
             self.lyrics_color,
             self.highlight_color,
         )
+        self.scrolling_lyrics_widget.set_text_effects(*self.lyrics_text_effects)
         self.scrolling_lyrics_widget.set_highlight_current(
             self.highlight_current
         )

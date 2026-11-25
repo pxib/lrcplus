@@ -351,6 +351,7 @@ class FuriganaLayoutMixin:
                 + base_metrics.height()
                 + self.PADDING
             )
+            width += 2 * max(0, self.text_effect_inset - self.PADDING)
             return QSize(max(1, width), max(1, total))
         rows = self.lyric.count("\n") + 1
         if self.translation_lines:
@@ -375,7 +376,7 @@ class FuriganaLayoutMixin:
             return prepared
 
         indent = self._quote_indent()
-        available = max(1, self.width() - 20 - indent)
+        available = max(1, self.width() - max(20, 2 * self.text_effect_inset) - indent)
         base_height, ruby_height, ruby_gap, line_height = self._content_metrics()
         max_lines = self.wrap_max_lines
         if max_lines < 0:
@@ -532,12 +533,7 @@ class FuriganaLayoutMixin:
                 y_offset += row_height
                 continue
             total_width = row_widths[row_index]
-            if self.alignment == "left":
-                x = float(indent)
-            elif self.alignment == "right":
-                x = max(float(indent), self.width() - total_width)
-            else:
-                x = max(float(indent), indent + (self.width() - indent - total_width) / 2.0)
+            x = self._horizontal_line_start(total_width)
 
             if reading_height and self.ruby_position == "above":
                 reading_y = (
@@ -670,6 +666,15 @@ class FuriganaLayoutMixin:
             styled.setStrikeOut(False)
             styled.setUnderline(False)
         return styled
+
+    def _horizontal_line_start(self, line_width):
+        left = float(self._quote_indent() + self.text_effect_inset)
+        right = self.width() - self.text_effect_inset
+        if self.alignment == "left":
+            return left
+        if self.alignment == "right":
+            return max(left, right - line_width)
+        return max(left, (left + right - line_width) / 2)
 
     def _prepare_decoration_spans(self, prepared):
         """Connect decorated glyphs across layout padding and source spaces."""
@@ -810,6 +815,7 @@ class FuriganaLayoutMixin:
             self.wrap_text, self.wrap_max_lines,
             getattr(self, "vertical_padding", 0),
             self.PADDING, self.TOP_MARGIN, self.BOTTOM_MARGIN,
+            self.text_effect_inset,
         )
         if key != self._prepared_layout_key:
             prepared = self._build_prepared_segments()
@@ -937,7 +943,8 @@ class FuriganaLayoutMixin:
         # width again would squeeze every visual row and shift its alignment.
         if (self.all_romaji and not self.wrap_text
                 and self.direction != "vertical" and total_width > 0):
-            available_width = max(1.0, float(self.width() - 12 - self._quote_indent()))
+            side_space = max(12, 2 * self.text_effect_inset)
+            available_width = max(1.0, float(self.width() - side_space - self._quote_indent()))
             self._all_romaji_x_scale = min(1.0, available_width / total_width)
         else:
             self._all_romaji_x_scale = 1.0
@@ -1130,9 +1137,10 @@ class FuriganaLayoutMixin:
 
             max_column = max(column_has_ruby, default=0)
             column_x = {}
+            inset = max(self.PADDING, self.text_effect_inset)
 
             if self.alignment == "right":
-                cursor_x = float(self.width() - self.PADDING)
+                cursor_x = float(self.width() - inset)
                 for col in range(max_column + 1):
                     has_ruby = column_has_ruby.get(col, False)
                     lane = ruby_lane_width + self.ruby_padding if has_ruby else 0
@@ -1140,7 +1148,7 @@ class FuriganaLayoutMixin:
                     column_x[col] = cursor_x
                     cursor_x -= lane + self.PADDING
             else:
-                cursor_x = float(self.PADDING + self._quote_indent())
+                cursor_x = float(inset + self._quote_indent())
                 for col in range(max_column + 1):
                     has_ruby = column_has_ruby.get(col, False)
                     lane = ruby_lane_width + self.ruby_padding if has_ruby else 0
@@ -1151,7 +1159,7 @@ class FuriganaLayoutMixin:
             # glyph. Keep that relationship, but also guarantee the lane stays
             # inside the row even with unusually wide fonts or a stale parent
             # width from an earlier font setting.
-            min_ruby_x = float(self.PADDING)
+            min_ruby_x = float(inset)
             if logical:
                 min_needed_x = min(
                     (
@@ -1193,14 +1201,7 @@ class FuriganaLayoutMixin:
 
             return logical
 
-        if self.alignment == "left":
-            x = self._quote_indent()
-        elif self.alignment == "right":
-            x = self.width() - total_width
-        else:
-            x = self._quote_indent() + (self.width() - self._quote_indent() - total_width) / 2
-
-        x = max(self._quote_indent(), x)
+        x = self._horizontal_line_start(total_width)
 
         base_height, ruby_height, ruby_gap, _total_height = self._content_metrics()
         romaji_height = QFontMetrics(self.reading_font).height() if self._has_visible_romaji() else 0

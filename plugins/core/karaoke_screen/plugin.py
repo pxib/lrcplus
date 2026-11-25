@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from core.settings import get_karaoke_settings, apply_karaoke_settings, get_effective_lyrics_settings
 from core.lyrics_controller import playback_lyric_position
+from core.lyrics_settings import lyric_text_effects
 from core.pitch_detector import PitchDetector
 from lyrics.widgets import FuriganaWidget
 from ui.artwork_background import ArtworkBackgroundWidget
@@ -807,14 +808,15 @@ class KaraokeScreenPlugin(QObject):
         if self.screen is None:
             return
         settings = get_karaoke_settings()
-        focus = get_effective_lyrics_settings(getattr(self.window, "current_audio_path", None))["focus_transition"]
+        lyrics = get_effective_lyrics_settings(getattr(self.window, "current_audio_path", None))
         for widget in (
             getattr(self.screen, "current_lyric", None),
             getattr(self.screen, "next_lyric", None),
         ):
             if widget is not None:
                 apply_karaoke_settings(widget, settings)
-                widget.set_focus_transition(focus)
+                widget.set_focus_transition(lyrics["focus_transition"])
+                widget.set_text_effects(*lyric_text_effects(lyrics))
 
     def on_lyrics_settings_changed(self):
         self._apply_sweep_style()

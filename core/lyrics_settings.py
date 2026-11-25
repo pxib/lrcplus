@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 
 from core.factory_defaults import FACTORY_DEFAULTS
@@ -16,6 +17,45 @@ def save_all_settings(payload):
     return save(payload)
 
 LYRIC_LAYER_ORDER = ("lyrics", "romaji", "translation", "furigana")
+
+@dataclass(frozen=True)
+class LyricShadow:
+    color: str = "#000000"
+    opacity: int = 63
+    offset_x: int = 2
+    offset_y: int = 2
+    blur: int = 0
+
+    @property
+    def spread(self):
+        return 3 * self.blur
+
+
+DEFAULT_LYRIC_SHADOW = LyricShadow()
+LYRIC_SHADOW_FIELDS = {
+    "lyrics_shadow_opacity": ("opacity", 0, 100),
+    "lyrics_shadow_offset_x": ("offset_x", -12, 12),
+    "lyrics_shadow_offset_y": ("offset_y", -12, 12),
+    "lyrics_shadow_blur": ("blur", 0, 6),
+}
+
+
+def lyric_text_effects(settings):
+    shadow = LyricShadow(
+        color=settings["lyrics_shadow_color"],
+        **{name: settings[key] for key, (name, _, _) in LYRIC_SHADOW_FIELDS.items()},
+    )
+    return settings["lyrics_stroke_width"], settings["lyrics_stroke_color"], settings["lyrics_shadow"], shadow
+
+
+def text_effect_padding(stroke_width, enabled, shadow):
+    if enabled and shadow.opacity:
+        return (
+            max(stroke_width, abs(shadow.offset_x) + shadow.spread),
+            max(0, shadow.spread - shadow.offset_y),
+            max(0, shadow.spread + shadow.offset_y),
+        )
+    return stroke_width, 0, 0
 
 
 def normalize_layer_order(value):
@@ -56,6 +96,11 @@ LYRICS_DEFAULTS = {
     "highlight_animation_easing": "out_cubic",
     "highlight_color": "#ffaa00",
     "lyrics_color": "#ffffff",
+    "lyrics_stroke_width": 0,
+    "lyrics_stroke_color": "#000000",
+    "lyrics_shadow": False,
+    "lyrics_shadow_color": DEFAULT_LYRIC_SHADOW.color,
+    **{key: getattr(DEFAULT_LYRIC_SHADOW, name) for key, (name, _, _) in LYRIC_SHADOW_FIELDS.items()},
     "scrolling_mode": "automatic",
     "continuous_scroll_speed": 35,
     "continuous_scroll_duration_based": True,
@@ -267,6 +312,16 @@ def normalize_lyrics_settings(values):
         values.get("lyrics_color"),
         result["lyrics_color"],
     )
+    result["lyrics_stroke_width"] = max(0, min(3, _safe_int(values.get("lyrics_stroke_width"), 0)))
+    result["lyrics_stroke_color"] = _safe_color(
+        values.get("lyrics_stroke_color"), result["lyrics_stroke_color"],
+    )
+    result["lyrics_shadow"] = bool(values.get("lyrics_shadow", result["lyrics_shadow"]))
+    result["lyrics_shadow_color"] = _safe_color(
+        values.get("lyrics_shadow_color"), result["lyrics_shadow_color"],
+    )
+    for key, (_, minimum, maximum) in LYRIC_SHADOW_FIELDS.items():
+        result[key] = max(minimum, min(maximum, _safe_int(values.get(key), result[key])))
 
     mode = str(values.get(
         "scrolling_mode", result["scrolling_mode"]

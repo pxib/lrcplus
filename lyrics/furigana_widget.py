@@ -3,8 +3,8 @@
 import math
 from concurrent.futures import ThreadPoolExecutor
 
-from PySide6.QtCore import QRectF, QEasingCurve, QVariantAnimation, QTimer, QObject, Signal
-from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics, QColor
+from PySide6.QtCore import Qt, QRectF, QEasingCurve, QVariantAnimation, QTimer, QObject, Signal
+from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics, QColor, QPen
 from PySide6.QtWidgets import QWidget, QGraphicsBlurEffect
 from lyrics.furigana import (
     build_furigana_segments,
@@ -12,6 +12,7 @@ from lyrics.furigana import (
     split_reading_by_text_ranges,
 )
 from core.settings import KARAOKE_SWEEP_STYLES
+from core.lyrics_settings import DEFAULT_LYRIC_SHADOW, text_effect_padding
 from lyrics.karaoke_effects import word_lift_amount
 from lyrics.karaoke_layout import annotate_next_timed_starts
 from lyrics.line_breaks import reading_source
@@ -84,6 +85,12 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
         self.base_font_size = self.BASE_FONT_SIZE
         self.ruby_font_size = self.READING_FONT_SIZE
         self.lyrics_color = QColor("#ffffff")
+        self.lyrics_stroke_pen = None
+        self.lyrics_shadow = False
+        self._lyric_shadow_style = None
+        self._text_effect_style = (0, "", None)
+        self.text_effect_inset = 0
+        self._shadow_top = self._shadow_bottom = 0
         self.highlight_color = QColor("#ffaa00")
         self.highlight_current = True
         self.highlight_animation = "none"
@@ -374,6 +381,25 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
         self.highlight_color = highlight
         self.update()
 
+    def set_text_effects(self, stroke_width, stroke_color, shadow, shadow_style=DEFAULT_LYRIC_SHADOW):
+        active_shadow = shadow_style if shadow and shadow_style.opacity else None
+        style = (stroke_width, stroke_color if stroke_width else "", active_shadow)
+        if self._text_effect_style == style:
+            return
+        pen = None
+        if stroke_width > 0:
+            pen = QPen(QColor(stroke_color), 2 * stroke_width)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        self.lyrics_stroke_pen = pen
+        self.lyrics_shadow = bool(active_shadow)
+        self._lyric_shadow_style = active_shadow
+        self._text_effect_style = style
+        self.text_effect_inset, self._shadow_top, self._shadow_bottom = text_effect_padding(
+            stroke_width, shadow, shadow_style,
+        )
+        self._update_motion_margin()
+        self.update()
+
     def set_highlight_current(self, enabled):
         self.highlight_current = bool(enabled)
         self.update()
@@ -642,8 +668,8 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
 
     def _update_motion_margin(self):
         height = QFontMetrics(self.base_font).height()
-        top = type(self).TOP_MARGIN + (math.ceil(height * 0.1) if self.karaoke_word_lift else 0)
-        bottom = type(self).BOTTOM_MARGIN + (math.ceil(height * 0.16) if self.karaoke_line_entrance else 0)
+        top = max(type(self).TOP_MARGIN, self._shadow_top) + (math.ceil(height * 0.1) if self.karaoke_word_lift else 0)
+        bottom = max(type(self).BOTTOM_MARGIN, self._shadow_bottom) + (math.ceil(height * 0.16) if self.karaoke_line_entrance else 0)
         if self.TOP_MARGIN != top or self.BOTTOM_MARGIN != bottom:
             self.TOP_MARGIN = top
             self.BOTTOM_MARGIN = bottom

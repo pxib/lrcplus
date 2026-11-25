@@ -109,12 +109,13 @@ class DisplayLayersMixin:
                         right = max(max(p["x"] + p["width"],
                                         p.get("reading_x", p["x"]) + p.get("reading_width", 0))
                                     for p in prepared)
-                        shift = x_offset - left + self.PADDING
+                        inset = max(self.PADDING, self.text_effect_inset) if not result else self.PADDING
+                        shift = x_offset - left + inset
                         for piece in prepared:
                             for key in ("x", "base_x", "karaoke_x", "reading_x"):
                                 if piece.get(key) is not None:
                                     piece[key] += shift
-                        x_offset += right - left + self.PADDING + self.ruby_padding
+                        x_offset += right - left + inset + self.ruby_padding
                 else:
                     metrics = QFontMetrics(self.base_font)
                     reading_metrics = QFontMetrics(self.reading_font)
@@ -145,6 +146,6 @@ class DisplayLayersMixin:
             self._layer_layout_active = False
             self.__dict__.pop("_layer_visual_segments", None)
         self._horizontal_layout_height = max(1, y_offset)
-        self._layer_layout_width = max(1, x_offset + self.PADDING)
+        self._layer_layout_width = max(1, x_offset + max(self.PADDING, self.text_effect_inset))
         self._all_romaji_x_scale = 1.0
         return result

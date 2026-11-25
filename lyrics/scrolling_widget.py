@@ -4,6 +4,7 @@ import math
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer, QEvent
 from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import QVBoxLayout, QWidget, QScrollArea
+from core.lyrics_settings import DEFAULT_LYRIC_SHADOW, text_effect_padding
 from core.settings import KARAOKE_SWEEP_STYLES
 from lyrics.furigana import get_cached_furigana_segments
 from lyrics.line_breaks import reading_source
@@ -48,6 +49,7 @@ class ScrollingLyricsWidget(QWidget):
         self.font_size = 32
         self.ruby_font_size = 18
         self.lyrics_color = "#ffffff"
+        self.lyrics_text_effects = (0, "#000000", False, DEFAULT_LYRIC_SHADOW)
         self.highlight_color = "#ffaa00"
         self.highlight_current = True
         self.highlight_animation = "none"
@@ -186,11 +188,13 @@ class ScrollingLyricsWidget(QWidget):
 
     def _reset_estimates(self):
         vertical = self._is_vertical_layout()
+        inset, shadow_top, shadow_bottom = self._text_effect_padding
         signature = (vertical, self.alignment, self.font_family, self.font_size,
                      self.ruby_font_size, self.show_ruby, self.show_romaji,
                      getattr(self, "all_romaji", False), self.ruby_position,
                      getattr(self, "lyric_layers", None),
                      self.ruby_padding, self.padding, self.vertical_padding,
+                     self._text_effect_padding,
                      getattr(self, "karaoke_line_entrance", False),
                      getattr(self, "karaoke_word_lift", False),
                      self.scroll_area.viewport().height() if vertical else 0,
@@ -201,9 +205,9 @@ class ScrollingLyricsWidget(QWidget):
         font = QFont(self.font_family)
         font.setPointSize(self.font_size)
         base_height = QFontMetrics(font).height()
-        top_margin = FuriganaWidget.TOP_MARGIN + (math.ceil(base_height * 0.1)
+        top_margin = max(FuriganaWidget.TOP_MARGIN, shadow_top) + (math.ceil(base_height * 0.1)
                      if getattr(self, "karaoke_word_lift", False) else 0)
-        bottom_margin = FuriganaWidget.BOTTOM_MARGIN + (math.ceil(base_height * 0.16)
+        bottom_margin = max(FuriganaWidget.BOTTOM_MARGIN, shadow_bottom) + (math.ceil(base_height * 0.16)
                         if getattr(self, "karaoke_line_entrance", False) else 0)
         font.setPointSize(self.ruby_font_size)
         reading_height = QFontMetrics(font).height() if self.show_ruby or self.show_romaji else 0
@@ -217,6 +221,7 @@ class ScrollingLyricsWidget(QWidget):
                 columns = max(1, math.ceil(len(text) * (base_height + FuriganaWidget.PADDING) / drawable))
                 extent = FuriganaWidget.PADDING + columns * (base_height + FuriganaWidget.PADDING
                          + (reading_height + self.ruby_padding if reading_height else 0))
+                extent += 2 * max(0, inset - FuriganaWidget.PADDING)
             else:
                 extent = (top_margin + base_height + bottom_margin
                           + self.padding + (reading_height + self.ruby_padding if reading_height else 0))
@@ -225,7 +230,7 @@ class ScrollingLyricsWidget(QWidget):
                 available_width = max(
                     1,
                     self.scroll_area.viewport().width()
-                    - 20
+                    - max(20, 2 * inset)
                     - (self.font_size if getattr(lyric, "is_blockquote", False) else 0),
                 )
                 metrics = QFontMetrics(font)
@@ -250,6 +255,7 @@ class ScrollingLyricsWidget(QWidget):
                 base + FuriganaWidget.PADDING + (ruby + row.ruby_padding if has_ruby and ruby else 0)
                 for has_ruby in flags)
             width += row._quote_indent()
+            width += 2 * max(0, row.text_effect_inset - row.PADDING)
             row.setFixedWidth(max(1, int(width)))
             return row.width()
         row.setFixedWidth(max(1, self.scroll_area.viewport().width()))
@@ -475,6 +481,22 @@ class ScrollingLyricsWidget(QWidget):
         for row in self.rows:
             row.set_highlight_current(enabled)
         self.update()
+
+    @property
+    def _text_effect_padding(self):
+        width, _, enabled, style = self.lyrics_text_effects
+        return text_effect_padding(width, enabled, style)
+
+    def set_text_effects(self, stroke_width, stroke_color, shadow, shadow_style=DEFAULT_LYRIC_SHADOW):
+        effects = (stroke_width, stroke_color, shadow, shadow_style)
+        if self.lyrics_text_effects == effects:
+            return
+        previous_padding = self._text_effect_padding
+        self.lyrics_text_effects = effects
+        for row in self.rows:
+            row.set_text_effects(*effects)
+        if self._text_effect_padding != previous_padding:
+            self._refresh_row_heights()
 
     def set_highlight_animation(
         self,
@@ -837,6 +859,7 @@ class ScrollingLyricsWidget(QWidget):
             self.ruby_font_size,
         )
         row.set_colors(self.lyrics_color, self.highlight_color)
+        row.set_text_effects(*self.lyrics_text_effects)
         row.set_highlight_current(self.highlight_current)
         row.set_highlight_animation(
             "none" if self._plain else self.highlight_animation,

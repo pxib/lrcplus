@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.fonts import covering_font
+from core.lyrics_settings import lyric_text_effects
 from core.settings import apply_karaoke_settings, get_effective_lyrics_settings, get_karaoke_settings
 from lyrics.furigana_widget import FuriganaWidget
 from lyrics.karaoke_timing import next_lyric_start
@@ -57,6 +58,7 @@ class LyricsEditorPreviewMixin:
         preview.set_direction(settings["lyrics_direction"])
         preview.set_alignment(settings["lyrics_alignment"])
         preview.set_colors(settings["lyrics_color"], settings["highlight_color"])
+        preview.set_text_effects(*lyric_text_effects(settings))
         preview.set_highlight_current(settings["highlight_current"])
         preview.set_ruby_position(settings["ruby_position"])
         preview.set_ruby_padding(settings["ruby_padding"])

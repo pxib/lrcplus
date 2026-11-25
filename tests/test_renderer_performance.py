@@ -6,6 +6,8 @@ import pytest
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage, QPainter, QTransform
 
+from core.lyrics_settings import LyricShadow
+from lyrics import furigana_painting
 from lyrics.furigana_widget import FuriganaWidget
 from lyrics.karaoke_layout import annotate_next_timed_starts
 
@@ -50,6 +52,37 @@ def test_dense_pinyin_reuses_layout_and_resolves_group_progress_once(row, monkey
         row.render(image)
         assert len(progress_calls) == 1
     assert len(builds) == 1
+
+
+def test_karaoke_reuses_rasterized_text_effects(row, monkeypatch):
+    text = "Cached lyric effects"
+    row.set_segments(text, [{"text": text, "start": 0, "end": 4}], generate=False)
+    row.set_text_effects(2, "#543219", True, LyricShadow(blur=3))
+    calls = []
+    original = furigana_painting._paint_text_effects
+
+    def paint_effects(painter, *args):
+        calls.append(True)
+        return original(painter, *args)
+
+    monkeypatch.setattr(furigana_painting, "_paint_text_effects", paint_effects)
+
+    def render(position):
+        row.set_karaoke_position(position)
+        image = QImage(row.size(), QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(0)
+        row.render(image)
+        return image
+
+    first = render(0)
+    initial_calls = len(calls)
+    assert initial_calls > 0
+    assert render(2) != first
+    assert len(calls) == initial_calls
+
+    row.set_text_effects(2, "#543219", True, LyricShadow(color="#765432", blur=3))
+    render(2)
+    assert len(calls) == 2 * initial_calls
 
 
 @pytest.mark.parametrize("change", [
