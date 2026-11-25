@@ -2,6 +2,9 @@
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 ALLLLLLLLLLLLLLLLL changes here ARE **FINAL.** Okay? If I made a mistake, it's STAYING, okay?
 Okay?
+Okay?
+Okay?
+Thamk yo
 
 ## [2026-11-25]
 
@@ -594,7 +597,8 @@ Fixed zero-width columns on startup.
 
 
 
-(Yes, you're seeing this right. It's blank. Check changes on "https://github.com/pxib/lrcplus/commit/8a8dec46d0f9d23f226910ab77cb1bfb7e349c9c".)
+(Yes, you're seeing this right. It's blank. What the fuck was I on? I don't know, ask PAST me. Not CURRENT me. I'm innocent, I swear.
+Check changes on "https://github.com/pxib/lrcplus/commit/8a8dec46d0f9d23f226910ab77cb1bfb7e349c9c".)
 
 ## [2026-11-02.2]
 
