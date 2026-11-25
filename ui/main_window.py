@@ -1828,6 +1828,7 @@ class Player(
                     save_playback_settings(self.playback_settings)
                     self._apply_radio_lyrics_preference()
                     self._sync_waveform_visibility()
+                    self._apply_library_scroll_mode()
                     self._apply_output_device(self.playback_settings)
                     self._load_replaygain()
                     self._invalidate_gapless_preload()

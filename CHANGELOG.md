@@ -1,6 +1,18 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
 
+## [2026-11-25]
+
+### Added
+- Pressing or holding scroll wheel now lets you navigate the library.
+
+### Changed
+
+- Reduce RAM use for lyrics backgrounds, especially in large windows. Render stronger Gaussian blur at half resolution and draw backgrounds with blur off directly into the cache.
+- Open Library album covers at display resolution and load more detail as you zoom. **100%** loads the original resolution, and **Fit** returns to a smaller preview.
+- Reduce startup RAM use for **Rhythm Games** by deferring NumPy loading until Mania renders a results screen.
+- Reduce lyrics stutter during playback by capping **Audio Visualizer** artwork repaints at about 31 FPS while keeping audio analysis at its original rate.
+
 ## [2026-11-23]
 
 ### Added

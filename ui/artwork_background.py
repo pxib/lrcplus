@@ -307,15 +307,78 @@ class ArtworkBackgroundWidget(QWidget):
         self._rebuild_background()
         super().resizeEvent(event)
 
-    def _rebuild_background(self):
-        """
-        Build a ready-to-paint background image once.
+    def _artwork_rect(self):
+        size = self.size()
+        if self._background_layout == "center":
+            size = self._source_pixmap.size()
+        elif self._background_layout == "fit":
+            size = self._source_pixmap.size().scaled(size, Qt.AspectRatioMode.KeepAspectRatio)
+            size = size.expandedTo(QSize(1, 1))
+        return QRectF(
+            (self.width() - size.width()) // 2,
+            (self.height() - size.height()) // 2,
+            size.width(),
+            size.height(),
+        )
 
-        This is cached, so lyric repainting never rescales or processes the
-        artwork. The previous multi-copy blur approximation is intentionally
-        removed here because its alpha compositing could produce a nearly
-        black result on some Qt paint backends.
-        """
+    def _paint_artwork(self, painter, target):
+        if self._background_layout == "tile":
+            painter.drawTiledPixmap(target, self._source_pixmap)
+            return
+
+        source = QRectF(self._source_pixmap.rect())
+        if self._background_layout == "fill":
+            # Crop in source coordinates so extreme aspect ratios never need
+            # an oversized intermediate image.
+            ratio = max(target.width() / source.width(), target.height() / source.height())
+            width = target.width() / ratio
+            height = target.height() / ratio
+            source = QRectF((source.width() - width) / 2, (source.height() - height) / 2,
+                            width, height)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.drawPixmap(target, self._source_pixmap, source)
+
+    def _blur_artwork(self, target, scale):
+        size = (target.size().toSize() * scale).expandedTo(QSize(1, 1))
+        image = QImage(size, QImage.Format.Format_RGBA8888)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        painter.scale(size.width() / target.width(), size.height() / target.height())
+        self._paint_artwork(painter, QRectF(0, 0, target.width(), target.height()))
+        painter.end()
+
+        if self._blur_mode == "low_quality":
+            factor = max(0.12, 1.0 - (self._blur_radius / 34.0))
+            small_size = (size * factor).expandedTo(QSize(1, 1))
+            return image.scaled(small_size, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation), target
+
+        if not PIL_AVAILABLE:
+            raise RuntimeError(
+                "High quality blur requires Pillow (PIL), but it is "
+                "not installed. Install it with: pip install Pillow"
+            )
+
+        radius = self._blur_radius * scale
+        pixels = Image.frombuffer(
+            "RGBA", (size.width(), size.height()), image.constBits(), "raw", "RGBA", 0, 1,
+        )
+        if self._blur_bleed:
+            # Leave room for the Gaussian tail and map the padding back to the
+            # original layout coordinates when compositing.
+            padding = max(1, round(radius * 3))
+            canvas = Image.new("RGBA", (size.width() + 2 * padding, size.height() + 2 * padding))
+            canvas.paste(pixels, (padding, padding))
+            pixels = canvas
+            dx = padding * target.width() / size.width()
+            dy = padding * target.height() / size.height()
+            target = target.adjusted(-dx, -dy, dx, dy)
+
+        blurred = pixels.filter(ImageFilter.GaussianBlur(radius))
+        return QImage(blurred.tobytes(), blurred.width, blurred.height,
+                      QImage.Format.Format_RGBA8888), target
+
+    def _rebuild_background(self):
         if self._rendering_deferred():
             self._cached_background = QPixmap()
             self._background_cache_key = None
@@ -336,158 +399,26 @@ class ArtworkBackgroundWidget(QWidget):
         if key == self._background_cache_key and not self._cached_background.isNull():
             return
 
-        if self._background_layout == "center":
-            scaled = self._source_pixmap
-        elif self._background_layout in ("fill", "tile"):
-            # Render directly into a viewport-sized canvas to keep the cache
-            # bounded even when Fill crops an image with an extreme aspect ratio.
-            scaled = QPixmap(self.size())
-            scaled.fill(Qt.GlobalColor.transparent)
-            painter = QPainter(scaled)
-            if self._background_layout == "tile":
-                painter.drawTiledPixmap(scaled.rect(), self._source_pixmap)
-            else:
-                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-                source = QRectF(self._source_pixmap.rect())
-                ratio = max(self.width() / source.width(), self.height() / source.height())
-                crop_width = self.width() / ratio
-                crop_height = self.height() / ratio
-                crop = QRectF(
-                    (source.width() - crop_width) / 2,
-                    (source.height() - crop_height) / 2,
-                    crop_width,
-                    crop_height,
-                )
-                painter.drawPixmap(QRectF(scaled.rect()), self._source_pixmap, crop)
-            painter.end()
-        else:
-            scaled = self._source_pixmap.scaled(
-                self.size(),
-                (Qt.AspectRatioMode.IgnoreAspectRatio
-                 if self._background_layout == "stretch"
-                 else Qt.AspectRatioMode.KeepAspectRatio),
-                Qt.TransformationMode.SmoothTransformation,
-            )
+        self._cached_background = QPixmap()
+        target = self._artwork_rect()
+        # Keep subtle blurs at full resolution. Stronger Gaussian blurs can
+        # render and cache at half resolution with a matching blur radius.
+        scale = 0.5 if self._blur_mode == "quality" and self._blur_radius >= 6 else 1.0
+        background_size = (self.size() * scale).expandedTo(QSize(1, 1))
+        blurred = QImage()
+        if self._blur_radius and not target.isEmpty():
+            blurred, target = self._blur_artwork(target, scale)
 
-        # Blur exactly once while rebuilding the cached background.
-        if self._blur_radius > 0:
-            if self._blur_mode == "quality":
-                if not PIL_AVAILABLE:
-                    raise RuntimeError(
-                        "High quality blur requires Pillow (PIL), but it is "
-                        "not installed. Install it with: pip install Pillow"
-                    )
-
-                image = scaled.toImage().convertToFormat(
-                    QImage.Format.Format_RGBA8888
-                )
-
-                width = image.width()
-                height = image.height()
-
-                pil_image = Image.frombuffer(
-                    "RGBA", (width, height), image.constBits(), "raw", "RGBA", 0, 1,
-                )
-
-                blur_radius = max(
-                    0.0,
-                    float(self._blur_radius),
-                )
-
-                if self._blur_bleed:
-                    # Give the Gaussian blur transparent space outside the
-                    # original artwork so the soft edges can spread outward.
-                    # Three radii is enough room for the Gaussian tail.
-                    padding = max(
-                        1,
-                        int(round(blur_radius * 3)),
-                    )
-
-                    canvas = Image.new(
-                        "RGBA",
-                        (
-                            width + padding * 2,
-                            height + padding * 2,
-                        ),
-                        (0, 0, 0, 0),
-                    )
-                    canvas.paste(
-                        pil_image,
-                        (padding, padding),
-                    )
-
-                    blurred_image = canvas.filter(
-                        ImageFilter.GaussianBlur(
-                            radius=blur_radius
-                        )
-                    )
-
-                    qimage = QImage(
-                        blurred_image.tobytes(),
-                        blurred_image.width,
-                        blurred_image.height,
-                        QImage.Format.Format_RGBA8888,
-                    )
-
-                    scaled = QPixmap.fromImage(qimage)
-                    print(
-                        f"[Background] High quality Gaussian blur with "
-                        f"edge bleed applied (radius={self._blur_radius})"
-                    )
-
-                else:
-                    # Normal Gaussian blur remains inside the artwork bounds.
-                    blurred_image = pil_image.filter(
-                        ImageFilter.GaussianBlur(
-                            radius=blur_radius
-                        )
-                    )
-
-                    qimage = QImage(
-                        blurred_image.tobytes(),
-                        width,
-                        height,
-                        QImage.Format.Format_RGBA8888,
-                    )
-
-                    scaled = QPixmap.fromImage(qimage)
-                    print(
-                        f"[Background] High quality Gaussian blur applied "
-                        f"(radius={self._blur_radius})"
-                    )
-
-            else:
-                # SHRINK-O-VISION™: intentionally low-quality blur.
-                # This mode remains contained because downsample/upscale
-                # cannot create transparent Gaussian edge bleed.
-                factor = max(0.12, 1.0 - (self._blur_radius / 34.0))
-                small_size = scaled.size() * factor
-                small = scaled.scaled(
-                    small_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                scaled = small.scaled(
-                    scaled.size(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                print(
-                    f"[Background] Low quality blur applied "
-                    f"(radius={self._blur_radius})"
-                )
-
-        background = QPixmap(self.size())
+        background = QPixmap(background_size)
         background.fill(Qt.GlobalColor.black)
-
         painter = QPainter(background)
-        x = (self.width() - scaled.width()) // 2
-        y = (self.height() - scaled.height()) // 2
-        painter.drawPixmap(x, y, scaled)
-        painter.fillRect(
-            background.rect(),
-            QColor(0, 0, 0, self._darkness),
-        )
+        painter.scale(background.width() / self.width(), background.height() / self.height())
+        if not blurred.isNull():
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            painter.drawImage(target, blurred)
+        elif not target.isEmpty():
+            self._paint_artwork(painter, target)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, self._darkness))
         painter.end()
 
         self._cached_background = background
@@ -524,6 +455,7 @@ class ArtworkBackgroundWidget(QWidget):
             self._rebuild_background()
 
         if not self._cached_background.isNull():
-            painter.drawPixmap(0, 0, self._cached_background)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            painter.drawPixmap(self.rect(), self._cached_background)
 
         painter.end()

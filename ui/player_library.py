@@ -1,7 +1,7 @@
 """Music library widgets, column preferences, cover loading and folder scanning."""
 
 from pathlib import Path
-from PySide6.QtCore import Qt, QTimer, QSize, QItemSelectionModel
+from PySide6.QtCore import QByteArray, QItemSelectionModel, QSize, Qt, QTimer
 from PySide6.QtGui import QMovie, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -114,6 +114,7 @@ class PlayerLibraryMixin:
         self.library_lyrics_column = next(i for i, (key, _) in enumerate(self.library_columns) if key == "lyric_match")
         self.library_favorite_column = len(self.library_columns) - 1
         self.library_table = LibraryTrackTree()
+        self._apply_library_scroll_mode()
         self.library_table.setDragEnabled(True)
         self.library_table.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
         self.library_table.setToolTip("Drop audio files or folders to add to the library. Right-click tracks to remove them without deleting files.")
@@ -173,6 +174,10 @@ class PlayerLibraryMixin:
         header.sectionMoved.connect(lambda *_: self._save_library_column_state())
         root.addWidget(self.library_table, 1)
         return page
+
+    def _apply_library_scroll_mode(self):
+        smooth = self.playback_settings.get("library_smooth_scrolling", False)
+        self.library_table.set_smooth_scrolling(smooth)
 
     def _show_library_column_menu(self, pos):
         header = self.library_table.header()
@@ -495,7 +500,7 @@ class PlayerLibraryMixin:
             return 10**9
 
     def _play_library_item(self, item, column=0):
-        if column == self.library_favorite_column:
+        if item is None or column == self.library_favorite_column:
             return
         path = item.data(0, Qt.ItemDataRole.UserRole)
         if not path:
@@ -510,13 +515,10 @@ class PlayerLibraryMixin:
         path = item.data(0, Qt.ItemDataRole.UserRole)
         if not path:
             return
-        cover_data = extract_embedded_cover(path)
-        if not cover_data:
+        cover_data = QByteArray(extract_embedded_cover(path) or b"")
+        viewer = CoverPreviewDialog.from_data(cover_data, self)
+        if viewer is None:
             return
-        pixmap = QPixmap()
-        if not pixmap.loadFromData(cover_data):
-            return
-        viewer = CoverPreviewDialog(pixmap, self)
         try:
             viewer.exec()
         finally:

@@ -5,6 +5,7 @@ from bisect import bisect_left, bisect_right
 from collections import deque
 from dataclasses import dataclass, field, replace
 from heapq import heappop, heappush, nsmallest
+from html import escape
 from io import BytesIO
 from itertools import accumulate, cycle, pairwise
 from math import asinh, atan2, cos, exp, floor, hypot, isfinite, pi, sin, sqrt, tau
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from core.background_job import BackgroundJob
 from core.rhythm_analysis import BeatGrid, beat_grid, load_audio_rhythm
+from lyrics.furigana import kana_to_romaji
 from plugins.community.rhythm_games.mania import (
     LANE_KEYS, MANIA_BAD, MANIA_DEMO, MAX_LIFE, SCORE_METER_MAX, SCORE_RANKS, ManiaBoard, ManiaControlsDialog,
     ManiaSounds, assign_lanes, mania_controls, mania_result_name, mirror_mania_notes, neon_speed_multiplier,
@@ -1983,6 +1985,11 @@ class RhythmDialog(QDialog):
         self._rhythm_job = None
         self._rhythm_cancelled = Event()
         self._waiting_for_rhythm = False
+        self._typing_audio_pending = False
+        self._typing_audio_start_ms = 0
+        self._typing_resolved = False
+        self._typing_timer = QTimer(self, interval=40, timerType=Qt.TimerType.PreciseTimer)
+        self._typing_timer.timeout.connect(self._tick_typing)
         self._mania_source = None
         self._mania_notes = ()
         self._mania_mirror_source = None
@@ -2070,17 +2077,27 @@ class RhythmDialog(QDialog):
         self.tabs.addTab(self.circle_board, "Circles")
         self.tabs.addTab(self.mania_board, "Mania")
         self.typing_board = QWidget(self.tabs)
+        self.typing_board.setStyleSheet("background-color: #080808; color: #f4f4f4;")
         typing_layout = QVBoxLayout(self.typing_board)
         typing_layout.addStretch(1)
         self.typing_prompt = QLabel()
         self.typing_prompt.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.typing_prompt.setWordWrap(True)
-        self.typing_prompt.setMinimumHeight(100)
-        self.typing_prompt.setStyleSheet("font-size: 24px; font-weight: 600;")
+        self.typing_prompt.setMinimumHeight(112)
+        self.typing_prompt.setStyleSheet("font-size: 42px; font-weight: 500; color: #f4f4f4;")
         typing_layout.addWidget(self.typing_prompt)
+        self.typing_romaji = QLabel()
+        self.typing_romaji.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.typing_romaji.setWordWrap(True)
+        self.typing_romaji.setStyleSheet("font-size: 27px; color: #777; padding: 12px;")
+        typing_layout.addWidget(self.typing_romaji)
         self.typing_entry = QLineEdit()
-        self.typing_entry.setPlaceholderText("Type the lyric and press Enter")
-        self.typing_entry.returnPressed.connect(self._submit_typing)
+        self.typing_entry.setPlaceholderText("Type the whole lyric before it moves on · romaji accepted for Japanese")
+        self.typing_entry.setStyleSheet(
+            "QLineEdit { background: #181818; color: #fff; border: 1px solid #555; "
+            "border-radius: 6px; padding: 9px; font-size: 18px; }"
+        )
+        self.typing_entry.textChanged.connect(self._typing_changed)
         typing_layout.addWidget(self.typing_entry)
         self.typing_feedback = QLabel()
         self.typing_feedback.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2296,7 +2313,9 @@ class RhythmDialog(QDialog):
         if self.board is self.typing_board:
             self._prepare_typing()
             self.caption.clear()
-            self.progress.setVisible(False)
+            self.progress.setRange(0, max(1, len(self._typing_notes)))
+            self.progress.setValue(0)
+            self.progress.setVisible(bool(self._typing_notes))
             self.score.clear()
             return
         passage = self._selected_passage()
@@ -2312,29 +2331,43 @@ class RhythmDialog(QDialog):
         self.score.setText(f"{len(notes)} targets" if notes else "")
 
     def _prepare_typing(self):
-        passage = self._selected_passage()
-        seen = set()
-        unique = []
-        for note in passage.notes:
-            key = note.text.strip().casefold()
-            if key and key not in seen:
-                seen.add(key)
-                unique.append(note)
-        self._typing_notes = tuple(unique)
+        selected = self._selected_passage()
+        source = self.passages[1:-1] if selected is not DEMO else ()
+        lines = []
+        for passage in source:
+            notes = tuple(note for note in passage.notes if note.text.strip())
+            if not notes:
+                continue
+            label_text = passage.label.partition("  ")[2].strip()
+            text = label_text or " ".join(note.text.strip() for note in notes)
+            if not any(char.isalnum() for char in text):
+                continue
+            reading = "".join(note.reading for note in notes) if all(note.reading for note in notes) else ""
+            lines.append(Note(notes[0].time_ms, text, reading))
+        if not lines:
+            lines = list(selected.notes)
+        self._typing_notes = tuple(lines)
         self._typing_index = 0
+        self._typing_resolved = False
+        self._typing_misses = 0
         self.typing_entry.clear()
         self.typing_entry.setEnabled(False)
-        if unique:
-            self.typing_prompt.setText(unique[0].text)
-            self.typing_feedback.setText(f"{len(unique)} lyric phrases · Enter to submit")
+        self.progress.setRange(0, max(1, len(lines)))
+        self.progress.setValue(0)
+        if lines:
+            self.typing_prompt.setText(lines[0].text)
+            self._update_typing_romaji("")
+            self.typing_feedback.setText(f"{len(lines)} lyric lines · type each before it moves on")
         else:
             self.typing_prompt.setText("No lyric phrases in this chart.")
+            self.typing_romaji.clear()
             self.typing_feedback.setText("Choose a chart with lyrics to play this mode.")
 
     def _start_typing_round(self):
         self._prepare_typing()
         if not self._typing_notes:
             return
+        self._typing_timer.stop()
         self._typing_started = monotonic()
         self._typing_score = self._typing_hits = 0
         self.typing_entry.setEnabled(True)
@@ -2344,42 +2377,142 @@ class RhythmDialog(QDialog):
         self.calibration.setEnabled(False)
         self.tabs.setTabEnabled(0, False)
         self.tabs.setTabEnabled(1, False)
-        self.typing_feedback.setText("Round started · type each phrase and press Enter")
+        self.typing_feedback.setText(f"Phrase 1 of {len(self._typing_notes)} · type and press Enter")
+        self._start_typing_audio()
 
-    def _submit_typing(self):
+    def _start_typing_audio(self):
+        if not self.main_paused:
+            self.resume_main = self.host.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+            self.api.pause()
+            self.main_paused = True
+        self.output.setDevice(self.host.audio_output.device())
+        self.output.setVolume(min(1.0, self.host.volume_slider.value() / 100))
+        self.player.stop()
+        self._typing_audio_start_ms = 0
+        self._typing_audio_pending = True
+        self.source_ready = False
+        if self._selected_passage() is DEMO:
+            self.using_demo = True
+            if not self.demo_buffer.isOpen():
+                self.demo_buffer.setData(demo_wave())
+                self.demo_buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+            self.demo_buffer.seek(0)
+            self.player.setSourceDevice(self.demo_buffer, QUrl("demo.wav"))
+        else:
+            self.using_demo = False
+            self.player.setSource(QUrl.fromLocalFile(self.track_path))
+
+    def _update_typing_romaji(self, typed):
+        if not self._typing_notes or self._typing_index >= len(self._typing_notes):
+            self.typing_romaji.clear()
+            return
+        note = self._typing_notes[self._typing_index]
+        reading = note.reading.strip() or note.text.strip()
+        romanized = kana_to_romaji(reading).strip()
+        normalized = "".join(romanized.casefold().split())
+        answer = "".join(typed.casefold().split())
+        matched = 0
+        while matched < min(len(answer), len(normalized)) and answer[matched] == normalized[matched]:
+            matched += 1
+        current = escape(romanized[:matched])
+        remaining = escape(romanized[matched:])
+        self.typing_romaji.setText(
+            f'<span style="color:#f4f4f4">{current}</span>'
+            f'<span style="color:#777">{remaining}</span>'
+        )
+
+    def _typing_changed(self, typed):
+        if (not self.typing_entry.isEnabled() or not self._typing_notes
+                or self._typing_index >= len(self._typing_notes) or self._typing_resolved):
+            return
+        self._update_typing_romaji(typed)
+        note = self._typing_notes[self._typing_index]
+        accuracy = self._typing_accuracy(note, typed)
+        if self._typing_matches(note, typed):
+            self._typing_resolved = True
+            self._typing_score += 100
+            self._typing_hits += 1
+            self.progress.setValue(self._typing_index + 1)
+            self.typing_feedback.setText("Line complete · get ready for the next lyric")
+        else:
+            self.typing_feedback.setText(
+                f"Line {self._typing_index + 1} of {len(self._typing_notes)} · {accuracy:.0%} match"
+            )
+
+    @staticmethod
+    def _typing_normalize(value):
+        return " ".join(value.casefold().split())
+
+    @classmethod
+    def _typing_matches(cls, note, typed):
+        answer = cls._typing_normalize(typed)
+        targets = [note.text.strip()]
+        reading = note.reading.strip() or note.text.strip()
+        romanized = kana_to_romaji(reading).strip()
+        if romanized.casefold() != targets[0].casefold():
+            targets.append(romanized)
+        return any(answer == cls._typing_normalize(target) for target in targets if target)
+
+    def _tick_typing(self):
         if not self.typing_entry.isEnabled() or not self._typing_notes:
+            self._typing_timer.stop()
             return
-        target = self._typing_notes[self._typing_index].text.strip()
-        typed = self.typing_entry.text().strip()
-        if not typed:
+        position = self.player.position()
+        next_index = self._typing_index + 1
+        if next_index < len(self._typing_notes) and position >= self._typing_notes[next_index].time_ms:
+            self._advance_typing_line()
             return
-        from difflib import SequenceMatcher
-        expected = " ".join(target.casefold().split())
-        answer = " ".join(typed.casefold().split())
-        accuracy = SequenceMatcher(None, answer, expected).ratio()
-        elapsed = monotonic() - self._typing_started
-        expected_time = (self._typing_notes[self._typing_index].time_ms
-                         - self._typing_notes[0].time_ms) / 1000
-        timing = max(0.0, 1.0 - abs(elapsed - expected_time) / 2)
-        points = round(100 * accuracy * (0.6 + 0.4 * timing))
-        self._typing_score += points
-        self._typing_hits += accuracy >= 0.85
-        self._typing_index += 1
-        self.typing_entry.clear()
-        if self._typing_index == len(self._typing_notes):
-            hit_rate = self._typing_hits / len(self._typing_notes)
-            self.typing_prompt.setText("Chart complete!")
-            self.typing_feedback.setText(f"Score {self._typing_score:,} · {hit_rate:.0%} phrases accurate")
-            self.typing_entry.setEnabled(False)
-            self.start.setEnabled(True)
-            self.passage.setEnabled(True)
-            self.calibration.setEnabled(True)
-            self.tabs.setTabEnabled(0, True)
-            self.tabs.setTabEnabled(1, True)
-            return
-        self.typing_prompt.setText(self._typing_notes[self._typing_index].text)
-        self.typing_feedback.setText(f"{points} points · {self._typing_index}/{len(self._typing_notes)}")
+        if self.player.mediaStatus() == QMediaPlayer.MediaStatus.EndOfMedia:
+            if not self._typing_resolved:
+                self._typing_misses += 1
+            self._finish_typing_round()
 
+    def _advance_typing_line(self):
+        missed = not self._typing_resolved
+        if missed:
+            self._typing_misses += 1
+        self._typing_index += 1
+        self._typing_resolved = False
+        if self._typing_index >= len(self._typing_notes):
+            self._finish_typing_round()
+            return
+        self.typing_entry.clear()
+        note = self._typing_notes[self._typing_index]
+        self.typing_prompt.setText(note.text)
+        self._update_typing_romaji("")
+        self.progress.setValue(self._typing_index)
+        suffix = " · previous line missed" if missed else ""
+        self.typing_feedback.setText(
+            f"Line {self._typing_index + 1} of {len(self._typing_notes)} · type before the next lyric{suffix}"
+        )
+
+    def _finish_typing_round(self):
+        self._typing_timer.stop()
+        total = len(self._typing_notes)
+        hit_rate = self._typing_hits / total if total else 0
+        self.typing_prompt.setText("Song complete")
+        self.typing_romaji.clear()
+        self.typing_feedback.setText(
+            f"Score {self._typing_score:,} · {hit_rate:.0%} completed · {self._typing_misses} missed"
+        )
+        self.typing_entry.setEnabled(False)
+        self.start.setEnabled(True)
+        self.passage.setEnabled(True)
+        self.calibration.setEnabled(True)
+        self.tabs.setTabEnabled(0, True)
+        self.tabs.setTabEnabled(1, True)
+
+    @staticmethod
+    def _typing_accuracy(note, typed):
+        from difflib import SequenceMatcher
+        answer = " ".join(typed.casefold().split())
+        targets = [note.text.strip()]
+        reading = note.reading.strip() or note.text.strip()
+        romanized = kana_to_romaji(reading).strip()
+        if romanized.casefold() != targets[0].casefold():
+            targets.append(romanized)
+        return max(SequenceMatcher(None, answer, " ".join(target.casefold().split())).ratio()
+                   for target in targets if target)
     def _start_round(self):
         if self.board is self.typing_board:
             self._start_typing_round()
@@ -2442,6 +2575,13 @@ class RhythmDialog(QDialog):
     def _media_status(self, status):
         if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia):
             self.source_ready = True
+            if self._typing_audio_pending:
+                self._typing_audio_pending = False
+                self.player.setPosition(self._typing_audio_start_ms)
+                self._typing_started = monotonic()
+                self.player.play()
+                self._typing_timer.start()
+                return
             if self.pending_start:
                 self._play_round()
         elif status == QMediaPlayer.MediaStatus.EndOfMedia and self.round is not None and not self.pending_start:
@@ -2819,8 +2959,11 @@ class RhythmDialog(QDialog):
 
     def _playback_error(self, error, message):
         self.timer.stop()
+        self._typing_timer.stop()
         self._stop_effects()
-        self.board.clear_feedback()
+        if self.board in (self.circle_board, self.mania_board):
+            self.board.clear_feedback()
+        self._typing_audio_pending = False
         self.round = None
         self.pending_start = self.source_ready = False
         self.preroll_until = None
@@ -2843,20 +2986,25 @@ class RhythmDialog(QDialog):
             self.board.setFocus(Qt.FocusReason.OtherFocusReason)
         else:
             self.mania_board.set_pause_state(enabled=False)
-            self.board.clear_inputs()
-            self.board.unsetCursor()
+            if self.board in (self.circle_board, self.mania_board):
+                self.board.clear_inputs()
+                self.board.unsetCursor()
 
     def _release_audio(self, _result):
         self._rhythm_cancelled.set()
         self._waiting_for_rhythm = False
+        self._typing_audio_pending = False
+        self._typing_timer.stop()
         if self._rhythm_job is not None:
             self._rhythm_job.close()
             self._rhythm_job = None
         self.timer.stop()
         self._stop_effects()
-        self.board.clear_feedback()
+        if self.board in (self.circle_board, self.mania_board):
+            self.board.clear_feedback()
         self.round = None
-        self.board.clear_inputs()
+        if self.board in (self.circle_board, self.mania_board):
+            self.board.clear_inputs()
         self.pending_start = False
         self.preroll_until = None
         self._postroll_anchor = None

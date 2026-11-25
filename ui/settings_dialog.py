@@ -1380,6 +1380,16 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             "How often the precise playback timestamp updates."
         )
 
+        self._add_section_heading(layout, "Library")
+        self.library_smooth_scrolling_checkbox = QCheckBox("Smooth library scrolling")
+        self.library_smooth_scrolling_checkbox.setChecked(
+            self.playback_settings.get("library_smooth_scrolling", False)
+        )
+        self.library_smooth_scrolling_checkbox.setToolTip(
+            "Animate mouse wheel scrolling and allow the library to move by individual pixels."
+        )
+        layout.addWidget(self.library_smooth_scrolling_checkbox)
+
         layout = sections["Behavior"]
         self._add_section_heading(layout, "Playback order")
         self.play_mode_combo = QComboBox()
@@ -2258,6 +2268,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             "output_device": self.output_device_combo.currentData(),
             "device_lyric_delays_ms": dict(self._device_lyric_delays),
             "show_waveform": self.show_waveform_checkbox.isChecked(),
+            "library_smooth_scrolling": self.library_smooth_scrolling_checkbox.isChecked(),
             "radio_auto_lyrics": self.playback_settings.get("radio_auto_lyrics", False),
             "resume_live_from_buffer": self.playback_settings.get("resume_live_from_buffer", False),
             "volume": self.playback_settings.get("volume", 80),

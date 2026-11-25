@@ -105,6 +105,7 @@ PLAYBACK_DEFAULTS = {
     "volume": 80,
     "high_volume_warning_shown": False,
     "show_waveform": True,
+    "library_smooth_scrolling": False,
     "radio_auto_lyrics": False,
     "resume_live_from_buffer": False,
     "pitch_mode": "Semitones",
@@ -248,6 +249,9 @@ def get_playback_settings(payload=None):
         "show_waveform": bool(
             values.get("show_waveform", PLAYBACK_DEFAULTS["show_waveform"])
         ),
+        "library_smooth_scrolling": values.get(
+            "library_smooth_scrolling", PLAYBACK_DEFAULTS["library_smooth_scrolling"]
+        ) is True,
         "radio_auto_lyrics": values.get("radio_auto_lyrics", PLAYBACK_DEFAULTS["radio_auto_lyrics"]) is True,
         "resume_live_from_buffer": values.get("resume_live_from_buffer", PLAYBACK_DEFAULTS["resume_live_from_buffer"]) is True,
         "pitch_mode": pitch_mode,

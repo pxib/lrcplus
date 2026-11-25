@@ -71,6 +71,8 @@ class SpectrumWidget(QWidget):
         self._band_colors = ()
         self._visual_time = 0.0
         self._last_tick = None
+        self._effect_update_pending = False
+        self._artwork_updated_last_tick = False
         self._band_positions = np.linspace(0, 1, _BAND_COUNT)
         self._radial_directions = tuple(
             (sin(angle), -cos(angle)) for angle in np.linspace(0, 2 * pi, _BAND_COUNT, endpoint=False)
@@ -138,6 +140,8 @@ class SpectrumWidget(QWidget):
             self.update()
 
     def _clear_frames(self):
+        self._effect_update_pending = False
+        self._artwork_updated_last_tick = False
         self._levels.fill(0)
         self._target.fill(0)
         self._peaks.fill(0)
@@ -196,10 +200,21 @@ class SpectrumWidget(QWidget):
         if self._last_tick is not None:
             self._visual_time += min(0.05, now - self._last_tick)
         self._last_tick = now
-        sample = self._tap.take_latest()
+        changed = self._advance_playback(self._tap.take_latest())
+        self._effect_update_pending |= changed
+
+        # Repainting the artwork also repaints the transparent lyrics above it.
+        # Keep sampling every tick, and carry a skipped update into the next tick.
+        if self.over_artwork and self._artwork_updated_last_tick:
+            self._artwork_updated_last_tick = False
+        elif self._effect_update_pending:
+            self._effect_update_pending = False
+            self._artwork_updated_last_tick = self.over_artwork
+            self.update(self._effect_rect())
+
+    def _advance_playback(self, sample):
         if self.over_artwork and self.visual_style in (_OSCILLOSCOPE, _WAVEFORM_RIBBON):
-            self._advance_trace(sample)
-            return
+            return self._advance_trace(sample)
         if sample is not None:
             self._target = self._spectrum(*sample)
             self._idle_ticks = 0
@@ -208,16 +223,14 @@ class SpectrumWidget(QWidget):
             if self._idle_ticks > 6:
                 self._target.fill(0)
         if self.over_artwork and self.visual_style in (_SPECTROGRAM, _WATERFALL):
-            self._advance_history()
-            return
+            return self._advance_history()
         delta = self._target - self._levels
         self._levels += delta * self._np.where(delta > 0, 0.91, 0.44)
         # Let the peaks fall more slowly than the live signal.
         np = self._np
         was_visible = self._peaks.max() >= 0.025
         np.maximum(self._levels, self._peaks - 0.062, out=self._peaks)
-        if was_visible or self._peaks.max() >= 0.025:
-            self.update(self._effect_rect())
+        return bool(was_visible or self._peaks.max() >= 0.025)
 
     def _advance_history(self):
         self._np.maximum(self._history_pending, self._target, out=self._history_pending)
@@ -236,10 +249,9 @@ class SpectrumWidget(QWidget):
             if active or has_history:
                 history[:, :-columns] = history[:, columns:]
                 history[:, -columns:] = (self._history_pending[::-1, None] * 255) if active else 0
-                self.update(self._effect_rect())
             self._history_pending.fill(0)
-        elif waterfall and has_history:
-            self.update(self._effect_rect())
+            return bool(active or has_history)
+        return bool(waterfall and has_history)
 
     def _advance_trace(self, sample):
         np = self._np
@@ -263,12 +275,12 @@ class SpectrumWidget(QWidget):
                     self._trace = trace * (0.92 / (scale ** 0.55 if ribbon and scale < 1 else scale))
                     self._trace_opacity = 1.0
                     self._idle_ticks = 0
-                    self.update(self._effect_rect())
-                    return
+                    return True
         self._idle_ticks += 1
         if self._trace_opacity and (sample is not None or self._idle_ticks > 6 or self._trace_opacity < 1):
             self._trace_opacity = max(0.0, self._trace_opacity - 0.22)
-            self.update(self._effect_rect())
+            return True
+        return False
 
     def _ribbon_samples(self, samples, length):
         np = self._np

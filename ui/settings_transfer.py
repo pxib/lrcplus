@@ -174,6 +174,7 @@ class SettingsTransferMixin:
                 "replaygain_mode": "replaygain_combo", "replaygain_preamp": "replaygain_preamp",
                 "replaygain_prevent_clipping": "replaygain_clipping", "output_device": "output_device_combo",
                 "show_waveform": "show_waveform_checkbox",
+                "library_smooth_scrolling": "library_smooth_scrolling_checkbox",
             }),
             "appearance": (settings.get_appearance_settings, {
                 "background_enabled": "background_enabled_checkbox", "background_layout": "background_layout_combo",

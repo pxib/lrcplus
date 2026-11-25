@@ -64,6 +64,39 @@ def test_visualizer_keeps_the_spectrum_visible_at_low_gain(qapp):
     assert not quiet_widget._spectrum(bytes(samples.nbytes), 48000, 1, audio_format).any()
 
 
+def test_artwork_coalesces_repaints_but_flushes_the_last_frame(qapp, monkeypatch):
+    player = QWidget()
+    tap = player.playback_audio_tap = PlaybackAudioTap()
+    tap.set_collecting(True)
+    widget = SpectrumWidget(player)
+    widget.over_artwork = True
+    updates = []
+    monkeypatch.setattr(widget, "update", updates.append)
+    data, audio_format = _tone()
+
+    for _ in range(5):
+        tap.capture(data, audio_format, "native")
+        widget._advance()
+    assert len(updates) == 3
+
+    widget._levels.fill(0)
+    widget._peaks.fill(0.04)
+    tap.capture(bytes(len(data)), audio_format, "native")
+    widget._advance()
+    assert not widget._peaks.any()
+    assert len(updates) == 3
+    widget._advance()
+    assert len(updates) == 4
+    widget._advance()
+    assert len(updates) == 4
+
+    widget.over_artwork = False
+    for _ in range(4):
+        tap.capture(data, audio_format, "native")
+        widget._advance()
+    assert len(updates) == 8
+
+
 def test_visualizer_draws_active_outer_bands_to_the_edges(qapp):
     player = QWidget()
     player.playback_audio_tap = PlaybackAudioTap()

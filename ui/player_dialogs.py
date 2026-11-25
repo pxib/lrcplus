@@ -1,7 +1,13 @@
 import math
 
-from PySide6.QtCore import Qt, QTimer, Signal, QThread, QRect, QRectF, QSignalBlocker
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPalette, QPen, QLinearGradient, QBrush
+from PySide6.QtCore import (
+    QByteArray, QBuffer, QIODevice, QRect, QRectF, QSignalBlocker, QSize,
+    Qt, QThread, QTimer, Signal,
+)
+from PySide6.QtGui import (
+    QBrush, QColor, QImageReader, QLinearGradient, QPainter, QPalette, QPen,
+    QPixmap, QTransform,
+)
 from PySide6.QtWidgets import (
     QDialog,
     QComboBox,
@@ -251,28 +257,87 @@ class AlbumCoverDelegate(QStyledItemDelegate):
         super().paint(painter, option, index)
 
 
+def _decode_cover_preview(data, max_dimension):
+    buffer = QBuffer(data)
+    buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+    reader = QImageReader(buffer)
+    original = reader.size()
+    bounds = QSize(max_dimension, max_dimension)
+    if max(original.width(), original.height()) > max_dimension:
+        target = original.scaled(bounds, Qt.AspectRatioMode.KeepAspectRatio)
+        reader.setScaledSize(target.expandedTo(QSize(1, 1)))
+    image = reader.read()
+    if not original.isValid():
+        original = image.size()
+    if max(image.width(), image.height()) > max_dimension:
+        target = image.size().scaled(bounds, Qt.AspectRatioMode.KeepAspectRatio)
+        image = image.scaled(target.expandedTo(QSize(1, 1)), Qt.AspectRatioMode.IgnoreAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation)
+    return QPixmap.fromImage(image), original
+
+
 class CoverPreviewView(QGraphicsView):
-    def __init__(self, pixmap, parent=None):
+    def __init__(self, pixmap, parent=None, *, data=None, original_size=None):
         super().__init__(parent)
+        self._cover_data = data
+        self._original_size = original_size
+        self._preview_dimension = max(pixmap.width(), pixmap.height())
         scene = QGraphicsScene(self)
         self.image_item = scene.addPixmap(pixmap)
+        if data is not None:
+            self.image_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+            self._match_original_geometry()
+            scene.setSceneRect(self.image_item.sceneBoundingRect())
         self.setScene(scene)
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
 
+    def _match_original_geometry(self):
+        # Keep the scene in original image coordinates as the decoded pixmap changes.
+        pixmap = self.image_item.pixmap()
+        self.image_item.setTransform(QTransform.fromScale(
+            self._original_size.width() / pixmap.width(),
+            self._original_size.height() / pixmap.height(),
+        ))
+
+    def _update_resolution(self, *, force_shrink=False):
+        if self._cover_data is None:
+            return
+        native = max(self._original_size.width(), self._original_size.height())
+        needed = math.ceil(native * self.transform().m11() * self.devicePixelRatioF())
+        limit = self._preview_dimension
+        while limit < min(native, needed):
+            limit *= 2
+        limit = min(native, limit)
+        current = self.image_item.pixmap().size()
+        current_dimension = max(current.width(), current.height())
+        # Allow some slack when zooming out to avoid reloading on every
+        # wheel movement near a resolution boundary.
+        if limit == current_dimension:
+            return
+        if limit < current_dimension and not force_shrink and needed > limit * 0.8:
+            return
+        pixmap, _ = _decode_cover_preview(self._cover_data, limit)
+        if not pixmap.isNull():
+            self.image_item.setPixmap(pixmap)
+            self._match_original_geometry()
+
     def fit_to_view(self):
         self.resetTransform()
         self.fitInView(self.image_item, Qt.AspectRatioMode.KeepAspectRatio)
+        self._update_resolution(force_shrink=True)
 
     def set_actual_size(self):
         self.resetTransform()
+        self._update_resolution()
         self.centerOn(self.image_item)
 
     def zoom(self, factor):
         current_scale = self.transform().m11()
         if 0.05 <= current_scale * factor <= 8:
             self.scale(factor, factor)
+            self._update_resolution()
 
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
@@ -284,12 +349,23 @@ class CoverPreviewView(QGraphicsView):
 
 
 class CoverPreviewDialog(QDialog):
-    def __init__(self, pixmap, parent=None):
+    @classmethod
+    def from_data(cls, data: QByteArray, parent):
+        if not data:
+            return None
+        pixmap, original_size = _decode_cover_preview(
+            data, math.ceil(1024 * parent.devicePixelRatioF()),
+        )
+        if pixmap.isNull():
+            return None
+        return cls(pixmap, parent, data=data, original_size=original_size)
+
+    def __init__(self, pixmap, parent=None, *, data=None, original_size=None):
         super().__init__(parent)
         self.setWindowTitle("Album Cover")
         self.resize(900, 700)
 
-        self.view = CoverPreviewView(pixmap, self)
+        self.view = CoverPreviewView(pixmap, self, data=data, original_size=original_size)
         controls = QHBoxLayout()
         zoom_out = QToolButton(self)
         zoom_out.setText("-")

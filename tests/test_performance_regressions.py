@@ -7,7 +7,9 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QRect, QThread, QTimer, Qt
+from PySide6.QtCore import (
+    QByteArray, QBuffer, QCoreApplication, QEvent, QIODevice, QRect, QThread, QTimer, Qt,
+)
 from PySide6.QtGui import QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QLabel, QLineEdit, QPushButton, QStyleOptionViewItem,
@@ -18,7 +20,7 @@ from core.audio_controller import AudioController
 from core.music_library import LibraryTrack
 from ui.lrc_editor import LrcEditorDialog
 from ui.main_window import Player
-from ui.player_dialogs import AlbumCoverDelegate
+from ui.player_dialogs import AlbumCoverDelegate, CoverPreviewDialog
 from ui.settings_dialog import PluginSettingsDialog, SettingsDialog
 
 
@@ -354,6 +356,54 @@ def test_cover_delegate_paints_from_cache_without_row_decoration(library):
     assert image.pixelColor(31, 29) == Qt.GlobalColor.red
     assert image.pixelColor(0, 0) == Qt.GlobalColor.black
     assert item.data(0, Qt.ItemDataRole.DecorationRole) is None
+
+
+def test_library_cover_preview_loads_original_only_at_high_zoom(library, qapp, monkeypatch):
+    parent = library.library_table.parentWidget()
+    monkeypatch.setattr(parent, "devicePixelRatioF", lambda: 1.0)
+    item = library.library_table.topLevelItem(0).child(0)
+    artwork = QImage(3000, 2000, QImage.Format.Format_RGB32)
+    artwork.fill(Qt.GlobalColor.red)
+    data = QByteArray()
+    buffer = QBuffer(data)
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    assert artwork.save(buffer, "JPEG")
+    monkeypatch.setattr("ui.player_library.extract_embedded_cover", lambda _path: bytes(data))
+
+    visited = []
+
+    def inspect_dialog(dialog):
+        dialog.show()
+        qapp.processEvents()
+        view = dialog.view
+        monkeypatch.setattr(view, "devicePixelRatioF", lambda: 1.0)
+        view.fit_to_view()
+        original_rect = view.sceneRect()
+        assert original_rect.width() == 3000
+        assert original_rect.height() == 2000
+        assert view.image_item.pixmap().width() == 1024
+
+        for _ in range(3):
+            view.zoom(1.2)
+        assert view.image_item.pixmap().width() == 2048
+        assert view.sceneRect() == original_rect
+
+        for _ in range(5):
+            view.zoom(1 / 1.2)
+        assert view.image_item.pixmap().width() == 1024
+
+        view.set_actual_size()
+        assert view.transform().m11() == 1.0
+        assert view.image_item.pixmap().size() == artwork.size()
+
+        view.fit_to_view()
+        assert view.image_item.pixmap().width() == 1024
+        assert view.sceneRect() == original_rect
+        visited.append(True)
+
+    monkeypatch.setattr(CoverPreviewDialog, "exec", inspect_dialog)
+    Player._open_library_cover_preview(parent, item, 0)
+    assert visited == [True]
 
 
 def test_superseded_artwork_is_cancelled_and_stops_polling(monkeypatch):

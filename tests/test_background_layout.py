@@ -128,6 +128,32 @@ def test_layouts_keep_artwork_visible_with_blur_and_resize(qapp, mode, blur_mode
 
 
 @pytest.mark.parametrize("mode", ["center", "fill", "fit", "stretch", "tile"])
+@pytest.mark.parametrize("bleed", [False, True])
+def test_strong_gaussian_blur_caches_half_resolution(qapp, mode, bleed):
+    widget = ArtworkBackgroundWidget()
+    try:
+        widget.resize(641, 479)
+        widget.set_background_layout(mode)
+        widget.set_blur_radius(12)
+        widget.set_blur_bleed(bleed)
+        widget.set_darkness(0)
+        artwork = QPixmap(301, 201)
+        artwork.fill(Qt.GlobalColor.red)
+        widget.set_artwork_pixmap(artwork)
+
+        cache = widget._cached_background
+        assert (cache.width(), cache.height()) == (321, 240)
+        painted = widget.grab().toImage()
+        assert painted.size() == widget.size()
+        assert painted.pixelColor(320, 239).red() == 255
+        if mode == "fit":
+            # The original letterbox starts above y=25.
+            assert (painted.pixelColor(320, 23).red() > 0) == bleed
+    finally:
+        widget.deleteLater()
+
+
+@pytest.mark.parametrize("mode", ["center", "fill", "fit", "stretch", "tile"])
 def test_background_layout_setting_persists(mode):
     save_appearance_settings({"background_layout": mode})
     assert get_appearance_settings()["background_layout"] == mode
