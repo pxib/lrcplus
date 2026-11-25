@@ -575,7 +575,7 @@ Fixed zero-width columns on startup.
 - Lyrics text now wraps around.
 
 
-## [2026-11-02.4]
+## [2026-11-02.2>4]
 
 ### Added
 
@@ -589,6 +589,12 @@ Fixed zero-width columns on startup.
 
 - Detect `-exp` prerelease tags and versioned Windows ZIP roots; reuse the installed updater when a compatible package omits its own updater executable.
 - Improve text contrast for selected Settings tabs and mode buttons.
+
+## [2026-11-02]
+
+
+
+(Yes, you're seeing this right. It's blank. Check changes on "https://github.com/pxib/lrcplus/commit/8a8dec46d0f9d23f226910ab77cb1bfb7e349c9c".)
 
 ## [2026-11-02.2]
 
@@ -710,6 +716,45 @@ merry christmas noobs
 also happy halloween
 (p.s thank you to Anti on discord for the feedback!)
 
+## [2026-10-31]
+
+### What changed again?
+- dont click icon in about 7 times.
+
+also happy halloween
+
+## [2026-10-30.5]
+
+### Added
+- Added lyric formatting: `**bold**`, `*italic*`, `~~strikethrough~~`, and `<u>underline</u>`.
+- Added single-level blockquotes using `> `, with an indent and a vertical bar spanning all rows of a lyric.
+- Added formatting buttons and keyboard shortcuts, plus an **Insert Newline** control above the lyric field.
+
+### Changed
+- Moved **Shift Timing** and **Validate Timing** next to the lyric offset controls.
+
+### Fixed
+- Fixed `{\n}` rendering and multiline row spacing, preserving furigana and karaoke timing.
+- Fixed batched reading generation losing text after a visual newline.
+- Made underline and strikethrough continuous across spaces and furigana padding.
+- Fixed LRCX furigana prefetch skipping lines with content segments, which caused MeCab to run as playback reached each line.
+- Corrected logs that labeled ordinary LRCX content and reading tokens as karaoke.
+- Files declaring `[format:LRCX]` now load correctly even with a `.lrc` extension.
+
+## [2026-10-30.4]
+
+### Added
+- Now warns you if an audio device was disconnected. No more jumpscares, ig.
+- Added Vietnamese placeholder album cover.
+- Can now identify Vietnamese lyrics.
+- (A little secret has been added.)
+
+## [2026-10-30.3]
+
+### So, what changed?
+- FAFO. (http://fafo.urbanup.com/10894485)
+- Here's what changed: https://www.youtube.com/watch?v=FtutLA63Cp8
+
 ## [2026-10-30.2]
 
 ### Added
@@ -737,6 +782,33 @@ also happy halloween
 ---
 
 # Historical changes (that I removed)
+
+## [2026-10-29.2]
+
+### Added
+- Inline ASS/SSA subtitle warnings, including qualified warnings for VTT captions with ASS-style effect markers.
+- Subtitle language/source selection in yt-dlp Audio Import, original VTT/SRT downloads, optional LRC conversion, and subtitle-only imports for existing audio.
+- Plugin API lyric attachments that refresh the current track without restarting playback or replacing authored lyric files.
+- Optional yt-dlp Audio Import plugin with URL previews, M4A/MP3 downloads, metadata/artwork, cancellation, retries, and remembered source URLs.
+- Plugin API v4 local audio import method for library/queue integration, and optional dependency extras support for matching yt-dlp components.
+- Queue manager with drag-and-drop and multi-track reordering, Play next, Add to queue, and library context-menu actions.
+- Named saved playlists with load, append, update, rename, and delete controls, plus local M3U/M3U8 import and export.
+
+### Fixed
+- Styled subtitle conversion now collapses repeated outline/color redraws, joins vertical CJK character columns, and handles consecutive cues without blank separators.
+- Oversized lyric imports are rejected before creating scrolling widgets, preventing malformed subtitle conversions from freezing playback.
+- Repeated queue entries retain their own playback position, including when restoring a session with missing files.
+
+## [2026-10-29]
+
+### Added
+- Dependency Manager in Settings to install, repair, check, and remove optional plugin libraries.
+- Setup notices for enabled plugins with missing or incompatible dependencies.
+- Automatic private Python runtime setup for Windows builds, with libraries stored in the user's application data folder (Windows: %LOCALAPPDATA%\LyricsPlus)
+- Dependency changes take effect after restarting LyricsPlus; failed installations preserve the previous working environment.
+
+### Fixed
+- Cantonese readings in packaged Windows builds now use the private Python runtime for their worker processes.
 
 ## [2026-10-28]
 
