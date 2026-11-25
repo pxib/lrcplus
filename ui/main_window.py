@@ -1771,6 +1771,7 @@ class Player(
                 self,
                 update_settings=self.update_settings,
                 statistics_settings={"enabled": self.statistics.enabled},
+                audio_signal_path=self.audio_signal_path,
             )
 
             def check_updates_after_settings_close():

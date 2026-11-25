@@ -1,4 +1,7 @@
-from PySide6.QtCore import Qt
+import time
+import wave
+
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QScrollArea
 
@@ -9,6 +12,47 @@ from ui.settings_dialog import SettingsDialog
 def matches(search):
     return [search.entries[search.results.item(i).data(Qt.ItemDataRole.UserRole)]
             for i in range(search.results.count())]
+
+
+def test_audio_signal_path_search_opens_live_advanced_panel(qapp, tmp_path):
+    path = tmp_path / "test.wav"
+    with wave.open(str(path), "wb") as audio:
+        audio.setparams((1, 2, 44100, 0, "NONE", "not compressed"))
+        audio.writeframes(b"\0\0" * 16)
+    source = QUrl.fromLocalFile(str(path))
+    values = {"Codec": "", "Audio output": "Headphones", "Crossfade": "Off"}
+    dialog = SettingsDialog([], {}, audio_signal_path=lambda: (source, values))
+
+    def wait_for_value(name, expected):
+        deadline = time.monotonic() + 2
+        label = panel._values[name]
+        while label.text() != expected and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.015)
+        assert label.text() == expected
+
+    try:
+        dialog.show()
+        search = dialog.settings_search
+        search.search_edit.setText("audio signal path")
+        entry, = matches(search)
+        assert entry.path == "Advanced"
+        search.activate(search.results.item(0))
+        panel = entry.widget
+        assert panel.isVisible()
+        wait_for_value("Codec", "PCM")
+        assert panel._values["Source sample rate"].text() == "44,100 Hz"
+        assert panel._values["Audio output"].text() == "Headphones"
+
+        source = QUrl("https://example.invalid/radio")
+        values.update({"Audio output": "Speakers", "Crossfade": "Available for local files only."})
+        wait_for_value("Audio output", "Speakers")
+        assert panel._values["Source sample rate"].text() == "Unavailable"
+        assert panel._values["Crossfade"].text() == values["Crossfade"]
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
 
 
 def test_search_finds_aliases_scopes_and_tooltips_without_changing_settings(qapp, monkeypatch):

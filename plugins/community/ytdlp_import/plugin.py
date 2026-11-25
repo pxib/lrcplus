@@ -1,4 +1,4 @@
-"""Optional URL audio imports, using only the public host API."""
+"""Optional URL audio imports."""
 from pathlib import Path
 import shutil
 
@@ -57,7 +57,7 @@ class YtdlpImportPlugin:
     def open_import(self):
         if self.dialog is None:
             self.dialog = ImportDialog(self.context.api, self.settings(), self.window,
-                                       download_queue=self.download_queue)
+                                       download_queue=self.download_queue, plugin_manager=self.context.manager)
         self.dialog.show()
         self.dialog.raise_()
         self.dialog.activateWindow()

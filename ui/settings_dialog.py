@@ -269,6 +269,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         parent=None,
         update_settings=None,
         statistics_settings=None,
+        audio_signal_path=None,
     ):
         super().__init__(parent)
 
@@ -303,6 +304,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             self.theme_color = APPEARANCE_DEFAULTS["theme_color"]
         self.theme_color = QColor(self.theme_color).name()
         self.playback_settings = dict(playback_settings or {})
+        self._audio_signal_path = audio_signal_path
         self._device_lyric_delays = dict(self.playback_settings.get("device_lyric_delays_ms", {}))
         self.karaoke_settings = get_karaoke_settings({"karaoke": karaoke_settings or {}})
         self.local_overrides = dict(local_overrides or {})

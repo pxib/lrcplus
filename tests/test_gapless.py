@@ -96,6 +96,35 @@ def transport(qapp):
         qapp.processEvents()
 
 
+def test_transition_status_tracks_runtime_restrictions(transport, monkeypatch):
+    monkeypatch.setattr("core.gapless.shutil.which", lambda _: "ffmpeg")
+    player = transport
+    player.pause()
+    player.configure_gapless(True, 1, ("off", 0, True), crossfade_seconds=3)
+    assert player.transition_status() == (
+        "Enabled for eligible transitions.", "3 s configured. Enabled for eligible transitions.",
+    )
+    player._preload_resolved = True
+    assert player.transition_status()[0] == "No eligible next track."
+
+    player.configure_gapless(True, 1, ("off", 0, True), compatible=False, crossfade_seconds=3)
+    assert all("Speed or pitch processing" in status for status in player.transition_status())
+    player.configure_gapless(True, 1, ("off", 0, True))
+    assert player.transition_status() == ("Available on the next track load.", "Off")
+
+    player.setSource(QUrl("https://example.invalid/radio"))
+    assert player.transition_status()[0] == "Available for local files only."
+
+
+def test_transition_status_reports_device_change(transport, monkeypatch):
+    monkeypatch.setattr("core.gapless.shutil.which", lambda _: "ffmpeg")
+    player = transport
+    player.pause()
+    player._sink_device = object()
+    player.configure_gapless(True, 1, ("off", 0, True), crossfade_seconds=3)
+    assert all("output device changed" in status for status in player.transition_status())
+
+
 @pytest.mark.parametrize("preamp", [0, -6])
 def test_continuity_and_audible_track_boundary_use_single_sink(transport, preamp):
     from plugins.core.equalizer.dsp import EqualizerProcessor

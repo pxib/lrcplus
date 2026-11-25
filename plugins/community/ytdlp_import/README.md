@@ -7,6 +7,9 @@ worker, settings, and download history all live in this plugin.
 ## Setup
 
 1. In **Settings > Dependencies**, install/repair **yt-dlp** and **mutagen**.
+   Select the yt-dlp row or check its box to choose **Stable** or **Nightly**
+   under **yt-dlp build**, then click **Install / Repair** to apply the choice.
+   Stable is the default for new installations. Nightly gets site fixes sooner.
    The yt-dlp requirement includes its `default` extras, including matching
    YouTube challenge scripts. Restart LRCPlus after installation or updates.
 2. In **Settings > Dependencies**, select **FFmpeg + ffprobe** and **Install / Repair**.
@@ -47,6 +50,21 @@ You can also paste a URL and select **Preview** to see the
 title, creator, duration, and artwork when supplied by the source. Select
 **Download**, or open **Download options** first to change the folder, audio
 format, artwork, lyrics, or playback queue preferences.
+
+### YouTube session prototype
+
+Compatibility varies by browser profile and video.
+
+Paste one YouTube video URL and choose **More > Download with YouTube session…**.
+For a failed YouTube download, select its row and choose **Retry with YouTube session…**.
+Choose the profile folder shown in Firefox or LibreWolf’s `about:support`, or
+select a YouTube `cookies.txt` export. **Test session** uses the chosen session
+to check whether yt-dlp can read that video on YouTube before downloading audio.
+If YouTube requests age verification, complete it on YouTube in the same browser profile.
+
+Profile loading uses the browser’s default container. The app remembers your
+chosen path until it closes. A restart clears permission to use the session for
+any unfinished download, which can be retried from the Downloads tab.
 
 ### Download queue, batches, and playlists
 

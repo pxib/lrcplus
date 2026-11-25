@@ -142,6 +142,9 @@ class GaplessMediaPlayer(QMediaPlayer):
         self._crossfade_out = b""
         self._gapless_enabled = False
         self._gapless_active = False
+        self._gapless_requested = False
+        self._gapless_unavailable = ""
+        self._gapless_fallback_reason = ""
         self._gapless_handoff = False
         self._decoder = self._next_decoder = None
         self._sink = self._io = None
@@ -170,10 +173,22 @@ class GaplessMediaPlayer(QMediaPlayer):
         self._rg_settings = rg_settings
         self._volume = volume
         self._crossfade_seconds = max(0, min(10, crossfade_seconds))
-        enabled = bool((enabled or self._crossfade_seconds) and compatible and shutil.which("ffmpeg"))
+        self._gapless_requested = bool(enabled)
+        requested = bool(enabled or self._crossfade_seconds)
+        self._gapless_unavailable = ""
+        if requested:
+            if not compatible:
+                self._gapless_unavailable = "Speed or pitch processing is enabled."
+            elif not shutil.which("ffmpeg"):
+                self._gapless_unavailable = "FFmpeg is unavailable."
+        enabled = requested and not self._gapless_unavailable
         self._gapless_enabled = enabled
         if self._gapless_active and (not enabled or self._sink_device != self.audioOutput().device()):
             url, position, state = self.source(), self.position(), self.playbackState()
+            self._gapless_fallback_reason = (
+                "The output device changed. The route is selected again on the next track load."
+                if self._sink_device != self.audioOutput().device() else ""
+            )
             self._release()
             self._gapless_active = False
             super().setSource(url)
@@ -186,6 +201,41 @@ class GaplessMediaPlayer(QMediaPlayer):
             self.audioOutput().setVolume(0.0)
             return True
         return False
+
+    def transition_status(self):
+        """Describe the configured transitions and the route selected for this source."""
+        source = self.source()
+        if source.isEmpty():
+            status = "No audio loaded."
+        elif not source.isLocalFile():
+            status = "Available for local files only."
+        elif self._gapless_unavailable:
+            status = self._gapless_unavailable
+        elif not self._gapless_active:
+            status = self._gapless_fallback_reason or "Available on the next track load."
+        elif self._at_end:
+            status = "Waiting for playback."
+        elif self._preload_resolved and not self._next_path:
+            status = "No eligible next track."
+        else:
+            status = "Enabled for eligible transitions."
+
+        gapless = status if self._gapless_requested or self._crossfade_seconds else "Off"
+        crossfade = "Off"
+        if self._crossfade_seconds:
+            successor = self._next_decoder
+            if (self._gapless_active and successor is not None and self._decoder is not None
+                    and not (self._decoder.duration and successor.duration)):
+                crossfade = "Crossfade requires known durations for both tracks."
+            else:
+                crossfade = f"{self._crossfade_seconds:g} s configured. {status}"
+        return gapless, crossfade
+
+    def gapless_output_sample_rate(self):
+        return self._format.sampleRate() if self._gapless_active and self._sink is not None else 0
+
+    def gapless_replaygain(self):
+        return self._decoder.tags if self._gapless_active and self._decoder is not None else None
 
     def setSource(self, url):
         if (self._gapless_handoff and self._next_decoder is not None
@@ -209,6 +259,7 @@ class GaplessMediaPlayer(QMediaPlayer):
             return
         self._release()
         self._gapless_active = False
+        self._gapless_fallback_reason = ""
         super().stop()
         if not self._gapless_enabled or url.isEmpty() or not url.isLocalFile():
             super().setSource(url)
@@ -218,6 +269,7 @@ class GaplessMediaPlayer(QMediaPlayer):
         fmt = self._sink_device.preferredFormat()
         fmt.setSampleFormat(QAudioFormat.SampleFormat.Float)
         if not self._sink_device.isFormatSupported(fmt):
+            self._gapless_fallback_reason = "The output device does not support the required PCM format."
             super().setSource(url)
             return
         # Clear native source while it is stopped. No native stream runs beside
@@ -358,6 +410,7 @@ class GaplessMediaPlayer(QMediaPlayer):
         url, position, state = self.source(), self.position(), self.playbackState()
         self._release()
         self._gapless_active = False
+        self._gapless_fallback_reason = str(error)
         super().setSource(url)
         super().setPosition(position)
         self.gaplessFallback.emit(str(error))

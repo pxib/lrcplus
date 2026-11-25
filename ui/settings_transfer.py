@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 
 from core import settings
 from core.settings_transfer import export_settings, get_factory_settings, import_settings, merge_settings
+from ui.audio_signal_path import AudioSignalPathPanel
 from ui.settings_controls import DeferredOptionsComboBox
 
 
@@ -17,6 +18,7 @@ class SettingsTransferMixin:
     def _create_advanced_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.addWidget(AudioSignalPathPanel(self._audio_signal_path))
         self._add_section_heading(layout, "Import and export settings")
         description = QLabel(
             "Save your preferences to a JSON file or load them on another installation. "

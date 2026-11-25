@@ -7,11 +7,12 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from .job import ImportJob
-from .worker import validate_url
+from .job import ImportJob, YOUTUBE_AGE_SESSION_HINT, is_youtube_age_restriction
+from .worker import validate_url, validate_youtube_session_url
 
 
 TERMINAL = {"completed", "failed", "cancelled", "skipped"}
+SESSION_RETRY = "YouTube session cleared. Use Retry with YouTube session to continue."
 
 
 def source_key(url):
@@ -29,12 +30,14 @@ def source_key(url):
 class DownloadQueue(QObject):
     changed = Signal()
     error = Signal(str)
+    nightly_suggested = Signal()
 
     def __init__(self, api, parent=None, *, job_factory=ImportJob):
         super().__init__(parent)
         self.api = api
         self.job_factory = job_factory
         self.jobs = {}
+        self._youtube_sessions = {}
         self._schedule_timer = QTimer(self)
         self._schedule_timer.setSingleShot(True)
         self._schedule_timer.timeout.connect(self.pump)
@@ -55,6 +58,7 @@ class DownloadQueue(QObject):
             if any(existing["id"] == item["id"] for existing in self.items):
                 continue
             request = item["request"]
+            request.pop("youtube_session", None)
             if (not isinstance(request.get("config"), dict) or not isinstance(request.get("folder"), str)
                     or not request["folder"] or not isinstance(request.get("url"), str)
                     or request.get("codec") not in {"m4a", "mp3"}):
@@ -83,6 +87,8 @@ class DownloadQueue(QObject):
             item["request"].pop("musicbrainz_cover", None)
             item["request"].pop("info", None)
             item.pop("next_action", None)
+            if item["id"] in self._youtube_sessions and item["state"] not in TERMINAL:
+                item.update(state="failed", message=SESSION_RETRY, details=SESSION_RETRY)
         try:
             self.api.set_setting("download_queue", saved)
             self.last_error = ""
@@ -91,9 +97,12 @@ class DownloadQueue(QObject):
             self.error.emit(self.last_error)
         self.changed.emit()
 
-    def enqueue(self, entries, options, *, force=False):
+    def enqueue(self, entries, options, *, force=False, youtube_session=None):
         # Validate the whole batch before changing the queue.
-        entries = [dict(entry, url=validate_url(entry["url"])) for entry in entries]
+        if youtube_session is not None and len(entries) != 1:
+            raise ValueError("Choose one YouTube video to use a session.")
+        validate = validate_url if youtube_session is None else validate_youtube_session_url
+        entries = [dict(entry, url=validate(entry["url"])) for entry in entries]
         added = 0
         for entry in entries:
             key = source_key(entry["url"])
@@ -103,10 +112,14 @@ class DownloadQueue(QObject):
                                  for item in self.items):
                 continue
             request = deepcopy(options)
+            request.pop("youtube_session", None)
             request.update(url=entry["url"], force=force)
-            self.items.append({"id": uuid4().hex, "title": entry.get("title") or entry["url"],
+            item_id = uuid4().hex
+            self.items.append({"id": item_id, "title": entry.get("title") or entry["url"],
                                "request": request, "state": "waiting", "message": "Waiting",
                                "imported": False})
+            if youtube_session is not None:
+                self._youtube_sessions[item_id] = dict(youtube_session)
             added += 1
         self._save()
         self._schedule_timer.start(0)
@@ -136,12 +149,14 @@ class DownloadQueue(QObject):
     def _start(self, item, action):
         request = deepcopy(item["request"])
         request["action"] = action
+        if action != "lyrics" and item["id"] in self._youtube_sessions:
+            request["youtube_session"] = self._youtube_sessions[item["id"]]
         item.update(state="preparing" if action == "preview" else "downloading", message=action.title())
         job = self.job_factory(request, self)
         self.jobs[item["id"]] = job
         job.event_received.connect(lambda event: self._event(item, event))
         job.succeeded.connect(lambda result: self._success(item, action, result))
-        job.failed.connect(lambda message: self._fail(item, message))
+        job.failed.connect(lambda message: self._fail(item, message, used_youtube_session="youtube_session" in request))
         job.cancelled.connect(lambda: item.update(state="cancelled", message="Cancelled"))
         job.finished.connect(lambda: self._finished(item, job))
         self._save()
@@ -222,16 +237,26 @@ class DownloadQueue(QObject):
             except OSError as error:
                 item["details"] = "Could not save download history: " + str(error)
 
-    def _fail(self, item, message):
-        item.update(state="failed", message=str(message), details=str(message))
+    def _fail(self, item, message, *, used_youtube_session=False):
+        details = str(message)
+        if is_youtube_age_restriction(details):
+            if used_youtube_session:
+                message = "YouTube reported an age restriction with the selected session. " + YOUTUBE_AGE_SESSION_HINT
+            else:
+                message = "YouTube reported an age restriction. Select this track and choose Retry with YouTube session…"
+            details = f"{message}\n\n{details}"
+        item.update(state="failed", message=str(message), details=details)
 
     def _finished(self, item, job):
         self.jobs.pop(item["id"], None)
+        if item["state"] == "failed" and getattr(job, "nightly_candidate", False) and not self.stopping:
+            self.nightly_suggested.emit()
         job.deleteLater()
         action = item.pop("next_action", None)
         if action and item["state"] != "cancelled" and not self.stopping:
             self._start(item, action)
         else:
+            self._youtube_sessions.pop(item["id"], None)
             self._import_ready()
             self._save()
         if not self.stopping:
@@ -260,6 +285,7 @@ class DownloadQueue(QObject):
         for item in self.items:
             if item["id"] in ids and item["state"] not in TERMINAL:
                 item.update(state="cancelled", message="Cancelled")
+                self._youtube_sessions.pop(item["id"], None)
                 job = self.jobs.get(item["id"])
                 if job:
                     job.cancel()
@@ -273,6 +299,13 @@ class DownloadQueue(QObject):
         self._save()
         self.pump()
 
+    def retry_with_youtube_session(self, item, source):
+        if item["state"] != "failed" or item["id"] in self.jobs or item not in self.items:
+            return
+        validate_youtube_session_url(item["request"]["url"])
+        self._youtube_sessions[item["id"]] = dict(source)
+        self.retry({item["id"]})
+
     def remove(self, ids):
         self.items = [item for item in self.items if item["id"] not in ids or item["id"] in self.jobs
                       or (item["state"] == "completed" and not item.get("imported"))]
@@ -284,9 +317,13 @@ class DownloadQueue(QObject):
         self.stopping = True
         self._schedule_timer.stop()
         interrupted = set(self.jobs)
+        authenticated = set(self._youtube_sessions)
         for job in list(self.jobs.values()):
             job.shutdown()
         for item in self.items:
-            if item["state"] not in TERMINAL or item["id"] in interrupted:
+            if item["id"] in authenticated:
+                item.update(state="failed", message=SESSION_RETRY, details=SESSION_RETRY)
+            elif item["state"] not in TERMINAL or item["id"] in interrupted:
                 item.update(state="waiting", message="Interrupted; ready to restart.")
+        self._youtube_sessions.clear()
         self._save()

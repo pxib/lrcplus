@@ -12,6 +12,19 @@ from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 from plugins.community.ytdlp_import.worker import PREFIX
 
 
+YOUTUBE_AGE_SESSION_HINT = (
+    "If the video already plays in the selected browser profile, YouTube may still restrict the yt-dlp request. "
+    "If YouTube asks for age verification in the browser, complete it there."
+)
+
+
+def is_youtube_age_restriction(message):
+    error = str(message).casefold().removeprefix("error: ")
+    return error.startswith("[youtube]") and any(reason in error for reason in (
+        "age-restricted", "age restricted", "age-verification", "age verification", "confirm your age",
+    ))
+
+
 class _WindowsJob:
     """Own only this worker's process tree; closing the handle stops it all."""
 
@@ -99,9 +112,13 @@ class ImportJob(QObject):
         self._stderr = b""
         self._result = None
         self._error = ""
+        self._challenge_warning = False
+        self._missing_js = False
+        self.nightly_candidate = False
         self._cancelled = False
         self._done = False
         self.stage = None
+        self._session_workspace = None
         self._process_job = None
 
     def start(self):
@@ -112,6 +129,15 @@ class ImportJob(QObject):
                 folder.mkdir(parents=True, exist_ok=True)
                 self.stage = Path(tempfile.mkdtemp(prefix=".lrcplus-import-", dir=folder))
                 self.request.update(folder=str(folder), stage=str(self.stage))
+            if self.request.get("youtube_session", {}).get("kind") == "firefox":
+                # The parent can remove SQLite snapshots even if the worker is killed.
+                self._session_workspace = tempfile.TemporaryDirectory(
+                    prefix="lrcplus-youtube-session-", ignore_cleanup_errors=True,
+                )
+                environment = self.process.processEnvironment()
+                for name in ("TMPDIR", "TEMP", "TMP"):
+                    environment.insert(name, self._session_workspace.name)
+                self.process.setProcessEnvironment(environment)
             self.process.start(command[0], command[1:])
         except (OSError, RuntimeError) as error:
             self._error = str(error)
@@ -151,11 +177,37 @@ class ImportJob(QObject):
             elif event.get("event") == "error":
                 self._error = str(event.get("message", "Download failed."))
             elif not self._cancelled:
+                if event.get("event") == "log":
+                    self._read_extractor_warning(str(event.get("message", "")))
                 self.event_received.emit(event)
         if len(self._buffer) > 4_000_000:
             self._buffer = b""
             self._error = "The downloader returned an oversized response."
             self.process.kill()
+
+    def _read_extractor_warning(self, message):
+        warning = message.casefold().removeprefix("warning: ")
+        if not warning.startswith("[youtube]"):
+            return
+        self._challenge_warning |= any(text in warning for text in (
+            "signature solving failed", "n challenge solving failed", "nsig extraction failed",
+        ))
+        self._missing_js |= ("no supported javascript runtime" in warning
+                             or ("challenge solver script" in warning and "were skipped" in warning))
+
+    def _failed_extraction(self):
+        error = self._error.casefold().removeprefix("error: ")
+        if not error.startswith("[youtube]") or self._missing_js:
+            return False
+        description = error.removeprefix("[youtube]").strip()
+        extractor_errors = ("unable to extract", "signature extraction failed", "signature solving failed",
+                            "nsig extraction failed", "n challenge solving failed")
+        if self._challenge_warning:
+            extractor_errors += ("requested format is not available",)
+        return (
+            description.startswith(extractor_errors)
+            or description.partition(": ")[2].startswith(extractor_errors)
+        )
 
     def _read_error(self):
         self._stderr = (self._stderr + bytes(self.process.readAllStandardError()))[-8000:]
@@ -190,6 +242,9 @@ class ImportJob(QObject):
         if self._process_job is not None:
             self._process_job.close()
             self._process_job = None
+        if self._session_workspace is not None:
+            self._session_workspace.cleanup()
+            self._session_workspace = None
         if self.stage is not None:
             stage = self.stage.resolve()
             folder = Path(self.request["folder"]).resolve()
@@ -209,6 +264,7 @@ class ImportJob(QObject):
         elif exit_code == 0 and isinstance(self._result, dict):
             self.succeeded.emit(self._result)
         else:
+            self.nightly_candidate = self.request["action"] in {"download", "preview"} and self._failed_extraction()
             detail = self._error or self._stderr.decode("utf-8", "replace").strip()[-2000:]
             self.failed.emit(detail or f"The downloader exited without a result (code {exit_code}).")
         self.finished.emit()

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, Signal, Qt
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy, QTest
 
 from plugins.community.ytdlp_import.queue import DownloadQueue
 from plugins.community.ytdlp_import.dialog import ImportDialog
@@ -130,6 +130,110 @@ def test_stop_starting_cancel_retry_and_remove(queue):
     assert queue.items[0]["state"] == "cancelled"
     queue.remove({first})
     assert all(item["id"] != first for item in queue.items)
+
+
+def test_queue_suggests_nightly_after_flagged_download_failure(queue):
+    add(queue, count=2)
+    queue.set_paused(False)
+    flagged = prepared(queue, 0)
+    ordinary = prepared(queue, 1)
+    suggested = QSignalSpy(queue.nightly_suggested)
+
+    flagged.nightly_candidate = True
+    flagged.fail("Unable to extract player response")
+    ordinary.fail("Network timeout")
+
+    assert suggested.count() == 1
+    assert [(item["state"], item["message"]) for item in queue.items] == [
+        ("failed", "Unable to extract player response"), ("failed", "Network timeout"),
+    ]
+
+
+def test_youtube_session_stays_with_one_track_and_clears_when_restored(queue, tmp_path):
+    source = {"kind": "firefox", "path": str(tmp_path / "Selected profile")}
+    url = "https://www.youtube.com/watch?v=abcdefghijk"
+    queue.enqueue([{"url": url}], queue.options, youtube_session=source)
+    add(queue, count=1)
+    queue.set_paused(False)
+    item, ordinary = queue.items
+    assert queue.jobs[item["id"]].request["youtube_session"] == source
+    assert "youtube_session" not in queue.jobs[ordinary["id"]].request
+    assert prepared(queue, 0).request["youtube_session"] == source
+    serialized = queue.api.get_setting("download_queue")
+    assert source["path"] not in str(serialized)
+    assert serialized[0]["state"] == "failed"
+    assert serialized[1]["state"] == "preparing"
+
+    queue.shutdown()
+    restored = DownloadQueue(queue.api, job_factory=Job)
+    try:
+        assert restored.items[0]["state"] == "failed"
+        assert "session cleared" in restored.items[0]["message"]
+        assert restored.items[1]["state"] == "waiting"
+        restored.retry_with_youtube_session(restored.items[0], source)
+        restored.set_paused(False)
+        authenticated_job = restored.jobs[item["id"]]
+        assert authenticated_job.request["youtube_session"] == source
+        authenticated_job.fail("Sign-in expired")
+        restored.retry({item["id"]})
+        assert "youtube_session" not in restored.jobs[item["id"]].request
+    finally:
+        restored.shutdown()
+        restored.deleteLater()
+
+
+def test_importer_can_queue_and_retry_with_a_user_selected_youtube_profile(queue, tmp_path, monkeypatch):
+    from plugins.community.ytdlp_import import session_dialog
+
+    profile = str(tmp_path / "LibreWolf profile")
+    url = "https://www.youtube.com/watch?v=abcdefghijk&rco=1"
+    error = "ERROR: [youtube] abcdefghijk: Sorry, this content is age-restricted. This video is age-restricted and only available on YouTube"
+
+    def choose_profile(dialog):
+        dialog.path.setText(profile)
+        dialog.test.click()
+        assert dialog._job.request["url"] == url
+        assert dialog._job.request["youtube_session"] == {"kind": "firefox", "path": profile}
+        dialog._job.fail(error)
+        assert error in dialog.status.text()
+        assert "video already plays" in dialog.status.text()
+        dialog.use.click()
+        return dialog.result()
+
+    monkeypatch.setattr(session_dialog, "ImportJob", Job)
+    monkeypatch.setattr(session_dialog.YouTubeSessionDialog, "exec", choose_profile)
+    dialog = ImportDialog(queue.api, dict(DEFAULTS, download_folder=str(tmp_path)), download_queue=queue)
+    try:
+        dialog.url.setText(url)
+        action = next(action for action in dialog.actions_button.menu().actions()
+                      if action.text() == "Download with YouTube session…")
+        action.trigger()
+        queue.pump()
+        item = queue.items[0]
+        assert dialog.tabs.currentWidget() is dialog.queue_view
+        job = queue.jobs[item["id"]]
+        assert job.request["url"] == url
+        assert job.request["youtube_session"] == {"kind": "firefox", "path": profile}
+        job.fail(error)
+        assert "video already plays" in item["message"]
+        assert error in item["details"]
+        dialog.queue_view.table.topLevelItem(0).setSelected(True)
+        assert not dialog.queue_view.retry_session.isHidden()
+        dialog.queue_view.retry_session.click()
+        assert queue.jobs[item["id"]].request["youtube_session"]["path"] == profile
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_anonymous_age_restriction_points_to_session_retry(queue):
+    queue.enqueue([{"url": "https://www.youtube.com/watch?v=abcdefghijk"}], queue.options)
+    queue.pump()
+    item = queue.items[0]
+    error = "ERROR: [youtube] abcdefghijk: This video is age-restricted and only available on YouTube"
+    queue.jobs[item["id"]].fail(error)
+    assert "Retry with YouTube session" in item["message"]
+    assert error in item["details"]
 
 
 def test_shutdown_restores_running_and_waiting_without_autostart(queue):
@@ -322,7 +426,7 @@ def test_import_window_reveals_options_and_actions_when_relevant(queue, qapp, tm
     assert dialog.download_button.isHidden()
     assert dialog.cancel_button.isHidden()
     assert [action.text() for action in dialog.actions_button.menu().actions() if not action.isSeparator()] == [
-        "Load playlist", "Paste batch", "Check setup",
+        "Load playlist", "Paste batch", "Download with YouTube session…", "Check setup",
     ]
     dialog.show()
     qapp.processEvents()

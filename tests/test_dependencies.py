@@ -2,6 +2,7 @@ import hashlib
 import json
 import sys
 import zipfile
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -109,6 +110,46 @@ def test_install_remove_preserves_shared_dependencies_and_requires_restart(offli
     manager.remove("lp-test-beta")
     assert manager.state() == {"environment": None, "requirements": {}}
     assert manager.status("lp-test-beta")["state"] == "missing"
+
+
+def test_yt_dlp_build_channels_switch_and_survive_dependency_rebuilds(offline_manager, monkeypatch):
+    manager = offline_manager
+    manager.configure([_plugin("yt-dlp", "yt-dlp[default]>=2026.3.3"), _plugin("lp-test-alpha")])
+    wheels = manager.root.parent / "wheels"
+    stable = _wheel(wheels, "yt-dlp", version="2026.4.1", extras=["default"],
+                    requires=["lp-test-support; extra == 'default'"], code="import lp_test_support\n")
+    nightly = _wheel(wheels, "yt-dlp", version="2026.3.5.dev1", extras=["default"],
+                     requires=["lp-test-support; extra == 'default'"], code="import lp_test_support\n")
+    files = [
+        {"filename": stable.name},
+        {"filename": nightly.name},
+        {"filename": "yt_dlp-2026.5.1.dev1-py3-none-any.whl", "requires-python": ">=99"},
+        {"filename": "yt_dlp-2026.6.1.dev1-py3-none-any.whl", "yanked": "bad build"},
+        {"filename": "yt_dlp-2026.3.3.dev1-py3-none-any.whl"},
+    ]
+
+    def package_index(request, *, timeout):
+        assert request.full_url == "https://pypi.org/simple/yt-dlp/"
+        return BytesIO(json.dumps({"files": files}).encode())
+
+    monkeypatch.setattr(dependencies.urllib.request, "urlopen", package_index)
+    manager.install("yt-dlp")
+    assert manager.status("yt-dlp")["channel"] == "stable"
+    manager.install("yt-dlp", channel="nightly")
+    assert manager.status("yt-dlp")["text"] == "Installed (Nightly 2026.3.5.dev1) — restart required"
+    manager.install("lp-test-alpha")
+    assert manager.status("yt-dlp")["channel"] == "nightly"
+    manager.check("yt-dlp")
+
+    nightly_state = manager.state()
+    files.remove({"filename": nightly.name})
+    with pytest.raises(DependencyError, match="No compatible yt-dlp nightly build"):
+        manager.install("yt-dlp", channel="nightly")
+    assert manager.state() == nightly_state
+
+    manager.install("yt-dlp", channel="stable")
+    assert manager.status("yt-dlp")["version"] == "2026.4.1"
+    assert manager.status("lp-test-alpha")["state"] == "available"
 
 
 @pytest.mark.exhaustive
@@ -435,12 +476,13 @@ def test_checked_dependencies_install_as_queue_and_continue_after_failure(qapp, 
     manager = PluginManager()
     manager.dependency_manager.configure([
         _plugin("lp-test-alpha"), _plugin("lp-test-beta"),
+        _plugin("yt-dlp"),
         _plugin("packaging", "packaging>=24", "packaging"),
     ])
     calls = []
 
-    def install(name, log):
-        calls.append(("library", name))
+    def install(name, log, *, channel=None):
+        calls.append(("library", name, channel))
         if name == "lp-test-alpha":
             raise DependencyError("test install failure")
         log("test install completed")
@@ -455,19 +497,24 @@ def test_checked_dependencies_install_as_queue_and_continue_after_failure(qapp, 
         assert len(widget._checked_items()) == widget.tree.topLevelItemCount()
         widget.refresh()
         assert len(widget._checked_items()) == widget.tree.topLevelItemCount()
+        assert not widget.yt_dlp_channel.isHidden()
+        assert widget.yt_dlp_channel.currentData() == "stable"
+        widget.yt_dlp_channel.setCurrentIndex(widget.yt_dlp_channel.findData("nightly"))
         widget._buttons["install"].click()
         assert widget.busy
         assert not widget.tree.isEnabled()
         assert not widget.select_all.isEnabled()
+        assert not widget.yt_dlp_channel.isEnabled()
         deadline = time.monotonic() + 5
         while widget.busy and time.monotonic() < deadline:
             qapp.processEvents()
             time.sleep(0.005)
         assert not widget.busy
-        assert ("library", "lp-test-alpha") in calls
-        assert ("library", "lp-test-beta") in calls
+        assert ("library", "lp-test-alpha", None) in calls
+        assert ("library", "lp-test-beta", None) in calls
+        assert ("library", "yt-dlp", "nightly") in calls
         assert ("tool", "ffmpeg") in calls
-        assert ("library", "packaging") not in calls
+        assert ("library", "packaging", None) not in calls
         assert ("tool", "deno") not in calls
         assert "1 failed" in widget.status.text()
         assert "lp-test-alpha: test install failure" in widget.details.toPlainText()
@@ -475,6 +522,18 @@ def test_checked_dependencies_install_as_queue_and_continue_after_failure(qapp, 
         assert widget._buttons["install"].isEnabled()
         widget.clear_selection.click()
         assert widget._checked_items() == []
+        yt_dlp = next(widget.tree.topLevelItem(i) for i in range(widget.tree.topLevelItemCount())
+                      if widget.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole) == "yt-dlp")
+        widget.tree.setCurrentItem(yt_dlp)
+        assert not widget.yt_dlp_channel.isHidden()
+        widget.yt_dlp_channel.setCurrentIndex(widget.yt_dlp_channel.findData("stable"))
+        widget._buttons["install"].click()
+        deadline = time.monotonic() + 5
+        while widget.busy and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.005)
+        assert not widget.busy
+        assert calls[-1] == ("library", "yt-dlp", "stable")
     finally:
         if widget._job is not None:
             widget._job.wait()

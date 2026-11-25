@@ -12,12 +12,12 @@ import traceback
 
 from PySide6.QtCore import QSignalBlocker, QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMessageBox,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMessageBox,
     QHeaderView, QPlainTextEdit, QProgressBar, QPushButton, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
-from core.dependencies import DependencyError
+from core.dependencies import DependencyError, YTDLP_CHANNELS
 from core.dependency_tasks import DependencyCancelled, cancellation_scope, diagnostic, diagnostic_scope
 from core.external_tools import ExternalToolManager, TOOLS
 from core.settings import load_all_settings, save_all_settings
@@ -49,10 +49,11 @@ class _DependencyJob(QThread):
     cancelled = Signal()
     diagnostic_message = Signal(str)
 
-    def __init__(self, manager, action, name, parent=None, kind="library"):
+    def __init__(self, manager, action, name, parent=None, kind="library", *, channel=None):
         super().__init__(parent)
         self.manager, self.action, self.name = manager, action, name
         self.kind = kind
+        self.channel = channel
         self._diagnostic_lines = deque(maxlen=5000)
         self._diagnostic_lock = threading.Lock()
         self._last_diagnostic_emit = 0.0
@@ -96,6 +97,8 @@ class _DependencyJob(QThread):
         if self.action == "check":
             result = self.manager.check(self.name)
             self.message.emit(result if self.kind == "tool" else f"{self.name}: import check passed.")
+        elif self.channel is not None:
+            self.manager.install(self.name, self.message.emit, channel=self.channel)
         else:
             getattr(self.manager, self.action)(self.name, self.message.emit)
 
@@ -113,6 +116,7 @@ class DependencyManagerWidget(QWidget):
         self._cancel_requested = False
         self._checks = {}
         self._buttons = {}
+        self._installed_yt_dlp_channel = None
         layout = QVBoxLayout(self)
         notice = QLabel(
             "Choose the features you want, then click Install / Repair. "
@@ -140,6 +144,15 @@ class DependencyManagerWidget(QWidget):
         selection.addStretch()
         layout.addLayout(selection)
         actions = QHBoxLayout()
+        self.yt_dlp_channel = QComboBox()
+        for channel in YTDLP_CHANNELS:
+            self.yt_dlp_channel.addItem(channel.title(), channel)
+        self.yt_dlp_channel.setToolTip("Nightly includes newer site fixes and may introduce regressions.")
+        self.yt_dlp_channel_label = QLabel("yt-dlp build")
+        self.yt_dlp_channel_label.setBuddy(self.yt_dlp_channel)
+        for widget in (self.yt_dlp_channel_label, self.yt_dlp_channel):
+            widget.hide()
+            actions.addWidget(widget)
         for label, action in (("Install / Repair", "install"), ("Check", "check"), ("Remove", "remove")):
             button = QPushButton(label)
             button.clicked.connect(lambda _checked=False, a=action: self._start_selected(a))
@@ -195,6 +208,15 @@ class DependencyManagerWidget(QWidget):
     def busy(self):
         return self._job is not None
 
+    def select_yt_dlp_build(self, channel):
+        for index in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(index)
+            if (item.data(0, Qt.ItemDataRole.UserRole), item.data(0, Qt.ItemDataRole.UserRole + 1)) == ("yt-dlp", "library"):
+                self.tree.setCurrentItem(item)
+                self.tree.scrollToItem(item)
+                self.yt_dlp_channel.setCurrentIndex(self.yt_dlp_channel.findData(channel))
+                return
+
     def refresh(self):
         # Rebuilding checked rows must not rescan every package on each item change.
         signals = QSignalBlocker(self.tree)
@@ -210,6 +232,11 @@ class DependencyManagerWidget(QWidget):
             state = self.manager.state() if self.manager else None
             for name, entry in sorted(self.manager.catalog.items() if self.manager else []):
                 status = self.manager.status(name, state=state)
+                if name == "yt-dlp":
+                    channel = status.get("channel") or "stable"
+                    if channel != self._installed_yt_dlp_channel:
+                        self._installed_yt_dlp_channel = channel
+                        self.yt_dlp_channel.setCurrentIndex(self.yt_dlp_channel.findData(channel))
                 check = self._checks.get(("library", name))
                 text = status["text"]
                 if check:
@@ -259,8 +286,14 @@ class DependencyManagerWidget(QWidget):
             button.setEnabled(False)
         item = self.tree.currentItem()
         if self.busy or item is None:
+            if not self.busy:
+                self._show_yt_dlp_channel(False)
             return
         checked = self._checked_items()
+        current = (item.data(0, Qt.ItemDataRole.UserRole), item.data(0, Qt.ItemDataRole.UserRole + 1))
+        self._show_yt_dlp_channel(
+            ("yt-dlp", "library") in (checked or [current]) and self._can_act("install", "yt-dlp", "library")
+        )
         if checked:
             for action, button in self._buttons.items():
                 count = sum(self._can_act(action, name, kind) for name, kind in checked)
@@ -272,8 +305,8 @@ class DependencyManagerWidget(QWidget):
                 "Restart after changing Python libraries."
             )
             return
-        name = item.data(0, Qt.ItemDataRole.UserRole)
-        if item.data(0, Qt.ItemDataRole.UserRole + 1) == "tool":
+        name, kind = current
+        if kind == "tool":
             status = self.tools.status(name)
             self._buttons["install"].setEnabled(self.tools.supported(name))
             self._buttons["install"].setToolTip("Download the latest verified release for LRCPlus.")
@@ -315,6 +348,11 @@ class DependencyManagerWidget(QWidget):
                 )
         except DependencyError as error:
             self.action_hint.setText(str(error))
+
+    def _show_yt_dlp_channel(self, visible):
+        self.yt_dlp_channel_label.setVisible(visible)
+        self.yt_dlp_channel.setVisible(visible)
+        self.yt_dlp_channel.setEnabled(visible)
 
     def _checked_items(self):
         return [
@@ -375,7 +413,8 @@ class DependencyManagerWidget(QWidget):
         self._log(self.status.text())
         self._checks.pop((kind, name), None)
         manager = self.tools if kind == "tool" else self.manager
-        self._job = _DependencyJob(manager, action, name, self, kind=kind)
+        channel = self.yt_dlp_channel.currentData() if (action, name, kind) == ("install", "yt-dlp", "library") else None
+        self._job = _DependencyJob(manager, action, name, self, kind=kind, channel=channel)
         self._job.message.connect(self._message)
         self._job.diagnostic_message.connect(self._log)
         self._job.failed.connect(lambda error: self._failed(action, name, error, kind))
@@ -387,6 +426,7 @@ class DependencyManagerWidget(QWidget):
         self.tree.setEnabled(False)
         self.select_all.setEnabled(False)
         self.clear_selection.setEnabled(False)
+        self.yt_dlp_channel.setEnabled(False)
         for button in self._buttons.values():
             button.setEnabled(False)
         self._job.start()

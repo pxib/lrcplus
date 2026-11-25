@@ -2,17 +2,21 @@
 from __future__ import annotations
 
 import base64
+from contextlib import closing, contextmanager, redirect_stderr, redirect_stdout
 from html import unescape
+from io import StringIO
 import json
 from itertools import islice
 import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
 PREFIX = "LRCPLUS_YTDLP "
@@ -45,6 +49,129 @@ def validate_url(value):
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("URLs containing login credentials are not supported.")
     return value
+
+
+def validate_youtube_session_url(value):
+    url = validate_url(value)
+    parsed = urlsplit(url)
+    host, path = parsed.hostname, parsed.path.strip("/")
+    if host == "youtu.be":
+        video_id = path
+    elif host in {"youtube.com", "www.youtube.com", "music.youtube.com", "m.youtube.com"}:
+        if path == "watch":
+            video_id = parse_qs(parsed.query).get("v", [""])[0]
+        else:
+            kind, _, video_id = path.partition("/")
+            if kind not in {"shorts", "live"}:
+                video_id = ""
+    else:
+        video_id = ""
+    if parsed.scheme != "https" or parsed.port not in {None, 443} or not re.fullmatch(r"[\w-]{11}", video_id, re.ASCII):
+        raise ValueError("Choose one YouTube video with an HTTPS link to use a session.")
+    return url
+
+
+def _snapshot_browser_cookies(source, destination):
+    # A SQLite backup includes committed WAL changes from an open browser.
+    deadline = time.monotonic() + 10
+
+    def check_progress(status, _remaining, _total):
+        if status != sqlite3.SQLITE_DONE and time.monotonic() >= deadline:
+            raise TimeoutError("Timed out reading the browser's cookie database.")
+
+    uri = source.as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True, timeout=2)) as database:
+        with closing(sqlite3.connect(destination)) as snapshot:
+            database.backup(snapshot, pages=256, progress=check_progress)
+
+
+def _youtube_session_path(source):
+    path = Path(source["path"]).expanduser()
+    if source["kind"] == "firefox":
+        if not path.is_absolute() or not (path / "cookies.sqlite").is_file():
+            raise ValueError("Choose the browser’s profile folder containing cookies.sqlite. Find it in about:support.")
+    elif source["kind"] == "file":
+        if not path.is_absolute() or not path.is_file():
+            raise ValueError("Choose an exported YouTube cookies.txt file.")
+    else:
+        raise ValueError("Choose a Firefox-compatible profile or a cookies.txt file.")
+    return path
+
+
+def _has_youtube_login(jar):
+    names = {cookie.name for cookie in jar.get_cookies_for_url("https://www.youtube.com/") if cookie.value}
+    return "LOGIN_INFO" in names and bool(names & {"SAPISID", "__Secure-1PAPISID", "__Secure-3PAPISID"})
+
+
+def _cookie_file_jar(path):
+    from yt_dlp.cookies import YoutubeDLCookieJar, load_cookies
+
+    filtered = YoutubeDLCookieJar()
+    for cookie in load_cookies(str(path), None, None):
+        domain = cookie.domain.lstrip(".").lower()
+        if (domain == "youtube.com" or domain.endswith(".youtube.com")) and not cookie.is_expired():
+            filtered.set_cookie(cookie)
+    return filtered
+
+
+def _prepare_firefox_session(ydl, profile):
+    from yt_dlp.cookies import load_cookies
+
+    try:
+        if _has_youtube_login(ydl.cookiejar):
+            return
+    except Exception:
+        # The native reader may fail to open an in-use database.
+        pass
+    with TemporaryDirectory(prefix="lrcplus-browser-session-") as folder:
+        _snapshot_browser_cookies(profile / "cookies.sqlite", Path(folder) / "cookies.sqlite")
+        ydl.cookiejar = load_cookies(None, ("firefox", folder, None, "none"), None)
+
+
+def _prepare_youtube_session(ydl, kind, path):
+    try:
+        # yt-dlp can include profile paths or malformed cookie lines in diagnostics.
+        with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+            if kind == "firefox":
+                _prepare_firefox_session(ydl, path)
+            else:
+                ydl.cookiejar = _cookie_file_jar(path)
+    except Exception:
+        if kind == "firefox":
+            raise ValueError("Could not read the browser profile. Choose a Firefox-compatible profile or a cookies.txt file.") from None
+        raise ValueError("Could not read the cookie file. Choose a YouTube export in Netscape cookies.txt format.") from None
+    if not _has_youtube_login(ydl.cookiejar):
+        raise ValueError("No usable YouTube sign-in cookies found. Sign in again and choose the signed-in profile or a fresh export.")
+
+
+@contextmanager
+def _video_downloader(opts, url, session):
+    from yt_dlp import YoutubeDL
+
+    path = None
+    if session is not None:
+        validate_youtube_session_url(url)
+        path = _youtube_session_path(session)
+        if session["kind"] == "firefox":
+            opts = dict(opts, cookiesfrombrowser=("firefox", str(path), None, "none"))
+    with YoutubeDL(opts) as ydl:
+        if path is not None:
+            _prepare_youtube_session(ydl, session["kind"], path)
+        yield ydl
+
+
+def check_youtube_session(request):
+    from yt_dlp.version import __version__
+
+    url = validate_youtube_session_url(request["url"])
+    logger = _SessionCheckLogger()
+    opts = dict(options(request["config"]), logger=logger, verbose=True)
+    with _video_downloader(opts, url, request["youtube_session"]) as ydl:
+        try:
+            single_track(ydl.extract_info(url, download=False))
+        except Exception as error:
+            raise ValueError(f"{error}\n\nyt-dlp {__version__}. {logger.summary()}") from None
+    return {"message": "yt-dlp could read this video with the selected YouTube session."}
 
 
 def _spotify_url(value, kind):
@@ -194,6 +321,32 @@ class Logger:
         emit("log", message=str(message)[:2000])
 
 
+class _SessionCheckLogger:
+    """Keep only the session signals the dialog can display without credentials."""
+
+    def __init__(self):
+        self.account_cookies_detected = False
+        self.session_invalidated = False
+        self.authenticated_playback_restricted = False
+
+    def debug(self, message):
+        message = str(message).casefold()
+        self.account_cookies_detected |= "found youtube account cookies" in message
+        self.session_invalidated |= "provided youtube account cookies are no longer valid" in message
+        self.authenticated_playback_restricted |= "youtube is requiring account age-verification" in message
+
+    info = warning = error = debug
+
+    def summary(self):
+        if self.session_invalidated:
+            return "yt-dlp reported that the YouTube session cookies became invalid during the check."
+        if self.authenticated_playback_restricted:
+            return "yt-dlp recognized the account cookies locally. A YouTube player response was still restricted."
+        if self.account_cookies_detected:
+            return "yt-dlp recognized the account cookies locally. YouTube’s acceptance of the session is unconfirmed."
+        return "yt-dlp did not report whether it recognized the account cookies."
+
+
 def options(config):
     tools = tool_paths(config)
     values = {
@@ -272,10 +425,8 @@ def validate_subtitle(info, request):
         raise ValueError("The selected subtitles are no longer available. Preview the URL again.")
 
 
-def preview(url, config, *, musicbrainz_not_before=0):
-    from yt_dlp import YoutubeDL
-
-    with YoutubeDL(options(config)) as ydl:
+def preview(url, config, *, musicbrainz_not_before=0, youtube_session=None):
+    with _video_downloader(options(config), url, youtube_session) as ydl:
         info = single_track(ydl.extract_info(validate_url(url), download=False))
         result = metadata(info)
         result["audio_formats"] = preview_audio_formats(info)
@@ -535,8 +686,6 @@ def find_existing_audio_lyrics(request):
 
 
 def download_subtitles(request):
-    from yt_dlp import YoutubeDL
-
     stage, destination = checked_stage(request)
     audio = Path(request["audio_path"]).resolve()
     if audio.parent != destination or not audio.is_file() or audio.suffix.lower() not in {".m4a", ".mp3"}:
@@ -546,7 +695,7 @@ def download_subtitles(request):
     opts = options(request["config"])
     opts.update(subtitle_options(request))
     opts.update(skip_download=True, outtmpl=str(stage / "captions.%(ext)s"))
-    with YoutubeDL(opts) as ydl:
+    with _video_downloader(opts, request["url"], request.get("youtube_session")) as ydl:
         info = single_track(ydl.extract_info(validate_url(request["url"]), download=False))
         if identity(info) != request["identity"]:
             raise ValueError("The URL now points to a different track. Preview it again.")
@@ -562,7 +711,6 @@ def download_subtitles(request):
 
 
 def download(request):
-    from yt_dlp import YoutubeDL
     from yt_dlp.postprocessor import PostProcessor
 
     config = request["config"]
@@ -605,7 +753,7 @@ def download(request):
             {"key": "EmbedThumbnail"},
         ],
     })
-    with YoutubeDL(opts) as ydl:
+    with _video_downloader(opts, request["url"], request.get("youtube_session")) as ydl:
         info = single_track(ydl.extract_info(validate_url(request["url"]), download=False))
         if identity(info) != request["identity"]:
             raise ValueError("The URL now points to a different track. Preview it again before downloading.")
@@ -685,7 +833,8 @@ def main():
             result = playlist(request["url"], request["config"], start=request.get("start", 1))
         elif action == "preview":
             result = preview(request["url"], request["config"],
-                             musicbrainz_not_before=request.get("musicbrainz_not_before", 0))
+                             musicbrainz_not_before=request.get("musicbrainz_not_before", 0),
+                             youtube_session=request.get("youtube_session"))
         elif action == "download":
             result = download(request)
         elif action == "subtitles":
@@ -694,6 +843,8 @@ def main():
             result = find_existing_audio_lyrics(request)
         elif action == "check":
             result = check_setup(request["config"])
+        elif action == "check_youtube_session":
+            result = check_youtube_session(request)
         else:
             raise ValueError("Unknown downloader operation.")
         emit("result", result=result)

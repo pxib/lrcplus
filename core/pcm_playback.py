@@ -50,6 +50,7 @@ class PcmPlayback(QObject):
         self._pending = deque()
         self._queued_bytes = 0
         self._output_progress_us = 0
+        self._output_sample_rate = 0
         self._end_of_stream = False
         self._has_input = False
         self._input_expected = False
@@ -87,6 +88,7 @@ class PcmPlayback(QObject):
         self._pending.clear()
         self._queued_bytes = 0
         self._output_progress_us = 0
+        self._output_sample_rate = 0
         self._end_of_stream = False
         self._has_input = False
         self._input_expected = False
@@ -106,6 +108,10 @@ class PcmPlayback(QObject):
             if self._closed or not self._controls.enabled:
                 return None
             return self._generation, self._output_progress_us / 1000, self._controls.playing
+
+    def output_sample_rate(self):
+        with self._lock:
+            return self._output_sample_rate
 
     def configure(self, device, speed, shift, gain, *, enabled, playing):
         with self._lock:
@@ -505,4 +511,8 @@ class _PlaybackEngine(QObject):
             self._written_bytes += written
             if written and not self._active:
                 self._active = True
-                self._mailbox._route.emit(self._generation)
+                mailbox = self._mailbox
+                with mailbox._lock:
+                    if self._generation == mailbox._generation:
+                        mailbox._output_sample_rate = audio_format.sampleRate()
+                mailbox._route.emit(self._generation)

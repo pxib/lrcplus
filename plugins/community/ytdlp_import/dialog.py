@@ -12,8 +12,13 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QStyle, QStyleOptionTabWidgetFrame, QTabWidget, QToolButton, QWidget,
 )
 
-from plugins.community.ytdlp_import.job import ImportJob
-from plugins.community.ytdlp_import.worker import spotify_playlist_url, spotify_track_url, validate_url
+from core.dependencies import DependencyError
+from plugins.community.ytdlp_import.job import ImportJob, is_youtube_age_restriction
+from plugins.community.ytdlp_import.session_dialog import YouTubeSessionDialog
+from plugins.community.ytdlp_import.worker import (
+    spotify_playlist_url, spotify_track_url, validate_url, validate_youtube_session_url,
+)
+from ui.dependency_settings import DependencyManagerDialog
 from ui.search_history import SearchHistoryLineEdit
 from plugins.community.ytdlp_import.queue_view import DownloadQueueView
 
@@ -96,10 +101,12 @@ class _ImportTabs(QTabWidget):
 class ImportDialog(QDialog):
     _artwork_available_at = 0.0
 
-    def __init__(self, api, settings, parent=None, *, download_queue=None):
+    def __init__(self, api, settings, parent=None, *, download_queue=None, plugin_manager=None):
         super().__init__(parent)
         self.api = api
         self.download_queue = download_queue
+        self.plugin_manager = plugin_manager
+        self._youtube_session_source = None
         self._playlist_url = None
         self._playlist_next = None
         self._spotify_entries = []
@@ -137,6 +144,7 @@ class ImportDialog(QDialog):
         if self.download_queue is not None:
             actions.addAction("Load playlist", self._load_playlist)
             actions.addAction("Paste batch", self._paste_batch)
+            actions.addAction("Download with YouTube session…", self._download_with_youtube_session)
             actions.addSeparator()
         actions.addAction("Check setup", lambda: self._start("check"))
         self.actions_button.setMenu(actions)
@@ -319,7 +327,7 @@ class ImportDialog(QDialog):
             search_page = QWidget()
             layout = QVBoxLayout(search_page)
             self.tabs.addTab(search_page, "Search / Import")
-            self.queue_view = DownloadQueueView(self.download_queue)
+            self.queue_view = DownloadQueueView(self.download_queue, retry_with_session=self._retry_with_youtube_session)
             self.tabs.addTab(self.queue_view, "Downloads")
         else:
             layout = outer
@@ -363,7 +371,24 @@ class ImportDialog(QDialog):
         layout.addWidget(self.details)
         layout.addLayout(buttons)
         layout.addWidget(self.options_panel)
+        self.nightly_prompt = QWidget()
+        nightly_row = QHBoxLayout(self.nightly_prompt)
+        nightly_row.setContentsMargins(0, 0, 0, 0)
+        nightly_hint = QLabel("A newer yt-dlp build may fix this download.")
+        nightly_hint.setWordWrap(True)
+        nightly_row.addWidget(nightly_hint, 1)
+        self.try_nightly_button = QPushButton("Try Nightly")
+        self.try_nightly_button.setAutoDefault(False)
+        self.try_nightly_button.clicked.connect(self._open_nightly_setup)
+        nightly_row.addWidget(self.try_nightly_button)
+        dismiss = QPushButton("Dismiss")
+        dismiss.setAutoDefault(False)
+        dismiss.clicked.connect(self.nightly_prompt.hide)
+        nightly_row.addWidget(dismiss)
+        outer.addWidget(self.nightly_prompt)
+        self.nightly_prompt.hide()
         if self.download_queue is not None:
+            self.download_queue.nightly_suggested.connect(self._offer_nightly)
             self.tabs.currentChanged.connect(self.tabs.updateGeometry)
         self._fit_content()
 
@@ -559,9 +584,9 @@ class ImportDialog(QDialog):
                 "subtitle": selected, "subtitles_as_lyrics": self.subtitles_as_lyrics.isChecked(),
                 "add_to_queue": self.add_to_queue.isChecked()}
 
-    def _enqueue_entries(self, entries, *, force=False):
+    def _enqueue_entries(self, entries, *, force=False, youtube_session=None):
         try:
-            count = self.download_queue.enqueue(entries, self._queue_options(), force=force)
+            count = self.download_queue.enqueue(entries, self._queue_options(), force=force, youtube_session=youtube_session)
         except (OSError, ValueError) as error:
             self.status.setText(str(error))
             return False
@@ -576,6 +601,33 @@ class ImportDialog(QDialog):
         self.status.setText(message)
         self.view_downloads_button.setVisible(bool(self.download_queue.items))
         return True
+
+    def _choose_youtube_session(self, url, config):
+        dialog = YouTubeSessionDialog(self, url=url, config=config, source=self._youtube_session_source)
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self._youtube_session_source = dialog.source
+                return dialog.source
+        finally:
+            dialog.deleteLater()
+
+    def _download_with_youtube_session(self):
+        try:
+            url = validate_youtube_session_url(self.url.text())
+        except ValueError as error:
+            self.status.setText(str(error))
+            return
+        source = self._choose_youtube_session(url, self.config)
+        if source is not None and self._enqueue_entries([{"url": url}], youtube_session=source):
+            self.tabs.setCurrentWidget(self.queue_view)
+
+    def _retry_with_youtube_session(self, item):
+        if item is None:
+            return
+        request = item["request"]
+        source = self._choose_youtube_session(request["url"], request["config"])
+        if source is not None:
+            self.download_queue.retry_with_youtube_session(item, source)
 
     def _update_downloads_tab(self):
         queue = self.download_queue
@@ -846,6 +898,8 @@ class ImportDialog(QDialog):
             elif self.use_musicbrainz_cover.isChecked() and self.info.get("musicbrainz_cover"):
                 request["musicbrainz_cover"] = dict(self.info["musicbrainz_cover"], data=self.info["thumbnail"])
         self.details.clear()
+        if action == "download":
+            self.nightly_prompt.hide()
         if action == "preview":
             self._caption_warning = ""
         self._refresh_subtitle_warning()
@@ -1040,7 +1094,39 @@ class ImportDialog(QDialog):
         self.progress.setValue(0)
         self.status.setText(str(message))
         self.details.appendPlainText(str(message))
+        if (self.download_queue is not None and self._last_action == "preview"
+                and is_youtube_age_restriction(message)):
+            self.status.setText("YouTube reported an age restriction. Choose More → Download with YouTube session… to test access.")
         self.retry_button.show()
+
+    def _can_offer_nightly(self):
+        if self.plugin_manager is None:
+            return False
+        manager = self.plugin_manager.dependency_manager
+        try:
+            state = manager.state()
+            status = manager.status("yt-dlp", state=state)
+            if status["source"] != "managed" or status.get("channel") != "stable":
+                return False
+            # Downloads use the environment activated at startup until LRCPlus restarts.
+            if state["environment"] != manager.start_environment:
+                status = manager.status("yt-dlp", state={**state, "environment": manager.start_environment})
+            return status.get("channel") == "stable"
+        except (DependencyError, KeyError):
+            return False
+
+    def _offer_nightly(self):
+        self.nightly_prompt.setVisible(self._can_offer_nightly())
+
+    def _open_nightly_setup(self):
+        if self._can_offer_nightly():
+            dialog = DependencyManagerDialog(self.plugin_manager, self)
+            dialog.dependencies.select_yt_dlp_build("nightly")
+            try:
+                dialog.exec()
+            finally:
+                dialog.deleteLater()
+        self._offer_nightly()
 
     def _finished(self):
         job = self.job
@@ -1055,6 +1141,8 @@ class ImportDialog(QDialog):
             self.progress.setRange(0, 100)
             self.progress.setValue(0)
         if job is not None:
+            if job.request["action"] == "download" and getattr(job, "nightly_candidate", False):
+                self._offer_nightly()
             job.deleteLater()
 
     def _retry(self):

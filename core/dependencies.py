@@ -27,7 +27,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from packaging.requirements import InvalidRequirement, Requirement
-from packaging.utils import canonicalize_name
+from packaging.specifiers import SpecifierSet
+from packaging.tags import sys_tags
+from packaging.utils import InvalidWheelFilename, canonicalize_name, parse_wheel_filename
 from packaging.version import InvalidVersion, Version
 
 from core.settings import get_app_data_dir
@@ -36,6 +38,9 @@ from core.dependency_tasks import check_cancelled, diagnostic, diagnostics_enabl
 
 class DependencyError(RuntimeError):
     pass
+
+
+YTDLP_CHANNELS = ("stable", "nightly")
 
 
 # Fugashi wheels include the MeCab engine; UniDic-lite supplies its dictionary.
@@ -175,6 +180,49 @@ def _distributions(paths):
         if name:
             found.setdefault(canonicalize_name(name), distribution.version)
     return found
+
+
+def _yt_dlp_channel(version):
+    try:
+        parsed = Version(version)
+    except (InvalidVersion, TypeError):
+        return None
+    if parsed.is_devrelease:
+        return "nightly"
+    return None if parsed.is_prerelease else "stable"
+
+
+def _latest_yt_dlp_nightly(constraints):
+    check_cancelled()
+    request = urllib.request.Request(
+        "https://pypi.org/simple/yt-dlp/",
+        headers={"Accept": "application/vnd.pypi.simple.v1+json"},
+    )
+    diagnostic(f"Checking yt-dlp nightly releases: {request.full_url}")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            files = json.load(response)["files"]
+    except (OSError, ValueError, KeyError) as error:
+        raise DependencyError(f"Could not check yt-dlp nightly releases: {error}") from error
+
+    check_cancelled()
+    tags = set(sys_tags())
+    python_version = ".".join(map(str, sys.version_info[:3]))
+    versions = set()
+    for file in files:
+        if file.get("yanked", False) is not False:
+            continue
+        try:
+            name, version, _, wheel_tags = parse_wheel_filename(file["filename"])
+        except InvalidWheelFilename:
+            continue
+        if name == "yt-dlp" and version.is_devrelease and tags.intersection(wheel_tags):
+            if SpecifierSet(file.get("requires-python") or "").contains(python_version):
+                versions.add(version)
+    compatible = [version for version in versions if constraints.contains(version, prereleases=True)]
+    if not compatible:
+        raise DependencyError("No compatible yt-dlp nightly build is available on PyPI.")
+    return max(compatible)
 
 
 def _has_module(name, paths):
@@ -413,15 +461,21 @@ class DependencyManager:
             return {"state": "missing", "text": "Missing", "version": version, "source": "app" if base_module else "managed"}
         if version is None:
             return {"state": "incompatible", "text": "Version could not be verified", "version": None, "source": "app" if base_module else "managed"}
+        channel = _yt_dlp_channel(version) if name == "yt-dlp" else None
+        build = f"{channel.title()} {version}" if channel else version
         try:
-            compatible = all(Requirement(item.requirement).specifier.contains(version) for item in dependencies)
+            compatible = all(Requirement(item.requirement).specifier.contains(
+                version, prereleases=True if channel == "nightly" else None,
+            ) for item in dependencies)
         except InvalidVersion:
             compatible = False
         if not compatible:
-            return {"state": "incompatible", "text": f"Incompatible version ({version})", "version": version, "source": "app" if base_module else "managed"}
+            return {"state": "incompatible", "text": f"Incompatible version ({build})", "version": version,
+                    "source": "app" if base_module else "managed", "channel": channel}
         pending = state["environment"] != self.start_environment
-        text = f"{source} ({version})" + (" — restart required" if pending and not base_module else "")
-        return {"state": "available", "text": text, "version": version, "source": "app" if base_module else "managed"}
+        text = f"{source} ({build})" + (" — restart required" if pending and not base_module else "")
+        return {"state": "available", "text": text, "version": version,
+                "source": "app" if base_module else "managed", "channel": channel}
 
     def plugin_problems(self, plugin):
         if plugin["plugin_id"] in self.catalog_errors:
@@ -442,13 +496,16 @@ class DependencyManager:
         if errors:
             raise DependencyError("\n".join(errors))
 
-    def install(self, name, log=lambda message: None):
-        return self._change(canonicalize_name(name), False, log)
+    def install(self, name, log=lambda message: None, *, channel=None):
+        name = canonicalize_name(name)
+        if channel is not None and (name != "yt-dlp" or channel not in YTDLP_CHANNELS):
+            raise DependencyError("Choose Stable or Nightly for yt-dlp.")
+        return self._change(name, False, log, channel=channel)
 
     def remove(self, name, log=lambda message: None):
         return self._change(canonicalize_name(name), True, log)
 
-    def _change(self, name, remove, log):
+    def _change(self, name, remove, log, *, channel=None):
         check_cancelled()
         diagnostic(f"Dependency registry: {self.root}\nAction: {'remove' if remove else 'install'} {name}")
         if name not in self.catalog:
@@ -466,6 +523,10 @@ class DependencyManager:
             # Refresh constraints for previously selected packages after plugin updates.
             for key in requirements.keys() & self.catalog.keys():
                 requirements[key] = sorted({value for item in self.catalog[key]["dependencies"] for value in (item.requirement, *item.requires)})
+            if "yt-dlp" in requirements and channel is None:
+                previous_site = _site_path(self.root, state)
+                previous_version = _distributions([str(previous_site)]).get("yt-dlp") if previous_site else None
+                channel = _yt_dlp_channel(previous_version) or "stable"
             environment = uuid.uuid4().hex if requirements else None
             directory = self.root / "environments" / environment if environment else None
             try:
@@ -483,6 +544,14 @@ class DependencyManager:
                                 # constraints must name distributions alone.
                                 constraint.extras = set()
                                 pins.append(str(constraint))
+                    if channel == "nightly":
+                        pin_requirements = map(Requirement, (*pins, *requirements["yt-dlp"]))
+                        specifiers = ",".join(str(item.specifier) for item in pin_requirements
+                                              if canonicalize_name(item.name) == "yt-dlp" and item.specifier)
+                        log("Finding the latest compatible yt-dlp nightly build.")
+                        nightly = _latest_yt_dlp_nightly(SpecifierSet(specifiers))
+                        # An exact pin admits prereleases for yt-dlp alone.
+                        pins.append(f"yt-dlp=={nightly}")
                     constraints.write_text("\n".join(pins) + "\n", encoding="utf-8")
                     diagnostic(f"Installation target: {target}\nConstraints file: {constraints}\nConstraints:\n" + "\n".join(pins))
                     python = ensure_installer(log)
@@ -520,6 +589,10 @@ class DependencyManager:
                     if not diagnostics_enabled():
                         log(output.strip())
                     log("Checking installed versions and imports…")
+                    if channel is not None:
+                        version = _distributions([str(target)]).get("yt-dlp")
+                        if _yt_dlp_channel(version) != channel:
+                            raise DependencyError(f"The installation did not resolve to a yt-dlp {channel} build.")
                     staged_state = {"environment": environment, "requirements": requirements}
                     imports = []
                     for key in requirements.keys() & self.catalog.keys():

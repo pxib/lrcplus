@@ -8,6 +8,7 @@ from PySide6.QtCore import QSignalBlocker, Qt, QUrl
 from PySide6.QtMultimedia import (
     QAudioBufferOutput,
     QAudioSink,
+    QMediaMetaData,
     QMediaPlayer,
 )
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -807,6 +808,81 @@ class AudioController:
         def _pcm_equalizer_active(self):
             equalizer = getattr(self, "_equalizer", None)
             return equalizer is not None and equalizer.configuration is not None
+
+        def audio_signal_path(self):
+            """Read the current route without changing playback or reserving a successor."""
+            player = self.media_player
+            source = player.source()
+            device = self.audio_output.device()
+            output_available = not device.isNull() and not getattr(self, "_audio_output_unavailable", False)
+            has_audio = not source.isEmpty()
+            gapless = player._gapless_active
+            processed = getattr(self, "_pcm_route_active", False)
+            sample_rate = 0
+            effects = []
+            route = "No audio loaded"
+            if has_audio and output_available:
+                if gapless:
+                    route = "FFmpeg → PCM output"
+                    sample_rate = player.gapless_output_sample_rate()
+                elif processed:
+                    route = "Qt Multimedia → Processed PCM output"
+                    worker = getattr(self, "_pcm_worker", None)
+                    sink = getattr(self, "_pcm_sink", None)
+                    if getattr(worker, "owns_output", False):
+                        sample_rate = worker.output_sample_rate()
+                    elif sink is not None:
+                        sample_rate = sink.format().sampleRate()
+                else:
+                    route = "Qt Multimedia → Direct output"
+                if (gapless or processed) and self._pcm_equalizer_active():
+                    effects.append("Equalizer")
+                if self._pcm_rate_active():
+                    effects.append(f"Speed {self.playback_speed:.0%}")
+                pitch = self._displayed_pitch_semitones()
+                if abs(pitch) >= 0.001:
+                    if processed or self._pitch_follows_speed():
+                        effects.append(f"Pitch {pitch:+.2f} semitones")
+                    elif not gapless:
+                        effects.append("Independent pitch requires processed output")
+            elif has_audio:
+                route = "No output device available"
+
+            mode, preamp, prevent_clipping = self._replaygain_options()
+            replaygain = "Off"
+            if mode != "off" and not source.isLocalFile():
+                replaygain = "Available for local files only" if has_audio else "No audio loaded"
+            elif mode != "off":
+                tags = player.gapless_replaygain() or getattr(self, "_replaygain_tags", ReplayGain())
+                album = mode == "album" and tags.album_gain is not None
+                if album or tags.track_gain is not None:
+                    gain = tags.multiplier(mode, preamp, prevent_clipping)
+                    label = "Album" if album else "Track"
+                    if mode == "album" and not album:
+                        label += " (album gain unavailable)"
+                    replaygain = f"{label}, {20 * math.log10(gain):+.1f} dB"
+                else:
+                    replaygain = "No gain data for this track"
+
+            codec = ""
+            if has_audio and not gapless:
+                key = QMediaMetaData.Key.AudioCodec
+                tracks = player.audioTracks()
+                active = player.activeAudioTrack()
+                if 0 <= active < len(tracks):
+                    codec = tracks[active].stringValue(key)
+                codec = codec or player.metaData().stringValue(key)
+            gapless_status, crossfade_status = player.transition_status()
+            return source, {
+                "Codec": codec,
+                "Playback route": route,
+                "Audio output": (device.description() or "Unnamed output") if output_available else "Unavailable",
+                "Output sample rate": f"{sample_rate:,} Hz" if sample_rate else "Unavailable",
+                "ReplayGain": replaygain,
+                "DSP": ", ".join(effects) or ("Bypassed" if has_audio and output_available else "Unavailable"),
+                "Gapless": gapless_status,
+                "Crossfade": crossfade_status,
+            }
 
 
         def _refresh_equalizer_route(self):

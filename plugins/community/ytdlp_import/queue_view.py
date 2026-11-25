@@ -5,9 +5,11 @@ from PySide6.QtWidgets import (
     QSpinBox, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from .worker import validate_youtube_session_url
+
 
 class DownloadQueueView(QWidget):
-    def __init__(self, queue, parent=None):
+    def __init__(self, queue, parent=None, *, retry_with_session):
         super().__init__(parent)
         self.queue = queue
         layout = QVBoxLayout(self)
@@ -50,6 +52,9 @@ class DownloadQueueView(QWidget):
                                                     if item["state"] in {"completed", "failed", "cancelled", "skipped"}}))
         controls.addWidget(clear)
         layout.addLayout(controls)
+        self.retry_session = QPushButton("Retry with YouTube session…")
+        self.retry_session.clicked.connect(lambda: retry_with_session(self._session_item()))
+        layout.addWidget(self.retry_session, alignment=Qt.AlignmentFlag.AlignLeft)
         queue.changed.connect(self.refresh)
         queue.error.connect(self.summary.setText)
         self.refresh()
@@ -61,6 +66,21 @@ class DownloadQueueView(QWidget):
         ids = self._selected()
         self.details.setPlainText("\n\n".join(item.get("details") or item.get("message", "")
                                               for item in self.queue.items if item["id"] in ids))
+        self.retry_session.setVisible(self._session_item() is not None)
+
+    def _session_item(self):
+        ids = self._selected()
+        if len(ids) != 1:
+            return None
+        for item in self.queue.items:
+            if item["id"] not in ids or item["state"] != "failed":
+                continue
+            try:
+                validate_youtube_session_url(item["request"]["url"])
+            except ValueError:
+                return None
+            return item
+        return None
 
     def refresh(self):
         selected = self._selected()

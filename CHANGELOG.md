@@ -4,7 +4,12 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 ## [2026-11-25]
 
 ### Added
+
+- Add **Audio signal path** under **Settings > Advanced**. See the live playback route, output device, codec, available sample rates, ReplayGain, and DSP, plus reasons why gapless playback or crossfade is unavailable.
 - Pressing or holding scroll wheel now lets you navigate the library.
+- Choose **Stable** or **Nightly** for yt-dlp in **Settings > Dependencies**. New installs default to Stable. Restart LRCPlus after changing builds.
+- Offer **Try Nightly** when Stable encounters certain YouTube extractor errors. The prompt opens the Dependency Manager with Nightly selected.
+- Add prototype YouTube session support to **yt-dlp Audio Import**. Use a Firefox or LibreWolf profile or a `cookies.txt` file for one download, including retries from the Downloads tab. Compatibility varies by profile and video. Use **Test session** to check access before downloading.
 
 ### Changed
 

@@ -5,7 +5,6 @@ from itertools import cycle, groupby, pairwise
 from math import sin, tau
 from time import monotonic
 
-import numpy as np
 from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QBrush, QColor, QFont, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPainterPathStroker,
@@ -303,6 +302,8 @@ class ManiaControlsDialog(QDialog):
 
 
 def unmult_black(image):
+    import numpy as np
+
     image = image.convertToFormat(QImage.Format.Format_RGBA8888)
     pixels = np.ndarray((image.height(), image.width(), 4), dtype=np.uint8,
                         buffer=image.bits(), strides=(image.bytesPerLine(), 4, 1))
