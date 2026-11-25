@@ -1,5 +1,7 @@
 # Changelog
 Versions use dates with optional revisions. / バージョンは日付を使用し、オプションで改訂履歴も付けます。
+ALLLLLLLLLLLLLLLLL changes here ARE **FINAL.** Okay? If I made a mistake, it's STAYING, okay?
+Okay?
 
 ## [2026-11-25]
 
@@ -18,12 +20,20 @@ Versions use dates with optional revisions. / バージョンは日付を使用�
 - Reduce startup RAM use for **Rhythm Games** by deferring NumPy loading until Mania renders a results screen.
 - Reduce lyrics stutter during playback by capping **Audio Visualizer** artwork repaints at about 31 FPS while keeping audio analysis at its original rate.
 
+## [2026-11-24]
+
+### Added
+
+- Add a prototype **Lyrics Type** mode to **Rhythm Games**. Type each displayed lyric phrase and submit it to score accuracy and timing.
+- Add 60 FPS Mania result clips for clear, fail, all-perfect, and full-combo results when matching media is available.
+
 ## [2026-11-23]
 
 ### Added
 
 - Add eight artwork styles to **Audio Visualizer** in Lyrics. Choose Aurora, Particle Sphere, Radial, Mirror, Spectrogram, Stereo Oscilloscope, Waveform Ribbon, or Waterfall.
 - The yt-dlp plugin now supports Spotify playlists and individual songs, it relies on the SpotAPI dependency. If anything goes wrong, do not contact me /srs
+- Expand **Rhythm Games** Mania with chart-generation improvements, configurable Neon and Classic rules, Project Sekai-style judgment windows, directional flicks, trace/hold behavior, and matching hit sounds and result animations.
 
 ### Changed
 
@@ -699,3 +709,76 @@ merry christmas noobs
 
 also happy halloween
 (p.s thank you to Anti on discord for the feedback!)
+
+## [2026-10-30.2]
+
+### Added
+
+- Add MusicBrainz as a provider for yt-dlp album covers. (yt-dlp)
+- Added download speed in Mbps, displayed alongside the remaining time. (yt-dlp)
+- Added album information, full release dates in the user's regional date format, and source audio codec, bitrate, and sample rate to track previews. Upload dates are labeled separately when release dates are unavailable; missing metadata stays hidden. (yt-dlp)
+- Added an estimated download size before the Download button, updated for the selected audio format and hidden when unknown or reusing an existing file. (yt-dlp)
+- Added playing, paused, and idle album placeholders in Japanese, Korean, Chinese, and Cantonese when album artwork is unavailable. Language follows the lyrics, defaults to Japanese, and can be selected manually. (Discord Rich Presence)
+
+### Changed
+
+- Restore last volume percentage when unmuting.
+- Hid empty hints, so those areas only appear when they have content.
+- Limited embedded artwork uploads to 512 pixels on the longest edge and 1 MB, preserving aspect ratio and the original artwork. Invalid images and inputs over 20 MB or 25 megapixels are skipped. (Discord Rich Presence)
+
+### Fixed
+
+- Reduced renderer lag on long lyrics with many pinyin or furigana annotations by caching text layout and karaoke timing lookups and skipping offscreen text drawing.
+- Fixed MusicBrainz cover matching when YouTube credits include a composer alongside the primary artist confirmed by the uploader. (yt-dlp)
+- Fixed placeholder images by using direct CDN image URLs instead of share pages. (Discord Rich Presence)
+- Prevented repeated failed artwork uploads within a session and refreshed placeholders when lyrics or real album artwork become available. (Discord Rich Presence)
+- Fixed converter mishandled YouTube’s rolling captions, causing each line to appear three times.
+
+---
+
+# Historical changes (that I removed)
+
+## [2026-10-28]
+
+### Added
+- Karaoke boundary nudging with a configurable millisecond step and selected segment audio preview that pauses at the end.
+- Find lyric lines with Ctrl+F, next/previous matches, wraparound, and F3 shortcuts.
+- Save without closing the editor, Ctrl+S, and a separate Save & Close action.
+- Recovery of pending Source text, including unfinished syntax.
+- Batch shifts for an inclusive range of lyric lines, preserving karaoke timing and annotations, with a preview and negative-timestamp protection.
+- Timing validation with navigation to affected lyric lines.
+- Atomic lyric saves and exports with a backup of the previous file.
+- Regression tests and a Windows GitHub Actions test workflow.
+
+### Changed
+- Pitch shifting uses continuous Rubber Band R3 processing with shared stereo analysis, avoiding repeated block resets and crossfade artifacts.
+- Reduced measured pitch-processing startup to about 96 ms at 48 kHz and 105 ms at 44.1 kHz without changing the processed audio samples.
+- Preferences use a per-user application data directory with legacy migration and an explicit `LRCPLUS_SETTINGS_PATH` override.
+- Lyric indexes refresh when directory contents change and after editor saves.
+- Automated tests are included by default instead of individually allowlisted.
+- Documented installation, editing tools, preferences, testing, and packaging.
+
+### Fixed
+- Pitch and speed changes clear stale queued audio; unchanged controls no longer restart pitch processing, and output queues stay bounded when a device stalls.
+- Processed playback respects volume changes without also playing native audio.
+- Karaoke waveform end markers consistently use seconds and chronological lyric boundaries; linked drags support implicit ends and reject invalid intervals.
+- Re-separation preserves merged timing spans, trailing pauses, structural newlines, and complete Unicode graphemes.
+- Authored Ruby edits replace generated readings and persist on save.
+- Marking a single karaoke segment retains explicit karaoke status; resetting karaoke enables Save and preserves readings.
+- Overlap warnings use actual table rows and support simultaneous visual rows.
+- Close, Escape, and the title-bar button consistently protect unsaved edits.
+- Editing without the karaoke plugin no longer references missing controls.
+- Source reloads validate timed input before replacing the model, apply offset and generation mode, and preserve artist/title/custom metadata.
+- Editing a multiline lyric timestamp no longer flattens its text.
+- Karaoke shortcuts respect text cells and keyboard modifiers; duplicate event handlers no longer override each other.
+- Typing spaces in lyric text no longer triggers the playback shortcut.
+- Saving an unchanged TXT document does not rewrite it as timestamped text.
+- Invalid karaoke timestamps restore the previous display without changing the document or history; single-segment timing retains karaoke status.
+- Undo/Redo correctly track the last saved document and reading mode.
+- Mark Playback Time advances to the correct source line in a sorted sidebar.
+- Undo no longer skips the immediately preceding edit.
+- Segment edits are captured before mutation for Undo.
+- Restored parsing of manually edited karaoke timestamps and instant-fill controls.
+- LRCX reloads preserve a final segment end independently of a later line end, retaining trailing pauses after a shifted document is saved.
+- Failed lyric saves leave the editor dirty and recovery data intact.
+- Regression tests use the current furigana and scrolling widget modules.
