@@ -100,19 +100,20 @@ def _text_effect_image(key, text, font, device, stroke, shadow):
 
 
 class FuriganaPaintingMixin:
-    def _draw_lyric_text(self, painter, x, y, text):
+    def _draw_lyric_text(self, painter, x, y, text, effects):
+        stroke, style = effects
         shadow = self._lyric_shadow_style
-        if text and (shadow is not None or self.lyrics_stroke_pen is not None):
+        if text and (shadow is not None or stroke is not None):
             font = painter.font()
             device = painter.device()
             # The fill still uses the live pen, including the karaoke gradient.
             key = (
-                text, font, self._text_effect_style, device.devicePixelRatioF(),
+                text, font, style, device.devicePixelRatioF(),
                 device.logicalDpiX(), device.logicalDpiY(),
             )
-            image = _text_effect_image(key, text, font, device, self.lyrics_stroke_pen, shadow)
+            image = _text_effect_image(key, text, font, device, stroke, shadow)
             if image is None:
-                _paint_text_effects(painter, x, y, text, self.lyrics_stroke_pen, shadow)
+                _paint_text_effects(painter, x, y, text, stroke, shadow)
             else:
                 offset = image.offset()
                 painter.drawImage(x + offset.x(), y + offset.y(), image)
@@ -291,6 +292,11 @@ class FuriganaPaintingMixin:
         if not prepared:
             painter.end()
             return
+
+        effects = (self.lyrics_stroke_pen, self._text_effect_style)
+        if (self._karaoke_stroke is not None and self.karaoke_position is not None
+                and self._karaoke_static_bounds[2] is not None):
+            effects = self._karaoke_stroke
 
         # Used by the vertical karaoke brush geometry below. Keep these
         # metrics in paintEvent so the highlight uses the exact same base
@@ -485,7 +491,7 @@ class FuriganaPaintingMixin:
                 vertical_piece_sweep, base_metrics,
             ))
             draw_x = segment.get("base_x", segment["x"]) if segment.get("_vertical") else base_x
-            self._draw_lyric_text(painter, int(draw_x), int(segment["base_y"]), segment["text"])
+            self._draw_lyric_text(painter, int(draw_x), int(segment["base_y"]), segment["text"], effects)
 
             # Slide sweeps the current-line highlight across the lyric.
             if (
@@ -558,7 +564,7 @@ class FuriganaPaintingMixin:
                     reading_y = segment.get("reading_y", self.TOP_MARGIN + reading_metrics.ascent() if False else self.TOP_MARGIN)
                     cursor_y = reading_y
                     for reading_char in reading:
-                        self._draw_lyric_text(painter, int(reading_x), int(cursor_y), reading_char)
+                        self._draw_lyric_text(painter, int(reading_x), int(cursor_y), reading_char, effects)
                         cursor_y += segment.get("reading_step", reading_metrics.height())
                 else:
                     if self.show_romaji:
@@ -579,6 +585,7 @@ class FuriganaPaintingMixin:
                         int(reading_x),
                         int(draw_y),
                         display_reading,
+                        effects,
                     )
 
                 # Slide highlighting must cover ruby too, not only base text.

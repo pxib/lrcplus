@@ -69,6 +69,8 @@ LYRIC_FIELDS_BY_SECTION = {
         LyricSettingField("lyrics_stroke_width", "Text stroke width", "spinbox",
                           bounds=(0, 3), unit="px", tooltip="Use 0 px to turn off the outline."),
         LyricSettingField("lyrics_stroke_color", "Text stroke color", "color"),
+        LyricSettingField("karaoke_stroke_color", "Karaoke stroke color", "optional_color",
+                          tooltip="Uses the text stroke width on lines with karaoke timing."),
         LyricSettingField("lyrics_shadow", "Text shadow", "checkbox"),
         LyricSettingField("lyrics_shadow_color", "Shadow color", "color"),
         LyricSettingField("lyrics_shadow_opacity", "Shadow opacity", "spinbox", bounds=(0, 100), unit="%"),

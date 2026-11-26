@@ -115,6 +115,52 @@ def test_search_keyboard_opens_nested_control_and_scrolls_without_accepting(qapp
         qapp.processEvents()
 
 
+def test_shadow_details_follow_effective_setting_and_search_focuses_toggle(qapp):
+    dialog = SettingsDialog([], get_global_lyrics_settings(), current_file="song.mp3")
+    try:
+        dialog.show()
+        qapp.processEvents()
+        search = dialog.settings_search
+        global_shadow = dialog.global_controls["lyrics_shadow"]
+        global_blur = dialog.global_controls["lyrics_shadow_blur"]
+        local_override, local_shadow = dialog.local_controls["lyrics_shadow"]
+        blur_override, local_blur = dialog.local_controls["lyrics_shadow_blur"]
+
+        search.search_edit.setText("shadow blur")
+        assert search.results.count() == 2
+        search.activate(search.results.item(0))
+        assert not global_blur.isVisible()
+        assert global_shadow.hasFocus()
+        global_shadow.setChecked(True)
+        assert global_blur.isVisible()
+
+        search.search_edit.setText("local shadow blur")
+        search.activate(search.results.item(0))
+        assert local_blur.isVisible()
+        blur_override.setChecked(True)
+        local_blur.setValue(4)
+
+        local_override.setChecked(True)
+        assert not blur_override.isVisible()
+        assert not local_blur.isVisible()
+        assert dialog.get_local_lyrics_overrides()["lyrics_shadow_blur"] == 4
+        local_shadow.setChecked(True)
+        assert local_blur.isVisible()
+        assert local_blur.value() == 4
+
+        local_override.setChecked(False)
+        global_shadow.setChecked(False)
+        assert not local_blur.isVisible()
+        search.search_edit.setText("local shadow blur")
+        search.activate(search.results.item(0))
+        assert local_override.hasFocus()
+        assert not local_override.isChecked()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
 def test_empty_results_escape_and_clear_restore_current_page(qapp):
     dialog = SettingsDialog([], {})
     try:

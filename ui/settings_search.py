@@ -170,7 +170,8 @@ class SettingsSearch(QWidget):
         self._highlighted = target
         target.setProperty("settingsSearchHighlight", True)
         self._repolish(target)
-        focus = entry.focus_widget if entry.focus_widget is not None else target
+        focus = (entry.focus_widget if target is entry.widget
+                 else target.property("settingsFocusWidget")) or target
         focus.setFocus(Qt.FocusReason.OtherFocusReason)
         # Layout and scroll ranges settle after selecting hidden nested tabs.
         QTimer.singleShot(0, self._scroll_to_highlight)

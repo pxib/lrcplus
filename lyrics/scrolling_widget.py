@@ -49,7 +49,7 @@ class ScrollingLyricsWidget(QWidget):
         self.font_size = 32
         self.ruby_font_size = 18
         self.lyrics_color = "#ffffff"
-        self.lyrics_text_effects = (0, "#000000", False, DEFAULT_LYRIC_SHADOW)
+        self.lyrics_text_effects = (0, "#000000", False, DEFAULT_LYRIC_SHADOW, "")
         self.highlight_color = "#ffaa00"
         self.highlight_current = True
         self.highlight_animation = "none"
@@ -484,11 +484,12 @@ class ScrollingLyricsWidget(QWidget):
 
     @property
     def _text_effect_padding(self):
-        width, _, enabled, style = self.lyrics_text_effects
+        width, _, enabled, style, _ = self.lyrics_text_effects
         return text_effect_padding(width, enabled, style)
 
-    def set_text_effects(self, stroke_width, stroke_color, shadow, shadow_style=DEFAULT_LYRIC_SHADOW):
-        effects = (stroke_width, stroke_color, shadow, shadow_style)
+    def set_text_effects(self, stroke_width, stroke_color, shadow,
+                         shadow_style=DEFAULT_LYRIC_SHADOW, karaoke_color=""):
+        effects = (stroke_width, stroke_color, shadow, shadow_style, karaoke_color)
         if self.lyrics_text_effects == effects:
             return
         previous_padding = self._text_effect_padding

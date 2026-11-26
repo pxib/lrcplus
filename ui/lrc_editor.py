@@ -702,10 +702,14 @@ class LrcEditorDialog(
                     timeline_index -= 1
             row = rows[timeline_index] if timeline_index >= 0 else -1
 
-        if row < 0 or row >= len(self.lines):
+        self.go_to_lyric_line(row)
+
+    def go_to_lyric_line(self, line_index):
+        """Select a source line and bring its sidebar entry into view."""
+        if not 0 <= line_index < len(self.lines):
             return
         try:
-            view_row = self._view_line_indices.index(row)
+            view_row = self._view_line_indices.index(line_index)
         except ValueError:
             return
 

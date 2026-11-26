@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 from core import settings
 from core.settings_transfer import export_settings, get_factory_settings, import_settings, merge_settings
 from ui.audio_signal_path import AudioSignalPathPanel
-from ui.settings_controls import DeferredOptionsComboBox
+from ui.settings_controls import DeferredOptionsComboBox, SettingsColorButton
 
 
 class SettingsTransferMixin:
@@ -152,6 +152,8 @@ class SettingsTransferMixin:
             widget.setCurrentIndex(max(0, widget.findData(value)))
         elif isinstance(widget, QLineEdit):
             widget.setText(value)
+        elif isinstance(widget, SettingsColorButton):
+            widget.setValue(value)
         elif isinstance(widget, QPushButton):
             widget.setText(value)
             widget.setStyleSheet(f"QPushButton {{ text-align: left; background: {value}; }}")

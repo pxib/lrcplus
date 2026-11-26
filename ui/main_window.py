@@ -87,6 +87,17 @@ from ui.lyrics_search_dialog import LyricsSearchDialogMixin
 from ui.stream_lyrics import StreamLyricsController
 
 
+class _LyricsDisplayStack(QStackedWidget):
+    edit_requested = Signal()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            event.accept()
+            self.edit_requested.emit()
+            return
+        super().mouseDoubleClickEvent(event)
+
+
 class Player(
     PlayerRepeatMixin,
     PlayerABLoopMixin,
@@ -778,7 +789,10 @@ class Player(
             layout.setContentsMargins(18, 14, 18, 14)
             layout.setSpacing(10)
 
-            self.lyric_display_stack = QStackedWidget()
+            self.lyric_display_stack = _LyricsDisplayStack()
+            self.lyric_display_stack.edit_requested.connect(
+                lambda: self.edit_current_lyrics(line_index=self.current_line)
+            )
             self.lyric_display_stack.setAttribute(
                 Qt.WidgetAttribute.WA_TranslucentBackground,
                 True,
@@ -914,6 +928,16 @@ class Player(
                 lambda: self.skip_seconds(5)
             )
 
+            for digit in range(10):
+                key = Qt.Key(Qt.Key.Key_0 + digit)
+                shortcut = QShortcut(self)
+                shortcut.setKeys([
+                    QKeySequence(key),
+                    QKeySequence(Qt.KeyboardModifier.KeypadModifier | key),
+                ])
+                shortcut.setAutoRepeat(False)
+                shortcut.activated.connect(lambda digit=digit: self._seek_to_tenth(digit))
+
             self.shortcut_mute = QShortcut(
                 QKeySequence("Ctrl+M"),
                 self,
@@ -983,6 +1007,10 @@ class Player(
             self._lyrics_renderers_ready = True
             self.apply_lyric_display_mode()
             self.lyrics_renderers_created.emit()
+
+
+        def _seek_to_tenth(self, digit):
+            self._seek_from_waveform(self.media_player.duration() * digit // 10)
 
 
         def _seek_from_waveform(self, position_ms):
@@ -1899,7 +1927,7 @@ class Player(
             return None
 
 
-        def edit_current_lyrics(self):
+        def edit_current_lyrics(self, *, line_index=-1):
             from ui.lrc_editor import LrcEditorDialog
 
             lyrics_path = self.get_current_lyrics_path()
@@ -1917,6 +1945,8 @@ class Player(
             dialog = None
             try:
                 dialog = LrcEditorDialog(lyrics_path, self)
+                if lyrics_path is not None and line_index >= 0:
+                    dialog.go_to_lyric_line(line_index)
                 # Association edits refresh through save_document; loading the
                 # editor's old file here would undo a newly selected target.
                 if (dialog.exec() == QDialog.DialogCode.Accepted

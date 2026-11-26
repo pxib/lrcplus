@@ -1,7 +1,7 @@
 import pytest
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QColor, QFontMetrics, QImage, QPainter
-from PySide6.QtWidgets import QGroupBox
+from PySide6.QtWidgets import QColorDialog, QGroupBox
 
 from core.fonts import library_font
 from core.lyrics_settings import LyricShadow, lyric_text_effects
@@ -121,11 +121,34 @@ def test_text_effects_settings_follow_lyrics_scope(qapp, tmp_path):
         offset.setValue(6)
         save_local_lyrics_overrides(path, dialog.get_local_lyrics_overrides())
         assert get_effective_lyrics_settings(path)["lyrics_stroke_width"] == 0
-        _, _, enabled, style = lyric_text_effects(get_effective_lyrics_settings(path))
+        _, _, enabled, style, _ = lyric_text_effects(get_effective_lyrics_settings(path))
         assert enabled is True
         assert style == LyricShadow(opacity=40, offset_x=6, blur=4)
         assert get_global_lyrics_settings()["lyrics_shadow_offset_x"] == -3
         assert get_global_lyrics_settings()["lyrics_stroke_width"] == 2
+    finally:
+        dialog.deleteLater()
+
+
+def test_karaoke_stroke_color_can_be_picked_and_reset_per_file(qapp, tmp_path, monkeypatch):
+    path = tmp_path / "song.mp3"
+    dialog = SettingsDialog([], get_global_lyrics_settings(), current_file=str(path))
+    try:
+        key = "karaoke_stroke_color"
+        global_color = dialog.global_controls[key]
+        assert global_color.text() == "Use text stroke color"
+        monkeypatch.setattr(QColorDialog, "getColor", lambda *_: QColor("#389fee"))
+        global_color.menu().actions()[0].trigger()
+        save_global_lyrics_settings(dialog.get_global_lyrics_settings())
+        assert get_global_lyrics_settings()[key] == "#389fee"
+        assert get_effective_lyrics_settings(path)[key] == "#389fee"
+
+        override, local_color = dialog.local_controls[key]
+        override.setChecked(True)
+        local_color.menu().actions()[0].trigger()
+        local_color.menu().actions()[1].trigger()
+        save_local_lyrics_overrides(path, dialog.get_local_lyrics_overrides())
+        assert get_effective_lyrics_settings(path)[key] == ""
     finally:
         dialog.deleteLater()
 

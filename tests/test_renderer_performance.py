@@ -57,13 +57,14 @@ def test_dense_pinyin_reuses_layout_and_resolves_group_progress_once(row, monkey
 def test_karaoke_reuses_rasterized_text_effects(row, monkeypatch):
     text = "Cached lyric effects"
     row.set_segments(text, [{"text": text, "start": 0, "end": 4}], generate=False)
-    row.set_text_effects(2, "#543219", True, LyricShadow(blur=3))
-    calls = []
+    row.set_text_effects(2, "#543219", True, LyricShadow(blur=3), karaoke_color="#fedcba")
+    painted_strokes = []
     original = furigana_painting._paint_text_effects
 
-    def paint_effects(painter, *args):
-        calls.append(True)
-        return original(painter, *args)
+    def paint_effects(painter, x, y, text, stroke, shadow):
+        if stroke is not None:
+            painted_strokes.append(stroke.color().name())
+        return original(painter, x, y, text, stroke, shadow)
 
     monkeypatch.setattr(furigana_painting, "_paint_text_effects", paint_effects)
 
@@ -74,15 +75,15 @@ def test_karaoke_reuses_rasterized_text_effects(row, monkeypatch):
         row.render(image)
         return image
 
+    assert render(None) != render(0)
+    assert painted_strokes == ["#543219", "#fedcba"]
     first = render(0)
-    initial_calls = len(calls)
-    assert initial_calls > 0
     assert render(2) != first
-    assert len(calls) == initial_calls
+    assert painted_strokes == ["#543219", "#fedcba"]
 
-    row.set_text_effects(2, "#543219", True, LyricShadow(color="#765432", blur=3))
+    row.set_lyric("Plain lyric", generate=False)
     render(2)
-    assert len(calls) == 2 * initial_calls
+    assert painted_strokes == ["#543219", "#fedcba", "#543219"]
 
 
 @pytest.mark.parametrize("change", [

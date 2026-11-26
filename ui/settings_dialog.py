@@ -49,6 +49,7 @@ from ui.settings_transfer import SettingsTransferMixin
 from ui.settings_debug import SettingsDebugMixin
 from ui.settings_controls import (
     DeferredOptionsComboBox,
+    SettingsColorButton,
     ThemedSpinBox,
     ThemedComboBox,
     QComboBox,
@@ -58,6 +59,9 @@ from ui.settings_controls import (
     _apply_settings_dialog_style,
     settings_theme_options,
 )
+
+
+SHADOW_DETAIL_KEYS = tuple(key for key in LYRIC_FIELDS if key.startswith("lyrics_shadow_"))
 
 
 def _load_theme_color_presets():
@@ -1055,6 +1059,15 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
                 self.artwork_source_combo, "Choose an artwork source that uses Booru to edit Booru tags."
             ),
         }
+        for key in SHADOW_DETAIL_KEYS:
+            conditional[self.global_controls[key]] = (
+                self.global_controls["lyrics_shadow"], "Enable Text shadow to edit this setting.",
+            )
+            if self.local_controls:
+                conditional[self.local_controls[key][1]] = (
+                    self.local_controls["lyrics_shadow"][1],
+                    "Enable Text shadow globally or override it for this file.",
+                )
         for key, style in (("softness", "Soft"), ("glow_intensity", "Glow"),
                            ("glow_radius", "Glow"), ("shimmer_width", "Shimmer")):
             conditional[self.karaoke_controls[key]] = (
@@ -1622,8 +1635,15 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
 
         layout = sections["Typography"]
         self._add_section_heading(layout, "Typography")
+        shadow_panel = QWidget()
+        shadow_layout = QVBoxLayout(shadow_panel)
+        shadow_layout.setContentsMargins(0, 0, 0, 0)
         for key in LYRIC_SECTIONS["Typography"]:
-            add(key, layout)
+            add(key, shadow_layout if key in SHADOW_DETAIL_KEYS else layout)
+        layout.addWidget(shadow_panel)
+        shadow = controls["lyrics_shadow"]
+        shadow.toggled.connect(shadow_panel.setVisible)
+        shadow_panel.setVisible(shadow.isChecked())
 
         layout = sections["Highlighting"]
         self._add_section_heading(layout, "Highlighting")
@@ -1729,22 +1749,6 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
         label.setFixedWidth(55)
         slider.valueChanged.connect(lambda value: label.setText(f"{value} {unit}"))
         return label
-
-    def _create_color_button(self, value):
-        button = QPushButton()
-
-        def set_color(color):
-            button.setText(str(color))
-            button.setStyleSheet(f"QPushButton {{ text-align: left; background: {color}; }}")
-
-        def choose():
-            color = QColorDialog.getColor()
-            if color.isValid():
-                set_color(color.name())
-
-        set_color(value)
-        button.clicked.connect(choose)
-        return button
 
     def _update_theme_color_button(self):
         color = QColor(self.theme_color)
@@ -2036,6 +2040,7 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
 
     def _create_local_controls(self, global_values, overrides, layout):
         controls = {}
+        shadow_detail_widgets = []
 
         sections = self._create_lyric_sections(layout)
         grids = {}
@@ -2087,6 +2092,20 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             if field.kind == "slider":
                 grid.addWidget(self._slider_readout(editor, field.unit), row_index, 3)
             controls[key] = (enabled, editor)
+            if key in SHADOW_DETAIL_KEYS:
+                shadow_detail_widgets.extend((setting_name, enabled, editor))
+
+        shadow_override, local_shadow = controls["lyrics_shadow"]
+        global_shadow = self.global_controls["lyrics_shadow"]
+
+        def sync_shadow_details():
+            effective_shadow = local_shadow if shadow_override.isChecked() else global_shadow
+            for widget in shadow_detail_widgets:
+                widget.setVisible(effective_shadow.isChecked())
+
+        for checkbox in (global_shadow, shadow_override, local_shadow):
+            checkbox.toggled.connect(sync_shadow_details)
+        sync_shadow_details()
 
         visibility_keys = ("show_lyrics", "show_romaji", "show_translation", "show_ruby")
 
@@ -2144,8 +2163,8 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             editor.setRange(*field.bounds)
             editor.setValue(int(value))
             editor.setSuffix(f" {field.unit}")
-        elif kind == "color":
-            editor = self._create_color_button(value)
+        elif kind in {"color", "optional_color"}:
+            editor = SettingsColorButton(value, "Use text stroke color" if kind == "optional_color" else "")
         else:
             raise ValueError(f"Unknown lyric settings control: {kind}")
 
@@ -2161,8 +2180,6 @@ class SettingsDialog(SettingsDebugMixin, SettingsTransferMixin, QDialog):
             return control.currentData()
         if kind == "checkbox":
             return control.isChecked()
-        if kind == "color":
-            return control.text().strip()
         return control.value()
 
     def get_startup_settings(self):

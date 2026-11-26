@@ -1,8 +1,39 @@
 from PySide6.QtCore import QPoint, QSignalBlocker, Qt
 from PySide6.QtGui import QColor, QPainter, QPalette, QPolygon
-from PySide6.QtWidgets import QAbstractSpinBox, QComboBox, QDoubleSpinBox, QSpinBox, QToolButton
+from PySide6.QtWidgets import (
+    QAbstractSpinBox, QColorDialog, QComboBox, QDoubleSpinBox, QMenu, QPushButton, QSpinBox, QToolButton,
+)
 from core.settings import APPEARANCE_DEFAULTS
 from core.theme import build_theme_palette
+
+
+class SettingsColorButton(QPushButton):
+    def __init__(self, value, inherit_label=""):
+        super().__init__()
+        self._inherit_label = inherit_label
+        if inherit_label:
+            menu = QMenu(self)
+            menu.addAction("Choose color…", self._choose_color)
+            menu.addAction(inherit_label, lambda: self.setValue(""))
+            self.setMenu(menu)
+        else:
+            self.clicked.connect(self._choose_color)
+        self.setValue(value)
+
+    def value(self):
+        return self._value
+
+    def setValue(self, value):
+        self._value = value
+        self.setText(value or self._inherit_label)
+        background = f" background: {value};" if value else ""
+        self.setStyleSheet(f"QPushButton {{ text-align: left;{background} }}")
+
+    def _choose_color(self):
+        color = QColorDialog.getColor(QColor(self._value), self)
+        if color.isValid():
+            self.setValue(color.name())
+
 
 class _SpinStepButton(QToolButton):
     def __init__(self, parent, direction):

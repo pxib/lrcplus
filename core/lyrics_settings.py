@@ -45,7 +45,10 @@ def lyric_text_effects(settings):
         color=settings["lyrics_shadow_color"],
         **{name: settings[key] for key, (name, _, _) in LYRIC_SHADOW_FIELDS.items()},
     )
-    return settings["lyrics_stroke_width"], settings["lyrics_stroke_color"], settings["lyrics_shadow"], shadow
+    return (
+        settings["lyrics_stroke_width"], settings["lyrics_stroke_color"], settings["lyrics_shadow"],
+        shadow, settings["karaoke_stroke_color"],
+    )
 
 
 def text_effect_padding(stroke_width, enabled, shadow):
@@ -98,6 +101,7 @@ LYRICS_DEFAULTS = {
     "lyrics_color": "#ffffff",
     "lyrics_stroke_width": 0,
     "lyrics_stroke_color": "#000000",
+    "karaoke_stroke_color": "",
     "lyrics_shadow": False,
     "lyrics_shadow_color": DEFAULT_LYRIC_SHADOW.color,
     **{key: getattr(DEFAULT_LYRIC_SHADOW, name) for key, (name, _, _) in LYRIC_SHADOW_FIELDS.items()},
@@ -316,6 +320,7 @@ def normalize_lyrics_settings(values):
     result["lyrics_stroke_color"] = _safe_color(
         values.get("lyrics_stroke_color"), result["lyrics_stroke_color"],
     )
+    result["karaoke_stroke_color"] = _safe_color(values.get("karaoke_stroke_color"), "")
     result["lyrics_shadow"] = bool(values.get("lyrics_shadow", result["lyrics_shadow"]))
     result["lyrics_shadow_color"] = _safe_color(
         values.get("lyrics_shadow_color"), result["lyrics_shadow_color"],

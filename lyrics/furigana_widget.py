@@ -89,6 +89,7 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
         self.lyrics_shadow = False
         self._lyric_shadow_style = None
         self._text_effect_style = (0, "", None)
+        self._karaoke_stroke = None
         self.text_effect_inset = 0
         self._shadow_top = self._shadow_bottom = 0
         self.highlight_color = QColor("#ffaa00")
@@ -381,16 +382,27 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
         self.highlight_color = highlight
         self.update()
 
-    def set_text_effects(self, stroke_width, stroke_color, shadow, shadow_style=DEFAULT_LYRIC_SHADOW):
+    def set_text_effects(self, stroke_width, stroke_color, shadow,
+                         shadow_style=DEFAULT_LYRIC_SHADOW, karaoke_color=""):
         active_shadow = shadow_style if shadow and shadow_style.opacity else None
         style = (stroke_width, stroke_color if stroke_width else "", active_shadow)
-        if self._text_effect_style == style:
+        karaoke_style = (
+            (stroke_width, karaoke_color, active_shadow)
+            if stroke_width and karaoke_color and karaoke_color != stroke_color else None
+        )
+        previous_karaoke_style = self._karaoke_stroke[1] if self._karaoke_stroke is not None else None
+        if self._text_effect_style == style and previous_karaoke_style == karaoke_style:
             return
         pen = None
         if stroke_width > 0:
             pen = QPen(QColor(stroke_color), 2 * stroke_width)
             pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         self.lyrics_stroke_pen = pen
+        self._karaoke_stroke = None
+        if karaoke_style is not None:
+            karaoke_pen = QPen(pen)
+            karaoke_pen.setColor(QColor(karaoke_color))
+            self._karaoke_stroke = (karaoke_pen, karaoke_style)
         self.lyrics_shadow = bool(active_shadow)
         self._lyric_shadow_style = active_shadow
         self._text_effect_style = style
