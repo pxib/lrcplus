@@ -10,7 +10,7 @@ Thamk yo
 
 ### Added
 
-- Double-click a lyric or blank space in the lyrics display to open the **Lyrics Editor**. The editor selects the currently highlighted line and scrolls it into view in both scrolling and compact modes.
+- Double-click a lyric or blank space in the lyrics display to open the **Lyrics Editor**. The editor selects the currently highlighted line and scrolls it into view in both scrolling and compact modes. (thanks openlyrics 4 the inspiration!)
 - Add YouTube-style seeking with the number row and numeric keypad. Press **0** to jump to the start or **1–9** to jump to **10–90%** of the track.
 - Add text outlines and shadows under **Settings > Lyrics > Typography**, with per-song overrides. Choose the outline width and color, and optionally use a different outline color for timed karaoke lyrics. Adjust the shadow color, opacity, blur, and offsets when **Text shadow** is enabled. The renderer caches both effects while the karaoke highlight animates.
 
