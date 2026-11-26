@@ -32,6 +32,7 @@ _PACKAGE_FEATURES = {
     "pypresence": "Discord listening status",
     "requests": "Online connections",
     "argostranslate": "Offline lyric translation",
+    "demucs": "Vocal analysis for lyric timing",
     "alkana": "English words in katakana",
     "koroman": "Korean romanization",
     "pycantonese": "Cantonese readings (Jyutping)",

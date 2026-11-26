@@ -59,12 +59,13 @@ Paste one YouTube video URL and choose **More > Download with YouTube session…
 For a failed YouTube download, select its row and choose **Retry with YouTube session…**.
 Choose the profile folder shown in Firefox or LibreWolf’s `about:support`, or
 select a YouTube `cookies.txt` export. **Test session** uses the chosen session
-to check whether yt-dlp can read that video on YouTube before downloading audio.
+to check whether yt-dlp can find an audio format for that video.
 If YouTube requests age verification, complete it on YouTube in the same browser profile.
 
-Profile loading uses the browser’s default container. The app remembers your
-chosen path until it closes. A restart clears permission to use the session for
-any unfinished download, which can be retried from the Downloads tab.
+Profile loading uses the browser’s default container. Both sources pass only
+unexpired YouTube cookies to the downloader. The import window remembers your
+chosen path while it is open. A restart clears permission to use the session
+for any unfinished download, which can be retried from the Downloads tab.
 
 ### Download queue, batches, and playlists
 
@@ -112,6 +113,14 @@ subtitles are reported without failing the audio download. Artwork and lyric
 provider requests are paced across workers. Finished tracks enter the library
 and playback queue in selection order, so a later track may wait for an earlier
 track to finish or fail before import.
+
+To review timing on a batch, enable **Check lyric timing against subtitles**,
+select subtitles, and enable **Automatically find lyrics**. Clear **Use subtitles
+as synced lyrics** to compare the LRCLIB lyrics with the downloaded captions.
+**Downloads** flags tracks with a proposed correction or too little evidence to
+compare. With the imported song loaded, **Timing tools → Correct Timing Drift…**
+in the lyric editor can use its captions automatically. To preview using a
+specific caption file, choose **Match Timing to Reference…**.
 
 The preview also shows the album and full release date when available, falling
 back to a clearly labeled upload date. Dates follow the operating system's
@@ -212,10 +221,9 @@ retried; select a row in **Downloads** to inspect its details. A completed file
 is retained if adding it to the library fails, so **Retry selected** can reuse
 the file and retry the import.
 
-This version handles finished tracks and playlist selections. Live
-broadcasts, streaming playback, and browser-cookie authentication are outside
-its current scope. Site availability and authentication requirements still
-depend on yt-dlp and the source site.
+This version handles finished tracks and playlist selections. YouTube sessions
+support one finished video at a time. Site availability and authentication
+requirements depend on yt-dlp and the source site.
 
 ## Host interface
 

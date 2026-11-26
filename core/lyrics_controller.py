@@ -44,6 +44,14 @@ from core.lyrics_search import LyricsSearchMixin
 from core.idle_cache import IdleCache
 
 
+def processed_audio_position_ms(window):
+    """Return the played track position when processed audio is audible."""
+    worker = getattr(window, "_pcm_worker", None)
+    if getattr(window, "_pcm_route_active", False) and getattr(worker, "owns_output", False):
+        return worker.track_position_ms()
+    return None
+
+
 def playback_lyric_position(window, position_seconds):
     """Convert the media clock to the display clock for timed lyrics."""
     file_offset = getattr(window, "lyrics_offset_seconds", 0.0)
@@ -750,6 +758,19 @@ class LyricsController(LyricsSearchMixin):
             self.plugin_manager.emit("lyric_timing_changed")
 
     def update_lyrics(self, position_ms):
+        processed_position = processed_audio_position_ms(self)
+        self._update_lyrics_at_position(position_ms if processed_position is None else processed_position)
+
+    def _update_processed_lyric_position(self):
+        # Keep updating during the processed tail, when Qt's media position
+        # has already stopped. Paused and stalled sinks report the same time.
+        position_ms = processed_audio_position_ms(self)
+        if position_ms is not None and position_ms != self._last_processed_lyric_ms:
+            self._last_processed_lyric_ms = position_ms
+            self._update_lyrics_at_position(position_ms)
+            self.processed_lyric_position_changed.emit()
+
+    def _update_lyrics_at_position(self, position_ms):
         if not self.lyrics or getattr(self, "_auto_stream_lyrics", False):
             return
 

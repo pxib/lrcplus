@@ -1,9 +1,12 @@
 from copy import deepcopy
 
+import numpy as np
 import pytest
 
+from lyrics.audio_timing_drift import estimate_audio_timing, sung_intervals
 from lyrics.models import LyricLine, LyricSegment
 from lyrics.timing import parse_timestamp, shift_timing, validate_timing
+from lyrics.timing_drift import estimate_timing_correction
 
 
 @pytest.mark.parametrize("value,expected", [("2.600", 2.6), ("00:02.600", 2.6), ("01:02:03.500", 3723.5), ("120:01.250", 7201.25)])
@@ -58,6 +61,71 @@ def test_negative_segment_timestamp_rejects_entire_range_even_when_line_stays_po
     with pytest.raises(ValueError, match="before 00:00"):
         shift_timing(lines, -200)
     assert lines[0].start == 3
+
+
+def test_drift_correction_preserves_document_offset_and_scales_karaoke_cues():
+    lines = [karaoke_line(), LyricLine(12, "Second verse"), LyricLine(22, "Third verse"), LyricLine(32, "Final verse")]
+    lines[0].segments[0].mora_cues = ((0, 0.25),)
+    lines[0].text += "\nTranslation"
+    lines[0].translation_lines = [1]
+    original = deepcopy(lines)
+    reference = [LyricLine(time * 1.04 + 0.5, text) for time, text in (
+        (2, "Hello, WORLD!"), (12, "Second verse"), (22, "Third verse"), (32, "Final verse"),
+    )]
+    correction = estimate_timing_correction(lines, reference, offset_ms=200, reference_offset_ms=100)
+    updated, offset = correction.apply(lines, offset_ms=200, duration_ms=35000)
+
+    assert correction.scale == pytest.approx(1.04)
+    assert offset == 200
+    assert [line.start for line in updated] == pytest.approx([2.48, 12.88, 23.28, 33.68])
+    assert updated[0].end == pytest.approx(4.56)
+    assert updated[0].segments[0].start == pytest.approx(2.688)
+    assert updated[0].segments[0].end == pytest.approx(3.312)
+    assert updated[0].segments[0].mora_cues == ((0, 0.26),)
+    assert updated[0].segments[0].ruby_spans == original[0].segments[0].ruby_spans
+    assert updated[0].translation_lines == [1]
+    assert lines == original
+    with pytest.raises(ValueError, match="outside the recording"):
+        correction.apply(lines, duration_ms=30000)
+
+
+def test_drift_correction_can_replace_an_offset_larger_than_the_first_corrected_time():
+    lines = [karaoke_line(), LyricLine(12, "Second verse"), LyricLine(22, "Third verse"), LyricLine(32, "Final verse")]
+    correction = estimate_timing_correction(lines, lines, offset_ms=18400)
+    corrected, offset = correction.apply(lines, offset_ms=18400, duration_ms=45000)
+    assert offset == 0
+    assert corrected == lines
+
+
+def test_drift_rejects_repeated_or_uneven_matches_and_recognizes_existing_sync():
+    lines = [LyricLine(time, f"Verse {time}") for time in (5, 15, 25, 35, 45)]
+    reference = deepcopy(lines)
+    assert estimate_timing_correction(lines, reference) is None
+    reference[2].start += 2
+    with pytest.raises(ValueError, match="varies across the song"):
+        estimate_timing_correction(lines, reference)
+    reference.extend(LyricLine(100 + line.start, line.text) for line in lines)
+    with pytest.raises(ValueError, match="Too few unique lyric lines"):
+        estimate_timing_correction(lines, reference)
+
+
+def test_vocal_timing_fit_corrects_drift_and_is_stable_when_repeated():
+    schedule = ((4, 5.45), (6, 11), (19, 22), (24, 29.2), (46, 51.2),
+                (52, 55), (57, 64), (77, 78.9), (80, 85.4))
+    lines = [LyricLine(start, f"Verse {number}", end=end)
+             for number, (start, end) in enumerate(schedule)]
+    time = np.arange(0, 125, .02)
+    envelope = np.full(len(time), .001)
+    for start, end in schedule:
+        envelope[(time >= start * 1.21 + 8) & (time < end * 1.21 + 8)] = .75
+
+    correction = estimate_audio_timing(sung_intervals(lines), envelope, offset_ms=6000)
+    assert correction.scale == pytest.approx(1.21, abs=.002)
+    assert correction.intercept == pytest.approx(8, abs=.04)
+    updated, offset = correction.apply(lines, offset_ms=6000, duration_ms=125000)
+    assert estimate_audio_timing(sung_intervals(updated), envelope, offset_ms=offset) is None
+    with pytest.raises(ValueError, match="enough consistent timing cues"):
+        estimate_audio_timing(sung_intervals(lines), np.full(len(time), .75), offset_ms=6000)
 
 
 @pytest.mark.parametrize("first,last", [(2, 1), (-1, 0), (0, 5)])

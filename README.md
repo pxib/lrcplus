@@ -18,6 +18,8 @@ A Windows music player and lyrics editor for synchronized lyrics, karaoke timing
 
 The download includes an offline manual at `docs/manual/index.html`. Open its **Editing and timing** section for a walkthrough.
 
+Karaoke Screen has moved to [KRCPlus](https://github.com/pxib/KRCPlus), a standalone player for synchronized karaoke lyrics, MIDI melody guides, and live microphone pitch.
+
 ## Tests (診断)
 
 Run `python -m pytest -q` for routine checks, or add `--exhaustive` for every

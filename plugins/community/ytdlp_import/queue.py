@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from lyrics.timing_drift import estimate_timing_correction, load_timing_reference
 from .job import ImportJob, YOUTUBE_AGE_SESSION_HINT, is_youtube_age_restriction
 from .worker import validate_url, validate_youtube_session_url
 
@@ -25,6 +26,33 @@ def source_key(url):
     if host == "youtu.be":
         return "youtube:" + parsed.path.strip("/")
     return url
+
+
+def _check_lyrics_drift(result):
+    lyrics = Path(result.get("lyrics_path") or "")
+    subtitles = Path(result.get("subtitle_path") or "")
+    if lyrics.suffix.lower() not in {".lrc", ".lrcx"} or not lyrics.is_file():
+        return "Needs timing review", "No timed lyric file is available."
+    if subtitles.suffix.lower() not in {".srt", ".vtt"} or not subtitles.is_file():
+        return "Needs timing review", "No timed subtitles are available for this recording."
+    if not result.get("lyrics_source") and lyrics.stem == subtitles.stem:
+        return "Timing from subtitles", "The attached lyrics were generated from this recording's subtitles."
+    try:
+        lines, offset = load_timing_reference(lyrics)
+        reference, reference_offset = load_timing_reference(
+            subtitles, automatic_captions=(result.get("subtitle") or {}).get("kind") == "auto",
+        )
+        correction = estimate_timing_correction(lines, reference, offset_ms=offset,
+                                                reference_offset_ms=reference_offset)
+        if correction is None:
+            return "Timing matches subtitles", "Matched lyric lines closely follow this recording's subtitles."
+        duration = result.get("duration")
+        correction.apply(lines, offset_ms=offset, duration_ms=duration * 1000 if isinstance(duration, (int, float)) else 0)
+    except (OSError, ValueError, OverflowError) as error:
+        return "Needs timing review", str(error)
+    return ("Timing correction available",
+            f"{len(correction.matches)} lines matched in {subtitles.name}. Open Timing tools → "
+            f"Correct Timing Drift in the lyrics editor for this song.")
 
 
 class DownloadQueue(QObject):
@@ -220,6 +248,8 @@ class DownloadQueue(QObject):
             else:
                 item["next_action"] = "download"
         else:
+            if action == "subtitles" and "lyrics_path" in result and "lyrics_source" not in result:
+                item.get("existing_entry", {}).pop("lyrics_source", None)
             result = dict(item.pop("existing_entry", {}), **result)
             if not result.get("path") or not Path(result["path"]).is_file():
                 self._fail(item, "The downloaded file could not be found.")
@@ -280,6 +310,11 @@ class DownloadQueue(QObject):
                 item["message"] = "Added to library and playback queue" if request.get("add_to_queue", True) else "Added to library"
             except (OSError, ValueError, RuntimeError) as error:
                 self._fail(item, "File saved, but import failed: " + str(error))
+                continue
+            if request["config"].get("review_lyrics_drift"):
+                status, details = _check_lyrics_drift(result)
+                item["message"] += " · " + status
+                item["details"] = "\n".join(filter(None, (item.get("details"), f"{status}. {details}")))
 
     def cancel(self, ids):
         for item in self.items:

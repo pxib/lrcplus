@@ -261,8 +261,7 @@ regressions. No new packaged build or hardware listening check was performed.
 
 When processing needs NumPy, its import cost is paid once and it remains loaded
 for subsequent audio buffers. Enabled plugins that use NumPy independently can
-still load it at startup; the disabled-by-default Karaoke Screen plugin is one
-such consumer.
+still load it at startup.
 
 ## Networking, library rows, and hidden renderers
 

@@ -141,10 +141,15 @@ def lrc_stamp(milliseconds):
     return f"[{minutes:02d}:{seconds:02d}.{millis:03d}]"
 
 
-def captions_to_lrc(text, *, automatic=False):
+def timed_caption_cues(text, *, automatic=False):
     cues = coalesce_caption_redraws(parse_captions(text))
     if automatic:
         cues = clean_rolling_captions(cues)
+    return cues
+
+
+def captions_to_lrc(text, *, automatic=False):
+    cues = timed_caption_cues(text, automatic=automatic)
     lines = []
     for index, cue in enumerate(cues):
         for line in cue.text.splitlines():
@@ -159,13 +164,20 @@ def captions_to_lrc(text, *, automatic=False):
     return "\n".join(lines) + "\n"
 
 
-def convert_caption_file(source, target, *, automatic=False):
+def read_caption_text(source):
     raw = Path(source).read_bytes()
     if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
-        text = raw.decode("utf-16")
-    else:
-        try:
-            text = raw.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text = raw.decode("cp1252")
+        return raw.decode("utf-16")
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("cp1252")
+
+
+def load_caption_cues(source, *, automatic=False):
+    return timed_caption_cues(read_caption_text(source), automatic=automatic)
+
+
+def convert_caption_file(source, target, *, automatic=False):
+    text = read_caption_text(source)
     Path(target).write_text(captions_to_lrc(text, automatic=automatic), encoding="utf-8")

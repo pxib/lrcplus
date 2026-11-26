@@ -745,6 +745,10 @@ class AudioController:
         def _activate_pcm_route(self):
             self._pcm_route_active = True
             self.audio_output.setVolume(0.0)
+            lyric_timer = getattr(self, "_processed_lyric_timer", None)
+            if lyric_timer is not None:
+                lyric_timer.start()
+                self._update_processed_lyric_position()
 
 
         def _stop_pcm_sink(self):
@@ -754,6 +758,10 @@ class AudioController:
             self._pcm_drain_timer.stop()
             self._pcm_pending.clear()
             self._pcm_route_active = False
+            lyric_timer = getattr(self, "_processed_lyric_timer", None)
+            if lyric_timer is not None:
+                lyric_timer.stop()
+                self._last_processed_lyric_ms = None
             sink = getattr(self, "_pcm_sink", None)
             if sink is not None:
                 dispose_audio_sink(sink)

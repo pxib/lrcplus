@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from core.settings import save_music_library, save_music_library_columns
 from core.playlists import path_key
 from ui.file_drops import audio_drop_paths, LibraryTrackTree, DropIndicator
-from core.library_search import close_metadata_match, search_words
+from core.library_search import close_metadata_match, literal_metadata_match, search_words
 from ui.search_history import SearchHistoryLineEdit
 from ui.library_lyrics_search import LyricMatchDelegate
 from ui.library_sorting import LIBRARY_SORT_ROLE, LibraryTreeItem
@@ -421,19 +421,10 @@ class PlayerLibraryMixin:
                     )
             if query and lyrics_matches is None and not found:
                 words = search_words(query)
-                for parent, rows in self._library_filter_groups:
-                    any_visible = False
-                    for item, _ in rows:
-                        visible = ((not favorites_only or item.favorite_key in self.favorite_paths)
-                                   and close_metadata_match(words, item.track))
-                        if item.isHidden() == visible:
-                            item.setHidden(not visible)
-                        any_visible |= visible
-                    if parent.isHidden() == any_visible:
-                        parent.setHidden(not any_visible)
-                    if any_visible:
-                        parent.setExpanded(True)
-                    close_matches |= any_visible
+                if len(words) > 1:
+                    found = self._show_library_metadata_matches(words, favorites_only, literal_metadata_match)
+                if words and not found:
+                    close_matches = self._show_library_metadata_matches(words, favorites_only, close_metadata_match)
             status = getattr(self, "library_close_matches", None)
             if status is not None:
                 status.setVisible(close_matches)
@@ -445,6 +436,21 @@ class PlayerLibraryMixin:
         finally:
             self.library_table.setUpdatesEnabled(True)
         self._queue_visible_library_covers()
+
+    def _show_library_metadata_matches(self, words, favorites_only, matches):
+        # This runs only after the preceding search left all rows hidden.
+        found = False
+        for parent, rows in self._library_filter_groups:
+            group_matches = False
+            for item, _ in rows:
+                if (not favorites_only or item.favorite_key in self.favorite_paths) and matches(words, item.track):
+                    item.setHidden(False)
+                    group_matches = True
+            if group_matches:
+                parent.setHidden(False)
+                parent.setExpanded(True)
+                found = True
+        return found
 
     def _queue_visible_library_covers(self, *_args):
         if not self.library_table.isVisible() or self._library_cover_load_pending:

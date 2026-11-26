@@ -93,6 +93,36 @@ def downloaded(queue, index, tmp_path):
     return str(path)
 
 
+def test_batch_timing_review_reports_suggestion_and_uncertain_track(queue, tmp_path):
+    queue.options["config"]["review_lyrics_drift"] = True
+    assert add(queue, count=2) == 2
+    queue.options["config"]["review_lyrics_drift"] = False
+    queue.set_paused(False)
+    lyrics = tmp_path / "track0.lrc"
+    original = "".join(f"[00:{time:02}.000]Verse {number}\n"
+                       for number, time in enumerate((5, 15, 25, 35), 1))
+    lyrics.write_text(original, encoding="utf-8")
+    subtitles = tmp_path / "track0.en.manual.vtt"
+    subtitles.write_text("WEBVTT\n\n" + "".join(
+        f"00:00:{time:02}.000 --> 00:00:{time + 1:02}.000\nVerse {number}\n\n"
+        for number, time in enumerate((6, 17, 28, 39), 1)
+    ), encoding="utf-8")
+    audio = tmp_path / "track0.m4a"
+    audio.touch()
+    job = prepared(queue, 0)
+    prepared(queue, 1)
+    downloaded(queue, 1, tmp_path)
+    job.complete({"identity": "Test:0", "path": str(audio), "lyrics_path": str(lyrics),
+                  "lyrics_source": "LRCLIB", "subtitle_path": str(subtitles), "duration": 45})
+
+    assert "Timing correction available" in queue.items[0]["message"]
+    assert "track0.en.manual.vtt" in queue.items[0]["details"]
+    assert "Needs timing review" in queue.items[1]["message"]
+    assert lyrics.read_text(encoding="utf-8") == original
+    assert len(queue.api.imports) == 2
+    assert queue.api.settings["download_queue"][0]["message"] == queue.items[0]["message"]
+
+
 def test_concurrency_snapshot_and_import_order(queue, qapp, tmp_path):
     assert add(queue) == 3
     queue.options["codec"] = "mp3"
@@ -185,15 +215,27 @@ def test_youtube_session_stays_with_one_track_and_clears_when_restored(queue, tm
 def test_importer_can_queue_and_retry_with_a_user_selected_youtube_profile(queue, tmp_path, monkeypatch):
     from plugins.community.ytdlp_import import session_dialog
 
-    profile = str(tmp_path / "LibreWolf profile")
+    profile = tmp_path / "LibreWolf profile"
+    profile.mkdir()
+    (profile / "cookies.sqlite").touch()
     url = "https://www.youtube.com/watch?v=abcdefghijk&rco=1"
     error = "ERROR: [youtube] abcdefghijk: Sorry, this content is age-restricted. This video is age-restricted and only available on YouTube"
 
     def choose_profile(dialog):
-        dialog.path.setText(profile)
+        dialog.kind.setCurrentIndex(dialog.kind.findData("file"))
+        dialog.path.setText(str(tmp_path / "missing cookies.txt"))
+        dialog.use.click()
+        assert dialog.source is None
+        assert "existing YouTube cookies.txt" in dialog.status.text()
+        dialog.kind.setCurrentIndex(dialog.kind.findData("firefox"))
+        dialog.path.setText(str(tmp_path))
+        dialog.test.click()
+        assert dialog._job is None
+        assert "containing cookies.sqlite" in dialog.status.text()
+        dialog.path.setText(str(profile))
         dialog.test.click()
         assert dialog._job.request["url"] == url
-        assert dialog._job.request["youtube_session"] == {"kind": "firefox", "path": profile}
+        assert dialog._job.request["youtube_session"] == {"kind": "firefox", "path": str(profile)}
         dialog._job.fail(error)
         assert error in dialog.status.text()
         assert "video already plays" in dialog.status.text()
@@ -213,14 +255,14 @@ def test_importer_can_queue_and_retry_with_a_user_selected_youtube_profile(queue
         assert dialog.tabs.currentWidget() is dialog.queue_view
         job = queue.jobs[item["id"]]
         assert job.request["url"] == url
-        assert job.request["youtube_session"] == {"kind": "firefox", "path": profile}
+        assert job.request["youtube_session"] == {"kind": "firefox", "path": str(profile)}
         job.fail(error)
         assert "video already plays" in item["message"]
         assert error in item["details"]
         dialog.queue_view.table.topLevelItem(0).setSelected(True)
         assert not dialog.queue_view.retry_session.isHidden()
         dialog.queue_view.retry_session.click()
-        assert queue.jobs[item["id"]].request["youtube_session"]["path"] == profile
+        assert queue.jobs[item["id"]].request["youtube_session"]["path"] == str(profile)
     finally:
         dialog.close()
         dialog.deleteLater()

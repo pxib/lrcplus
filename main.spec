@@ -41,6 +41,7 @@ datas = [
     (str(PROJECT_ROOT / "docs" / "manual"), "docs/manual"),
     (str(PROJECT_ROOT / "PLUGIN_API.md"), "."),
     (str(PROJECT_ROOT / "core" / "dependency_probe.py"), "core"),
+    (str(PROJECT_ROOT / "core" / "vocal_envelope_worker.py"), "core"),
 ]
 
 plugins_dir = PROJECT_ROOT / "plugins"

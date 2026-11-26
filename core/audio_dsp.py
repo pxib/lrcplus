@@ -140,12 +140,13 @@ class PcmPitchProcessor:
         shifted = np.zeros_like(frames)
         padding = min(frame_count, self._startup_remaining)
         self._startup_remaining -= padding
-        if frame_count > padding:
-            available = min(frame_count - padding, pending.shape[0])
-            if available:
-                shifted[padding:padding + available] = pending[:available]
-                pending = pending[available:]
-                self._started = True
+        available = min(frame_count - padding, pending.shape[0])
+        if available:
+            shifted[padding:padding + available] = pending[:available]
+            pending = pending[available:]
+            self._started = True
+        # The output clock can distinguish original audio from inserted silence.
+        self.content_frames = (padding, available)
         self._pending = pending
         if floating:
             result = np.clip(shifted, -1.0, 1.0).astype(dtype)
@@ -190,6 +191,7 @@ class PcmPitchProcessor:
         self._input = ()
         self._pending = ()
         self._started = False
+        self.content_frames = (0, 0)
         self._effect = None
         self._startup_remaining = 0
         self._ramp_remaining = 0

@@ -118,6 +118,7 @@ class Player(
         queue_changed = Signal()
         station_history_changed = Signal()
         lyrics_renderers_created = Signal()
+        processed_lyric_position_changed = Signal()
         favorites_changed = Signal()
 
         def __init__(self, plugin_manager=None):
@@ -177,6 +178,10 @@ class Player(
             self._pcm_worker.route_started.connect(self._activate_pcm_route)
             self._pcm_worker.failed.connect(self._pcm_output_failed)
             self._pcm_worker.drained.connect(self._pcm_output_drained)
+            self._processed_lyric_timer = QTimer(self)
+            self._processed_lyric_timer.setInterval(33)
+            self._processed_lyric_timer.timeout.connect(self._update_processed_lyric_position)
+            self._last_processed_lyric_ms = None
             self._playback_save_timer = QTimer(self)
             self._playback_save_timer.setSingleShot(True)
             self._playback_save_timer.setInterval(300)

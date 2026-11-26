@@ -13,6 +13,12 @@ Thamk yo
 - Double-click a lyric or blank space in the lyrics display to open the **Lyrics Editor**. The editor selects the currently highlighted line and scrolls it into view in both scrolling and compact modes. (thanks openlyrics 4 the inspiration!)
 - Add YouTube-style seeking with the number row and numeric keypad. Press **0** to jump to the start or **1–9** to jump to **10–90%** of the track.
 - Add text outlines and shadows under **Settings > Lyrics > Typography**, with per-song overrides. Choose the outline width and color, and optionally use a different outline color for timed karaoke lyrics. Adjust the shadow color, opacity, blur, and offsets when **Text shadow** is enabled. The renderer caches both effects while the karaoke highlight animates.
+- Add **Timing tools > Correct Timing Drift…** to the Lyrics Editor. Use matching subtitles or local vocal analysis to correct line and karaoke timestamps for the loaded song in one undoable edit. **Save** writes the correction to the lyrics file. Vocal analysis uses FFmpeg and Demucs.
+- Add **Check lyric timing against subtitles** to yt-dlp Audio Import. The Downloads tab flags tracks with a suggested correction or too little evidence to check their timing.
+
+### Changed
+
+- Improve the YouTube session prototype in **yt-dlp Audio Import**. The chooser checks that the selected source exists, and **Test session** looks for a usable audio format and reports when yt-dlp detects invalidated cookies. Open Firefox and LibreWolf profiles supply their latest committed cookies, and both source types pass only unexpired YouTube cookies to yt-dlp. For Chrome, Edge, Brave, Opera, Vivaldi, and Safari, choose **Exported cookies.txt** and select a Netscape-format YouTube cookie export.
 
 ## [2026-11-25]
 

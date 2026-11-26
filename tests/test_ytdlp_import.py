@@ -34,24 +34,58 @@ def test_youtube_sessions_are_limited_to_https_youtube_video_urls(url):
         validate_youtube_session_url(url)
 
 
-def test_check_youtube_session_uses_the_native_firefox_cookie_reader(tmp_path, monkeypatch):
+class SessionCookieJar(list):
+    def set_cookie(self, cookie):
+        self.append(cookie)
+
+    def get_cookies_for_url(self, url):
+        assert url == "https://www.youtube.com/"
+        return [cookie for cookie in self if cookie.domain == ".youtube.com"]
+
+
+def session_cookie(name, domain=".youtube.com", *, expired=False):
+    return SimpleNamespace(name=name, value="synthetic", domain=domain, is_expired=lambda: expired)
+
+
+@pytest.mark.parametrize("kind", ["firefox", "file"])
+def test_check_youtube_session_uses_scoped_cookies_and_checks_audio(tmp_path, monkeypatch, capsys, kind):
     from plugins.community.ytdlp_import import worker
 
     url = "https://www.youtube.com/watch?v=abcdefghijk&rco=1"
-    (tmp_path / "cookies.sqlite").touch()
-    source = {"kind": "firefox", "path": str(tmp_path)}
-    cookies = SimpleNamespace(get_cookies_for_url=lambda _: [
-        SimpleNamespace(name=name, value="synthetic") for name in ("LOGIN_INFO", "SAPISID")
+    cookie_file = tmp_path / ("cookies.sqlite" if kind == "firefox" else "cookies.txt")
+    cookie_file.touch()
+    source = {"kind": kind, "path": str(tmp_path if kind == "firefox" else cookie_file)}
+    youtube_cookies = [session_cookie("LOGIN_INFO"), session_cookie("SAPISID"),
+                       session_cookie("PREF", "music.youtube.com")]
+    cookies = SessionCookieJar(youtube_cookies + [
+        session_cookie("unrelated", ".example.com"), session_cookie("lookalike", ".fakeyoutube.com"),
+        session_cookie("expired", expired=True),
     ])
     error = "[youtube] abcdefghijk: This video is age-restricted and only available on YouTube"
-    responses = iter([RuntimeError(error), {"id": "abcdefghijk"}])
+    audio = {"id": "abcdefghijk", "formats": [{"acodec": "opus", "vcodec": "none"}]}
+    responses = iter([
+        (RuntimeError(error), "YouTube is requiring account age-verification"),
+        ({"id": "abcdefghijk", "formats": [{"acodec": "none", "vcodec": "avc1"}]}, ""),
+        (audio, "The provided YouTube account cookies are no longer valid"),
+        (audio, ""),
+    ])
+
+    def load_cookies(filename, browser, logger):
+        assert logger is None
+        if kind == "firefox":
+            assert (filename, browser) == (None, ("firefox", str(tmp_path), None, "none"))
+        else:
+            assert (filename, browser) == (str(cookie_file), None)
+        print("synthetic cookie loader output")
+        print("synthetic cookie loader error", file=sys.stderr)
+        return cookies
 
     class YoutubeDL:
         def __init__(self, options):
             assert options["verbose"]
-            assert options["cookiesfrombrowser"] == ("firefox", str(tmp_path), None, "none")
+            assert "cookiesfrombrowser" not in options and "cookiefile" not in options
             self.logger = options["logger"]
-            self.cookiejar = cookies
+            self.cookiejar = self.request_cookiejar = SessionCookieJar()
 
         def __enter__(self):
             return self
@@ -61,12 +95,13 @@ def test_check_youtube_session_uses_the_native_firefox_cookie_reader(tmp_path, m
 
         def extract_info(self, target, *, download):
             assert target == url
-            assert self.cookiejar is cookies
+            assert list(self.request_cookiejar) == youtube_cookies
+            assert len(cookies) == 6
             assert download is False
             self.logger.debug("[debug] [youtube] Found YouTube account cookies")
-            result = next(responses)
+            result, diagnostic = next(responses)
+            self.logger.info(diagnostic)
             if isinstance(result, Exception):
-                self.logger.info("[youtube] YouTube is requiring account age-verification")
                 self.logger.debug("[debug] unrelated synthetic cookie value")
                 raise result
             return result
@@ -74,7 +109,7 @@ def test_check_youtube_session_uses_the_native_firefox_cookie_reader(tmp_path, m
     monkeypatch.setitem(sys.modules, "yt_dlp", SimpleNamespace(YoutubeDL=YoutubeDL))
     monkeypatch.setitem(sys.modules, "yt_dlp.version", SimpleNamespace(__version__="2026.11.23"))
     monkeypatch.setitem(sys.modules, "yt_dlp.cookies", SimpleNamespace(
-        load_cookies=lambda *_: pytest.fail("The native jar should be used as-is"),
+        YoutubeDLCookieJar=SessionCookieJar, load_cookies=load_cookies,
     ))
     monkeypatch.setattr(worker, "options", lambda config: {})
     request = {"url": url, "config": {}, "youtube_session": source}
@@ -84,17 +119,23 @@ def test_check_youtube_session_uses_the_native_firefox_cookie_reader(tmp_path, m
     assert "recognized the account cookies locally" in str(failure.value)
     assert "player response was still restricted" in str(failure.value)
     assert "synthetic cookie value" not in str(failure.value)
-    assert "could read this video" in worker.check_youtube_session(request)["message"]
+    with pytest.raises(ValueError, match="no usable audio format"):
+        worker.check_youtube_session(request)
+    with pytest.raises(ValueError, match="cookies became invalid"):
+        worker.check_youtube_session(request)
+    assert "found an audio format" in worker.check_youtube_session(request)["message"]
+    assert capsys.readouterr() == ("", "")
 
 
-def test_firefox_session_uses_snapshot_if_native_loader_has_no_sign_in_cookies(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reason", ["missing sign-in", "native reader error", "wal"])
+def test_firefox_session_uses_snapshot_when_needed(tmp_path, monkeypatch, reason):
     from plugins.community.ytdlp_import import worker
 
-    native = SimpleNamespace(get_cookies_for_url=lambda _: [])
-    snapshot = SimpleNamespace(get_cookies_for_url=lambda _: [
-        SimpleNamespace(name=name, value="synthetic") for name in ("LOGIN_INFO", "SAPISID")
-    ])
-    downloader = SimpleNamespace(cookiejar=native)
+    youtube_cookies = [session_cookie("LOGIN_INFO"), session_cookie("SAPISID")]
+    snapshot = SessionCookieJar(youtube_cookies + [session_cookie("unrelated", ".example.com")])
+    reads = []
+    if reason == "wal":
+        (tmp_path / "cookies.sqlite-wal").touch()
 
     def make_snapshot(source, destination):
         assert source == tmp_path / "cookies.sqlite"
@@ -104,14 +145,21 @@ def test_firefox_session_uses_snapshot_if_native_loader_has_no_sign_in_cookies(t
         assert cookie_file is None
         engine, profile, _, container = browser
         assert (engine, container) == ("firefox", "none")
-        assert Path(profile) != tmp_path
+        original_profile = Path(profile) == tmp_path
+        reads.append(original_profile)
+        if original_profile:
+            if reason == "native reader error":
+                raise OSError("database is in use")
+            return SessionCookieJar()
         assert (Path(profile) / "cookies.sqlite").is_file()
         return snapshot
 
     monkeypatch.setattr(worker, "_snapshot_browser_cookies", make_snapshot)
-    monkeypatch.setitem(sys.modules, "yt_dlp.cookies", SimpleNamespace(load_cookies=load_snapshot))
-    worker._prepare_youtube_session(downloader, "firefox", tmp_path)
-    assert downloader.cookiejar is snapshot
+    monkeypatch.setitem(sys.modules, "yt_dlp.cookies", SimpleNamespace(
+        YoutubeDLCookieJar=SessionCookieJar, load_cookies=load_snapshot,
+    ))
+    assert list(worker._load_youtube_session("firefox", tmp_path)) == youtube_cookies
+    assert reads == ([False] if reason == "wal" else [True, False])
 
 
 def test_browser_session_snapshot_reads_committed_wal_updates(tmp_path):

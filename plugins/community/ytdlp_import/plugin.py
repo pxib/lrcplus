@@ -18,6 +18,7 @@ DEFAULTS = {
     "subtitle_language": "", "subtitle_kind": "manual", "subtitles_as_lyrics": True,
     "use_musicbrainz_cover": False,
     "automatically_find_lyrics": False,
+    "review_lyrics_drift": False,
     "concurrent_downloads": 2,
 }
 

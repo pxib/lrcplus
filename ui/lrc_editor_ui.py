@@ -135,6 +135,8 @@ class LrcEditorUiMixin:
         timing_tools = QPushButton("Timing tools")
         timing_menu = QMenu(timing_tools)
         timing_menu.addAction("Shift Timing…", self.show_timing_shift_dialog)
+        timing_menu.addAction("Correct Timing Drift…", self.correct_current_timing_drift)
+        timing_menu.addAction("Match Timing to Reference…", self.show_timing_drift_dialog)
         timing_menu.addAction("Validate Timing…", self.show_timing_validation)
         timing_tools.setMenu(timing_menu)
         offset_row.addWidget(timing_tools)

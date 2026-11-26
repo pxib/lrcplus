@@ -85,17 +85,22 @@ def _snapshot_browser_cookies(source, destination):
             database.backup(snapshot, pages=256, progress=check_progress)
 
 
-def _youtube_session_path(source):
-    path = Path(source["path"]).expanduser()
-    if source["kind"] == "firefox":
-        if not path.is_absolute() or not (path / "cookies.sqlite").is_file():
-            raise ValueError("Choose the browser’s profile folder containing cookies.sqlite. Find it in about:support.")
-    elif source["kind"] == "file":
-        if not path.is_absolute() or not path.is_file():
-            raise ValueError("Choose an exported YouTube cookies.txt file.")
+def youtube_session_path(source):
+    kind = source["kind"]
+    if kind == "firefox":
+        message = "Choose the browser’s profile folder containing cookies.sqlite. Find it in about:support."
+    elif kind == "file":
+        message = "Choose an existing YouTube cookies.txt export."
     else:
         raise ValueError("Choose a Firefox-compatible profile or a cookies.txt file.")
-    return path
+    try:
+        path = Path(source["path"]).expanduser()
+        cookie_file = path / "cookies.sqlite" if kind == "firefox" else path
+        if path.is_absolute() and cookie_file.is_file():
+            return path
+    except (OSError, RuntimeError, ValueError):
+        pass
+    raise ValueError(message)
 
 
 def _has_youtube_login(jar):
@@ -103,60 +108,67 @@ def _has_youtube_login(jar):
     return "LOGIN_INFO" in names and bool(names & {"SAPISID", "__Secure-1PAPISID", "__Secure-3PAPISID"})
 
 
-def _cookie_file_jar(path):
-    from yt_dlp.cookies import YoutubeDLCookieJar, load_cookies
+def _youtube_cookie_jar(jar):
+    from yt_dlp.cookies import YoutubeDLCookieJar
 
     filtered = YoutubeDLCookieJar()
-    for cookie in load_cookies(str(path), None, None):
+    for cookie in jar:
         domain = cookie.domain.lstrip(".").lower()
         if (domain == "youtube.com" or domain.endswith(".youtube.com")) and not cookie.is_expired():
             filtered.set_cookie(cookie)
     return filtered
 
 
-def _prepare_firefox_session(ydl, profile):
+def _firefox_cookie_jar(profile):
     from yt_dlp.cookies import load_cookies
 
-    try:
-        if _has_youtube_login(ydl.cookiejar):
-            return
-    except Exception:
-        # The native reader may fail to open an in-use database.
-        pass
+    database = profile / "cookies.sqlite"
+    wal = profile / "cookies.sqlite-wal"
+    # The browser can commit newer cookies to the WAL while the native copy reads the main file.
+    if not wal.is_file():
+        try:
+            jar = _youtube_cookie_jar(load_cookies(None, ("firefox", str(profile), None, "none"), None))
+            if _has_youtube_login(jar) and not wal.is_file():
+                return jar
+        except Exception:
+            # The native reader may fail to open an in-use database.
+            pass
     with TemporaryDirectory(prefix="lrcplus-browser-session-") as folder:
-        _snapshot_browser_cookies(profile / "cookies.sqlite", Path(folder) / "cookies.sqlite")
-        ydl.cookiejar = load_cookies(None, ("firefox", folder, None, "none"), None)
+        _snapshot_browser_cookies(database, Path(folder) / "cookies.sqlite")
+        return _youtube_cookie_jar(load_cookies(None, ("firefox", folder, None, "none"), None))
 
 
-def _prepare_youtube_session(ydl, kind, path):
+def _load_youtube_session(kind, path):
+    from yt_dlp.cookies import load_cookies
+
     try:
         # yt-dlp can include profile paths or malformed cookie lines in diagnostics.
         with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
             if kind == "firefox":
-                _prepare_firefox_session(ydl, path)
+                jar = _firefox_cookie_jar(path)
             else:
-                ydl.cookiejar = _cookie_file_jar(path)
+                jar = _youtube_cookie_jar(load_cookies(str(path), None, None))
     except Exception:
         if kind == "firefox":
-            raise ValueError("Could not read the browser profile. Choose a Firefox-compatible profile or a cookies.txt file.") from None
+            raise ValueError("Could not read the browser profile. Close the browser and try again, or choose a cookies.txt file.") from None
         raise ValueError("Could not read the cookie file. Choose a YouTube export in Netscape cookies.txt format.") from None
-    if not _has_youtube_login(ydl.cookiejar):
+    if not _has_youtube_login(jar):
         raise ValueError("No usable YouTube sign-in cookies found. Sign in again and choose the signed-in profile or a fresh export.")
+    return jar
 
 
 @contextmanager
 def _video_downloader(opts, url, session):
     from yt_dlp import YoutubeDL
 
-    path = None
+    cookies = ()
     if session is not None:
         validate_youtube_session_url(url)
-        path = _youtube_session_path(session)
-        if session["kind"] == "firefox":
-            opts = dict(opts, cookiesfrombrowser=("firefox", str(path), None, "none"))
+        cookies = _load_youtube_session(session["kind"], youtube_session_path(session))
     with YoutubeDL(opts) as ydl:
-        if path is not None:
-            _prepare_youtube_session(ydl, session["kind"], path)
+        # Verbose yt-dlp can bind its request handlers to this jar during construction.
+        for cookie in cookies:
+            ydl.cookiejar.set_cookie(cookie)
         yield ydl
 
 
@@ -168,10 +180,14 @@ def check_youtube_session(request):
     opts = dict(options(request["config"]), logger=logger, verbose=True)
     with _video_downloader(opts, url, request["youtube_session"]) as ydl:
         try:
-            single_track(ydl.extract_info(url, download=False))
+            info = single_track(ydl.extract_info(url, download=False))
+            if not preview_audio_formats(info):
+                raise ValueError("YouTube returned no usable audio format for this video.")
         except Exception as error:
             raise ValueError(f"{error}\n\nyt-dlp {__version__}. {logger.summary()}") from None
-    return {"message": "yt-dlp could read this video with the selected YouTube session."}
+    if logger.session_invalidated:
+        raise ValueError(f"yt-dlp {__version__}. {logger.summary()} Sign in again and choose a fresh session.")
+    return {"message": "yt-dlp found an audio format for this video with the selected YouTube session."}
 
 
 def _spotify_url(value, kind):

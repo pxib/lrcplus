@@ -9,7 +9,6 @@ from lyrics.furigana_widget import FuriganaWidget
 from lyrics.line_breaks import reading_source
 from lyrics.lrcx_parser import load_lrcx
 from core.fonts import library_font
-from test_karaoke_screen_timing import screen
 
 
 @pytest.fixture
@@ -44,31 +43,6 @@ def immediate_reading_workers(monkeypatch):
             return future
 
     monkeypatch.setattr("lyrics.furigana_widget._FURIGANA_EXECUTOR", Executor())
-
-
-@pytest.mark.parametrize("timed", [False, True])
-def test_karaoke_screen_skips_translation_in_both_rows(
-        qapp, screen, translation_provider, immediate_reading_workers, timed):
-    from lyrics.models import LyricLine, LyricSegment
-
-    for index, original in enumerate(("Original", "Upcoming")):
-        start = index * 10
-        screen.window.lyric_lines[index] = LyricLine(
-            start, original + "\nTranslation", [
-                LyricSegment(start, original), LyricSegment(start, "\nTranslation", instant=True),
-            ], end=start + 10, has_karaoke=timed, translation_lines=[1],
-        )
-    screen.window.current_line = 0
-    screen.screen.show()
-    qapp.processEvents()
-    screen.refresh_karaoke_screen()
-    qapp.processEvents()
-    assert set(translation_provider) == {"Original", "Upcoming"}
-    for widget in (screen.screen.current_lyric, screen.screen.next_lyric):
-        assert widget.translation_lines == [1]
-        translated = [part for part in widget._prepare_segments() if part.get("translation")]
-        assert "".join(part["text"] for part in translated) == "Translation"
-        assert all(not part.get("reading") for part in translated)
 
 
 def test_floating_lyrics_skips_translation_and_retains_role_on_same_text(

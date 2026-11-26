@@ -1,7 +1,7 @@
 import pytest
 from PySide6.QtCore import QAbstractAnimation, Qt
 from PySide6.QtGui import QFontMetrics, QImage, QPainter
-from PySide6.QtWidgets import QCheckBox, QGraphicsBlurEffect, QGraphicsDropShadowEffect, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QGraphicsBlurEffect, QVBoxLayout, QWidget
 
 from core.settings import KARAOKE_DEFAULTS, apply_karaoke_settings, get_karaoke_settings, get_global_lyrics_settings, save_global_lyrics_settings
 from lyrics.furigana_widget import FuriganaWidget
@@ -239,49 +239,4 @@ def test_focus_transition_blurs_and_dims_then_becomes_fully_sharp(qapp, monkeypa
     finally:
         parent.close()
         parent.deleteLater()
-        qapp.processEvents()
-
-
-def test_fullscreen_focus_preserves_outline_and_tracks_both_lyric_rows(qapp):
-    from types import SimpleNamespace
-    from lyrics.models import LyricLine, LyricSegment
-    from plugins.core.karaoke_screen.plugin import KaraokeScreenPlugin
-    from plugins.core.karaoke_screen.screen import KaraokeScreen
-    window = QWidget()
-    screen = KaraokeScreen(window)
-    try:
-        window.current_line = 0
-        window.lyric_lines = [LyricLine(i * 10, f"Line {i}",
-            [LyricSegment(i * 10, f"Line {i}", end=i * 10 + 9)],
-            end=i * 10 + 10, has_karaoke=True) for i in range(2)]
-        plugin = KaraokeScreenPlugin()
-        plugin.window = window
-        plugin.screen = screen
-        plugin._screen_line_index = None
-        plugin._screen_next_line_index = None
-        plugin._screen_next_text = None
-        plugin.context = SimpleNamespace(api=SimpleNamespace(
-            get_current_lyrics=lambda: [{"text": line.text, "start_ms": int(line.start * 1000)}
-                                       for line in window.lyric_lines],
-            get_position=lambda: window.current_line * 10000,
-            get_duration=lambda: 20000,
-            get_current_track=lambda: "song.mp3",
-        ))
-        screen.show()
-        qapp.processEvents()
-        plugin.refresh_karaoke_screen()
-        assert screen.current_lyric.is_current_line
-        assert not screen.next_lyric.is_current_line
-        for row in (screen.current_lyric, screen.next_lyric):
-            assert isinstance(row.graphicsEffect(), QGraphicsBlurEffect)
-            assert isinstance(row.parentWidget().graphicsEffect(), QGraphicsDropShadowEffect)
-        window.current_line = 1
-        plugin.refresh_karaoke_screen()
-        assert not screen.current_lyric.is_current_line
-        assert screen.next_lyric.is_current_line
-        screen.next_lyric._focus_animation.setCurrentTime(240)
-        assert not screen.next_lyric.graphicsEffect().isEnabled()
-    finally:
-        screen.close()
-        window.deleteLater()
         qapp.processEvents()

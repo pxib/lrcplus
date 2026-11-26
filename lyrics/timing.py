@@ -40,7 +40,6 @@ def shift_timing(lines, delta_ms, *, first=0, last=None):
     last = len(lines) - 1 if last is None else last
     if not 0 <= first <= last < len(lines):
         raise ValueError("Choose a valid range of lyric lines.")
-    shifted = deepcopy(lines)
     delta = delta_ms / 1000.0
 
     def move(value):
@@ -51,6 +50,14 @@ def shift_timing(lines, delta_ms, *, first=0, last=None):
             raise ValueError("This shift would move a timestamp before 00:00.000.")
         return result
 
+    return map_timing(lines, move, first=first, last=last)
+
+
+def map_timing(lines, move, *, first=0, last=None, duration_scale=1.0):
+    """Apply a timestamp mapping to a copy, including karaoke boundaries."""
+    shifted = deepcopy(lines)
+    if last is None:
+        last = len(shifted) - 1
     for line in shifted[first:last + 1]:
         line.start = move(line.start)
         if line.end is not None:
@@ -59,6 +66,9 @@ def shift_timing(lines, delta_ms, *, first=0, last=None):
             segment.start = move(segment.start)
             if segment.end is not None:
                 segment.end = move(segment.end)
+            if duration_scale != 1 and segment.mora_cues:
+                segment.mora_cues = tuple((offset, round(elapsed * duration_scale, 9))
+                                          for offset, elapsed in segment.mora_cues)
     return shifted
 
 

@@ -584,6 +584,12 @@ def test_floating_karaoke_uses_shared_clock_and_cleans_up(
     karaoke.update_karaoke_position()
     assert widget.karaoke_position == pytest.approx(2.25)
 
+    host._pcm_worker = SimpleNamespace(owns_output=True, track_position_ms=lambda: 2250)
+    host._pcm_route_active = True
+    karaoke.on_processed_lyric_position_changed()
+    assert widget.karaoke_position == pytest.approx(1.75)
+    host._pcm_route_active = False
+
     floating.toggle_window(False)
     assert not karaoke.timer.isActive()
     host.media_player.position_ms = 3500

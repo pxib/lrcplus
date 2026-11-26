@@ -54,6 +54,13 @@ BUILTIN_DEPENDENCIES = {
     ],
 }
 
+VOCAL_TIMING_DEPENDENCIES = {
+    "plugin_id": "lrcplus-vocal-timing",
+    "name": "Automatic lyrics timing",
+    "dependencies": [{"requirement": "demucs>=4.1,<5", "import_name": "demucs",
+                      "requires": ["numpy>=1.26", "julius>=0.2.8"]}],
+}
+
 
 _runtime_dll_handles = {}
 
@@ -434,7 +441,7 @@ class DependencyManager:
     def configure(self, plugins):
         self.catalog = {}
         self.catalog_errors = {}
-        for plugin in [BUILTIN_DEPENDENCIES, *plugins]:
+        for plugin in [BUILTIN_DEPENDENCIES, VOCAL_TIMING_DEPENDENCIES, *plugins]:
             try:
                 dependencies = parse_dependencies(plugin.get("dependencies", []))
             except DependencyError as error:

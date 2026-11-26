@@ -43,6 +43,26 @@ def test_numeric_words_require_literal_match():
     assert close_metadata_match(search_words("snog 12345"), track)
 
 
+@pytest.mark.parametrize(("query", "matches"), [
+    ("bsd apple", True),
+    ("apple bsd", True),
+    ("bsd", False),
+    ("bsd appl", False),
+    ("bda apple", False),
+    ("bd apple", False),
+])
+def test_three_letter_typo_requires_a_substitution_and_a_complete_word(query, matches):
+    track = LibraryTrack("C:/music/track.mp3", "Bad Apple")
+    assert close_metadata_match(search_words(query), track) is matches
+
+
+@pytest.mark.parametrize("query", ["stsrli", "staril", "strlig", "starrl"])
+def test_typo_in_a_long_word_prefix(query):
+    track = LibraryTrack("C:/music/track.mp3", "Starlight")
+    assert close_metadata_match(search_words(query), track)
+    assert not close_metadata_match(search_words("xxarli"), track)
+
+
 def test_unicode_metadata_and_album_artist_are_searchable():
     track = LibraryTrack("C:/music/track.mp3", "夜空を駆ける", album_artist="Beyoncé")
     assert close_metadata_match(search_words("夜空を掛ける"), track)
@@ -98,6 +118,31 @@ def test_ordinary_matches_take_priority_without_running_fallback(library, monkey
 
     monkeypatch.setattr("ui.player_library.close_metadata_match", unexpected)
     assert search(library, "hatsne miku") == ["Hatsne Miku"]
+    assert library.library_close_matches.isHidden()
+
+
+def test_reordered_literal_words_take_priority_over_typos(library, monkeypatch):
+    library.library_tracks.append(LibraryTrack("C:/music/third.mp3", "Hatzune Miku"))
+    library._populate_library_view()
+
+    def unexpected(*args):
+        pytest.fail("Literal word matches must not run typo matching")
+
+    monkeypatch.setattr("ui.player_library.close_metadata_match", unexpected)
+    assert search(library, "miku hatsune") == ["Starlight"]
+    assert search(library, "miku starlight") == ["Starlight"]
+    assert library.library_close_matches.isHidden()
+
+
+def test_short_and_partial_typos_show_close_matches(library):
+    library.library_tracks.append(LibraryTrack("C:/music/third.mp3", "Bad Apple"))
+    library._populate_library_view()
+
+    assert search(library, "bsd apple") == ["Bad Apple"]
+    assert not library.library_close_matches.isHidden()
+    assert search(library, "hatzun") == ["Starlight"]
+    assert not library.library_close_matches.isHidden()
+    assert search(library, "bsd") == []
     assert library.library_close_matches.isHidden()
 
 

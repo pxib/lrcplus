@@ -174,33 +174,6 @@ def test_flashcard_dialog_waits_for_analysis_before_disposal(qapp, monkeypatch, 
         assert destroyed == [True]
 
 
-def test_karaoke_screen_releases_parent_owned_stages_and_timers(qapp):
-    from PySide6.QtCore import QTimer
-    from plugins.core.karaoke_screen.plugin import KaraokeScreenPlugin
-    from plugins.core.karaoke_screen.screen import KaraokeScreen
-
-    parent = QWidget()
-    plugin = KaraokeScreenPlugin()
-    plugin._stop_microphone = lambda: None
-    plugin._stop_square_wave_stream = lambda: None
-    try:
-        for _ in range(3):
-            plugin.screen = KaraokeScreen(parent)
-            plugin.screen_timer = QTimer(plugin.screen)
-            plugin.pitch_timer = QTimer(plugin.screen)
-            plugin.screen_timer.start(17)
-            plugin.pitch_timer.start(16)
-            plugin.screen.finished.connect(plugin._screen_closed)
-            plugin.screen.reject()
-            flush_deletes()
-            assert plugin.screen is None
-            assert not parent.findChildren(KaraokeScreen)
-            assert not parent.findChildren(QTimer)
-    finally:
-        parent.deleteLater()
-        flush_deletes()
-
-
 @pytest.mark.parametrize("open_manager", [False, True])
 def test_dependency_notice_and_manager_are_deleted(qapp, monkeypatch, open_manager):
     from ui import dependency_settings as module

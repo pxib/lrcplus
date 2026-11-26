@@ -17,8 +17,8 @@ def audio_format():
     return fmt
 
 
-def buffer(value=0.25, frames=4096):
-    return QAudioBuffer(np.full((frames, 2), value, np.float32).tobytes(), audio_format())
+def buffer(value=0.25, frames=4096, *, start_us=-1):
+    return QAudioBuffer(np.full((frames, 2), value, np.float32).tobytes(), audio_format(), start_us)
 
 
 class Sink:
@@ -273,7 +273,25 @@ def test_player_waits_for_audible_processed_tail_before_advancing(qapp, tmp_path
         assert window.current_audio_path == first
         wait_without_gui(lambda: bool(sinks) and window._pcm_worker._engine._stream_flushed
                          and not window._pcm_worker._engine._pending)
-        assert np.max(np.abs(np.frombuffer(sinks[0].written, np.int16))) > 100
+        fmt = sinks[0].fmt
+        dtype = {QAudioFormat.SampleFormat.Float: np.float32,
+                 QAudioFormat.SampleFormat.Int16: np.int16,
+                 QAudioFormat.SampleFormat.Int32: np.int32}[fmt.sampleFormat()]
+        samples = np.frombuffer(bytes(sinks[0].written), dtype).astype(np.float64)
+        if dtype != np.float32:
+            samples /= -np.iinfo(dtype).min
+        assert np.max(np.abs(samples)) > 0.01
+        if not stop_early:
+            from PySide6.QtTest import QTest
+
+            position_updates = []
+            monkeypatch.setattr(window, "_update_lyrics_at_position", position_updates.append)
+            cue_offset = np.flatnonzero(np.abs(samples) > 0.01)[0]
+            sinks[0].played_us = round(cue_offset * 1_000_000 / (fmt.sampleRate() * fmt.channelCount()))
+            QTest.qWait(100)
+            assert window._pcm_route_active
+            assert window.current_audio_path == first
+            assert position_updates[-1] == pytest.approx(13600 / 48, abs=35)
         if stop_early is True:
             window.stop_playback()
         elif stop_early == "sleep_pause":
@@ -320,15 +338,96 @@ def test_output_progress_snapshot_uses_the_audio_thread_clock_and_resets(qapp):
     worker = PcmPlayback(sink_factory=lambda *args: sinks.append(ClockedSink(*args)) or sinks[-1])
     try:
         worker.configure(None, 1, 0, 1.5, enabled=True, playing=True)
-        worker.receive_buffer(buffer(frames=4800))
+        worker.receive_buffer(buffer(frames=4800, start_us=4_000_000))
         wait_without_gui(lambda: bool(sinks) and sinks[0].total_written == 4800 * 8)
+        wait_without_gui(lambda: worker.track_position_ms() == 4000)
         sinks[0].played_us = 50000
         wait_without_gui(lambda: worker.output_progress()[1] == 50)
+        assert worker.track_position_ms() == pytest.approx(4050)
+        worker.set_playing(False)
+        wait_without_gui(sinks[0].suspended.is_set)
+        assert worker.track_position_ms() == pytest.approx(4050)
+        worker.set_playing(True)
+        wait_without_gui(lambda: not sinks[0].suspended.is_set())
+        sinks[0].played_us = 75000
+        wait_without_gui(lambda: worker.track_position_ms() == pytest.approx(4075))
         before = worker.output_progress()[0]
         worker.reset()
         after = worker.output_progress()
         assert after[0] > before
         assert after[1] == 0
+        assert worker.track_position_ms() is None
+        worker.receive_buffer(buffer(frames=4800, start_us=9_000_000))
+        wait_without_gui(lambda: worker.track_position_ms() == 9000)
+    finally:
+        close(worker)
+
+
+@pytest.mark.parametrize("speed", [1, 1.5])
+def test_pitch_clock_matches_played_cue_at_different_speeds(qapp, monkeypatch, speed):
+    from core import audio_dsp
+
+    class IdentityPitch:
+        latency_frames = 2000
+
+        def process(self, frames):
+            return frames
+
+        def close(self):
+            pass
+
+    class ClockedSink(Sink):
+        played_us = 0
+
+        def processedUSecs(self):
+            self.check_thread()
+            return self.played_us
+
+    monkeypatch.setattr(audio_dsp, "create_pitch_stream", lambda *args: IdentityPitch())
+    sinks = []
+    worker = PcmPlayback(sink_factory=lambda *args: sinks.append(ClockedSink(*args)) or sinks[-1])
+    try:
+        worker.configure(None, speed, 5, 1, enabled=True, playing=True)
+        source = np.zeros((4800, 2), np.float32)
+        source[2400:] = 0.25
+        worker.receive_buffer(QAudioBuffer(source.tobytes(), audio_format(), 4_000_000))
+        worker.receive_buffer(QAudioBuffer())
+        wait_without_gui(lambda: sinks and worker._engine._stream_flushed and not worker._engine._pending)
+        sink = sinks[0]
+        cue = np.flatnonzero(np.frombuffer(sink.written, np.float32)[::2] > 0.1)[0]
+        sink.played_us = round(cue * 1_000_000 / 48000)
+        wait_without_gui(lambda: worker.output_progress()[1] == sink.played_us / 1000)
+        assert worker.track_position_ms() == pytest.approx(4050, abs=0.1)
+        sink.played_us = audio_format().durationForBytes(len(sink.written))
+        wait_without_gui(lambda: worker.track_position_ms() == pytest.approx(4100))
+    finally:
+        close(worker)
+
+
+def test_clock_jumps_to_surviving_audio_after_queue_overruns(qapp):
+    class GatedSink(Sink):
+        writable = False
+        played_us = 0
+
+        def bytesFree(self):
+            return super().bytesFree() if self.writable else 0
+
+        def processedUSecs(self):
+            self.check_thread()
+            return self.played_us
+
+    sinks = []
+    worker = PcmPlayback(sink_factory=lambda *args: sinks.append(GatedSink(*args)) or sinks[-1])
+    try:
+        worker.configure(None, 1, 0, 1.5, enabled=True, playing=True)
+        worker.receive_buffer(buffer(frames=4800, start_us=2_000_000))
+        wait_without_gui(lambda: len(worker._engine._pending) == 4800 * 8)
+        worker.receive_buffer(buffer(frames=4800, start_us=2_300_000))
+        wait_without_gui(lambda: len(worker._engine._pending) == 5760 * 8)
+        sinks[0].writable = True
+        wait_without_gui(lambda: worker.track_position_ms() == pytest.approx(2080))
+        sinks[0].played_us = 30000
+        wait_without_gui(lambda: worker.track_position_ms() == pytest.approx(2310))
     finally:
         close(worker)
 

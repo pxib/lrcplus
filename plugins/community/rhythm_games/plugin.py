@@ -2375,8 +2375,7 @@ class RhythmDialog(QDialog):
         self.start.setEnabled(False)
         self.passage.setEnabled(False)
         self.calibration.setEnabled(False)
-        self.tabs.setTabEnabled(0, False)
-        self.tabs.setTabEnabled(1, False)
+        self._set_mode_switching_enabled(False)
         self.typing_feedback.setText(f"Phrase 1 of {len(self._typing_notes)} · type and press Enter")
         self._start_typing_audio()
 
@@ -2499,8 +2498,7 @@ class RhythmDialog(QDialog):
         self.start.setEnabled(True)
         self.passage.setEnabled(True)
         self.calibration.setEnabled(True)
-        self.tabs.setTabEnabled(0, True)
-        self.tabs.setTabEnabled(1, True)
+        self._set_mode_switching_enabled(True)
 
     @staticmethod
     def _typing_accuracy(note, typed):
@@ -2972,6 +2970,11 @@ class RhythmDialog(QDialog):
         self.status.setText(message or "Could not play this audio.")
         self._set_controls_running(False)
 
+    def _set_mode_switching_enabled(self, enabled):
+        current_index = self.tabs.currentIndex()
+        for index in range(self.tabs.count()):
+            self.tabs.setTabEnabled(index, enabled or index == current_index)
+
     def _set_controls_running(self, running):
         self.start.setEnabled(not running)
         self.passage.setEnabled(not running)
@@ -2979,7 +2982,7 @@ class RhythmDialog(QDialog):
         self.mania_theme.setEnabled(not running)
         self.result_fps.setEnabled(not running)
         self.mania_controls_button.setEnabled(not running)
-        self.tabs.setTabEnabled(1 - self.tabs.currentIndex(), not running)
+        self._set_mode_switching_enabled(not running)
         if running:
             if self.board is self.circle_board:
                 self.board.setCursor(Qt.CursorShape.CrossCursor)

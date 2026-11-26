@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor, QImage, QPainter
@@ -11,7 +9,6 @@ from core.settings import (
 )
 from lyrics.furigana_widget import FuriganaWidget
 from lyrics.karaoke_effects import sweep_effect_pen, text_color_pen
-from plugins.core.karaoke_screen.plugin import KaraokeScreenPlugin
 from ui.settings_dialog import SettingsDialog
 
 
@@ -79,29 +76,6 @@ def test_new_effects_render_text_and_readings_and_seek_cleanly(qapp, style, dire
         render(style, 5)
         assert render(style, 1.5) == active
         assert render(style, -1) == start
-    finally:
-        row.deleteLater()
-
-
-def test_fullscreen_receives_all_properties_and_fps_without_repainting_unchanged(qapp, monkeypatch):
-    row = FuriganaWidget()
-    try:
-        save_karaoke_settings(dict(KARAOKE_DEFAULTS, sweep_style="soft", softness=30,
-                                  sweep_easing="ease_out", sweep_fps=30))
-        intervals = []
-        plugin = KaraokeScreenPlugin()
-        plugin.window = None
-        plugin.screen = SimpleNamespace(current_lyric=row, next_lyric=None)
-        plugin.screen_timer = SimpleNamespace(setInterval=intervals.append)
-        plugin.on_karaoke_settings_changed()
-        assert row.karaoke_sweep_style == "soft"
-        assert row.karaoke_softness == 30
-        assert row.karaoke_sweep_easing == "ease_out"
-        assert intervals == [33]
-        updates = []
-        monkeypatch.setattr(row, "update", lambda: updates.append(True))
-        plugin._apply_sweep_style()
-        assert updates == []
     finally:
         row.deleteLater()
 

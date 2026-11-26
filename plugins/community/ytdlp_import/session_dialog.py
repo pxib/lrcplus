@@ -1,6 +1,4 @@
 """Choose and test a local YouTube session for one queued download."""
-from pathlib import Path
-
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel,
@@ -8,6 +6,7 @@ from PySide6.QtWidgets import (
 )
 
 from .job import ImportJob, YOUTUBE_AGE_SESSION_HINT, is_youtube_age_restriction
+from .worker import youtube_session_path
 
 
 class YouTubeSessionDialog(QDialog):
@@ -55,7 +54,7 @@ class YouTubeSessionDialog(QDialog):
         layout.addWidget(self.status)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         self.test = buttons.addButton("Test session", QDialogButtonBox.ButtonRole.ActionRole)
-        self.test.setToolTip("Check access to this video on YouTube using the selected session.")
+        self.test.setToolTip("Check whether yt-dlp can find audio for this video with the selected session.")
         self.use = buttons.addButton("Use for this download", QDialogButtonBox.ButtonRole.AcceptRole)
         self.test.clicked.connect(self._test_session)
         buttons.accepted.connect(self._use_session)
@@ -87,18 +86,21 @@ class YouTubeSessionDialog(QDialog):
             self.path.setText(path)
 
     def _selected_source(self):
-        path = Path(self.path.text().strip()).expanduser()
-        if not path.is_absolute():
-            self.status.setText("Choose the full path to the browser profile or cookie file.")
+        source = {"kind": self.kind.currentData(), "path": self.path.text().strip()}
+        try:
+            source["path"] = str(youtube_session_path(source))
+        except ValueError as error:
+            self.status.setText(str(error))
+            self.path.setFocus()
             return None
-        return {"kind": self.kind.currentData(), "path": str(path)}
+        return source
 
     def _test_session(self):
         source = self._selected_source()
         if source is None or self._job is not None:
             return
         self._set_testing(True)
-        self.status.setText("Checking access to this video on YouTube…")
+        self.status.setText("Checking for audio formats on YouTube…")
         request = {"action": "check_youtube_session", "youtube_session": source,
                    "url": self._url, "config": self._config}
         self._job = ImportJob(request, self)

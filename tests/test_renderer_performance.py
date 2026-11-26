@@ -4,8 +4,9 @@ import random
 
 import pytest
 from PySide6.QtCore import QRectF
-from PySide6.QtGui import QImage, QPainter, QTransform
+from PySide6.QtGui import QFont, QImage, QPainter, QPen, QTransform
 
+from core.fonts import library_font
 from core.lyrics_settings import LyricShadow
 from lyrics import furigana_painting
 from lyrics.furigana_widget import FuriganaWidget
@@ -59,14 +60,13 @@ def test_karaoke_reuses_rasterized_text_effects(row, monkeypatch):
     row.set_segments(text, [{"text": text, "start": 0, "end": 4}], generate=False)
     row.set_text_effects(2, "#543219", True, LyricShadow(blur=3), karaoke_color="#fedcba")
     painted_strokes = []
-    original = furigana_painting._paint_text_effects
+    original = QPainter.strokePath
 
-    def paint_effects(painter, x, y, text, stroke, shadow):
-        if stroke is not None:
-            painted_strokes.append(stroke.color().name())
-        return original(painter, x, y, text, stroke, shadow)
+    def stroke_path(painter, path, pen):
+        painted_strokes.append(pen.color().name())
+        return original(painter, path, pen)
 
-    monkeypatch.setattr(furigana_painting, "_paint_text_effects", paint_effects)
+    monkeypatch.setattr(QPainter, "strokePath", stroke_path)
 
     def render(position):
         row.set_karaoke_position(position)
@@ -84,6 +84,26 @@ def test_karaoke_reuses_rasterized_text_effects(row, monkeypatch):
     row.set_lyric("Plain lyric", generate=False)
     render(2)
     assert painted_strokes == ["#543219", "#fedcba", "#543219"]
+
+
+@pytest.mark.parametrize("dpr", [1, 1.5, 2])
+def test_stroke_cache_only_rasterizes_glyph_ink(qapp, dpr):
+    device = QImage(1, 1, QImage.Format.Format_ARGB32_Premultiplied)
+    device.setDevicePixelRatio(dpr)
+    font = library_font(QFont())
+    font.setPixelSize(48)
+    stroke = QPen()
+    stroke.setWidth(6)
+
+    def effect(text):
+        key = (text, font, (3, "#000000", None), dpr, device.logicalDpiX(), device.logicalDpiY())
+        return furigana_painting._text_effect_image(key, text, font, device, stroke, None)
+
+    ink = effect("Padded lyric")
+    padded = effect("Padded lyric" + " " * 100)
+    assert ink.offset() == padded.offset()
+    assert ink == padded
+    assert any(ink.constBits())
 
 
 @pytest.mark.parametrize("change", [

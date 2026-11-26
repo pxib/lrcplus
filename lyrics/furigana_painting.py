@@ -4,16 +4,23 @@ import math
 from collections import OrderedDict
 
 from PySide6.QtCore import Qt, QPointF, QRectF
-from PySide6.QtGui import QFontMetrics, QFontMetricsF, QColor, QImage, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QFont, QFontMetrics, QFontMetricsF, QColor, QImage, QPainter, QPainterPath, QPen
 from lyrics.karaoke_effects import eased_progress, sweep_effect_pen, text_color_pen
 
 
-_TEXT_EFFECT_CACHE_BYTES = 8 * 1024 * 1024
+# Leave room for several visible rows of large ruby and CJK text at high DPI.
+_TEXT_EFFECT_CACHE_BYTES = 16 * 1024 * 1024
 _text_effect_cache = OrderedDict()
 _text_effect_cache_bytes = 0
 
 
-def _paint_text_effects(painter, x, y, text, stroke, shadow):
+def _text_outline(text, font, device):
+    outline = QPainterPath()
+    outline.addText(QPointF(), QFont(font, device), text)
+    return outline
+
+
+def _paint_text_effects(painter, x, y, text, stroke, shadow, *, outline=None):
     painter.save()
     if shadow is not None:
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
@@ -23,8 +30,9 @@ def _paint_text_effects(painter, x, y, text, stroke, shadow):
         painter.drawText(x + shadow.offset_x, y + shadow.offset_y, text)
     if stroke is not None:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        outline = QPainterPath()
-        outline.addText(QPointF(x, y), painter.font(), text)
+        if outline is None:
+            outline = _text_outline(text, painter.font(), painter.device())
+        painter.translate(x, y)
         painter.strokePath(outline, stroke)
     painter.restore()
 
@@ -52,15 +60,27 @@ def _text_effect_image(key, text, font, device, stroke, shadow):
         _text_effect_cache.move_to_end(key)
         return image
 
-    bounds = QFontMetricsF(font, device).boundingRect(text)
-    text_bounds = bounds
+    bounds = QRectF()
+    outline = None
     if stroke is not None:
+        outline = _text_outline(text, font, device)
         fringe = stroke.widthF() / 2
-        bounds = bounds.adjusted(-fringe, -fringe, fringe, fringe)
+        if not outline.isEmpty():
+            bounds = outline.boundingRect().adjusted(-fringe, -fringe, fringe, fringe)
     if shadow is not None:
-        spread = shadow.spread
-        shadow_bounds = text_bounds.translated(shadow.offset_x, shadow.offset_y)
-        bounds = bounds.united(shadow_bounds.adjusted(-spread, -spread, spread, spread))
+        metrics = QFontMetricsF(font, device)
+        shadow_bounds = metrics.tightBoundingRect(text)
+        if font.underline() or font.strikeOut():
+            # Native rules can extend over spaces outside the glyph ink.
+            shadow_bounds = shadow_bounds.united(QRectF(
+                0, -metrics.ascent(), metrics.horizontalAdvance(text), metrics.height(),
+            ))
+        if not shadow_bounds.isEmpty():
+            spread = shadow.spread
+            shadow_bounds.translate(shadow.offset_x, shadow.offset_y)
+            bounds = bounds.united(shadow_bounds.adjusted(-spread, -spread, spread, spread))
+    if bounds.isEmpty():
+        return QImage()
     bounds = bounds.adjusted(-2, -2, 2, 2).toAlignedRect()
     dpr = device.devicePixelRatioF()
     width, height = math.ceil(bounds.width() * dpr), math.ceil(bounds.height() * dpr)
@@ -72,13 +92,16 @@ def _text_effect_image(key, text, font, device, stroke, shadow):
         return None
     image.fill(Qt.GlobalColor.transparent)
     image.setDevicePixelRatio(dpr)
-    image.setDotsPerMeterX(round(device.logicalDpiX() / 0.0254))
-    image.setDotsPerMeterY(round(device.logicalDpiY() / 0.0254))
+    if shadow is not None:
+        image.setDotsPerMeterX(round(device.logicalDpiX() / 0.0254))
+        image.setDotsPerMeterY(round(device.logicalDpiY() / 0.0254))
     image.setOffset(bounds.topLeft())
     painter = QPainter(image)
-    painter.setFont(font)
+    if shadow is not None:
+        painter.setFont(font)
     blur_shadow = shadow is not None and shadow.blur > 0
-    _paint_text_effects(painter, -bounds.x(), -bounds.y(), text, None if blur_shadow else stroke, shadow)
+    _paint_text_effects(painter, -bounds.x(), -bounds.y(), text, None if blur_shadow else stroke, shadow,
+                        outline=outline)
     painter.end()
     if blur_shadow:
         blurred = _blur_text_shadow(image, shadow, dpr)
@@ -86,8 +109,7 @@ def _text_effect_image(key, text, font, device, stroke, shadow):
         painter = QPainter(image)
         painter.drawImage(0, 0, blurred)
         if stroke is not None:
-            painter.setFont(font)
-            _paint_text_effects(painter, -bounds.x(), -bounds.y(), text, stroke, None)
+            _paint_text_effects(painter, -bounds.x(), -bounds.y(), text, stroke, None, outline=outline)
         painter.end()
 
     size = image.sizeInBytes()
@@ -114,7 +136,7 @@ class FuriganaPaintingMixin:
             image = _text_effect_image(key, text, font, device, stroke, shadow)
             if image is None:
                 _paint_text_effects(painter, x, y, text, stroke, shadow)
-            else:
+            elif not image.isNull():
                 offset = image.offset()
                 painter.drawImage(x + offset.x(), y + offset.y(), image)
         painter.drawText(x, y, text)

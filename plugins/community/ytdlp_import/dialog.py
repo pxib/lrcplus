@@ -249,6 +249,14 @@ class ImportDialog(QDialog):
             "Find matching lyrics on LRCLIB. Prefers synced lyrics, then plain text. Selected subtitle lyrics take precedence."
         )
         self.automatically_find_lyrics.toggled.connect(self._check_existing)
+        self.review_lyrics_drift = QCheckBox("Check lyric timing against subtitles")
+        self.review_lyrics_drift.setChecked(bool(settings.get("review_lyrics_drift", False)))
+        self.review_lyrics_drift.setVisible(download_queue is not None)
+        self.review_lyrics_drift.setToolTip(
+            "Flag timing drift in Downloads. Select subtitles and enable Automatically find lyrics "
+            "to compare the downloaded lyrics with this recording's captions. "
+            "Clear Use subtitles as synced lyrics to compare with LRCLIB."
+        )
         self.subtitle_hint = QLabel("Preview a track to see available subtitle languages.")
         self.subtitle_hint.setWordWrap(True)
         self.subtitle_warning = QLabel()
@@ -308,6 +316,7 @@ class ImportDialog(QDialog):
         options.setContentsMargins(12, 2, 0, 6)
         options.addLayout(form)
         for widget in (self.subtitles_as_lyrics, self.subtitle_hint, self.automatically_find_lyrics,
+                       self.review_lyrics_drift,
                        self.use_musicbrainz_cover, self.artwork_hint, self.add_to_queue,
                        self.audio_quality, self.download_size):
             options.addWidget(widget)
@@ -574,6 +583,7 @@ class ImportDialog(QDialog):
                       add_to_queue=self.add_to_queue.isChecked(),
                       use_musicbrainz_cover=self.use_musicbrainz_cover.isChecked(),
                       automatically_find_lyrics=self.automatically_find_lyrics.isChecked(),
+                       review_lyrics_drift=self.review_lyrics_drift.isChecked(),
                       subtitles_as_lyrics=self.subtitles_as_lyrics.isChecked(),
                       subtitle_language=(selected or {}).get("language", ""),
                       subtitle_kind=(selected or {}).get("kind", "manual"))

@@ -6,7 +6,7 @@ from PySide6.QtCore import QEvent, QObject, QTimer, Qt
 from PySide6.QtMultimedia import QMediaPlayer
 
 from core.settings import get_karaoke_settings, apply_karaoke_settings
-from core.lyrics_controller import playback_lyric_position
+from core.lyrics_controller import playback_lyric_position, processed_audio_position_ms
 
 
 class _DisplayVisibilityFilter(QObject):
@@ -84,6 +84,9 @@ class KaraokePlugin:
             created = getattr(window, "lyrics_renderers_created", None)
             if created is not None:
                 created.connect(self._watch_displays)
+            processed_position = getattr(window, "processed_lyric_position_changed", None)
+            if processed_position is not None:
+                processed_position.connect(self.on_processed_lyric_position_changed)
             self._watch_displays()
             self.connected = True
         self._apply_sweep_style()
@@ -186,6 +189,9 @@ class KaraokePlugin:
             self._playback_rate = 1.0
 
     def _estimated_position_seconds(self):
+        processed_position = processed_audio_position_ms(self.window)
+        if processed_position is not None:
+            return processed_position / 1000.0
         if self._position_anchor_monotonic is None or not self._playing:
             try:
                 return float(self.window.media_player.position()) / 1000.0
@@ -205,6 +211,10 @@ class KaraokePlugin:
         if not self._playing:
             self._position_anchor_monotonic = None
         self._sync_timer_with_visibility()
+
+    def on_processed_lyric_position_changed(self):
+        if self.timer is not None and not self.timer.isActive():
+            self.update_karaoke_position()
 
     def update_karaoke_position(self):
         if self.window is None or self.timer is None:
@@ -243,12 +253,16 @@ class KaraokePlugin:
                         signal.disconnect(callback)
                     except (RuntimeError, TypeError):
                         pass
-        created = getattr(self.window, "lyrics_renderers_created", None)
-        if created is not None:
-            try:
-                created.disconnect(self._watch_displays)
-            except (RuntimeError, TypeError):
-                pass
+        for name, callback in (
+            ("lyrics_renderers_created", self._watch_displays),
+            ("processed_lyric_position_changed", self.on_processed_lyric_position_changed),
+        ):
+            signal = getattr(self.window, name, None)
+            if signal is not None:
+                try:
+                    signal.disconnect(callback)
+                except (RuntimeError, TypeError):
+                    pass
         if self._visibility_filter is not None:
             for widget in self._watched_displays:
                 widget.removeEventFilter(self._visibility_filter)
