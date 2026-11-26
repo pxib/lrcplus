@@ -18,7 +18,13 @@ Thamk yo
 
 ### Changed
 
+- Move the **Karaoke Screen** plugin to [KRCPlus](https://github.com/pxib/KRCPlus), a standalone karaoke player with synchronized lyrics, MIDI melody guides, and live microphone pitch tracking.
+- Improve **Music Library** search. Find tracks with search words in any order, and see **Close matches** for typos in partial words or short words such as `bsd apple` for `Bad Apple`. Exact matches take priority.
 - Improve the YouTube session prototype in **yt-dlp Audio Import**. The chooser checks that the selected source exists, and **Test session** looks for a usable audio format and reports when yt-dlp detects invalidated cookies. Open Firefox and LibreWolf profiles supply their latest committed cookies, and both source types pass only unexpired YouTube cookies to yt-dlp. For Chrome, Edge, Brave, Opera, Vivaldi, and Safari, choose **Exported cookies.txt** and select a Netscape-format YouTube cookie export.
+
+### Fixed
+
+- Keep timed lyrics, karaoke highlights, and the karaoke pitch lane in sync with pitch-shifted audio, including after seeks and playback speed changes.
 
 ## [2026-11-25]
 
