@@ -288,6 +288,7 @@ def test_player_waits_for_audible_processed_tail_before_advancing(qapp, tmp_path
         **kwargs,
     ))
     monkeypatch.setattr(main_window.Player, "_automatic_update_check", lambda self: None)
+    monkeypatch.setenv("LRCPLUS_RUST_PLAYBACK", "0")
     save_playback_settings({"play_mode": "playlist", "volume": 0})
     window = main_window.Player()
     for method in ("update_background_for_audio", "_start_lyrics_search", "_notify_queue_changed"):
@@ -997,6 +998,7 @@ def test_player_decoder_keeps_feeding_audio_during_gui_stall(qapp, tmp_path, mon
         parent, sink_factory=lambda *args: sinks.append(DeviceSink(*args)) or sinks[-1],
         **kwargs,
     ))
+    monkeypatch.setenv("LRCPLUS_RUST_PLAYBACK", "0")
     window = main_window.Player()
     errors = []
     monkeypatch.setattr(window, "_pcm_output_failed", errors.append)

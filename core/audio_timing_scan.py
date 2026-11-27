@@ -1,5 +1,6 @@
 """Resolve timing against nearby subtitles or local vocal analysis."""
 
+import json
 import os
 from pathlib import Path
 import re
@@ -8,11 +9,10 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 
-import numpy as np
-
 from core.dependency_tasks import cancellation_scope, check_cancelled, run_process
-from lyrics.audio_timing_drift import VOCAL_FRAME_SECONDS, estimate_audio_timing, sung_intervals
-from lyrics.timing_drift import estimate_timing_correction, load_timing_reference
+from lyrics.timing_drift import (
+    TimingCorrection, TimingMatch, estimate_timing_correction, load_timing_reference, sung_intervals,
+)
 
 
 _cached_envelope = None
@@ -26,34 +26,72 @@ def _worker_pythons():
     return list(dict.fromkeys((sys.executable, getattr(sys, "_base_executable", sys.executable))))
 
 
-def _vocal_envelope(audio):
+def _vocal_envelope(audio, output):
     global _cached_envelope
     stat = audio.stat()
     key = audio, stat.st_size, stat.st_mtime_ns
     cached = _cached_envelope
     if cached is not None and cached[0] == key:
-        return cached[1]
+        output.write_bytes(cached[1])
+        return
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise ValueError("Install FFmpeg in Settings → Dependencies to analyze vocal timing.")
     worker = Path(__file__).with_name("vocal_envelope_worker.py")
-    with TemporaryDirectory(prefix="lrcplus-vocal-timing-") as folder:
-        output = Path(folder) / "envelope.npy"
-        for python in _worker_pythons():
-            result = run_process(
-                [python, "-I", str(worker), ffmpeg, str(audio), str(output)],
-                capture_output=True, encoding="utf-8", errors="replace", timeout=900,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            if result.returncode == 2:
-                continue
-            if result.returncode:
-                raise ValueError(result.stderr.strip().splitlines()[-1] if result.stderr.strip()
-                                 else "Vocal analysis could not finish.")
-            envelope = np.load(output, allow_pickle=False)
-            _cached_envelope = key, envelope
-            return envelope
+    for python in _worker_pythons():
+        result = run_process(
+            [python, "-I", str(worker), ffmpeg, str(audio), str(output)],
+            stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", errors="replace",
+            timeout=900, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode == 2:
+            continue
+        if result.returncode:
+            raise ValueError(result.stderr.strip().splitlines()[-1] if result.stderr.strip()
+                             else "Vocal analysis could not finish.")
+        check_cancelled()
+        # Keep the single-track cache without loading NumPy in the editor process.
+        _cached_envelope = key, output.read_bytes()
+        return
     raise ValueError("Install Demucs in Settings → Dependencies and restart LRCPlus to analyze vocal timing.")
+
+
+def _fit_worker_command():
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--lrcplus-audio-timing-worker"]
+    return [sys.executable, "-I", str(Path(__file__).with_name("audio_timing_worker.py"))]
+
+
+def _fit_vocal_timing(envelope, intervals, offset_ms):
+    request = envelope.with_name("request.json")
+    response = envelope.with_name("response.json")
+    request.write_text(json.dumps({
+        "intervals": [(index, float(start), float(end)) for index, start, end in intervals],
+        "offset_ms": float(offset_ms),
+    }), encoding="utf-8")
+    completed = run_process(
+        _fit_worker_command() + [str(request), str(envelope), str(response)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        encoding="utf-8", errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    check_cancelled()
+    try:
+        result = json.loads(response.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError("The vocal timing worker did not return a result.") from error
+    if completed.returncode:
+        detail = result.get("error", "") if isinstance(result, dict) else ""
+        raise ValueError(detail or "The vocal timing worker could not finish.")
+    try:
+        duration_ms = result["duration_ms"]
+        data = result["correction"]
+        if data is not None:
+            data["matches"] = tuple(TimingMatch(**match) for match in data["matches"])
+            data = TimingCorrection(**data)
+        return data, duration_ms
+    except (KeyError, TypeError) as error:
+        raise ValueError("The vocal timing worker returned an invalid result.") from error
 
 
 def correct_audio_timing(audio, lines, offset_ms, duration_ms, cancelled):
@@ -88,12 +126,11 @@ def correct_audio_timing(audio, lines, offset_ms, duration_ms, cancelled):
                    for other in caption_results[1:] for t in (start, end)):
                 return None if first is None else first.apply(lines, offset_ms=offset_ms, duration_ms=duration_ms)
         intervals = sung_intervals(lines)
-        envelope = _vocal_envelope(audio)
-        check_cancelled()
-        correction = estimate_audio_timing(
-            intervals, envelope, offset_ms=offset_ms, check_cancelled=check_cancelled,
-        )
-        duration_ms = duration_ms or round(len(envelope) * VOCAL_FRAME_SECONDS * 1000)
+        with TemporaryDirectory(prefix="lrcplus-vocal-timing-") as folder:
+            envelope = Path(folder) / "envelope.npy"
+            _vocal_envelope(audio, envelope)
+            correction, estimated_duration = _fit_vocal_timing(envelope, intervals, offset_ms)
+        duration_ms = duration_ms or estimated_duration
         return None if correction is None else correction.apply(lines, offset_ms=offset_ms, duration_ms=duration_ms)
 
 

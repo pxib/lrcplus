@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 import math
 from pathlib import Path
+from statistics import median
 import unicodedata
 
 from lyrics.loader import load_lyrics
@@ -59,6 +60,18 @@ class TimingCorrection:
 
 class _PlaybackOffsetTooLarge(Exception):
     pass
+
+
+def sung_intervals(lines):
+    """Return sung intervals, keeping authored ends and inferring missing ones."""
+    timed = sorted((line.start, index, line.end) for index, line in enumerate(lines) if line.text.strip())
+    starts = sorted({start for start, _, _ in timed})
+    if len(starts) < 4 or not all(map(math.isfinite, starts)) or starts[0] < 0 or starts[-1] - starts[0] < 10:
+        raise ValueError("Automatic correction needs at least four timed lines spread across the song.")
+    spacing = median(b - a for a, b in zip(starts, starts[1:]))
+    following = dict(zip(starts, starts[1:] + [starts[-1] + spacing]))
+    return [(index, start, end if end is not None and math.isfinite(end) and end > start
+             else min(following[start], start + 1.2 * spacing)) for start, index, end in timed]
 
 
 def _key(text):

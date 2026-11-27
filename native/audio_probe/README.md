@@ -37,16 +37,17 @@ The prototype was built with the x64 Windows GNU Rust toolchain.
 After building the release probe, start the app from the repository root.
 
 ```powershell
-$env:LRCPLUS_RUST_PLAYBACK = "1"
 .\Scripts\python.exe main.py
 ```
 
-Open a local track on the system default audio device. **Advanced → Audio
-signal path** shows **Rust prototype (Symphonia and WASAPI)** when the probe
-is active. The probe supplies the playback position for the seek bar and
-lyrics. Use the app controls to pause, resume, and seek. The panel shows
-how many output frames the probe filled with silence when PCM ran out,
-counted from the latest track load or seek.
+For a local track on the system default audio device, Rust is selected at
+track load when the speed is off 100% and pitch preservation is on, or when
+an independent pitch shift is set. Qt is selected at track load for neutral
+playback and for speed changes with pitch linked. Changes on an active Rust
+track can use the same transport while it remains compatible. **Advanced →
+Audio signal path** shows **Rust (Symphonia and WASAPI)** when the probe is
+active. The probe supplies the playback position for the seek bar and lyrics.
+The panel counts underrun frames from the latest track load or seek.
 
 The Rust stream stays open as you drag the speed slider. It queues up to
 64 ms of PCM. With **Link pitch to speed** on, it ramps the resampling rate
@@ -64,11 +65,12 @@ clips boosted PCM to the supported sample range. Tracks that need equalization,
 gapless or crossfade, a non-default audio device, or PCM visualization use the
 existing playback routes.
 
-To compare memory and CPU with a regular launch, use the same track and
-settings. Include both the Python app and `lrcplus-audio-probe.exe` in the
-Rust run. Clear the flag before launching the baseline.
+Set `LRCPLUS_RUST_PLAYBACK=1` to prefer Rust for all compatible local
+tracks, or `LRCPLUS_RUST_PLAYBACK=0` to use the Qt baseline. Include both
+the Python app and `lrcplus-audio-probe.exe` in Rust memory and CPU
+measurements.
 
 ```powershell
-Remove-Item Env:LRCPLUS_RUST_PLAYBACK
+$env:LRCPLUS_RUST_PLAYBACK = "0"
 .\Scripts\python.exe main.py
 ```

@@ -1,4 +1,7 @@
+import json
 import re
+from copy import deepcopy
+from pathlib import Path
 
 from PySide6.QtGui import QColor, QGuiApplication, QPalette
 
@@ -197,3 +200,92 @@ def build_theme_palette(mode, accent_color, surface_style="classic", overrides=N
                 (target.red(), target.green(), target.blue()))))
         values[role] = marker.name()
     return values
+
+
+def load_theme_color_presets():
+    """Read named accent colors from the repository's shared theme reference."""
+    path = Path(__file__).resolve().parents[1] / "themedata" / "optionalthemes.json"
+    try:
+        with path.open(encoding="utf-8") as theme_file:
+            themes = json.load(theme_file).get("themes", [])
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [
+        (theme["name"], theme)
+        for theme in themes
+        if isinstance(theme, dict)
+        and isinstance(theme.get("name"), str)
+        and all(isinstance(theme.get(key), str) for key in (
+            "background", "surface", "accent", "text", "secondaryText"
+        ))
+    ]
+
+
+def _blend_theme_colors(first, second, amount):
+    first, second = QColor(first), QColor(second)
+    return QColor(
+        round(first.red() * (1 - amount) + second.red() * amount),
+        round(first.green() * (1 - amount) + second.green() * amount),
+        round(first.blue() * (1 - amount) + second.blue() * amount),
+    ).name()
+
+
+def apply_theme_preset(appearance, preset):
+    """Apply a preset using the same color mapping as the Settings UI."""
+    result = deepcopy(appearance)
+    if isinstance(preset, str):
+        # Core color presets cover the whole UI and replace the previous theme.
+        # Start with neutral surfaces so every hue has its own coherent palette.
+        overrides = {}
+        foreground_roles = {
+            "text", "muted", "brand", "header_button_text", "dock_text",
+            "dock_muted", "slider_handle",
+        }
+        for mode in ("light", "dark"):
+            base = build_theme_palette(mode, preset, "neutral")
+            colors = {}
+            for role in THEME_COLOR_FIELDS:
+                if role in foreground_roles:
+                    amount = 0.08
+                elif role.startswith("dock") or role in {"selection", "item_hover"}:
+                    amount = 0.30
+                elif role in {"surface", "surface_alt"}:
+                    amount = 0.12 if mode == "light" else 0.20
+                else:
+                    amount = 0.20 if mode == "light" else 0.26
+                colors[role] = _blend_theme_colors(base[role], preset, amount)
+            overrides[mode] = colors
+        result.update(theme_color=preset, theme_preset_name=None,
+                      theme_overrides=overrides)
+        return result
+    mode = "dark" if QColor(preset["background"]).lightness() < 128 else "light"
+    background, surface, accent, text, secondary = (QColor(preset[key]) for key in
+        ("background", "surface", "accent", "text", "secondaryText"))
+    dock = background if mode == "dark" else text
+    dock_control = surface if mode == "dark" else dock.lighter(135)
+    dock_text = text if mode == "dark" else surface
+    raised_base = surface if mode == "dark" else background
+    overrides = normalize_theme_overrides(result.get("theme_overrides"))
+    colors = overrides.setdefault(mode, {})
+    colors.update({
+        "window": background.name(), "header": background.name(), "surface": surface.name(),
+        "surface_alt": _blend_theme_colors(background, surface, 0.55),
+        "raised": _blend_theme_colors(raised_base, text, 0.10),
+        "raised_hover": _blend_theme_colors(raised_base, accent, 0.10),
+        "pressed": _blend_theme_colors(raised_base, accent, 0.20),
+        "text": text.name(), "brand": text.name(), "muted": secondary.name(),
+        "border": _blend_theme_colors(background, text, 0.16),
+        "field_border": _blend_theme_colors(background, text, 0.22),
+        "header_button_text": text.name(), "dock": dock.name(),
+        "dock_border": dock.lighter(150).name(), "dock_control": dock_control.name(),
+        "dock_control_hover": dock_control.lighter(115).name(),
+        "dock_control_border": dock_control.lighter(130).name(),
+        "dock_disabled": dock.darker(110).name(), "dock_text": dock_text.name(),
+        "dock_muted": secondary.name(), "seek_track": accent.name(),
+        "slider_handle": dock_text.name(), "scroll_handle": accent.name(),
+    })
+    for key, values in normalize_theme_overrides(preset.get("advancedColors", {})).items():
+        overrides.setdefault(key, {}).update(values)
+    result.update(theme_preset_name=preset["name"], theme_mode=mode,
+                  theme_color=accent.name(), theme_overrides=overrides)
+    return result

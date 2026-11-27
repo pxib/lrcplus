@@ -1,3 +1,4 @@
+mod gain;
 mod live_rate;
 mod melody;
 mod playback;

@@ -64,7 +64,6 @@ from core.music_library import LibraryTrack
 from core.playlists import path_key
 from core.favorites import load_favorites
 from ui.favorites import FavoritesMixin
-from lyrics.widgets import FuriganaWidget, ScrollingLyricsWidget
 from lyrics.waveform import WaveformWidget, find_ffmpeg
 from lyrics.writer import convert_lyrics
 from ui.user_manual import open_community_wiki, open_user_manual
@@ -83,7 +82,6 @@ from ui.player_ab_loop import PlayerABLoopMixin
 from ui.player_repeat import PlayerRepeatMixin
 from ui.player_sleep_timer import PlayerSleepTimerMixin
 from ui.player_statistics import PlayerStatisticsMixin
-from ui.lyrics_search_dialog import LyricsSearchDialogMixin
 from ui.stream_lyrics import StreamLyricsController
 
 
@@ -106,7 +104,6 @@ class Player(
     PlayerStatisticsMixin,
     PlayerLibraryMixin,
     PlayerUpdatesMixin,
-    LyricsSearchDialogMixin,
     LibraryLyricsSearchMixin,
     QueueActionsMixin,
     QueueControllerMixin,
@@ -1007,6 +1004,8 @@ class Player(
             """Create renderers when lyrics, a plugin, or the workspace needs them."""
             if self._lyrics_renderers_ready:
                 return
+            from lyrics.widgets import FuriganaWidget, ScrollingLyricsWidget
+
             self._lyric_widget = FuriganaWidget()
             self._lyric_widget.setMinimumHeight(250)
             self._scrolling_lyrics_widget = ScrollingLyricsWidget(
@@ -1949,6 +1948,12 @@ class Player(
                 return Path(self.current_audio_path).with_suffix(".lrc")
 
             return None
+
+
+        def search_lrclib_lyrics(self):
+            from ui.lyrics_search_dialog import LyricsSearchDialogMixin
+
+            return LyricsSearchDialogMixin.search_lrclib_lyrics(self)
 
 
         def edit_current_lyrics(self, *, line_index=-1):

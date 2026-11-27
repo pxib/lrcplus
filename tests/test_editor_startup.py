@@ -1,10 +1,55 @@
 """Opening an editor should build only one immutable saved-state snapshot."""
 
 from copy import deepcopy
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
 from ui.lrc_editor import LrcEditorDialog
+
+
+def test_opening_lyrics_karaoke_and_translations_defers_audio_timing(tmp_path):
+    path = tmp_path / "song.lrcx"
+    path.write_text("[00:01.000]First\n[00:03.000]Second\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-c", f"""
+import sys
+from pathlib import Path
+from PySide6.QtWidgets import QApplication, QDialog
+from core.gui_garbage_collector import install_gui_garbage_collector
+from core.plugin_manager import PluginManager
+from ui.lrc_editor import LrcEditorDialog
+from ui.main_window import Player
+
+app = QApplication([])
+install_gui_garbage_collector(app)
+manager = PluginManager(disabled_plugins=["discord_rpc", "audio_visualizer"])
+manager.discover_and_load(Path("plugins"))
+window = Player(plugin_manager=manager)
+window.show()
+dialog = LrcEditorDialog(Path({str(path)!r}), window)
+dialog.show()
+try:
+    tabs = {{dialog.tabs.tabText(i): i for i in range(dialog.tabs.count())}}
+    for name in ("Lyrics", "Karaoke", "Translations"):
+        dialog.tabs.setCurrentIndex(tabs[name])
+        app.processEvents()
+        assert "numpy" not in sys.modules, name
+        assert "core.audio_timing_scan" not in sys.modules, name
+finally:
+    dialog.done(QDialog.DialogCode.Rejected)
+    dialog.deleteLater()
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+    manager.unload_all()
+"""],
+        cwd=Path(__file__).resolve().parents[1], capture_output=True, encoding="utf-8",
+        errors="replace", timeout=25,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("completion_line", [-1, 0])

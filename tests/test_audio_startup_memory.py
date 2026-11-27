@@ -67,10 +67,54 @@ finally:
 """)
 
 
-def test_first_gain_and_resample_calls_load_numpy_and_preserve_output():
+def test_startup_and_theme_setup_defer_optional_dialogs_and_lyric_renderers():
+    run_fresh("""
+import sys
+import main
+from PySide6.QtWidgets import QDialog
+
+assert 'ui.onboarding' not in sys.modules
+app = main.QApplication([])
+window = main.Player()
+try:
+    window.show()
+    app.processEvents()
+    assert 'lyrics.scrolling_widget' not in sys.modules
+    assert 'ui.lyrics_search_dialog' not in sys.modules
+
+    from ui.onboarding import OnboardingDialog
+    from ui.onboarding_sound import OnboardingSounds
+
+    OnboardingSounds.play = lambda *_: False
+    wizard = OnboardingDialog(window)
+    try:
+        wizard.choose_preset(wizard.preset_combo.findText('Blue'))
+        assert window.appearance_settings['theme_color'] == '#4477cc'
+        assert 'ui.settings_dialog' not in sys.modules
+    finally:
+        wizard.done(QDialog.DialogCode.Rejected)
+
+    opened = []
+    QDialog.exec = lambda dialog: opened.append(dialog.windowTitle()) or 0
+    search_action = next(action for action in window.lyrics_menu.actions()
+                         if action.objectName() == 'search_lyrics')
+    search_action.trigger()
+    assert opened == ['Search Lyrics']
+    assert 'ui.lyrics_search_dialog' in sys.modules
+    window.lyrics_view_button.click()
+    assert 'lyrics.scrolling_widget' in sys.modules
+finally:
+    window.close()
+    app.processEvents()
+""")
+
+
+def test_first_dsp_calls_preserve_output_and_defer_numpy_when_possible():
     run_fresh("""
 import struct, sys
-from core.audio_dsp import PcmPitchProcessor, PcmRateProcessor, apply_pcm_gain_to_bytes, apply_pcm_rate_to_bytes
+from core.audio_dsp import (
+    PcmPitchProcessor, PcmRateProcessor, _native_gain, apply_pcm_gain_to_bytes, apply_pcm_rate_to_bytes,
+)
 from PySide6.QtMultimedia import QAudioFormat
 fmt = QAudioFormat.SampleFormat.Float
 source = struct.pack('<200f', *([0.25] * 200))
@@ -81,9 +125,10 @@ assert pitch.process(source, fmt, 1, 48000, 0) == source
 assert apply_pcm_rate_to_bytes(source, fmt, 1, 1) == source
 assert 'numpy' not in sys.modules
 gained = apply_pcm_gain_to_bytes(source, fmt, 2)
-assert 'numpy' in sys.modules
+assert ('numpy' in sys.modules) == (_native_gain() is None)
 assert all(value == 0.5 for (value,) in struct.iter_unpack('<f', gained))
 resampled = apply_pcm_rate_to_bytes(source, fmt, 1, 1.25)
+assert 'numpy' in sys.modules
 assert len(resampled) == 160 * 4
 assert all(abs(value - 0.25) < 1e-6 for (value,) in struct.iter_unpack('<f', resampled))
 """)
@@ -92,6 +137,7 @@ assert all(abs(value - 0.25) < 1e-6 for (value,) in struct.iter_unpack('<f', res
 def test_audio_thread_imports_numpy_only_when_first_processed_buffer_needs_it():
     run_fresh("""
 import struct, sys, time
+from core.audio_dsp import _native_gain
 from core.pcm_playback import PcmPlayback
 from PySide6.QtMultimedia import QAudioBuffer, QAudioFormat
 from PySide6.QtWidgets import QApplication
@@ -130,7 +176,7 @@ try:
     worker.configure(None, 1, 0, 2, enabled=True, playing=True)
     worker.receive_buffer(QAudioBuffer(source, fmt))
     wait(lambda: len(written) == 2)
-    assert 'numpy' in sys.modules
+    assert ('numpy' in sys.modules) == (_native_gain() is None)
     assert all(value == 0.5 for (value,) in struct.iter_unpack('<f', written[1]))
 finally:
     worker.close()
@@ -141,12 +187,14 @@ finally:
 def test_first_dsp_import_failure_reports_error_and_stops_processed_input():
     run_fresh("""
 import builtins, struct, time
+from core import audio_dsp
 from core.pcm_playback import PcmPlayback
 from PySide6.QtMultimedia import QAudioBuffer, QAudioFormat
 from PySide6.QtWidgets import QApplication
 app = QApplication([])
 errors = []
 original_import = builtins.__import__
+audio_dsp._native_gain = lambda: None
 def unavailable(name, *args, **kwargs):
     if name == 'numpy': raise ImportError('NumPy unavailable for test')
     return original_import(name, *args, **kwargs)
@@ -174,7 +222,7 @@ finally:
 """)
 
 
-def test_cold_player_can_switch_tracks_and_pitch_with_waveform_enabled(tmp_path, qapp):
+def test_cold_player_can_switch_tracks_and_pitch_with_waveform_enabled(tmp_path, qapp, monkeypatch):
     import shutil
     import pytest
     from PySide6.QtMultimedia import QMediaDevices
@@ -182,6 +230,7 @@ def test_cold_player_can_switch_tracks_and_pitch_with_waveform_enabled(tmp_path,
 
     if not QMediaDevices.audioOutputs() or not (audio_probe_executable() or shutil.which("ffmpeg")):
         pytest.skip("Requires audio output and a waveform decoder")
+    monkeypatch.setenv("LRCPLUS_RUST_PLAYBACK", "0")
     # Keep this in a fresh process: NumPy/Rubber Band imports on the audio
     # thread exposed a renderer/GIL deadlock hidden by the warmed-up suite.
     run_fresh(f"""

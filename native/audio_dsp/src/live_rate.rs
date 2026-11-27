@@ -5,6 +5,78 @@ use crate::streaming_rate::windowed_sinc;
 const LOBES: f64 = 32.0;
 const STEPS_PER_LOBE: f64 = 128.0;
 const CUTOFF: f64 = 0.94;
+const MAX_PERIOD: usize = 256;
+const MAX_FIXED_WEIGHTS: usize = 65_536;
+
+enum SteadyRate {
+    Pending,
+    Fixed(FixedRate),
+    Variable,
+}
+
+struct FixedRate {
+    phases: Vec<FixedPhase>,
+    base: usize,
+    advance: usize,
+    index: usize,
+}
+
+struct FixedPhase {
+    first: isize,
+    end: f64,
+    weights: Vec<f32>,
+}
+
+impl FixedRate {
+    fn new(ratio: f64, phase: f64, kernel: &[f32]) -> Option<Self> {
+        // Integer source and device rates often repeat a short sequence of
+        // fractions. Skip long periods so a control change cannot build a large filter.
+        let period = (1..=MAX_PERIOD).find(|&steps| {
+            let frames = (ratio * steps as f64).round();
+            frames > 0.0 && (frames / steps as f64 - ratio).abs() <= ratio * f64::EPSILON
+        })?;
+        let advance = (ratio * period as f64).round() as usize;
+        let cutoff = CUTOFF / ratio.max(1.0);
+        let radius = LOBES / cutoff;
+        if (2.0 * radius).ceil() as usize * period > MAX_FIXED_WEIGHTS {
+            return None;
+        }
+        let scale = cutoff * STEPS_PER_LOBE;
+        let position = |index| phase.fract() + (index * advance) as f64 / period as f64;
+        let phases = (0..period)
+            .map(|index| {
+                let center = position(index);
+                let first = (center - radius).ceil() as isize;
+                let last = (center + radius).floor() as isize;
+                let mut weights: Vec<_> = (first..=last)
+                    .map(|tap| kernel_weight(kernel, tap as f64 - center, scale))
+                    .collect();
+                let total: f32 = weights.iter().sum();
+                for weight in &mut weights {
+                    *weight /= total;
+                }
+                FixedPhase {
+                    first,
+                    end: position(index + 1),
+                    weights,
+                }
+            })
+            .collect();
+        Some(Self {
+            phases,
+            base: phase.floor() as usize,
+            advance,
+            index: 0,
+        })
+    }
+}
+
+fn kernel_weight(kernel: &[f32], distance: f64, scale: f64) -> f32 {
+    let index = (distance * scale).abs();
+    let left = index as usize;
+    let blend = (index - left as f64) as f32;
+    kernel[left] * (1.0 - blend) + kernel[left + 1] * blend
+}
 
 /// A variable-rate resampler for mono or stereo PCM with a continuous source phase.
 pub struct LiveRate {
@@ -14,6 +86,7 @@ pub struct LiveRate {
     input_start: usize,
     total: usize,
     phase: f64,
+    steady: SteadyRate,
     ratio: f64,
     target: f64,
     step: f64,
@@ -54,6 +127,7 @@ impl LiveRate {
             input_start: 0,
             total: 0,
             phase: 0.0,
+            steady: SteadyRate::Pending,
             ratio,
             target: ratio,
             step: 0.0,
@@ -71,6 +145,7 @@ impl LiveRate {
         }
         if ratio != self.target {
             self.target = ratio;
+            self.steady = SteadyRate::Pending;
             if self.phase == 0.0 {
                 self.ratio = ratio;
             } else {
@@ -115,6 +190,80 @@ impl LiveRate {
         pcm: &mut Vec<f32>,
         positions: &mut Vec<f64>,
     ) {
+        let ramp = limit.min(self.remaining);
+        if ramp != 0 {
+            self.render_variable::<CHANNELS>(ramp, pcm, positions);
+            if self.remaining != 0 {
+                return;
+            }
+        }
+        let limit = limit - ramp;
+        if limit == 0 || self.phase >= self.total as f64 {
+            return;
+        }
+        if self.ratio == 1.0 && self.phase.fract() == 0.0 {
+            let start = self.phase as usize;
+            let end = start + limit.min(self.total - start);
+            pcm.extend_from_slice(
+                &self.input
+                    [(start - self.input_start) * CHANNELS..(end - self.input_start) * CHANNELS],
+            );
+            positions.extend((start + 1..=end).map(|frame| frame as f64));
+            self.phase = end as f64;
+            return;
+        }
+        if matches!(self.steady, SteadyRate::Pending) {
+            self.steady = FixedRate::new(self.ratio, self.phase, &self.kernel)
+                .map_or(SteadyRate::Variable, SteadyRate::Fixed);
+        }
+        if let SteadyRate::Fixed(fixed) = &mut self.steady {
+            for _ in 0..limit {
+                let phase = &fixed.phases[fixed.index];
+                let first = fixed.base as isize + phase.first;
+                let end = first + phase.weights.len() as isize;
+                if self.phase >= self.total as f64 || (!self.eof && end > self.total as isize) {
+                    break;
+                }
+                let mut sums = [0.0; CHANNELS];
+                if first >= 0 && end <= self.total as isize {
+                    let start = (first as usize - self.input_start) * CHANNELS;
+                    let window = &self.input[start..start + phase.weights.len() * CHANNELS];
+                    for (frame, &weight) in window.chunks_exact(CHANNELS).zip(&phase.weights) {
+                        for (sum, &sample) in sums.iter_mut().zip(frame) {
+                            *sum += sample * weight;
+                        }
+                    }
+                } else {
+                    for (tap, &weight) in phase.weights.iter().enumerate() {
+                        let frame = (first + tap as isize).clamp(0, self.total as isize - 1);
+                        let start = (frame as usize - self.input_start) * CHANNELS;
+                        for (sum, &sample) in
+                            sums.iter_mut().zip(&self.input[start..start + CHANNELS])
+                        {
+                            *sum += sample * weight;
+                        }
+                    }
+                }
+                pcm.extend(sums);
+                self.phase = fixed.base as f64 + phase.end;
+                positions.push(self.phase.min(self.total as f64));
+                fixed.index += 1;
+                if fixed.index == fixed.phases.len() {
+                    fixed.index = 0;
+                    fixed.base += fixed.advance;
+                }
+            }
+        } else {
+            self.render_variable::<CHANNELS>(limit, pcm, positions);
+        }
+    }
+
+    fn render_variable<const CHANNELS: usize>(
+        &mut self,
+        limit: usize,
+        pcm: &mut Vec<f32>,
+        positions: &mut Vec<f64>,
+    ) {
         for _ in 0..limit {
             let cutoff = CUTOFF / self.ratio.max(1.0);
             let radius = LOBES / cutoff;
@@ -127,10 +276,7 @@ impl LiveRate {
             let mut samples = [0.0; CHANNELS];
             let mut weight_sum = 0.0;
             for tap in first..=last {
-                let index = ((tap as f64 - self.phase) * table_scale).abs();
-                let left = index as usize;
-                let blend = (index - left as f64) as f32;
-                let weight = self.kernel[left] * (1.0 - blend) + self.kernel[left + 1] * blend;
+                let weight = kernel_weight(&self.kernel, tap as f64 - self.phase, table_scale);
                 let frame =
                     (tap.clamp(0, self.total as isize - 1) as usize - self.input_start) * CHANNELS;
                 for (sample, &source) in
@@ -157,7 +303,74 @@ impl LiveRate {
 
 #[cfg(test)]
 mod tests {
-    use super::LiveRate;
+    use super::{LiveRate, SteadyRate};
+
+    #[test]
+    fn unity_copies_samples_without_lookahead() {
+        let input = [0.1, 0.7, -0.4, 0.2, 0.9, -0.8];
+        let mut rate = LiveRate::new(1.0, 2.0, 2, 100).unwrap();
+        let (mut pcm, mut positions) = (Vec::new(), Vec::new());
+        rate.push(&input[..2]);
+        rate.render(100, &mut pcm, &mut positions);
+        assert_eq!(pcm, input[..2]);
+        rate.push(&input[2..]);
+        rate.finish();
+        rate.render(100, &mut pcm, &mut positions);
+        assert_eq!(pcm, input);
+        assert_eq!(positions, [1.0, 2.0, 3.0]);
+        assert!(rate.drained());
+    }
+
+    #[test]
+    fn fixed_conversion_matches_the_variable_filter_and_finishes_at_the_source_end() {
+        let frames = 4093_usize;
+        let input: Vec<f32> = (0..frames)
+            .flat_map(|i| [(i as f32 * 0.17).sin(), (i as f32 * 0.9).cos()])
+            .collect();
+        for (advance, period) in [(147, 160), (147, 128), (160, 147)] {
+            let render = |mut rate: LiveRate| {
+                let (mut pcm, mut positions) = (Vec::new(), Vec::new());
+                for chunk in input.chunks(74) {
+                    rate.push(chunk);
+                    rate.render(1024, &mut pcm, &mut positions);
+                }
+                rate.finish();
+                rate.render(1024, &mut pcm, &mut positions);
+                (rate, pcm, positions)
+            };
+            let ratio = advance as f64 / period as f64;
+            let (fixed, pcm, positions) = render(LiveRate::new(ratio, 2.0, 2, 100).unwrap());
+            let mut variable = LiveRate::new(ratio, 2.0, 2, 100).unwrap();
+            variable.steady = SteadyRate::Variable;
+            let (_, reference, reference_positions) = render(variable);
+            assert!(matches!(fixed.steady, SteadyRate::Fixed(_)));
+            assert_eq!(pcm.len(), reference.len());
+            assert_eq!(positions.len(), (frames * period).div_ceil(advance));
+            assert_eq!(positions.last(), Some(&(frames as f64)));
+            assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+            for (cached, original) in positions.iter().zip(reference_positions) {
+                assert!((cached - original).abs() < 1e-8);
+            }
+            for (cached, original) in pcm.iter().zip(reference) {
+                assert!((cached - original).abs() < 2e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn ramp_back_to_unity_keeps_the_fractional_phase() {
+        let mut rate = LiveRate::new(1.0, 2.0, 1, 4).unwrap();
+        rate.push(&[0.8; 256]);
+        let (mut pcm, mut positions) = (Vec::new(), Vec::new());
+        rate.render(3, &mut pcm, &mut positions);
+        rate.set_ratio(1.25).unwrap();
+        rate.render(7, &mut pcm, &mut positions);
+        rate.set_ratio(1.0).unwrap();
+        rate.render(8, &mut pcm, &mut positions);
+        assert!(matches!(rate.steady, SteadyRate::Fixed(_)));
+        assert_eq!(&positions[13..], &[15.75, 16.75, 17.75, 18.75, 19.75]);
+        assert!(pcm.iter().all(|sample| (sample - 0.8).abs() < 1e-6));
+    }
 
     #[test]
     fn retargeting_preserves_phase_and_ramps_from_the_current_ratio() {

@@ -18,6 +18,8 @@ from core import settings
 from core.onboarding_events import onboarding_events
 from core.onboarding_script import SCRIPT_PATH, load_script
 from core.onboarding_state import apply_state, decode_payload, matches_condition
+from core.settings import needs_onboarding as needs_onboarding
+from core.theme import apply_theme_preset, load_theme_color_presets
 from ui.onboarding_sound import OnboardingSounds, sound_expression, voice_duration_ms
 
 
@@ -64,14 +66,6 @@ def dialogue_tokens(text):
     if position < len(text):
         tokens.append(("text", text[position:]))
     return tokens
-
-
-def needs_onboarding():
-    """Do not present first-run setup to users with an existing configuration."""
-    if settings.SETTINGS_PATH.exists():
-        return False
-    import os
-    return bool(os.environ.get("LRCPLUS_SETTINGS_PATH")) or not settings.LEGACY_SETTINGS_PATH.exists()
 
 
 def load_dialogue_data(key, path=DIALOGUE_PATH):
@@ -278,13 +272,12 @@ class OnboardingDialog(QDialog):
         self.theme_combo.setCurrentIndex(max(0, self.theme_combo.findData(appearance.get("theme_mode", "light"))))
         self.theme_combo.currentIndexChanged.connect(self.change_theme)
         layout.addWidget(self.theme_combo)
-        from ui.settings_dialog import _load_theme_color_presets
         self.preset_combo = QComboBox()
         self.preset_combo.setAccessibleName("Theme preset")
         self.preset_combo.addItem("Choose a theme preset", None)
         for name, color in (("Green", "#3a9879"), ("Blue", "#4477cc"), ("Purple", "#895cc4"), ("Rose", "#c45278"), ("Orange", "#bd691f")):
             self.preset_combo.addItem(name, color)
-        for name, preset in _load_theme_color_presets():
+        for name, preset in load_theme_color_presets():
             self.preset_combo.addItem(name, preset)
         for preset in appearance.get("custom_themes", []):
             self.preset_combo.addItem(preset["name"], preset)
@@ -761,7 +754,6 @@ class OnboardingDialog(QDialog):
             parent.dark_theme_button.setChecked(mode == "dark")
 
     def choose_preset(self, index):
-        from ui.settings_dialog import apply_theme_preset
         preset = self.preset_combo.itemData(index)
         if not preset:
             return

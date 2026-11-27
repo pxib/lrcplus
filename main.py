@@ -14,6 +14,11 @@ if __name__ == "__main__" and "--lrcplus-dependency-probe" in sys.argv:
     from core.dependency_probe import main as probe_main
     raise SystemExit(probe_main())
 
+if __name__ == "__main__" and "--lrcplus-audio-timing-worker" in sys.argv:
+    sys.argv.remove("--lrcplus-audio-timing-worker")
+    from core.audio_timing_worker import main as audio_timing_worker_main
+    raise SystemExit(audio_timing_worker_main())
+
 if __name__ == "__main__":
     from core.crash_logging import install_crash_logging
     install_crash_logging()
@@ -30,7 +35,7 @@ from PySide6.QtGui import QIcon
 
 from core.plugin_manager import PluginManager
 from core.app_info import APP_NAME, APP_VERSION
-from core.settings import get_disabled_plugins
+from core.settings import get_disabled_plugins, needs_onboarding
 from lyrics.furigana import katakana_to_hiragana, token_to_furigana_segments
 from ui.input_events import ControlWheelFilter
 from ui.main_window import Player
@@ -43,7 +48,6 @@ __all__ = [
 
 
 def main() -> int:
-    from ui.onboarding import needs_onboarding
     update_health_token = None
     smoke_directory = None
     for argument in sys.argv[1:]:
@@ -83,12 +87,13 @@ def main() -> int:
             8000,
             lambda token=update_health_token: acknowledge_update_health(token),
         )
-    from ui.dependency_settings import show_dependency_notice
     def show_startup_dialogs():
         if show_onboarding:
             from ui.onboarding import OnboardingDialog
             OnboardingDialog(window).run()
-        show_dependency_notice(plugin_manager, window)
+        if plugin_manager.dependency_errors:
+            from ui.dependency_settings import show_dependency_notice
+            show_dependency_notice(plugin_manager, window)
 
     if smoke_directory is None:
         QTimer.singleShot(0, show_startup_dialogs)

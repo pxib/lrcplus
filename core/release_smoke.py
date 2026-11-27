@@ -130,14 +130,20 @@ def _check_melody_detection():
 
 
 def _check_pcm_engine():
+    from core.audio_dsp import _native_gain, apply_pcm_gain_to_bytes
     from core.pcm_buffers import _native_api, make_inbox, make_output
 
     if _native_api() is None:
         raise RuntimeError("The packaged Rust PCM engine could not load.")
+    sample_format = QAudioFormat.SampleFormat.Int16
+    if (_native_gain() is None
+            or apply_pcm_gain_to_bytes(pack("<hh", 20_000, -20_000), sample_format, 2)
+            != pack("<hh", 32_767, -32_768)):
+        raise RuntimeError("The packaged Rust PCM gain produced unexpected output.")
     fmt = QAudioFormat()
     fmt.setSampleRate(48000)
     fmt.setChannelCount(1)
-    fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+    fmt.setSampleFormat(sample_format)
     pcm = pack("<h", 1500) * 120
     inbox = make_inbox()
     inbox.push(pcm, fmt, 4_000_000, len(pcm))

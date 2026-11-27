@@ -1,5 +1,9 @@
+from functools import cache
+from math import isfinite
+
 from PySide6.QtMultimedia import QAudioFormat
 
+from core.native_audio import audio_kernel
 from core.pcm_resampler import PcmRateProcessor
 
 
@@ -34,8 +38,38 @@ def apply_pcm_gain(samples, gain):
     return boosted.astype(np.float32, copy=False)
 
 
+_GAIN_FORMATS = {
+    QAudioFormat.SampleFormat.UInt8: 1,
+    QAudioFormat.SampleFormat.Int16: 2,
+    QAudioFormat.SampleFormat.Int32: 3,
+    QAudioFormat.SampleFormat.Float: 4,
+}
+
+
+@cache
+def _native_gain():
+    from ctypes import c_bool, c_double, c_size_t, c_uint8, c_void_p
+
+    return audio_kernel("lrcplus_pcm_gain_v1", (c_void_p, c_size_t, c_uint8, c_double), c_bool)
+
+
 def apply_pcm_gain_to_bytes(data, sample_format, gain):
     """Apply gain to interleaved Qt PCM bytes while preserving their sample format."""
+    format_id = _GAIN_FORMATS.get(sample_format)
+    if format_id is not None:
+        gain = float(gain)
+        native = _native_gain() if isfinite(gain) else None
+        if native is not None:
+            from ctypes import c_char
+
+            view = memoryview(data)
+            buffer = (c_char * view.nbytes).from_buffer_copy(view)
+            if native(buffer, len(buffer), format_id, gain):
+                return bytes(buffer)
+    return _apply_pcm_gain_numpy(data, sample_format, gain)
+
+
+def _apply_pcm_gain_numpy(data, sample_format, gain):
     import numpy as np
 
     if sample_format == QAudioFormat.SampleFormat.Float:

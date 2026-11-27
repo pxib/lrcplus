@@ -1,4 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+import sys
+from threading import Event
+from time import monotonic, sleep
 from types import SimpleNamespace
 
 import pytest
@@ -159,6 +163,38 @@ def test_cancelling_automatic_drift_does_not_apply_a_late_result(editor, tmp_pat
     assert completed and completed[0].is_set()
     assert editor.lyrics_offset_ms == 0
     assert not editor.document_dirty
+
+
+def test_cancelling_vocal_fit_stops_the_subprocess(tmp_path, monkeypatch):
+    from core import audio_timing_scan
+    from core.dependency_tasks import DependencyCancelled, cancellation_scope
+
+    started = tmp_path / "started"
+    envelope = tmp_path / "envelope.npy"
+    command = [
+        sys.executable, "-I", "-c",
+        "from pathlib import Path; import sys, time; Path(sys.argv[1]).touch(); time.sleep(60)",
+        str(started),
+    ]
+    monkeypatch.setattr(audio_timing_scan, "_fit_worker_command", lambda: command)
+    cancelled = Event()
+
+    def fit():
+        with cancellation_scope(cancelled.is_set):
+            return audio_timing_scan._fit_vocal_timing(envelope, [(0, 1, 2)], 0)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        result = executor.submit(fit)
+        try:
+            deadline = monotonic() + 5
+            while not started.is_file() and monotonic() < deadline:
+                sleep(.01)
+            assert started.is_file()
+        finally:
+            cancelled.set()
+        with pytest.raises(DependencyCancelled):
+            result.result(timeout=8)
+    assert not (tmp_path / "response.json").exists()
 
 
 def test_new_edit_after_undo_discards_redo_branch(editor):

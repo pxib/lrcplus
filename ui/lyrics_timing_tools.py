@@ -12,11 +12,16 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QMessageBox, QProgressDialog, QPushButton, QSpinBox, QVBoxLayout, QStyle,
 )
 
-from core.audio_timing_scan import correct_audio_timing
 from core.background_job import BackgroundJob
 from lyrics.timing import shift_timing, validate_timing
 from lyrics.timing_drift import estimate_timing_correction, load_timing_reference
 from lyrics.writer import format_timestamp
+
+
+def correct_audio_timing(audio, lines, offset_ms, duration_ms, cancelled):
+    from core.audio_timing_scan import correct_audio_timing as scan
+
+    return scan(audio, lines, offset_ms, duration_ms, cancelled)
 
 
 class LyricsTimingToolsMixin:

@@ -842,7 +842,7 @@ class AudioController:
             route = "No audio loaded"
             if has_audio and output_available:
                 if rust:
-                    route = "Rust prototype (Symphonia and WASAPI)"
+                    route = "Rust (Symphonia and WASAPI)"
                     sample_rate = player.rust_output_sample_rate
                 elif gapless:
                     route = "FFmpeg → PCM output"

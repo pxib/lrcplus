@@ -1,4 +1,4 @@
-"""Opt-in local playback through the out-of-process Rust audio probe."""
+"""Local pitch processing through the out-of-process Rust audio probe."""
 
 from importlib.util import find_spec
 import os
@@ -13,7 +13,7 @@ from core.native_audio import audio_probe_executable
 
 
 def rust_playback_executable():
-    if os.environ.get("LRCPLUS_RUST_PLAYBACK") == "1":
+    if os.environ.get("LRCPLUS_RUST_PLAYBACK") != "0":
         return audio_probe_executable()
 
 
@@ -46,12 +46,14 @@ class RustMediaPlayer(GaplessMediaPlayer):
     def __init__(self, parent=None, *, executable, **kwargs):
         super().__init__(parent, **kwargs)
         self._rust_executable = str(executable)
+        self._rust_prefer_all = os.environ.get("LRCPLUS_RUST_PLAYBACK") == "1"
         self._rust_pitch_library = _pitch_library()
         self._rust_pitch = None
         self._rust_url = None
         self._rust_process = None
         self._rust_ready = False
         self._rust_compatible = False
+        self._rust_preferred = False
         self._rust_gain = 1.0
         self._rust_rate = 1.0
         self.rust_audible_rate = 1.0
@@ -78,14 +80,20 @@ class RustMediaPlayer(GaplessMediaPlayer):
         return self.rust_active and self._rust_pitch is not None
 
     def configure_rust(self, gain, *, compatible, pitch_linked, semitones):
-        device = self.audioOutput().device()
-        pitch_required = not pitch_linked and (abs(self.playbackRate() - 1.0) >= 0.001 or abs(semitones) >= 0.001)
+        output = self.audioOutput()
+        device = output.device() if output is not None else None
+        rate = self.playbackRate()
+        pitch_required = not pitch_linked and (abs(rate - 1.0) >= 0.001 or abs(semitones) >= 0.001)
         self._rust_compatible = (
             compatible and 0.0 <= gain <= MAX_TRANSPORT_GAIN
-            and 0.25 <= self.playbackRate() <= 2.0
-            and (not pitch_required or self._rust_pitch_library is not None)
-            and not device.isNull() and device == QMediaDevices.defaultAudioOutput()
+            and 0.25 <= rate <= 2.0
+            and (not pitch_required or (
+                self._rust_pitch_library is not None and -24.0 <= semitones <= 24.0
+            ))
+            and device is not None and not device.isNull()
+            and device == QMediaDevices.defaultAudioOutput()
         )
+        self._rust_preferred = self._rust_compatible and (pitch_required or self._rust_prefer_all)
         previous_gain = self._rust_gain
         previous_pitch = self._rust_pitch
         self._rust_gain = float(gain) if self._rust_compatible else 1.0
@@ -113,7 +121,7 @@ class RustMediaPlayer(GaplessMediaPlayer):
         self._qt_resume = None
         self._release_process()
         self._rust_url = None
-        if not self._rust_compatible or not url.isLocalFile():
+        if not self._rust_preferred or not url.isLocalFile():
             super().setSource(url)
             if previous and url.isEmpty():
                 self.sourceChanged.emit(url)

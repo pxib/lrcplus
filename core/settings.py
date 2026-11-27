@@ -52,6 +52,13 @@ STARTUP_DEFAULTS = {
 ONBOARDING_TEXT_INTERVALS = {"slow": 50, "normal": 25, "fast": 10, "instant": 0}
 
 
+def needs_onboarding():
+    """Do not present first-run setup to users with an existing configuration."""
+    if SETTINGS_PATH.exists():
+        return False
+    return bool(os.environ.get("LRCPLUS_SETTINGS_PATH")) or not LEGACY_SETTINGS_PATH.exists()
+
+
 def get_onboarding_pacing(payload=None):
     """Read validated wizard preferences without creating first-run settings."""
     payload = load_all_settings() if payload is None else payload

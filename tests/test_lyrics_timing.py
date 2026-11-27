@@ -1,4 +1,5 @@
 from copy import deepcopy
+from threading import Event
 
 import numpy as np
 import pytest
@@ -109,7 +110,9 @@ def test_drift_rejects_repeated_or_uneven_matches_and_recognizes_existing_sync()
         estimate_timing_correction(lines, reference)
 
 
-def test_vocal_timing_fit_corrects_drift_and_is_stable_when_repeated():
+def test_vocal_timing_fit_corrects_drift_and_is_stable_when_repeated(tmp_path, monkeypatch):
+    from core import audio_timing_scan
+
     schedule = ((4, 5.45), (6, 11), (19, 22), (24, 29.2), (46, 51.2),
                 (52, 55), (57, 64), (77, 78.9), (80, 85.4))
     lines = [LyricLine(start, f"Verse {number}", end=end)
@@ -124,8 +127,17 @@ def test_vocal_timing_fit_corrects_drift_and_is_stable_when_repeated():
     assert correction.intercept == pytest.approx(8, abs=.04)
     updated, offset = correction.apply(lines, offset_ms=6000, duration_ms=125000)
     assert estimate_audio_timing(sung_intervals(updated), envelope, offset_ms=offset) is None
+    audio = tmp_path / "song.wav"
+    audio.touch()
+    monkeypatch.setattr(audio_timing_scan, "_vocal_envelope",
+                        lambda _path, output: np.save(output, envelope, allow_pickle=False))
+    assert audio_timing_scan.correct_audio_timing(audio, lines, 6000, 0, Event()) == (updated, offset)
+    assert audio_timing_scan.correct_audio_timing(audio, updated, offset, 0, Event()) is None
     with pytest.raises(ValueError, match="enough consistent timing cues"):
         estimate_audio_timing(sung_intervals(lines), np.full(len(time), .75), offset_ms=6000)
+    envelope.fill(.75)
+    with pytest.raises(ValueError, match="enough consistent timing cues"):
+        audio_timing_scan.correct_audio_timing(audio, lines, 6000, 0, Event())
 
 
 @pytest.mark.parametrize("first,last", [(2, 1), (-1, 0), (0, 5)])

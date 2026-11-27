@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from PySide6.QtMultimedia import QAudioFormat, QMediaPlayer
 
@@ -11,6 +12,7 @@ from core.audio_controller import (
     snap_volume_percentage,
     volume_to_gain,
 )
+from core.audio_dsp import _apply_pcm_gain_numpy, _native_gain
 from lyrics.waveform import _WaveformWorker
 
 
@@ -58,6 +60,22 @@ def test_apply_pcm_gain_to_int16_bytes_saturates_at_sample_limits():
         np.frombuffer(gained, dtype=np.int16),
         np.array([-32768, 16384, 32767], dtype=np.int16),
     )
+
+
+@pytest.mark.parametrize(("format_name", "dtype", "samples"), [
+    ("UInt8", np.uint8, [0, 64, 125, 127, 128, 129, 131, 192, 255]),
+    ("Int16", np.int16, [-32768, -7, -5, -1, 0, 1, 5, 7, 32767]),
+    ("Int32", np.int32, [-2147483648, -7, -5, -1, 0, 1, 5, 7, 2147483647]),
+    ("Float", np.float32, [-1.5, -0.5, -0.0, 0, 0.5, 1.5]),
+])
+def test_native_gain_matches_numpy_rounding_and_clipping(format_name, dtype, samples):
+    if _native_gain() is None:
+        pytest.skip("Rust gain library is unavailable")
+    data = np.array(samples, dtype=dtype).tobytes()
+    fmt = getattr(QAudioFormat.SampleFormat, format_name)
+    for gain in (0, 0.5, 1, 1.5, 2.3, 3000):
+        assert apply_pcm_gain_to_bytes(data, fmt, gain) == _apply_pcm_gain_numpy(data, fmt, gain)
+    assert apply_pcm_gain_to_bytes(b"", fmt, 2) == b""
 
 
 def test_stale_end_of_media_does_not_advance_playlist():
