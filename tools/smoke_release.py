@@ -1,6 +1,7 @@
 """Launch and exercise a Windows release ZIP with an isolated profile."""
 
 import json
+from math import isclose
 import os
 from pathlib import Path
 import struct
@@ -26,7 +27,17 @@ def smoke_release(archive, architecture, work):
                                  expected_version=APP_VERSION, architecture=architecture)
     fixtures = work / "fixtures"
     fixtures.mkdir()
-    write_fixture(fixtures / "sample.wav")
+    sample = fixtures / "sample.wav"
+    write_fixture(sample)
+    waveform = subprocess.run(
+        [str(app / "lrcplus-audio-probe.exe"), str(sample), "--waveform", "200"],
+        cwd=app, capture_output=True, check=True, timeout=30,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    ).stdout.split()
+    if (waveform[:2] != [b"waveform-v1", b"5000"] or len(waveform) != 202
+            or any(not isclose(float(peak), 1500 / 32768, abs_tol=1e-6) for peak in waveform[2:])):
+        raise RuntimeError("The packaged Rust waveform decoder returned unexpected results.")
+    print("Packaged Rust waveform decoder passed.")
     settings = work / "settings.json"
     settings.write_text(json.dumps({
         "updates": {"automatic_check": False},

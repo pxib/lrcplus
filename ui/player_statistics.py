@@ -19,7 +19,7 @@ class PlayerStatisticsMixin:
 
         self.waveform_widget.setVisible(
             self._stream_url is None
-            and self.workspace_stack.currentWidget() is not self.statistics_page
+            and self.workspace_stack.currentWidget() is not self._statistics_page
             and self.playback_settings.get("show_waveform", True)
             and find_ffmpeg() is not None
         )
@@ -168,7 +168,8 @@ class PlayerStatisticsMixin:
             self._shuffle_last_played = {}
         self._refresh_shuffle_history()
         self._statistics_state_changed()
-        self.statistics_page.sync_tracking()
+        if self._statistics_page is not None:
+            self._statistics_page.sync_tracking()
 
     def _clear_statistics(self):
         answer = QMessageBox.question(
@@ -181,17 +182,20 @@ class PlayerStatisticsMixin:
             return False
         self.statistics.clear(**self._statistics_snapshot())
         self.statistics_store.clear()
-        self.statistics_page.refresh()
+        if self._statistics_page is not None:
+            self._statistics_page.refresh()
         return True
 
     def _statistics_failed(self, message):
         if not self._statistics_closed:
             self.statusBar().showMessage(message, 10000)
-            self.statistics_page.show_error(message, persistent=True)
+            if self._statistics_page is not None:
+                self._statistics_page.show_error(message, persistent=True)
 
     def _close_statistics(self):
         if not self._statistics_closed:
             self._statistics_checkpoint()
             self._statistics_closed = True
             self._statistics_timer.stop()
-            self.statistics_page.shutdown()
+            if self._statistics_page is not None:
+                self._statistics_page.shutdown()

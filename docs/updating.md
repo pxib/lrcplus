@@ -42,7 +42,7 @@ python -m pip install pyinstaller
 python tools/build_release.py
 ```
 
-The script builds the Rust audio library and the one-file standard-library updater, generates the version/architecture manifest, builds the one-folder application, and creates the ZIP and checksum under `dist/release/`. Review and test both assets, then upload them to a GitHub Release in `pxib/lrcplus` whose tag is `APP_VERSION` (optionally prefixed with `v`). Mark ordinary releases stable and experimental releases as prereleases. After uploading, verify that GitHub's release API reports a non-empty `sha256:...` `digest` for the ZIP asset; otherwise the client will reject the release.
+The script builds the Rust audio library, the Rust waveform and playback helper, and the one-file standard-library updater. It generates the version/architecture manifest, builds the one-folder application, and creates the ZIP and checksum under `dist/release/`. Review and test both assets, then upload them to a GitHub Release in `pxib/lrcplus` whose tag is `APP_VERSION` (optionally prefixed with `v`). Mark ordinary releases stable and experimental releases as prereleases. After uploading, verify that GitHub's release API reports a non-empty `sha256:...` `digest` for the ZIP asset; otherwise the client will reject the release.
 
 The release ZIP must preserve the top-level `LRCPlus/` directory. Do not upload source archives as application assets. Existing installations without the updater must receive an updater-enabled build manually once; subsequent compatible releases can update in-app.
 

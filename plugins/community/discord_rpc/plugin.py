@@ -13,7 +13,6 @@ import unicodedata
 
 from core.http_client import requests
 from core.idle_cache import IdleCache
-from PIL import Image, ImageOps
 
 from lyrics.furigana import detect_lyrics_collection_language, get_reading_mode
 
@@ -826,6 +825,8 @@ class DiscordRpcPlugin:
         """Validate artwork and prepare a bounded copy without changing tags."""
         if len(image_data) > LITTERBOX_MAX_INPUT_BYTES:
             raise ValueError("Embedded cover exceeds the 20 MB input limit.")
+
+        from PIL import Image, ImageOps
 
         with Image.open(BytesIO(image_data), formats=("JPEG", "PNG")) as source:
             if source.width * source.height > LITTERBOX_MAX_INPUT_PIXELS:

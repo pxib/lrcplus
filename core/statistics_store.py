@@ -37,6 +37,11 @@ class StatisticsStore(QObject):
         with self._lock:
             return self._generation
 
+    @property
+    def last_error(self):
+        with self._lock:
+            return self._last_error
+
     def _error(self, message):
         with self._lock:
             notify = not self._closed and message != self._last_error

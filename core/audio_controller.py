@@ -861,9 +861,11 @@ class AudioController:
                     effects.append("Equalizer")
                 if self._pcm_rate_active():
                     effects.append(f"Speed {self.playback_speed:.0%}")
+                    if rust and not self._pitch_follows_speed():
+                        effects.append("Independent pitch")
                 pitch = self._displayed_pitch_semitones()
                 if abs(pitch) >= 0.001:
-                    if processed or self._pitch_follows_speed():
+                    if rust or processed or self._pitch_follows_speed():
                         effects.append(f"Pitch {pitch:+.2f} semitones")
                     elif not gapless:
                         effects.append("Independent pitch requires processed output")
@@ -935,12 +937,13 @@ class AudioController:
             rust_active = configure_rust is not None and configure_rust(
                 0.0 if self.audio_output.isMuted() else self._current_pcm_gain,
                 compatible=not (
-                    gapless or crossfade or pitch_active
-                    or ((rate_active or live_speed) and not self._pitch_follows_speed())
+                    gapless or crossfade
                     or self._pcm_equalizer_active()
                     or getattr(self, "_playback_audio_requested", False)
                     or getattr(self, "_audio_output_unavailable", False)
                 ),
+                pitch_linked=self._pitch_follows_speed(),
+                semitones=getattr(self, "pitch_semitones", 0.0),
             )
             if gapless_active or rust_active:
                 self._stop_pcm_sink()
@@ -1238,6 +1241,8 @@ class AudioController:
                 self.last_volume = value
             self.playback_settings["volume"] = value
             self.volume_percentage_label.setText(f"{value}%")
+            self.is_muted = value == 0
+            self.audio_output.setMuted(self.is_muted)
             self._configure_pcm_volume(value)
 
             if (
@@ -1255,13 +1260,6 @@ class AudioController:
                     "damage your hearing or speakers. Use care, especially "
                     "with headphones.",
                 )
-
-            if value == 0:
-                self.audio_output.setMuted(True)
-                self.is_muted = True
-            else:
-                self.audio_output.setMuted(False)
-                self.is_muted = False
 
             if hasattr(self, "statistics"):
                 self._statistics_rebase()
@@ -1332,7 +1330,9 @@ class AudioController:
 
         def _apply_playback_speed(self, speed, *, previous_shift=None, live=False):
             speed_changed = abs(self.playback_speed - speed) >= 0.001
-            rust_speed = getattr(self.media_player, "rust_active", False) and self._pitch_follows_speed()
+            rust_speed = getattr(self.media_player, "rust_active", False) and (
+                self._pitch_follows_speed() or getattr(self.media_player, "rust_independent_pitch", False)
+            )
             worker = getattr(self, "_pcm_worker", None)
             prime_pitch = False
             if (live and speed_changed and not rust_speed and getattr(worker, "owns_output", False)
@@ -1411,8 +1411,9 @@ class AudioController:
             # Preserve analysis for fine adjustments. Octave jumps need fresh
             # context; native playback covers that single warmup.
             shift = self._pcm_pitch_shift()
-            if ((abs(previous_shift) < 0.001) != (abs(shift) < 0.001)
-                    or abs(previous_shift - shift) >= 12.0):
+            if (not getattr(self.media_player, "rust_active", False)
+                    and ((abs(previous_shift) < 0.001) != (abs(shift) < 0.001)
+                         or abs(previous_shift - shift) >= 12.0)):
                 self._flush_pcm_output()
             self._configure_pcm_volume(self.volume_slider.value())
 

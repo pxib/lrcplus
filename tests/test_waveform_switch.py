@@ -6,6 +6,7 @@ from io import BytesIO
 from PySide6.QtCore import QThread, QTimer, Signal
 
 from lyrics import waveform
+from lyrics.waveform_worker import _waveform_peaks_from_pcm
 
 
 def test_peak_calculation_stops_after_cancellation():
@@ -15,7 +16,7 @@ def test_peak_calculation_stops_after_cancellation():
         checks.append(True)
         return len(checks) > 3
 
-    assert waveform._waveform_peaks_from_pcm(BytesIO(bytes(8000)), 200, cancelled) == ([], 0)
+    assert _waveform_peaks_from_pcm(BytesIO(bytes(8000)), 200, cancelled) == ([], 0)
     assert len(checks) == 4
 
 

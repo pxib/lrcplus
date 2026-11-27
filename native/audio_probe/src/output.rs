@@ -257,7 +257,7 @@ where
             if let Ok(chunk) = consumer.read_chunk(samples) {
                 let (first, second) = chunk.as_slices();
                 for (out, &sample) in output[..samples].iter_mut().zip(first.iter().chain(second)) {
-                    *out = T::from_sample(sample * gain);
+                    *out = T::from_sample((sample * gain).clamp(-1.0, 1.0));
                 }
                 chunk.commit_all();
             }

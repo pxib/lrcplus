@@ -83,7 +83,6 @@ from ui.player_ab_loop import PlayerABLoopMixin
 from ui.player_repeat import PlayerRepeatMixin
 from ui.player_sleep_timer import PlayerSleepTimerMixin
 from ui.player_statistics import PlayerStatisticsMixin
-from ui.statistics_page import StatisticsPage
 from ui.lyrics_search_dialog import LyricsSearchDialogMixin
 from ui.stream_lyrics import StreamLyricsController
 
@@ -851,9 +850,8 @@ class Player(
 
             self.workspace_stack.addWidget(self.library_page)
             self.workspace_stack.addWidget(self.lyrics_page)
+            self._statistics_page = None
             self._init_statistics()
-            self.statistics_page = StatisticsPage(self)
-            self.workspace_stack.addWidget(self.statistics_page)
             self.workspace_stack.setCurrentWidget(self.library_page)
             self.workspace_stack.currentChanged.connect(self._handle_workspace_changed)
             self._handle_workspace_changed(self.workspace_stack.currentIndex())
@@ -983,6 +981,17 @@ class Player(
             self._restore_startup_state()
             self.update_transport_buttons()
 
+
+        @property
+        def statistics_page(self):
+            if self._statistics_page is None:
+                from ui.statistics_page import StatisticsPage
+
+                page = self._statistics_page = StatisticsPage(self)
+                self.workspace_stack.addWidget(page)
+                if error := self.statistics_store.last_error:
+                    page.show_error(error, persistent=True)
+            return self._statistics_page
 
         @property
         def lyric_widget(self):
@@ -1341,7 +1350,8 @@ class Player(
                 style = style.replace(marker, palette[key])
             self.setStyleSheet("" if native else style)
             self.seek_slider.set_loop_colors(palette["loop_start"], palette["loop_end"])
-            self.statistics_page.apply_theme(self.appearance_settings)
+            if self._statistics_page is not None:
+                self._statistics_page.apply_theme(self.appearance_settings)
 
 
         def _restore_startup_state(self):
@@ -1440,7 +1450,7 @@ class Player(
             current_page = self.workspace_stack.widget(index)
             self.library_button.setChecked(current_page is self.library_page)
             self.lyrics_view_button.setChecked(current_page is self.lyrics_page)
-            self.statistics_button.setChecked(current_page is self.statistics_page)
+            self.statistics_button.setChecked(current_page is self._statistics_page)
             self._sync_waveform_visibility()
             if current_page is self.library_page:
                 self._queue_visible_library_covers()

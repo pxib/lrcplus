@@ -1,8 +1,19 @@
-"""Load the optional Rust audio library for this process."""
+"""Locate the Rust audio helper and load the in-process DSP library."""
 
 from functools import lru_cache
 from pathlib import Path
 import sys
+
+
+def audio_probe_executable():
+    if sys.platform != "win32":
+        return None
+    if getattr(sys, "frozen", False):
+        directory = Path(sys.executable).parent
+    else:
+        directory = Path(__file__).resolve().parents[1] / "build" / "audio-probe" / "release"
+    executable = directory / "lrcplus-audio-probe.exe"
+    return executable if executable.is_file() else None
 
 
 @lru_cache(maxsize=1)

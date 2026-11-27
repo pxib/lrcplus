@@ -22,7 +22,7 @@ from core.plugin_manager import PluginManager
 from core.rhythm_analysis import AudioRhythm, analyze_audio_rhythm, beat_grid, load_audio_rhythm
 from core.rhythm_melody import MelodyNote
 from lyrics.models import LyricLine, LyricSegment
-from plugins.community.rhythm_games import mania, plugin as rhythm_games
+from plugins.community.rhythm_games import game as rhythm_games, mania
 from plugins.community.rhythm_games.mania import MANIA_DEMO, ManiaNote
 from plugins.community.rhythm_games.plugin import (
     Judgement, ManiaRound, Note, Passage, RhythmBoard, RhythmDialog, Round, apply_audio_rhythm,

@@ -9,15 +9,6 @@ try:
 except ImportError:
     MutagenFile = None
 
-try:
-    from PIL import Image, ImageFilter
-except ImportError:
-    Image = None
-    ImageFilter = None
-
-PIL_AVAILABLE = Image is not None and ImageFilter is not None
-
-
 def extract_embedded_cover(path):
     """Return embedded cover bytes, or None when the track has no artwork."""
     if MutagenFile is None:
@@ -353,11 +344,13 @@ class ArtworkBackgroundWidget(QWidget):
             return image.scaled(small_size, Qt.AspectRatioMode.IgnoreAspectRatio,
                                 Qt.TransformationMode.SmoothTransformation), target
 
-        if not PIL_AVAILABLE:
+        try:
+            from PIL import Image, ImageFilter
+        except ImportError as error:
             raise RuntimeError(
                 "High quality blur requires Pillow (PIL), but it is "
                 "not installed. Install it with: pip install Pillow"
-            )
+            ) from error
 
         radius = self._blur_radius * scale
         pixels = Image.frombuffer(

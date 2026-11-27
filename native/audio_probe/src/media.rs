@@ -24,6 +24,7 @@ pub struct Decoder {
     seek_target: Option<u64>,
     skip_samples: usize,
     pub duration_ms: u64,
+    pub frame_count_hint: u64,
     pub sample_rate: u32,
     pub channels: usize,
 }
@@ -74,6 +75,7 @@ impl Decoder {
             seek_target: None,
             skip_samples: 0,
             duration_ms: 0,
+            frame_count_hint: 0,
             sample_rate: 0,
             channels: 0,
         };
@@ -85,7 +87,9 @@ impl Decoder {
         }
         decoder.time_base = time_base.unwrap_or_else(|| TimeBase::new(1, decoder.sample_rate));
         if let Some(duration) = duration {
-            decoder.duration_ms = (decoder.seconds(duration) * 1000.0).round() as u64;
+            let seconds = decoder.seconds(duration);
+            decoder.duration_ms = (seconds * 1000.0).round() as u64;
+            decoder.frame_count_hint = (seconds * f64::from(decoder.sample_rate)).round() as u64;
         }
         Ok(decoder)
     }

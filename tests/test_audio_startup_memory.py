@@ -36,6 +36,37 @@ finally:
 """)
 
 
+def test_library_startup_defers_statistics_games_and_pillow():
+    run_fresh("""
+import sys
+from pathlib import Path
+import main
+
+app = main.QApplication([])
+manager = main.PluginManager()
+manager.load_from_file("rhythm_games", Path("plugins/community/rhythm_games/plugin.py"))
+window = main.Player(plugin_manager=manager)
+window.show()
+manager.set_host_window(window)
+manager.emit("app_ready", window=window)
+try:
+    app.processEvents()
+    assert window._statistics_page is None
+    assert "ui.statistics_page" not in sys.modules
+    assert "plugins.community.rhythm_games.game" not in sys.modules
+    assert "PIL.Image" not in sys.modules
+    window.statistics_button.click()
+    assert window.workspace_stack.currentWidget() is window.statistics_page
+    game = manager.plugins["rhythm_games"].instance
+    game.open_game()
+    assert game.dialog is not None
+finally:
+    manager.unload_all()
+    window.close()
+    app.processEvents()
+""")
+
+
 def test_first_gain_and_resample_calls_load_numpy_and_preserve_output():
     run_fresh("""
 import struct, sys
@@ -147,9 +178,10 @@ def test_cold_player_can_switch_tracks_and_pitch_with_waveform_enabled(tmp_path,
     import shutil
     import pytest
     from PySide6.QtMultimedia import QMediaDevices
+    from core.native_audio import audio_probe_executable
 
-    if not QMediaDevices.audioOutputs() or not shutil.which("ffmpeg"):
-        pytest.skip("Requires audio output and FFmpeg for the muted waveform integration check")
+    if not QMediaDevices.audioOutputs() or not (audio_probe_executable() or shutil.which("ffmpeg")):
+        pytest.skip("Requires audio output and a waveform decoder")
     # Keep this in a fresh process: NumPy/Rubber Band imports on the audio
     # thread exposed a renderer/GIL deadlock hidden by the warmed-up suite.
     run_fresh(f"""
@@ -191,7 +223,7 @@ try:
         QTest.qWait(15 + (index % 5) * 20)
         window.handle_pitch_change('Semitones', (0, 5, -5, 12, -12)[index % 5])
     deadline = time.monotonic() + 3
-    while window.waveform_widget._loading and time.monotonic() < deadline:
+    while (window.waveform_widget._loading or window.media_player.position() <= 0) and time.monotonic() < deadline:
         QTest.qWait(20)
     assert not errors, errors
     assert window.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState

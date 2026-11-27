@@ -1,5 +1,6 @@
 """Opt-in local playback through the out-of-process Rust audio probe."""
 
+from importlib.util import find_spec
 import os
 from pathlib import Path
 import sys
@@ -8,22 +9,35 @@ from PySide6.QtCore import QProcess, QTimer, Qt, QUrl, Signal
 from PySide6.QtMultimedia import QMediaDevices, QMediaPlayer
 
 from core.gapless import GaplessMediaPlayer
+from core.native_audio import audio_probe_executable
 
 
 def rust_playback_executable():
-    if sys.platform != "win32" or os.environ.get("LRCPLUS_RUST_PLAYBACK") != "1":
-        return None
+    if os.environ.get("LRCPLUS_RUST_PLAYBACK") == "1":
+        return audio_probe_executable()
+
+
+def _pitch_library():
+    # Locate the DLL shipped with aubio without importing aubio or NumPy.
     if getattr(sys, "frozen", False):
-        directory = Path(sys.executable).parent
+        root = Path(sys._MEIPASS)
     else:
-        directory = Path(__file__).resolve().parents[1] / "build" / "audio-probe" / "release"
-    executable = directory / "lrcplus-audio-probe.exe"
-    return executable if executable.is_file() else None
+        spec = find_spec("aubio")
+        if spec is None or not spec.origin:
+            return None
+        root = Path(spec.origin).resolve().parent.parent
+    for directory in ("aubio_ledfx.libs", "aubio.libs"):
+        library = next(iter(sorted((root / directory).glob("*rubberband*.dll"))), None)
+        if library is not None:
+            return library
+    return None
 
 
 State = QMediaPlayer.PlaybackState
 Status = QMediaPlayer.MediaStatus
-TRANSPORT_VERSION = b"2"
+TRANSPORT_VERSION = b"4"
+# 300% volume times the largest supported ReplayGain adjustment (+60 dB).
+MAX_TRANSPORT_GAIN = 3000.0
 
 
 class RustMediaPlayer(GaplessMediaPlayer):
@@ -32,6 +46,8 @@ class RustMediaPlayer(GaplessMediaPlayer):
     def __init__(self, parent=None, *, executable, **kwargs):
         super().__init__(parent, **kwargs)
         self._rust_executable = str(executable)
+        self._rust_pitch_library = _pitch_library()
+        self._rust_pitch = None
         self._rust_url = None
         self._rust_process = None
         self._rust_ready = False
@@ -57,19 +73,37 @@ class RustMediaPlayer(GaplessMediaPlayer):
     def rust_active(self):
         return self._rust_url is not None
 
-    def configure_rust(self, gain, *, compatible):
+    @property
+    def rust_independent_pitch(self):
+        return self.rust_active and self._rust_pitch is not None
+
+    def configure_rust(self, gain, *, compatible, pitch_linked, semitones):
         device = self.audioOutput().device()
+        pitch_required = not pitch_linked and (abs(self.playbackRate() - 1.0) >= 0.001 or abs(semitones) >= 0.001)
         self._rust_compatible = (
-            compatible and 0.0 <= gain <= 1.0
+            compatible and 0.0 <= gain <= MAX_TRANSPORT_GAIN
             and 0.25 <= self.playbackRate() <= 2.0
+            and (not pitch_required or self._rust_pitch_library is not None)
             and not device.isNull() and device == QMediaDevices.defaultAudioOutput()
         )
         previous_gain = self._rust_gain
+        previous_pitch = self._rust_pitch
         self._rust_gain = float(gain) if self._rust_compatible else 1.0
+        self._rust_pitch = None if pitch_linked or self._rust_pitch_library is None else float(semitones)
         if self.rust_active and (not self._rust_compatible or device.id() != self._rust_device_id):
             self._fallback_to_qt()
-        if self.rust_active and self._rust_ready and self._rust_gain != previous_gain:
-            self._send(f"volume {self._rust_gain}")
+        if self.rust_active and self._rust_process is not None:
+            if (previous_pitch is None) != (self._rust_pitch is None):
+                self._release_process()
+                if self._rust_status != Status.EndOfMedia:
+                    self._rust_epoch += 1
+                    self._set_rust_status(Status.LoadingMedia)
+                    self._start_process()
+            elif self._rust_ready:
+                if self._rust_gain != previous_gain:
+                    self._send(f"volume {self._rust_gain}")
+                if self._rust_pitch != previous_pitch:
+                    self._send(f"pitch {self._rust_pitch}")
         return self.rust_active
 
     def setSource(self, url):
@@ -224,10 +258,13 @@ class RustMediaPlayer(GaplessMediaPlayer):
         process.finished.connect(lambda *_: self._process_finished(process))
         process.finished.connect(process.deleteLater)
         self._rust_startup.start(5000)
-        process.start(self._rust_executable, [
+        arguments = [
             self._rust_url.toLocalFile(), "--transport", "--speed", str(self._rust_rate),
             "--volume", str(self._rust_gain),
-        ])
+        ]
+        if self._rust_pitch is not None:
+            arguments.extend(("--pitch-library", str(self._rust_pitch_library), "--pitch", str(self._rust_pitch)))
+        process.start(self._rust_executable, arguments)
 
     def _release_process(self):
         self._rust_startup.stop()
@@ -264,7 +301,7 @@ class RustMediaPlayer(GaplessMediaPlayer):
             event = fields[0]
             if event == b"ready" and not self._rust_ready:
                 if len(fields) != 4 or fields[-1] != TRANSPORT_VERSION:
-                    self._fallback_to_qt("Rebuild the audio probe to use live speed control.")
+                    self._fallback_to_qt("Rebuild the audio probe to use the current playback controls.")
                     break
                 duration, sample_rate = map(int, fields[1:3])
                 self._rust_startup.stop()
@@ -275,6 +312,8 @@ class RustMediaPlayer(GaplessMediaPlayer):
                 self.rust_underrun_frames = 0
                 self._send(f"volume {self._rust_gain}")
                 self._send(f"speed {self._rust_rate}")
+                if self._rust_pitch is not None:
+                    self._send(f"pitch {self._rust_pitch}")
                 if self._rust_epoch:
                     self._send(f"seek {self._rust_epoch} {self._rust_position}")
                 if self._rust_state == State.PlayingState:

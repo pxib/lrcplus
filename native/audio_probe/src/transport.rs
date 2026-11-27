@@ -1,12 +1,19 @@
 use std::collections::VecDeque;
 use std::io::{self, BufRead, Write};
+use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use lrcplus_audio_dsp_v1::LiveRate;
 
-use crate::{media::Decoder, mix, output::Device, Options, Result};
+use crate::{
+    media::Decoder,
+    mix,
+    output::Device,
+    pitch::{PitchStage, BLOCK_FRAMES},
+    Options, Result, MAX_TRANSPORT_GAIN,
+};
 
 const REPORT_INTERVAL: Duration = Duration::from_millis(33);
 const DEVICE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -16,6 +23,7 @@ enum Command {
     Pause,
     Seek(u64, u64),
     Speed(f64),
+    Pitch(f64),
     Volume(f32),
     Quit,
 }
@@ -34,9 +42,16 @@ impl Command {
                 }
                 Self::Speed(speed)
             }
+            "pitch" => {
+                let pitch = fields.next()?.parse().ok()?;
+                if !(-24.0..=24.0).contains(&pitch) {
+                    return None;
+                }
+                Self::Pitch(pitch)
+            }
             "volume" => {
                 let gain = fields.next()?.parse().ok()?;
-                if !(0.0..=1.0).contains(&gain) {
+                if !(0.0..=MAX_TRANSPORT_GAIN).contains(&gain) {
                     return None;
                 }
                 Self::Volume(gain)
@@ -66,11 +81,13 @@ pub fn run(options: Options) -> Result<()> {
     let mut decoder = Decoder::open(&options.path)?;
     let mut gain = options.volume;
     let mut speed = options.speed;
-    let mut audio = Playback::new(&decoder, speed, gain)?;
+    let mut semitones = options.pitch;
+    let library = options.pitch_library.as_deref();
+    let mut audio = Playback::new(&decoder, speed, gain, library, semitones)?;
     let mut stdout = io::BufWriter::new(io::stdout().lock());
     writeln!(
         stdout,
-        "ready {} {} 2",
+        "ready {} {} 4",
         decoder.duration_ms, audio.device.sample_rate
     )?;
     stdout.flush()?;
@@ -133,7 +150,7 @@ pub fn run(options: Options) -> Result<()> {
             }
             Command::Seek(next_epoch, milliseconds) => {
                 audio.device.pause()?;
-                audio = Playback::new(&decoder, speed, gain)?;
+                audio = Playback::new(&decoder, speed, gain, library, semitones)?;
                 let at_end = decoder.duration_ms != 0 && milliseconds >= decoder.duration_ms;
                 offset = if at_end {
                     decoder.duration_ms
@@ -153,7 +170,14 @@ pub fn run(options: Options) -> Result<()> {
             }
             Command::Speed(value) => {
                 speed = value;
-                audio.rate.set_ratio(speed * audio.base_ratio)?;
+                audio.speed = value;
+                if audio.pitch.is_none() {
+                    audio.rate.set_ratio(speed * audio.base_ratio)?;
+                }
+            }
+            Command::Pitch(value) => {
+                semitones = value;
+                audio.pitch_scale = pitch_scale(value);
             }
             Command::Volume(value) => {
                 gain = value;
@@ -163,6 +187,10 @@ pub fn run(options: Options) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn pitch_scale(semitones: f64) -> f64 {
+    (semitones / 12.0).exp2()
 }
 
 fn report(
@@ -185,6 +213,9 @@ fn report(
 struct Playback {
     device: Device,
     rate: LiveRate,
+    pitch: Option<PitchStage>,
+    speed: f64,
+    pitch_scale: f64,
     base_ratio: f64,
     source_rate: u32,
     packet_offset: usize,
@@ -195,19 +226,40 @@ struct Playback {
 }
 
 impl Playback {
-    fn new(decoder: &Decoder, speed: f64, gain: f32) -> Result<Self> {
+    fn new(
+        decoder: &Decoder,
+        speed: f64,
+        gain: f32,
+        library: Option<&Path>,
+        semitones: f64,
+    ) -> Result<Self> {
         let device = Device::for_transport()?;
         device.set_gain(gain);
         let base_ratio = f64::from(decoder.sample_rate) / f64::from(device.sample_rate);
         let ramp_frames = (device.sample_rate as usize / 40).max(1);
+        let pitch_scale = pitch_scale(semitones);
+        let pitch = library
+            .map(|path| {
+                PitchStage::open(
+                    path,
+                    device.sample_rate,
+                    decoder.channels,
+                    speed,
+                    pitch_scale,
+                )
+            })
+            .transpose()?;
         Ok(Self {
             rate: LiveRate::new(
-                base_ratio * speed,
+                base_ratio * if pitch.is_some() { 1.0 } else { speed },
                 base_ratio * 2.0,
                 decoder.channels,
                 ramp_frames,
             )?,
             device,
+            pitch,
+            speed,
+            pitch_scale,
             base_ratio,
             source_rate: decoder.sample_rate,
             packet_offset: decoder.current_samples().len(),
@@ -222,13 +274,9 @@ impl Playback {
     }
 
     fn pump(&mut self, decoder: &mut Decoder) -> Result<bool> {
-        let available = self.device.available_frames().min(512);
+        let available = self.device.available_frames().min(BLOCK_FRAMES);
         if available != 0 {
-            self.rendered.clear();
-            self.positions.clear();
-            self.rate
-                .render(available, &mut self.rendered, &mut self.positions);
-            if self.positions.is_empty() && !self.rate.drained() {
+            if self.render(available) {
                 if self.packet_offset == decoder.current_samples().len() {
                     self.packet_offset = 0;
                     if decoder.next()?.is_none() {
@@ -255,7 +303,7 @@ impl Playback {
             debug_assert_eq!(written, self.mixed.len());
             self.clock.pending.extend(&self.positions);
         }
-        let final_block = self.rate.drained();
+        let final_block = self.rendering_finished();
         if final_block {
             self.device.mark_final();
         }
@@ -265,8 +313,43 @@ impl Playback {
         Ok(available != 0 && !final_block)
     }
 
+    /// Returns true when the resampler needs more decoded input.
+    fn render(&mut self, available: usize) -> bool {
+        self.rendered.clear();
+        self.positions.clear();
+        let Some(pitch) = &mut self.pitch else {
+            self.rate
+                .render(available, &mut self.rendered, &mut self.positions);
+            return self.positions.is_empty() && !self.rate.drained();
+        };
+        pitch.read(available, &mut self.rendered, &mut self.positions);
+        if !self.positions.is_empty() || pitch.finished() {
+            return false;
+        }
+        self.rate
+            .render(BLOCK_FRAMES, &mut self.rendered, &mut self.positions);
+        if self.positions.is_empty() && !self.rate.drained() {
+            return true;
+        }
+        pitch.process(
+            &self.rendered,
+            &self.positions,
+            self.speed,
+            self.pitch_scale,
+            self.rate.drained(),
+        );
+        self.rendered.clear();
+        self.positions.clear();
+        pitch.read(available, &mut self.rendered, &mut self.positions);
+        false
+    }
+
+    fn rendering_finished(&self) -> bool {
+        self.rate.drained() && self.pitch.as_ref().is_none_or(PitchStage::drained)
+    }
+
     fn drained(&self) -> bool {
-        self.rate.drained() && self.clock.pending.is_empty()
+        self.rendering_finished() && self.clock.pending.is_empty()
     }
 
     fn position(&mut self, frames: u64, offset: u64, duration: u64) -> u64 {
@@ -308,7 +391,22 @@ impl SourceClock {
 
 #[cfg(test)]
 mod tests {
-    use super::SourceClock;
+    use super::{Command, SourceClock};
+
+    #[test]
+    fn volume_accepts_manual_boost_and_replaygain() {
+        assert!(matches!(
+            Command::parse("volume 2.5"),
+            Some(Command::Volume(2.5))
+        ));
+        assert!(matches!(
+            Command::parse("volume 3000"),
+            Some(Command::Volume(3000.0))
+        ));
+        for line in ["volume -1", "volume 3000.1", "volume NaN", "volume inf"] {
+            assert!(Command::parse(line).is_none(), "{line}");
+        }
+    }
 
     #[test]
     fn clock_uses_the_source_phase_of_audible_frames() {

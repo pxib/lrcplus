@@ -6,7 +6,8 @@ from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QThread, Signal, Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtTest import QTest
 
-from ui.artwork_background import ArtworkBackgroundWidget, Image
+from PIL import Image
+from ui.artwork_background import ArtworkBackgroundWidget
 from lyrics import waveform
 
 

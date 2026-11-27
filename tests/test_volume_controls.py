@@ -23,6 +23,7 @@ class VolumeControls(AudioController):
 
     def _configure_pcm_volume(self, value):
         self.configured_volume = value
+        self.configured_muted = self.audio_output.isMuted()
 
 
 @pytest.mark.parametrize("volume", [1, 45, 80, 100, 145, 250, 300])
@@ -43,6 +44,7 @@ def test_unmute_restores_last_percentage(qapp, volume, mute_with_slider):
         assert controls.volume_percentage_label.text() == "0%"
         assert controls.mute_button.text() == "Unmute"
         assert controls.configured_volume == 0
+        assert controls.configured_muted
 
         controls.mute_button.click()
 
@@ -52,6 +54,7 @@ def test_unmute_restores_last_percentage(qapp, volume, mute_with_slider):
         assert controls.volume_percentage_label.text() == f"{volume}%"
         assert controls.mute_button.text() == "Mute"
         assert controls.configured_volume == volume
+        assert not controls.configured_muted
 
 
 def test_adjusting_volume_while_muted_updates_restored_percentage(qapp):
@@ -61,6 +64,7 @@ def test_adjusting_volume_while_muted_updates_restored_percentage(qapp):
 
     assert not controls.is_muted
     assert not controls.audio_output.isMuted()
+    assert not controls.configured_muted
 
     controls.mute_button.click()
     controls.mute_button.click()

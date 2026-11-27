@@ -78,9 +78,10 @@ datas, binaries = collect_delvewheel_libs_directory(
     "aubio", libdir_name="aubio_ledfx.libs", datas=datas,
 )
 audio_dll = PROJECT_ROOT / "build" / "audio-dsp" / "release" / "lrcplus_audio_dsp_v1.dll"
-if not audio_dll.is_file():
-    raise FileNotFoundError("Build the Rust audio library first with tools/build_release.py.")
-binaries.append((str(audio_dll), "."))
+audio_probe = PROJECT_ROOT / "build" / "audio-probe" / "release" / "lrcplus-audio-probe.exe"
+if not audio_dll.is_file() or not audio_probe.is_file():
+    raise FileNotFoundError("Build the Rust audio components first with tools/build_release.py.")
+binaries.extend([(str(audio_dll), "."), (str(audio_probe), ".")])
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,11 @@
 mod media;
 mod output;
+mod pitch;
 mod transport;
+mod waveform;
 
 use std::error::Error;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -10,8 +13,10 @@ use std::time::Instant;
 use lrcplus_audio_dsp_v1::StreamingRate;
 
 const USAGE: &str = "Usage: lrcplus-audio-probe <file> [--speed 0.25..2] [--volume 0..1] \
-[--seconds N] [--decode-only] [--transport]\n\
-Speed changes pitch. Volume defaults to 0.25. Seconds limits the output duration.";
+[--seconds N] [--decode-only] [--transport [--pitch-library DLL --pitch SEMITONES]]\n\
+       lrcplus-audio-probe <file> --waveform BUCKETS\n\
+Speed changes pitch by default. Volume defaults to 0.25; transport accepts gain up to 3000.";
+const MAX_TRANSPORT_GAIN: f32 = 3000.0;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -22,23 +27,21 @@ struct Options {
     seconds: Option<f64>,
     decode_only: bool,
     transport: bool,
+    pitch_library: Option<PathBuf>,
+    pitch: f64,
 }
 
 impl Options {
-    fn parse() -> Result<Option<Self>> {
-        let mut args = std::env::args_os().skip(1);
-        let path = args.next().ok_or(USAGE)?;
-        if path == "--help" || path == "-h" {
-            println!("{USAGE}");
-            return Ok(None);
-        }
+    fn parse(path: PathBuf, mut args: impl Iterator<Item = OsString>) -> Result<Self> {
         let mut options = Self {
-            path: path.into(),
+            path,
             speed: 1.0,
             volume: 0.25,
             seconds: None,
             decode_only: false,
             transport: false,
+            pitch_library: None,
+            pitch: 0.0,
         };
         while let Some(flag) = args.next() {
             let flag = flag.to_str().ok_or("invalid option")?;
@@ -50,7 +53,11 @@ impl Options {
                 options.transport = true;
                 continue;
             }
-            if !matches!(flag, "--speed" | "--volume" | "--seconds") {
+            if flag == "--pitch-library" {
+                options.pitch_library = Some(args.next().ok_or("expected a DLL path")?.into());
+                continue;
+            }
+            if !matches!(flag, "--speed" | "--volume" | "--seconds" | "--pitch") {
                 return Err(format!("unknown option {flag}\n{USAGE}").into());
             }
             let value: f64 = args
@@ -59,26 +66,58 @@ impl Options {
                 .ok_or_else(|| format!("expected a number after {flag}"))?;
             match flag {
                 "--speed" if (0.25..=2.0).contains(&value) => options.speed = value,
-                "--volume" if (0.0..=1.0).contains(&value) => options.volume = value as f32,
+                "--volume" if (0.0..=f64::from(MAX_TRANSPORT_GAIN)).contains(&value) => {
+                    options.volume = value as f32
+                }
                 "--seconds" if value.is_finite() && value > 0.0 => options.seconds = Some(value),
+                "--pitch" if (-24.0..=24.0).contains(&value) => options.pitch = value,
                 _ => return Err(format!("value out of range for {flag}\n{USAGE}").into()),
             }
         }
         if options.transport && (options.decode_only || options.seconds.is_some()) {
             return Err("--transport cannot be combined with --decode-only or --seconds".into());
         }
-        Ok(Some(options))
+        if !options.transport && options.volume > 1.0 {
+            return Err("volume above 1 requires --transport".into());
+        }
+        if (options.pitch_library.is_some() && !options.transport)
+            || (options.pitch != 0.0 && options.pitch_library.is_none())
+        {
+            return Err("pitch control requires --transport and --pitch-library".into());
+        }
+        Ok(options)
     }
 }
 
 fn main() -> ExitCode {
-    match Options::parse().and_then(|options| options.map_or(Ok(()), run)) {
+    match run_command() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_command() -> Result<()> {
+    let mut args = std::env::args_os().skip(1).peekable();
+    let path = args.next().ok_or(USAGE)?;
+    if path == "--help" || path == "-h" {
+        println!("{USAGE}");
+        return Ok(());
+    }
+    if args.next_if(|flag| flag == "--waveform").is_some() {
+        let count = args
+            .next()
+            .and_then(|count| count.to_str()?.parse().ok())
+            .filter(|count| (1..=10_000).contains(count))
+            .ok_or("expected a waveform bucket count from 1 to 10000")?;
+        if args.next().is_some() {
+            return Err(USAGE.into());
+        }
+        return waveform::run(&PathBuf::from(path), count);
+    }
+    run(Options::parse(path.into(), args)?)
 }
 
 fn run(options: Options) -> Result<()> {
