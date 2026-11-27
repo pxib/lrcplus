@@ -103,6 +103,16 @@ def main(argv=None) -> int:
     build.mkdir(parents=True, exist_ok=True)
     dist.mkdir(parents=True, exist_ok=True)
 
+    try:
+        subprocess.run(
+            ["cargo", "build", "--locked", "--release", "--manifest-path",
+             str(PROJECT_ROOT / "native" / "audio_dsp" / "Cargo.toml"),
+             "--target-dir", str(build / "audio-dsp")],
+            cwd=PROJECT_ROOT,
+            check=True,
+        )
+    except FileNotFoundError as error:
+        raise SystemExit("Install the Rust toolchain to build the Windows release.") from error
     subprocess.run(
         [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", str(PROJECT_ROOT / "updater.spec")],
         cwd=PROJECT_ROOT,
@@ -121,6 +131,7 @@ def main(argv=None) -> int:
 
     app_folder = dist / "LRCPlus"
     required = (app_folder / "LRCPlus.exe", app_folder / "LRCPlusUpdater.exe",
+                app_folder / "lrcplus_audio_dsp_v1.dll",
                 app_folder / "lrcplus-update.json",
                 app_folder / "themedata" / "optionalthemes.json",
                 app_folder / "docs" / "manual" / "index.html",

@@ -72,12 +72,12 @@ def apply_pcm_rate_to_bytes(data, sample_format, channels, rate):
 class PcmPitchProcessor:
     """One playback stream, owned by its processing thread."""
 
-    def process(self, data, sample_format, channels, sample_rate, semitones):
+    def process(self, data, sample_format, channels, sample_rate, semitones, *, continuous=False):
         """Shift decoded PCM pitch while preserving its playback duration."""
         if getattr(self, "_flushed", False):
             self.reset()
         shift = float(semitones)
-        if abs(shift) < 0.001:
+        if abs(shift) < 0.001 and not continuous:
             self.reset()
             return data
         import numpy as np
@@ -101,7 +101,7 @@ class PcmPitchProcessor:
             frames /= float(-np.iinfo(dtype).min)
         state = (channels, int(sample_rate), sample_format)
         reset_effect = (getattr(self, "_state", None) != state
-                        or abs(shift - getattr(self, "_shift", shift)) >= 12.0)
+                        or (not continuous and abs(shift - getattr(self, "_shift", shift)) >= 12.0))
         if reset_effect:
             self.reset()
             effect = create_pitch_stream(channels, int(sample_rate), shift)
@@ -116,7 +116,7 @@ class PcmPitchProcessor:
         elif self._shift != shift:
             # Ramp in audio time, rather than jumping once per decoder callback.
             # A new slider target continues from the pitch actually reached.
-            self._ramp_remaining = max(1, round(sample_rate * 0.03))
+            self._ramp_remaining = max(1, round(sample_rate * (0.008 if continuous else 0.03)))
         self._shift = shift
         input_buffer = np.concatenate((self._input, frames), axis=0)
         output = [self._pending]
@@ -175,7 +175,7 @@ class PcmPitchProcessor:
                  QAudioFormat.SampleFormat.Int16: np.int16,
                  QAudioFormat.SampleFormat.Int32: np.int32}[sample_format]
         tail = self.process(np.zeros((effect.latency_frames, channels), dtype).tobytes(),
-                            sample_format, channels, sample_rate, self._shift)
+                            sample_format, channels, sample_rate, self._shift, continuous=True)
         self._flushed = True
         return tail
 

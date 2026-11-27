@@ -1,13 +1,17 @@
 """Exercise an installed build using fixtures supplied by tools/smoke_release.py."""
 
 from pathlib import Path
+from struct import pack
+import sys
 from time import monotonic, sleep
 import traceback
 
 from PySide6.QtCore import QUrl
-from PySide6.QtMultimedia import QAudioDecoder, QMediaPlayer
+from PySide6.QtMultimedia import QAudioDecoder, QAudioFormat, QMediaPlayer
 from PySide6.QtWidgets import QApplication
 
+from core.audio_dsp import apply_pcm_rate_to_bytes
+from core.pcm_resampler import _native_renderer
 from ui.lrc_editor import LrcEditorDialog
 
 
@@ -98,15 +102,73 @@ def _check_lyric_editor(window, target):
         reopened.deleteLater()
 
 
+def _check_speed_resampling():
+    if _native_renderer() is None:
+        raise RuntimeError("The packaged Rust PCM resampler could not load.")
+    sample = pack("<h", 1500)
+    output = apply_pcm_rate_to_bytes(sample * 120, QAudioFormat.SampleFormat.Int16, 1, 1.25)
+    if output != sample * 96:
+        raise RuntimeError("The packaged Rust PCM resampler produced unexpected output.")
+
+
+def _check_melody_detection():
+    import numpy as np
+
+    from core.rhythm_melody import (
+        FIRST_MIDI_NOTE, LAST_MIDI_NOTE, MelodyAnalyzer, _native_peak_collector,
+    )
+
+    if _native_peak_collector() is None:
+        raise RuntimeError("The packaged Rust peak collector could not load.")
+    melody = MelodyAnalyzer(22050, 512)
+    spectra = np.zeros((1, melody._high_bin + 2), dtype=np.float32)
+    spectra[0, round(440 / melody._bin_hz)] = 1
+    pitches = np.zeros((1, LAST_MIDI_NOTE - FIRST_MIDI_NOTE + 1), dtype=np.float32)
+    melody._collect_peaks(spectra, pitches)
+    if list(np.flatnonzero(pitches[0]) + FIRST_MIDI_NOTE) != [69]:
+        raise RuntimeError("The packaged Rust peak collector produced an unexpected melody.")
+
+
+def _check_pcm_engine():
+    from core.pcm_buffers import _native_api, make_inbox, make_output
+
+    if _native_api() is None:
+        raise RuntimeError("The packaged Rust PCM engine could not load.")
+    fmt = QAudioFormat()
+    fmt.setSampleRate(48000)
+    fmt.setChannelCount(1)
+    fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+    pcm = pack("<h", 1500) * 120
+    inbox = make_inbox()
+    inbox.push(pcm, fmt, 4_000_000, len(pcm))
+    output = make_output(fmt)
+    data, decoded_format, position = inbox.pop()
+    output.add_source(120, position)
+    output.add_resampled(120, 1.0)
+    output.queue(data, padding=0, content=120)
+    if decoded_format != fmt or output.peek(len(pcm)) != pcm:
+        raise RuntimeError("The packaged Rust PCM engine changed the decoded audio.")
+    output.commit(len(pcm))
+    if output.position_ms(1250) != 4001.25:
+        raise RuntimeError("The packaged Rust PCM engine produced an unexpected playback position.")
+
+
 def run_release_smoke(window, directory):
     directory = Path(directory)
     report = directory / "result.txt"
+    frozen = getattr(sys, "frozen", False)
     try:
         transport_check = _check_playback(window, directory / "sample.wav")
+        if frozen:
+            _check_speed_resampling()
+            _check_melody_detection()
+            _check_pcm_engine()
         _check_lyric_editor(window, directory / "sample.lrcx")
     except Exception:
         report.write_text(traceback.format_exc(), encoding="utf-8")
         return 1
-    report.write_text(f"Audio decoding, seeking, {transport_check}, and LRCX round trip passed.\n",
+    audio_checks = "Rust speed resampling, melody detection, PCM playback, " if frozen else ""
+    report.write_text(f"Audio decoding, seeking, {transport_check}, {audio_checks}"
+                      "and LRCX round trip passed.\n",
                       encoding="utf-8")
     return 0

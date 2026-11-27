@@ -52,6 +52,8 @@ def test_plain_lyrics_stay_readable_when_refreshing_compact_display(qapp, tmp_pa
 
 @pytest.mark.parametrize("saved_pitch", [0, 5])
 def test_player_starts_and_pitch_dialog_controls_work(qapp, monkeypatch, saved_pitch):
+    from PySide6.QtTest import QTest
+
     save_playback_settings({
         "pitch_mode": "Semitones",
         "pitch_value": saved_pitch,
@@ -66,8 +68,20 @@ def test_player_starts_and_pitch_dialog_controls_work(qapp, monkeypatch, saved_p
 
         def use_dialog(dialog):
             assert dialog.slider.value() == 500
-            assert dialog.speed_slider.value() == 100
-            dialog.speed_slider.setValue(125)
+            speed_slider = dialog.speed_slider
+            assert speed_slider.value() == 100
+            speed_slider.setSliderDown(True)
+            speed_slider.setSliderPosition(150)
+            assert dialog.speed_label.text() == "150%"
+            for _ in range(50):
+                if window.playback_speed == 1.5:
+                    break
+                QTest.qWait(10)
+            assert speed_slider.isSliderDown()
+            assert window.playback_speed == 1.5
+            speed_slider.setSliderPosition(125)
+            assert dialog.speed_label.text() == "125%"
+            speed_slider.setSliderDown(False)
             assert window.playback_speed == 1.25
             assert window._displayed_pitch_semitones() == 5
             dialog.link_pitch_checkbox.setChecked(True)
@@ -78,6 +92,10 @@ def test_player_starts_and_pitch_dialog_controls_work(qapp, monkeypatch, saved_p
             assert window._displayed_pitch_semitones() == 5
             dialog.slider.setValue(700)
             assert window.pitch_semitones == 7
+            speed_slider.setValue(103)
+            assert window.playback_speed == 1.0
+            assert speed_slider.value() == 100
+            assert dialog.speed_label.text() == "100%"
             return 0
 
         monkeypatch.setattr(PitchChangerDialog, "exec", use_dialog)

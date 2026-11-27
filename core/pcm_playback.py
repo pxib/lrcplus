@@ -1,9 +1,8 @@
 """Processed playback whose scheduling and output never wait for GUI events."""
 
-from collections import deque
-from dataclasses import dataclass
-from math import ceil
+from dataclasses import dataclass, replace
 from threading import Lock
+from time import monotonic
 
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtMultimedia import QAudioBuffer, QAudioSink
@@ -12,6 +11,7 @@ from core.audio_dsp import (
     PcmPitchProcessor, PcmRateProcessor, apply_pcm_gain_to_bytes,
 )
 from core.audio_sink import dispose_audio_sink
+from core.pcm_buffers import dsp_plan, make_inbox, make_output
 
 
 # Keep threads alive if their window is deleted during a native DSP call.
@@ -20,6 +20,8 @@ _LIVE_THREADS = set()
 # Leave room for decoder jitter without filling the device with old controls.
 _OUTPUT_BUFFER_US = 60_000
 _STARTUP_RESERVE_US = 30_000
+_WRITE_POLL_MS = 5
+_POSITION_POLL_MS = 20
 
 
 @dataclass(frozen=True)
@@ -30,85 +32,8 @@ class _Controls:
     gain: float = 1.0
     enabled: bool = False
     playing: bool = False
-
-
-class _PlaybackClock:
-    """Carry source timestamps through DSP, the pending queue, and device writes."""
-
-    def __init__(self, fmt, speed):
-        self._sample_rate = fmt.sampleRate()
-        self._frame_size = fmt.bytesPerFrame()
-        self._speed = speed if abs(speed - 1.0) >= 0.001 else 1.0
-        self._source_frames = 0
-        self._content_frames = 0
-        self._written_bytes = 0
-        self._source = deque([(0, None)])
-        # A span associates bytes with source time and the time advanced per byte.
-        self._pending = deque()
-        self._written = deque()
-
-    def add_source(self, frames, start_us):
-        anchor_frame, anchor_us = self._source[-1]
-        # Coalesce timestamps that differ only by decoder rounding. A dropped
-        # input block instead becomes a timestamp jump at the matching sample.
-        if start_us != -1:
-            elapsed_us = self._to_us(self._source_frames - anchor_frame)
-            if anchor_us is None or abs(start_us - anchor_us - elapsed_us) > 2000:
-                self._source.append((self._source_frames, start_us))
-        self._source_frames += frames
-
-    def _to_us(self, frames):
-        return frames * 1_000_000 / self._sample_rate
-
-    def _source_position(self):
-        frame = min(self._source_frames, self._content_frames * self._speed)
-        while len(self._source) > 1 and self._source[1][0] <= frame + 1e-7:
-            self._source.popleft()
-        start, timestamp = self._source[0]
-        return None if timestamp is None else timestamp + self._to_us(frame - start)
-
-    def queue(self, frames, padding, content):
-        if padding:
-            self._pending.append((padding * self._frame_size, self._source_position(), 0))
-        # The pitch flush feeds synthetic input to release its tail. Only real
-        # decoded samples can advance the track position.
-        content = min(content, max(0, ceil(self._source_frames / self._speed) - self._content_frames))
-        step = self._to_us(self._speed) / self._frame_size
-        remaining = content
-        while remaining:
-            position = self._source_position()
-            count = remaining
-            if len(self._source) > 1:
-                boundary = ceil(self._source[1][0] / self._speed)
-                count = min(count, boundary - self._content_frames)
-            self._pending.append((count * self._frame_size, position, step))
-            self._content_frames += count
-            remaining -= count
-        trailing = frames - padding - content
-        if trailing:
-            self._pending.append((trailing * self._frame_size, self._source_position(), 0))
-
-    def consume_pending(self, size, *, written=False):
-        while size:
-            count, position, step = self._pending.popleft()
-            used = min(size, count)
-            if written:
-                self._written.append((self._written_bytes, position, step))
-                self._written_bytes += used
-            if used < count:
-                next_position = None if position is None else position + used * step
-                self._pending.appendleft((count - used, next_position, step))
-            size -= used
-
-    def position_ms(self, played_us):
-        played = min(self._written_bytes, played_us * self._sample_rate * self._frame_size / 1_000_000)
-        while len(self._written) > 1 and self._written[1][0] <= played:
-            self._written.popleft()
-        if self._written:
-            start, position, step = self._written[0]
-            if position is not None:
-                return max(0, (position + (played - start) * step) / 1000)
-        return None
+    live_speed: bool = False
+    pitch_linked: bool = False
 
 
 class PcmPlayback(QObject):
@@ -127,8 +52,7 @@ class PcmPlayback(QObject):
         self._lock = Lock()
         self._controls = _Controls()
         self._generation = 0
-        self._pending = deque()
-        self._queued_bytes = 0
+        self._pending = make_inbox()
         self._output_progress_us = 0
         self._track_position_ms = None
         self._output_sample_rate = 0
@@ -167,7 +91,6 @@ class PcmPlayback(QObject):
     def _reset_locked(self):
         self._generation += 1
         self._pending.clear()
-        self._queued_bytes = 0
         self._output_progress_us = 0
         self._track_position_ms = None
         self._output_sample_rate = 0
@@ -175,6 +98,10 @@ class PcmPlayback(QObject):
         self._has_input = False
         self._input_expected = False
         self._drain_requested = False
+
+    @property
+    def _queued_bytes(self):
+        return len(self._pending)
 
     def reset(self):
         with self._lock:
@@ -200,16 +127,15 @@ class PcmPlayback(QObject):
         with self._lock:
             return self._track_position_ms if self._controls.enabled else None
 
-    def configure(self, device, speed, shift, gain, *, enabled, playing):
+    def configure(self, device, speed, shift, gain, *, enabled, playing,
+                  live_speed=False, pitch_linked=False):
         with self._lock:
             if self._closed:
                 return
             previous = self._controls
-            self._controls = _Controls(device, speed, shift, gain, enabled, playing)
-            pitch_restart = ((abs(previous.shift) < 0.001) != (abs(shift) < 0.001)
-                             or abs(previous.shift - shift) >= 12.0)
-            if (previous.device != device or previous.enabled != enabled
-                    or abs(previous.speed - speed) >= 0.001 or pitch_restart):
+            self._controls = _Controls(device, speed, shift, gain, enabled, playing,
+                                       live_speed, pitch_linked)
+            if self._pending.configure(previous, self._controls):
                 self._reset_locked()
             if enabled and playing:
                 self._input_expected = True
@@ -221,8 +147,7 @@ class PcmPlayback(QObject):
             if self._closed:
                 return
             old = self._controls
-            self._controls = _Controls(old.device, old.speed, old.shift, old.gain,
-                                       old.enabled, playing)
+            self._controls = replace(old, playing=playing)
             if old.enabled and playing:
                 self._input_expected = True
         self._notify()
@@ -242,8 +167,7 @@ class PcmPlayback(QObject):
                 self._end_of_stream = True
             self._drain_requested = True
             old = self._controls
-            self._controls = _Controls(old.device, old.speed, old.shift, old.gain,
-                                       old.enabled, True)
+            self._controls = replace(old, playing=True)
         self._notify()
         return True
 
@@ -303,6 +227,7 @@ class PcmPlayback(QObject):
                 if self._closed or generation != self._generation:
                     return
                 self._end_of_stream = True
+            self._notify()
             return
         data = bytes(buffer.data())
         if not data:
@@ -312,18 +237,13 @@ class PcmPlayback(QObject):
         with self._lock:
             if self._closed or generation != self._generation:
                 return
-            limit = max(fmt.bytesForDuration(120_000), len(data))
             # Decoder callbacks can arrive in a burst after a UI/GIL stall.
             # Bound delay without tearing down audible output and restarting
             # pitch warmup each time that happens.
-            while self._pending and self._queued_bytes + len(data) > limit:
-                dropped, _, _ = self._pending.popleft()
-                self._queued_bytes -= len(dropped)
-            self._pending.append((data, fmt, start_us))
-            self._queued_bytes += len(data)
+            self._pending.push(data, fmt, start_us, fmt.bytesForDuration(120_000))
             self._end_of_stream = False
             self._has_input = True
-        # The audio thread polls this inbox; delivery never needs a GUI event.
+        self._notify()
 
     @Slot(int)
     def _deliver_route(self, generation):
@@ -379,36 +299,37 @@ class _PlaybackEngine(QObject):
         self._mailbox = mailbox
         self._sink_factory = sink_factory
         self._processor = PcmPitchProcessor()
-        self._rate_processor = PcmRateProcessor()
+        self._rate_processor = PcmRateProcessor(retain_live_history=True)
         self._equalizer = equalizer
         self._last_input = None
         self._stream_flushed = False
-        self._clock = None
-        self._written_bytes = 0
         self._generation = -1
         self._sink = None
+        self._sink_volume = None
+        self._sink_format = None
+        self._next_position_poll = 0.0
         self._io = None
-        self._pending = bytearray()
+        self._pending = ()
         self._active = False
         self._primed = False
         self._playing = False
         self._controls = _Controls()
         self._poll_timer = QTimer(self)
         self._poll_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self._poll_timer.setInterval(20)
         self._poll_timer.timeout.connect(self.pump)
 
     @Slot()
     def start(self):
-        self._poll_timer.start()
         self.pump()
 
     def _stop_sink(self):
-        self._pending.clear()
+        self._pending = ()
         self._active = False
         self._primed = False
-        self._written_bytes = 0
         sink, self._sink = self._sink, None
+        self._sink_volume = None
+        self._sink_format = None
+        self._next_position_poll = 0.0
         self._io = None
         if sink is not None:
             dispose_audio_sink(sink)
@@ -421,12 +342,53 @@ class _PlaybackEngine(QObject):
             self._equalizer.reset()
         self._last_input = None
         self._stream_flushed = False
-        self._clock = None
+
+    @property
+    def _written_bytes(self):
+        return getattr(self._pending, "written_bytes", 0)
 
     def _current(self):
         with self._mailbox._lock:
             return (not self._mailbox._closed
                     and self._generation == self._mailbox._generation)
+
+    def _set_sink_volume(self, gain):
+        volume = min(1.0, gain)
+        if volume != self._sink_volume:
+            self._sink.setVolume(volume)
+            self._sink_volume = volume
+
+    def _schedule_output_poll(self, drain_requested):
+        if not self._playing or self._sink is None:
+            self._poll_timer.stop()
+            return
+        # Decoder callbacks wake the worker. Poll quickly only while waiting
+        # for device room or for the last written samples to become audible.
+        pending_writes = self._primed and bool(self._pending)
+        interval = _WRITE_POLL_MS if pending_writes or drain_requested else _POSITION_POLL_MS
+        if not self._poll_timer.isActive() or self._poll_timer.interval() != interval:
+            self._poll_timer.start(interval)
+
+    def _publish_position(self, *, force):
+        progress = 0
+        track_position = None
+        played = True
+        if self._sink is not None:
+            now = monotonic()
+            if not force and now < self._next_position_poll:
+                return False
+            self._next_position_poll = now + _POSITION_POLL_MS / 1000
+            written_us = self._sink_format.durationForBytes(self._written_bytes)
+            processed_us = self._sink.processedUSecs()
+            played = processed_us >= written_us
+            progress = min(processed_us, written_us)
+            track_position = self._pending.position_ms(progress)
+        mailbox = self._mailbox
+        with mailbox._lock:
+            if self._generation == mailbox._generation:
+                mailbox._output_progress_us = progress
+                mailbox._track_position_ms = track_position
+        return played
 
     @Slot()
     def pump(self):
@@ -442,18 +404,17 @@ class _PlaybackEngine(QObject):
             self.thread().quit()
             return
         try:
-            interval = 5 if controls.enabled and controls.playing else 20
-            if self._poll_timer.interval() != interval:
-                self._poll_timer.setInterval(interval)
             if generation != self._generation:
                 self._reset()
                 self._generation = generation
             if not controls.enabled:
+                self._poll_timer.stop()
                 return
             self._controls = controls
+            playing_changed = controls.playing != self._playing
             if self._sink is not None:
-                self._sink.setVolume(min(1.0, controls.gain))
-                if controls.playing != self._playing:
+                self._set_sink_volume(controls.gain)
+                if playing_changed:
                     if controls.playing:
                         self._sink.resume()
                     else:
@@ -462,11 +423,12 @@ class _PlaybackEngine(QObject):
             # Bound each turn so device writes and control changes get time.
             for _ in range(4):
                 with mailbox._lock:
-                    if (mailbox._closed or mailbox._generation != generation
-                            or not mailbox._pending):
+                    if mailbox._closed or mailbox._generation != generation:
                         break
-                    data, fmt, start_us = mailbox._pending.popleft()
-                    mailbox._queued_bytes -= len(data)
+                    block = mailbox._pending.pop()
+                    if block is None:
+                        break
+                    data, fmt, start_us = block
                     # Pitch and gain are live controls. Apply the latest values
                     # to queued input, rather than replaying old slider targets.
                     # Changes that require new audio history bump generation.
@@ -474,13 +436,13 @@ class _PlaybackEngine(QObject):
                 if self._last_input is None or self._last_input[0] != fmt:
                     if self._last_input is not None:
                         self._reset()
-                    self._clock = _PlaybackClock(fmt, settings.speed)
-                self._clock.add_source(len(data) // fmt.bytesPerFrame(), start_us)
+                    self._pending = make_output(fmt)
+                self._pending.add_source(len(data) // fmt.bytesPerFrame(), start_us)
                 self._last_input = (fmt, settings)
                 self._stream_flushed = False
                 pcm = self._rate_processor.process(
                     data, fmt.sampleFormat(), fmt.channelCount(), settings.speed,
-                    sample_rate=fmt.sampleRate(),
+                    sample_rate=fmt.sampleRate(), smooth=settings.live_speed,
                 )
                 self._process_resampled(pcm, fmt, settings)
                 self._drain()
@@ -493,24 +455,14 @@ class _PlaybackEngine(QObject):
                     and self._last_input is not None and self._current()):
                 fmt, settings = self._last_input
                 self._process_resampled(self._rate_processor.flush(), fmt, settings, tail=True)
-                self._accept_processed(self._processor.flush(), fmt, settings, tail=True)
+                self._accept_processed(self._processor.flush(), fmt, dsp_plan(settings, settings.speed))
                 self._stream_flushed = True
             self._drain(force=end_of_stream)
-            progress = 0
-            track_position = None
-            if self._sink is not None:
-                progress = min(self._sink.processedUSecs(),
-                               self._sink.format().durationForBytes(self._written_bytes))
-                track_position = self._clock.position_ms(progress)
-            with mailbox._lock:
-                if generation == mailbox._generation:
-                    mailbox._output_progress_us = progress
-                    mailbox._track_position_ms = track_position
-            if drain_requested and end_of_stream and self._stream_flushed and not self._pending:
+            awaiting_tail = drain_requested and end_of_stream and self._stream_flushed and not self._pending
+            played = self._publish_position(force=awaiting_tail or playing_changed)
+            if awaiting_tail:
                 # Written data still belongs to the device. Advancing on write
                 # completion would cut off the tail already in its buffer.
-                played = (self._sink is None or self._sink.processedUSecs() >=
-                          self._sink.format().durationForBytes(self._written_bytes))
                 with mailbox._lock:
                     drained = (played and mailbox._drain_requested and not mailbox._closed
                                and generation == mailbox._generation and not mailbox._pending)
@@ -519,7 +471,10 @@ class _PlaybackEngine(QObject):
                         mailbox._input_expected = False
                 if drained:
                     mailbox._drained.emit(generation)
+                    drain_requested = False
+            self._schedule_output_poll(drain_requested)
         except (ImportError, ValueError, RuntimeError, OSError) as error:
+            self._poll_timer.stop()
             self._reset()
             with mailbox._lock:
                 report = not mailbox._closed and generation == mailbox._generation
@@ -527,10 +482,9 @@ class _PlaybackEngine(QObject):
                     # Disable input until the GUI handles recovery. Check and
                     # update together so an old failure cannot disable a seek.
                     old = mailbox._controls
-                    mailbox._controls = _Controls(old.device, old.speed, old.shift,
-                                                  old.gain, False, old.playing)
+                    mailbox._controls = replace(old, enabled=False)
+                    mailbox._pending.configure(old, mailbox._controls)
                     mailbox._pending.clear()
-                    mailbox._queued_bytes = 0
             if report:
                 mailbox._error.emit(generation, str(error))
         with mailbox._lock:
@@ -541,82 +495,89 @@ class _PlaybackEngine(QObject):
     def _process_resampled(self, pcm, fmt, settings, *, tail=False):
         if not pcm:
             return
-        pcm = self._processor.process(
-            pcm, fmt.sampleFormat(), fmt.channelCount(), fmt.sampleRate(), settings.shift,
-        )
-        self._accept_processed(pcm, fmt, settings, tail=tail)
+        frame_size = fmt.bytesPerFrame()
+        spans = self._rate_processor.spans or ((len(pcm) // frame_size, 1.0),)
+        pending_before = len(self._pending)
+        start = 0
+        for frames, rate in spans:
+            self._pending.add_resampled(frames, rate)
+            end = start + frames * frame_size
+            plan = dsp_plan(settings, rate)
+            pitch_options = {"continuous": True} if plan.continuous else {}
+            shifted = self._processor.process(
+                pcm[start:end], fmt.sampleFormat(), fmt.channelCount(), fmt.sampleRate(), plan.shift,
+                **pitch_options,
+            )
+            self._accept_processed(shifted, fmt, plan)
+            start = end
+        if not tail:
+            # A ramp splits one decoder block into several spans. Keep the
+            # whole new block when capping older pending audio.
+            self._pending.trim(pending_before, fmt.bytesForDuration(120_000))
 
-    def _accept_processed(self, pcm, fmt, settings, *, tail=False):
+    def _accept_processed(self, pcm, fmt, plan):
         if not pcm:
             return
-        if settings.gain > 1:
-            pcm = apply_pcm_gain_to_bytes(pcm, fmt.sampleFormat(), settings.gain)
-        frames = len(pcm) // fmt.bytesPerFrame()
+        frame_size = fmt.bytesPerFrame()
+        frames = len(pcm) // frame_size
         padding, content = 0, frames
-        if abs(settings.shift) >= 0.001:
+        if plan.pitched:
             if not self._processor._started:
                 return
             padding, content = self._processor.content_frames
+            if plan.trim_pitch_padding and (padding or content < frames):
+                # Native output covers startup. During a ramp, wait for actual
+                # pitch output instead of writing temporary silence.
+                pcm = pcm[padding * frame_size:(padding + content) * frame_size]
+                if not pcm:
+                    return
+                padding = 0
+        if plan.boost > 1:
+            pcm = apply_pcm_gain_to_bytes(pcm, fmt.sampleFormat(), plan.boost)
         if self._equalizer is not None:
             pcm = self._equalizer.process(pcm, fmt)
         if self._current():
-            self._accept(pcm, fmt, padding, content, tail=tail)
+            self._accept(pcm, fmt, padding, content)
 
-    def _accept(self, pcm, fmt, padding, content, *, tail=False):
+    def _accept(self, pcm, fmt, padding, content):
         if self._sink is None:
             self._sink = self._sink_factory(self._controls.device, fmt, self)
-            self._sink.setVolume(min(1.0, self._controls.gain))
+            self._set_sink_volume(self._controls.gain)
             # Capacity alone does not provide a reserve: wait for actual audio
             # below before starting playback, then retain room for decoder bursts.
             self._sink.setBufferSize(max(fmt.bytesForDuration(_OUTPUT_BUFFER_US), fmt.bytesPerFrame()))
             self._io = self._sink.start()
             if self._io is None:
                 raise RuntimeError("Qt could not start the PCM audio sink.")
+            self._sink_format = self._sink.format()
             if not self._playing:
                 self._sink.suspend()
-        frame_size = fmt.bytesPerFrame()
-        self._clock.queue(len(pcm) // frame_size, padding, content)
-        self._pending.extend(pcm)
-        if tail:
-            # The final reserve is bounded by processor latency. Preserve the
-            # audio waiting for the device instead of applying the burst limit.
-            return
-        limit = max(fmt.bytesForDuration(120_000), len(pcm))
-        limit -= limit % frame_size
-        excess = len(self._pending) - limit
-        if excess > 0:
-            self._clock.consume_pending(excess)
-            del self._pending[:excess]
+        self._pending.queue(pcm, padding, content)
 
     def _drain(self, force=False):
         if not self._playing or self._io is None or not self._pending or not self._current():
             return
+        audio_format = self._sink_format
         if not self._primed:
             # Python-backed decoder delivery and DSP still need the GIL. Dialog
             # construction can briefly hold it even with an independent Qt loop.
-            reserve = self._sink.format().bytesForDuration(_STARTUP_RESERVE_US)
+            reserve = audio_format.bytesForDuration(_STARTUP_RESERVE_US)
             if len(self._pending) < reserve and not force:
                 return
             self._primed = True
-        audio_format = self._sink.format()
-        frame_size = audio_format.bytesPerFrame()
-        count = min(max(0, self._sink.bytesFree()), len(self._pending))
-        count -= count % frame_size
-        if count:
-            chunk = bytes(self._pending[:count])
+        chunk = self._pending.peek(max(0, self._sink.bytesFree()))
+        if chunk:
             written = self._io.write(chunk)
-            if written < 0:
+            if not 0 <= written <= len(chunk):
                 raise RuntimeError("The PCM audio sink rejected audio data.")
             tap = self._mailbox._audio_tap
             if written and tap is not None and tap.collecting:
                 tap.capture(memoryview(chunk)[:written], audio_format, "processed")
-            self._clock.consume_pending(written, written=True)
-            del self._pending[:written]
-            self._written_bytes += written
+            self._pending.commit(written)
             if written and not self._active:
                 self._active = True
                 mailbox = self._mailbox
-                track_position = self._clock.position_ms(self._sink.processedUSecs())
+                track_position = self._pending.position_ms(self._sink.processedUSecs())
                 with mailbox._lock:
                     if self._generation == mailbox._generation:
                         mailbox._output_sample_rate = audio_format.sampleRate()

@@ -2171,7 +2171,7 @@ class Player(
                 self.handle_pitch_change,
                 speed_percent=round(self.playback_speed * 100),
                 link_pitch_to_speed=follows_speed(),
-                on_speed_change=self.handle_speed_change,
+                on_speed_change=lambda value: self.handle_speed_change(value, live=True),
                 on_link_change=self.handle_pitch_link_change,
                 speed_enabled=not getattr(self, "_live_speed_locked", False),
                 parent=self,

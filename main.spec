@@ -77,6 +77,10 @@ for line in (PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8").spli
 datas, binaries = collect_delvewheel_libs_directory(
     "aubio", libdir_name="aubio_ledfx.libs", datas=datas,
 )
+audio_dll = PROJECT_ROOT / "build" / "audio-dsp" / "release" / "lrcplus_audio_dsp_v1.dll"
+if not audio_dll.is_file():
+    raise FileNotFoundError("Build the Rust audio library first with tools/build_release.py.")
+binaries.append((str(audio_dll), "."))
 
 
 # ---------------------------------------------------------------------------

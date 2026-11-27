@@ -1,0 +1,9 @@
+[package]
+name = "lrcplus_audio_dsp"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "lrcplus_audio_dsp_v1"
+crate-type = ["cdylib", "rlib"]

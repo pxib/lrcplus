@@ -423,6 +423,10 @@ class PitchChangerDialog(QDialog):
         self._pitch_update_timer.setSingleShot(True)
         self._pitch_update_timer.setInterval(16)
         self._pitch_update_timer.timeout.connect(self._notify_pitch_change)
+        self._speed_update_timer = QTimer(self)
+        self._speed_update_timer.setSingleShot(True)
+        self._speed_update_timer.setInterval(32)
+        self._speed_update_timer.timeout.connect(self._notify_speed_change)
 
         heading = QLabel("Pitch changer")
         heading.setStyleSheet("font-size: 19px; font-weight: 600;")
@@ -525,6 +529,7 @@ class PitchChangerDialog(QDialog):
         self.value_spin.valueChanged.connect(self._from_spin)
         self.unit_combo.currentTextChanged.connect(self._on_units_changed)
         self.speed_slider.valueChanged.connect(self._on_speed_changed)
+        self.speed_slider.sliderReleased.connect(self._notify_speed_change)
         if on_speed_change is not None:
             self._on_speed_change = on_speed_change
         else:
@@ -543,8 +548,10 @@ class PitchChangerDialog(QDialog):
         self.set_speed_controls(speed_percent, link_pitch_to_speed, speed_enabled)
 
     def set_speed_controls(self, speed_percent, linked, enabled):
+        self._speed_update_timer.stop()
+        self._notified_speed = int(speed_percent)
         with QSignalBlocker(self.speed_slider), QSignalBlocker(self.link_pitch_checkbox):
-            self.speed_slider.setValue(int(speed_percent))
+            self.speed_slider.setValue(self._notified_speed)
             self.link_pitch_checkbox.setChecked(linked)
         self.speed_label.setText(f"{int(speed_percent)}%")
         self.speed_slider.setEnabled(enabled)
@@ -568,13 +575,25 @@ class PitchChangerDialog(QDialog):
             self._on_link_change(linked)
 
     def _on_speed_changed(self, value):
+        if self.speed_slider.isSliderDown():
+            self.speed_label.setText(f"{100 if abs(value - 100) <= 5 else value}%")
+            if not self._speed_update_timer.isActive():
+                self._speed_update_timer.start()
+        else:
+            self._notify_speed_change()
+
+    def _notify_speed_change(self):
+        self._speed_update_timer.stop()
+        value = self.speed_slider.value()
         if abs(value - 100) <= 5:
             value = 100
-            self.speed_slider.blockSignals(True)
-            self.speed_slider.setValue(value)
-            self.speed_slider.blockSignals(False)
+            if not self.speed_slider.isSliderDown():
+                with QSignalBlocker(self.speed_slider):
+                    self.speed_slider.setValue(value)
         self.speed_label.setText(f"{value}%")
-        self._on_speed_change(value)
+        if value != self._notified_speed:
+            self._notified_speed = value
+            self._on_speed_change(value)
 
     def set_value(self, value, notify=True):
         value = max(-24.0, min(24.0, round(float(value), 2)))
@@ -597,6 +616,8 @@ class PitchChangerDialog(QDialog):
     def done(self, result):
         if self._pitch_update_timer.isActive():
             self._notify_pitch_change()
+        if self._speed_update_timer.isActive():
+            self._notify_speed_change()
         super().done(result)
 
     def _from_slider(self, value):

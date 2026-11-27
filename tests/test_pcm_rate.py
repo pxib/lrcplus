@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from PySide6.QtMultimedia import QAudioFormat
 
+from core import pcm_resampler
 from core.audio_dsp import PcmRateProcessor, apply_pcm_rate_to_bytes
 
 
@@ -120,4 +121,55 @@ def test_filter_overshoot_saturates_integer_pcm(dtype, sample_format):
     result = render(source, 0.73, [127], sample_format)
     assert result.min() == limits.min
     assert result.max() == limits.max
+
+
+@pytest.mark.parametrize("channels,rate", [(1, 0.25), (2, 0.73), (3, 1.25), (2, 2.0)])
+@pytest.mark.parametrize("dtype,sample_format", [
+    (np.float32, FLOAT),
+    (np.int16, QAudioFormat.SampleFormat.Int16),
+    (np.int32, QAudioFormat.SampleFormat.Int32),
+])
+def test_rust_resampler_matches_numpy(dtype, sample_format, channels, rate, monkeypatch):
+    if pcm_resampler._native_renderer() is None:
+        pytest.skip("The optional source-build Rust resampler is unavailable.")
+    rng = np.random.default_rng(42)
+    scale = 1 if dtype == np.float32 else np.iinfo(dtype).max
+    source = (rng.uniform(-1, 1, (4097, channels)) * scale).astype(dtype)
+    sizes = [1, 127, 1024, 17]
+    native = render(source, rate, sizes, sample_format)
+    monkeypatch.setattr(pcm_resampler, "_native_renderer", lambda: None)
+    fallback = render(source, rate, sizes, sample_format)
+    if dtype == np.float32:
+        np.testing.assert_allclose(native, fallback, rtol=0, atol=1e-7)
+    else:
+        np.testing.assert_array_less(np.abs(native.astype(np.int64) - fallback), 2)
+
+
+def test_live_rate_keeps_source_phase_when_retargeted_mid_ramp():
+    source = np.linspace(-0.75, 0.75, 15000, dtype=np.float32)
+
+    def resample(chunk_size):
+        processor = PcmRateProcessor(retain_live_history=True)
+        output, rates = [], []
+        for start, end, rate in ((0, 5000, 0.73), (5000, 5700, 2.0),
+                                 (5700, 9500, 0.25), (9500, 15000, 1.0)):
+            for offset in range(start, end, chunk_size):
+                data = source[offset:min(offset + chunk_size, end)].tobytes()
+                output.append(processor.process(data, FLOAT, 1, rate, sample_rate=48000,
+                                                smooth=start != 0))
+                rates.extend(np.repeat(rate, frames) for frames, rate in processor.spans)
+        output.append(processor.flush())
+        rates.extend(np.repeat(rate, frames) for frames, rate in processor.spans)
+        return np.frombuffer(b"".join(output), np.float32), np.concatenate(rates)
+
+    samples, rates = resample(4096)
+    small_samples, small_rates = resample(257)
+    np.testing.assert_array_equal(rates, small_rates)
+    np.testing.assert_allclose(samples, small_samples, rtol=0, atol=1e-7)
+    positions = np.r_[0, np.cumsum(rates[:-1])]
+    assert positions[-1] < len(source) <= positions[-1] + rates[-1]
+    assert rates[-1] == 1.0
+    inside = (positions >= 100) & (positions < len(source) - 100)
+    expected = np.interp(positions[inside], np.arange(len(source)), source)
+    np.testing.assert_allclose(samples[inside], expected, rtol=0, atol=2e-6)
 

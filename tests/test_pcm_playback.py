@@ -1,6 +1,7 @@
 import threading
 import time
 import wave
+from math import log2
 
 import numpy as np
 import pytest
@@ -135,6 +136,41 @@ def test_output_primes_real_audio_reserve_before_starting(qapp):
         worker.receive_buffer(buffer(frames=416))  # Exactly 30 ms of real audio.
         wait_without_gui(lambda: sinks[0].total_written == 1440 * 8)
         assert worker._engine._primed
+    finally:
+        close(worker)
+
+
+def test_decoder_wakes_idle_output_and_only_applies_changed_sink_volume(qapp):
+    class VolumeMeter(Sink):
+        def __init__(self, *args):
+            super().__init__(*args)
+            self.volume_updates = []
+
+        def setVolume(self, volume):
+            super().setVolume(volume)
+            self.volume_updates.append(volume)
+
+    sinks = []
+    worker = PcmPlayback(sink_factory=lambda *args: sinks.append(VolumeMeter(*args)) or sinks[-1])
+    try:
+        worker.configure(None, 1, 0, 0.5, enabled=True, playing=False)
+        worker.receive_buffer(buffer())
+        wait_without_gui(lambda: sinks and sinks[0].suspended.is_set())
+        sink = sinks[0]
+        assert not sink.total_written
+        worker.set_playing(True)
+        wait_without_gui(lambda: sink.total_written == 32768)
+        worker.receive_buffer(buffer())
+        wait_without_gui(lambda: sink.total_written == 65536)
+        worker.configure(None, 1, 0, 0.75, enabled=True, playing=True)
+        wait_without_gui(lambda: sink.volume_updates == [0.5, 0.75])
+        worker.configure(None, 1, 0, 1.5, enabled=True, playing=True)
+        wait_without_gui(lambda: sink.volume_updates == [0.5, 0.75, 1.0])
+        worker.configure(None, 1, 0, 2.0, enabled=True, playing=True)
+        worker.receive_buffer(buffer())
+        wait_without_gui(lambda: sink.total_written == 98304)
+        assert sink.volume_updates == [0.5, 0.75, 1.0]
+        assert len(sinks) == 1
     finally:
         close(worker)
 
@@ -400,6 +436,61 @@ def test_pitch_clock_matches_played_cue_at_different_speeds(qapp, monkeypatch, s
         assert worker.track_position_ms() == pytest.approx(4050, abs=0.1)
         sink.played_us = audio_format().durationForBytes(len(sink.written))
         wait_without_gui(lambda: worker.track_position_ms() == pytest.approx(4100))
+    finally:
+        close(worker)
+
+
+@pytest.mark.parametrize("linked", [True, False])
+def test_live_speed_changes_keep_one_sink_and_follow_the_source_clock(qapp, monkeypatch, linked):
+    from core import audio_dsp
+
+    class IdentityPitch:
+        latency_frames = 2048
+
+        def __init__(self, shift):
+            self.shifts = [shift]
+
+        def set_semitones(self, shift):
+            self.shifts.append(shift)
+
+        def process(self, frames):
+            return frames
+
+        def close(self):
+            pass
+
+    effects, sinks = [], []
+
+    def make_pitch(_channels, _sample_rate, shift):
+        effect = IdentityPitch(shift)
+        effects.append(effect)
+        return effect
+
+    monkeypatch.setattr(audio_dsp, "create_pitch_stream", make_pitch)
+    worker = PcmPlayback(sink_factory=lambda *args: sinks.append(Sink(*args)) or sinks[-1])
+    try:
+        previous = 4000
+        for index, speed in enumerate((1.25, 0.73, 1.0)):
+            shift = 0 if linked else -12 * log2(speed)
+            worker.configure(None, speed, shift, 1, enabled=True, playing=True,
+                             live_speed=True, pitch_linked=linked)
+            current = worker.output_progress()[0]
+            if index == 0:
+                generation = current
+            assert current == generation
+            worker.receive_buffer(buffer(frames=4800, start_us=4_000_000 + 100_000 * index))
+            wait_without_gui(lambda: (worker.track_position_ms() or 0) > previous + 20)
+            previous = worker.track_position_ms()
+        worker.receive_buffer(QAudioBuffer())
+        wait_without_gui(lambda: worker.track_position_ms() == pytest.approx(4300, abs=0.1))
+        assert len(sinks) == 1
+        assert not sinks[0].was_reset.is_set()
+        assert len(effects) == (0 if linked else 1)
+        samples = np.frombuffer(bytes(sinks[0].written), np.float32)
+        np.testing.assert_allclose(samples[:-2 * IdentityPitch.latency_frames], 0.25, rtol=0, atol=1e-7)
+        if effects:
+            assert effects[0].shifts[0] < 0 < max(effects[0].shifts)
+            assert effects[0].shifts[-1] == 0
     finally:
         close(worker)
 

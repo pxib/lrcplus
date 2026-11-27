@@ -39,4 +39,5 @@ jobs:
           cache-dependency-path: requirements.txt
       - run: python -m pip install -r requirements.txt pyinstaller
       - run: python tools/build_release.py
+      - run: python -m pytest -q tests/test_pcm_buffers.py tests/test_pcm_rate.py tests/test_rhythm_melody.py
       - run: python tools/smoke_release.py

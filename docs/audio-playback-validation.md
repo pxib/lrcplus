@@ -46,6 +46,15 @@ supported 0.25–2x range (under 1.6 ms at 44.1 kHz). Unity rate is byte-preserv
 End-of-stream flushes the remaining rate-converted frames once. Seeks, track
 changes, format changes, and control changes requiring a restart discard history.
 
+Dragging the Speed slider sends the latest target about every 32 ms. Processed
+playback keeps its sink and advances through a short rate ramp while retaining
+the fractional source position. The output clock keeps the rate attached to
+each span as it passes through pitch correction and the device buffer. Unlinked
+pitch follows the rate ramp and keeps its processor warm through neutral pitch.
+The processed route stays active through 100% until playback stops or a new
+track loads. Entering processed playback from native or gapless playback still
+requires one route handoff.
+
 Pitch processing also drains its lookahead and partial input block once at EOF.
 Automatic track changes wait until the processed sink's sample clock reaches
 the end of the written audio. Manual stops, seeks and track changes cancel that
@@ -62,9 +71,16 @@ a native/processed handoff sounds seamless: the two devices' latency and the
 pitch processor's startup reserve still affect that handoff.
 
 Decoded buffers reach a registered Qt slot on the processed-audio thread through
-a queued connection. The renderer never calls Python directly: a rapid stop or
-source change must not wait for the GIL while another audio thread initializes
-NumPy or the pitch backend. Each receiver belongs to one playback generation;
+a queued connection. The Rust PCM engine owns the input and output queues,
+decides when changes reset DSP, and maps device writes back to source time.
+Incoming buffers wake the output worker. It retries pending writes every 5 ms
+and samples the device clock about every 20 ms during steady playback. It checks
+the final samples more frequently and stops polling when the device is paused.
+Qt still decodes the track and writes audio to the device. Source builds can
+use the Python implementation when the Rust library is unavailable.
+The renderer never calls Python directly: a rapid stop or source change must
+not wait for the GIL while another audio thread initializes NumPy or the pitch
+backend. Each receiver belongs to one playback generation;
 buffers already queued before a track, seek, device, or route change are ignored.
 EndOfMedia requests a drain, but processing waits for the queued EOF buffer before
 flushing so that late final samples are retained. Manual stops invalidate that work.

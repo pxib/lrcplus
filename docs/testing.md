@@ -37,7 +37,8 @@ tests without reusing application state between cases.
 
 ## Windows release ZIP
 
-Run these commands from the repository root in a Windows build environment:
+Install a Rust toolchain for the build's Windows architecture and put `cargo`
+on PATH. Run these commands from the repository root:
 
 ```powershell
 python -m pip install -r requirements.txt pyinstaller
@@ -47,8 +48,17 @@ python tools/smoke_release.py
 
 The smoke check extracts the ZIP for the current app version and architecture,
 launches `LRCPlus.exe` with a temporary profile, and verifies WAV decoding,
-seeking, and an LRCX save and reopen. It decodes the WAV separately with Qt's
-`QAudioDecoder` and checks the player's transport without sending sound to an
-output device. On a host with an audio endpoint it checks play and pause. On a
-host without one it verifies that LRCPlus pauses a play attempt. Windows CI runs
-it alongside the exhaustive source suite.
+seeking, the Rust PCM engine, speed resampling, melody detection, and an LRCX
+save and reopen. It decodes the WAV separately with Qt's `QAudioDecoder` and checks the player's
+transport without sending sound to an output device. On a host with an audio
+endpoint it checks play and pause. On a host without one it verifies that
+LRCPlus pauses a play attempt. Windows CI runs it alongside the exhaustive
+source suite.
+
+To exercise the Rust audio library from a source checkout, build it before
+running the PCM, resampling, and melody tests:
+
+```powershell
+cargo build --locked --release --manifest-path native/audio_dsp/Cargo.toml --target-dir build/audio-dsp
+python -m pytest tests/test_pcm_buffers.py tests/test_pcm_rate.py tests/test_rhythm_melody.py
+```

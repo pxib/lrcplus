@@ -1,10 +1,13 @@
 """Find stable pitched notes, including quieter notes under louder sounds."""
 
 from dataclasses import dataclass
+from functools import lru_cache
 from math import log2
 
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
+
+from core.native_audio import audio_kernel
 
 
 WINDOW_SIZE = 2048
@@ -12,6 +15,16 @@ FFT_SIZE = 4096
 FIRST_MIDI_NOTE = 48  # C3
 LAST_MIDI_NOTE = 91  # G6
 MIN_NOTE_MS = 110
+
+
+@lru_cache(maxsize=1)
+def _native_peak_collector():
+    from ctypes import c_double, c_int32, c_size_t, c_void_p
+
+    return audio_kernel("lrcplus_melody_peaks_v1", (
+        c_void_p, c_size_t, c_size_t, c_size_t, c_size_t, c_double, c_int32,
+        c_size_t, c_void_p,
+    ))
 
 
 @dataclass(frozen=True)
@@ -60,6 +73,19 @@ class MelodyAnalyzer:
         self._pitch_frames.append(pitches)
 
     def _collect_peaks(self, spectra, pitches):
+        if (spectra.dtype == pitches.dtype == np.float32 and pitches.flags.carray
+                and pitches.shape[0] == spectra.shape[0]
+                and 0 < self._low_bin <= self._high_bin < spectra.shape[1] - 1):
+            native = _native_peak_collector()
+            if native is not None:
+                # _scan owns the contiguous output, which both stereo passes share.
+                spectra = np.require(spectra, requirements=("C", "A"))
+                native(spectra.ctypes.data, *spectra.shape, self._low_bin, self._high_bin,
+                       self._bin_hz, FIRST_MIDI_NOTE, pitches.shape[1], pitches.ctypes.data)
+                return
+        self._collect_peaks_python(spectra, pitches)
+
+    def _collect_peaks_python(self, spectra, pitches):
         band = spectra[:, self._low_bin:self._high_bin + 1]
         # A relative floor keeps quieter pitches while rejecting the window's sidelobes.
         floor = np.maximum(0.0015, 0.055 * band.max(axis=1, keepdims=True))

@@ -40,6 +40,7 @@ class AudioController:
         _stream_url = None
         _stream_error = False
         _live_speed_locked = False
+        _live_rate_session = False
         _live_playback_delayed = False
         _station = None
         _station_history_pending = False
@@ -135,6 +136,7 @@ class AudioController:
 
             handoff = getattr(self.media_player, "_gapless_handoff", False)
             if not handoff:
+                self._live_rate_session = False
                 self._flush_pcm_output()
                 self.media_player.stop()
 
@@ -439,6 +441,9 @@ class AudioController:
                 self.statusBar().clearMessage()
             else:
                 self.media_player.stop()
+            if self._live_rate_session:
+                self._live_rate_session = False
+                self._configure_pcm_volume(self.volume_slider.value())
             if hasattr(self, "statistics"):
                 self._statistics_track_started()
             self.current_line = -1
@@ -906,11 +911,12 @@ class AudioController:
             self._current_pcm_gain = volume_to_gain(value) * self._replaygain_multiplier()
             pitch_active = abs(self._pcm_pitch_shift()) >= 0.001
             rate_active = self._pcm_rate_active()
+            live_speed = self._live_rate_session
             configure_gapless = getattr(self.media_player, "configure_gapless", None)
             if configure_gapless is not None and configure_gapless(
                 self.playback_settings.get("gapless_playback", False),
                 volume_to_gain(value), self._replaygain_options(),
-                compatible=not pitch_active and not rate_active,
+                compatible=not (pitch_active or rate_active or live_speed),
                 crossfade_seconds=self.playback_settings.get("crossfade_seconds", 0),
             ):
                 self._stop_pcm_sink()
@@ -923,7 +929,7 @@ class AudioController:
             gain_active = self._current_pcm_gain > 1.0
             worker = getattr(self, "_pcm_worker", None)
             owns_output = getattr(worker, "owns_output", False)
-            needs_pcm = (gain_active or pitch_active or rate_active
+            needs_pcm = (gain_active or pitch_active or rate_active or live_speed
                          or (owns_output and self._pcm_equalizer_active()))
             if owns_output:
                 worker.configure(
@@ -933,6 +939,7 @@ class AudioController:
                             and not getattr(self, "_audio_output_unavailable", False)
                             and getattr(self, "_audio_device_dialog", None) is None,
                     playing=self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState,
+                    live_speed=live_speed, pitch_linked=self._pitch_follows_speed(),
                 )
             if not needs_pcm:
                 # Keep the decoder's buffer output attached when returning to
@@ -1106,6 +1113,7 @@ class AudioController:
         def _pcm_output_failed(self, error):
             end_pending = getattr(self, "_pcm_end_pending", False)
             self._pcm_end_pending = False
+            self._live_rate_session = False
             recover = getattr(self, "_recover_disconnected_output", None)
             if recover is not None and recover():
                 return
@@ -1137,6 +1145,7 @@ class AudioController:
                 and (getattr(self, "_current_pcm_gain", 1.0) > 1.0
                      or abs(self._pcm_pitch_shift()) >= 0.001
                      or self._pcm_rate_active()
+                     or self._live_rate_session
                      or self._pcm_equalizer_active())
                 and self._pcm_buffer_output is not None
                 and self.media_player.audioBufferOutput()
@@ -1266,7 +1275,7 @@ class AudioController:
                 timer.start()
 
 
-        def handle_speed_change(self, value):
+        def handle_speed_change(self, value, *, live=False):
             if self._live_speed_locked:
                 return
             if hasattr(self, "statistics"):
@@ -1275,7 +1284,7 @@ class AudioController:
                 value = 100
             self.playback_settings["speed_percent"] = value
             self._schedule_playback_settings_save()
-            self._apply_playback_speed(value / 100.0)
+            self._apply_playback_speed(value / 100.0, live=live)
 
 
         def _set_live_speed_lock(self, locked):
@@ -1285,24 +1294,37 @@ class AudioController:
             previous_shift = self._pcm_pitch_shift()
             previous_link = self._pitch_follows_speed()
             self._live_speed_locked = locked
+            was_live = self._live_rate_session
+            self._live_rate_session = False
             speed = 1.0 if locked else self.playback_settings.get("speed_percent", 100) / 100.0
-            if speed != self.playback_speed or previous_link != self._pitch_follows_speed():
+            if was_live or speed != self.playback_speed or previous_link != self._pitch_follows_speed():
                 self._apply_playback_speed(speed, previous_shift=previous_shift)
             dialog = getattr(self, "_pitch_options_dialog", None)
             if dialog is not None:
                 dialog.set_speed_controls(round(speed * 100), self._pitch_follows_speed(), not locked)
 
 
-        def _apply_playback_speed(self, speed, *, previous_shift=None):
+        def _apply_playback_speed(self, speed, *, previous_shift=None, live=False):
             speed_changed = abs(self.playback_speed - speed) >= 0.001
+            worker = getattr(self, "_pcm_worker", None)
+            prime_pitch = False
+            if (live and speed_changed and getattr(worker, "owns_output", False)
+                    and self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState):
+                # A route already processing EQ or gain may still be bypassing
+                # pitch. Keep native playback audible for its one-time warmup.
+                prime_pitch = (not self._live_rate_session and getattr(self, "_pcm_route_active", False)
+                               and not self._pitch_follows_speed()
+                               and abs(self._pcm_pitch_shift()) < 0.001)
+                self._live_rate_session = True
             self.playback_speed = speed
             self.media_player.setPlaybackRate(speed)
             self._set_native_pitch_compensation()
             self.pitch_status_label.setText(
                 f"{self._displayed_pitch_semitones():+.1f} st"
             )
-            if speed_changed or (previous_shift is not None
-                                 and abs(previous_shift - self._pcm_pitch_shift()) >= 0.001):
+            shift_changed = (previous_shift is not None
+                             and abs(previous_shift - self._pcm_pitch_shift()) >= 0.001)
+            if prime_pitch or shift_changed or (speed_changed and not (live and self._live_rate_session)):
                 self._flush_pcm_output()
             if speed_changed and getattr(self, "_device_lyric_delay_ms", 0) and self.lyrics:
                 self._refresh_playback_lyric_timing()
