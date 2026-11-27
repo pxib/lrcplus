@@ -57,8 +57,10 @@ def playback_lyric_position(window, position_seconds):
     file_offset = getattr(window, "lyrics_offset_seconds", 0.0)
     # Device latency is measured in wall-clock milliseconds. At 2x, the
     # media clock travels twice that distance during the same delay.
-    device_offset = (getattr(window, "_device_lyric_delay_ms", 0)
-                     * getattr(window, "playback_speed", 1.0) / 1000.0)
+    player = getattr(window, "media_player", None)
+    speed = (player.rust_audible_rate if getattr(player, "rust_active", False)
+             else getattr(window, "playback_speed", 1.0))
+    device_offset = getattr(window, "_device_lyric_delay_ms", 0) * speed / 1000.0
     return position_seconds - (file_offset + device_offset)
 
 

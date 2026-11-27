@@ -1,5 +1,6 @@
 mod media;
 mod output;
+mod transport;
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -9,7 +10,7 @@ use std::time::Instant;
 use lrcplus_audio_dsp_v1::StreamingRate;
 
 const USAGE: &str = "Usage: lrcplus-audio-probe <file> [--speed 0.25..2] [--volume 0..1] \
-[--seconds N] [--decode-only]\n\
+[--seconds N] [--decode-only] [--transport]\n\
 Speed changes pitch. Volume defaults to 0.25. Seconds limits the output duration.";
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -20,6 +21,7 @@ struct Options {
     volume: f32,
     seconds: Option<f64>,
     decode_only: bool,
+    transport: bool,
 }
 
 impl Options {
@@ -36,11 +38,16 @@ impl Options {
             volume: 0.25,
             seconds: None,
             decode_only: false,
+            transport: false,
         };
         while let Some(flag) = args.next() {
             let flag = flag.to_str().ok_or("invalid option")?;
             if flag == "--decode-only" {
                 options.decode_only = true;
+                continue;
+            }
+            if flag == "--transport" {
+                options.transport = true;
                 continue;
             }
             if !matches!(flag, "--speed" | "--volume" | "--seconds") {
@@ -57,6 +64,9 @@ impl Options {
                 _ => return Err(format!("value out of range for {flag}\n{USAGE}").into()),
             }
         }
+        if options.transport && (options.decode_only || options.seconds.is_some()) {
+            return Err("--transport cannot be combined with --decode-only or --seconds".into());
+        }
         Ok(Some(options))
     }
 }
@@ -72,6 +82,9 @@ fn main() -> ExitCode {
 }
 
 fn run(options: Options) -> Result<()> {
+    if options.transport {
+        return transport::run(options);
+    }
     let started = Instant::now();
     let mut decoder = media::Decoder::open(&options.path)?;
     let mut device = if options.decode_only {

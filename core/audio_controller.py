@@ -55,6 +55,11 @@ class AudioController:
             self._load_replaygain()
             self.statusBar().showMessage(f"Gapless playback unavailable: {error}", 7000)
 
+        def _handle_rust_playback_fallback(self, error):
+            self._configure_pcm_volume(self.volume_slider.value())
+            if error:
+                self.statusBar().showMessage(f"Rust playback unavailable: {error}", 7000)
+
         def _replaygain_multiplier(self):
             return getattr(self, "_replaygain_tags", ReplayGain()).multiplier(*self._replaygain_options())
 
@@ -830,12 +835,16 @@ class AudioController:
             output_available = not device.isNull() and not getattr(self, "_audio_output_unavailable", False)
             has_audio = not source.isEmpty()
             gapless = player._gapless_active
+            rust = getattr(player, "rust_active", False)
             processed = getattr(self, "_pcm_route_active", False)
             sample_rate = 0
             effects = []
             route = "No audio loaded"
             if has_audio and output_available:
-                if gapless:
+                if rust:
+                    route = "Rust prototype (Symphonia and WASAPI)"
+                    sample_rate = player.rust_output_sample_rate
+                elif gapless:
                     route = "FFmpeg → PCM output"
                     sample_rate = player.gapless_output_sample_rate()
                 elif processed:
@@ -891,6 +900,7 @@ class AudioController:
                 "Playback route": route,
                 "Audio output": (device.description() or "Unnamed output") if output_available else "Unavailable",
                 "Output sample rate": f"{sample_rate:,} Hz" if sample_rate else "Unavailable",
+                "Rust underrun frames": f"{player.rust_underrun_frames:,}" if rust else "",
                 "ReplayGain": replaygain,
                 "DSP": ", ".join(effects) or ("Bypassed" if has_audio and output_available else "Unavailable"),
                 "Gapless": gapless_status,
@@ -912,19 +922,35 @@ class AudioController:
             pitch_active = abs(self._pcm_pitch_shift()) >= 0.001
             rate_active = self._pcm_rate_active()
             live_speed = self._live_rate_session
+            gapless = self.playback_settings.get("gapless_playback", False)
+            crossfade = self.playback_settings.get("crossfade_seconds", 0)
             configure_gapless = getattr(self.media_player, "configure_gapless", None)
-            if configure_gapless is not None and configure_gapless(
-                self.playback_settings.get("gapless_playback", False),
+            gapless_active = configure_gapless is not None and configure_gapless(
+                gapless,
                 volume_to_gain(value), self._replaygain_options(),
                 compatible=not (pitch_active or rate_active or live_speed),
-                crossfade_seconds=self.playback_settings.get("crossfade_seconds", 0),
-            ):
+                crossfade_seconds=crossfade,
+            )
+            configure_rust = getattr(self.media_player, "configure_rust", None)
+            rust_active = configure_rust is not None and configure_rust(
+                0.0 if self.audio_output.isMuted() else self._current_pcm_gain,
+                compatible=not (
+                    gapless or crossfade or pitch_active
+                    or ((rate_active or live_speed) and not self._pitch_follows_speed())
+                    or self._pcm_equalizer_active()
+                    or getattr(self, "_playback_audio_requested", False)
+                    or getattr(self, "_audio_output_unavailable", False)
+                ),
+            )
+            if gapless_active or rust_active:
                 self._stop_pcm_sink()
                 worker = getattr(self, "_pcm_worker", None)
                 if getattr(worker, "owns_output", False):
                     worker.configure(self.audio_output.device(), 1, 0, 1,
                                      enabled=False, playing=False)
                 self.media_player.setAudioBufferOutput(None)
+                if rust_active:
+                    self.audio_output.setVolume(0.0)
                 return
             gain_active = self._current_pcm_gain > 1.0
             worker = getattr(self, "_pcm_worker", None)
@@ -1306,9 +1332,10 @@ class AudioController:
 
         def _apply_playback_speed(self, speed, *, previous_shift=None, live=False):
             speed_changed = abs(self.playback_speed - speed) >= 0.001
+            rust_speed = getattr(self.media_player, "rust_active", False) and self._pitch_follows_speed()
             worker = getattr(self, "_pcm_worker", None)
             prime_pitch = False
-            if (live and speed_changed and getattr(worker, "owns_output", False)
+            if (live and speed_changed and not rust_speed and getattr(worker, "owns_output", False)
                     and self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState):
                 # A route already processing EQ or gain may still be bypassing
                 # pitch. Keep native playback audible for its one-time warmup.
@@ -1324,7 +1351,8 @@ class AudioController:
             )
             shift_changed = (previous_shift is not None
                              and abs(previous_shift - self._pcm_pitch_shift()) >= 0.001)
-            if prime_pitch or shift_changed or (speed_changed and not (live and self._live_rate_session)):
+            if (not (rust_speed and self.media_player.rust_active)
+                    and (prime_pitch or shift_changed or (speed_changed and not (live and self._live_rate_session)))):
                 self._flush_pcm_output()
             if speed_changed and getattr(self, "_device_lyric_delay_ms", 0) and self.lyrics:
                 self._refresh_playback_lyric_timing()

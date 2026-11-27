@@ -102,19 +102,7 @@ fn make_filter(rate: f64) -> (usize, Vec<f64>) {
         let start = weights.len();
         for tap in 0..2 * radius {
             let distance = fraction - (tap as f64 + 1.0 - radius as f64);
-            let angle = PI * distance / radius as f64;
-            let window = if distance.abs() < radius as f64 {
-                0.42 + 0.5 * angle.cos() + 0.08 * (2.0 * angle).cos()
-            } else {
-                0.0
-            };
-            let argument = PI * cutoff * distance;
-            let sinc = if argument == 0.0 {
-                1.0
-            } else {
-                argument.sin() / argument
-            };
-            weights.push(cutoff * sinc * window);
+            weights.push(cutoff * windowed_sinc(PI * cutoff * distance, distance / radius as f64));
         }
         let total: f64 = weights[start..].iter().sum();
         for coefficient in &mut weights[start..] {
@@ -122,6 +110,21 @@ fn make_filter(rate: f64) -> (usize, Vec<f64>) {
         }
     }
     (radius, weights)
+}
+
+pub(crate) fn windowed_sinc(argument: f64, window_position: f64) -> f64 {
+    let angle = PI * window_position;
+    let window = if window_position.abs() < 1.0 {
+        0.42 + 0.5 * angle.cos() + 0.08 * (2.0 * angle).cos()
+    } else {
+        0.0
+    };
+    let sinc = if argument == 0.0 {
+        1.0
+    } else {
+        argument.sin() / argument
+    };
+    sinc * window
 }
 
 #[cfg(test)]

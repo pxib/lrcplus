@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 from core.pcm_playback import PcmPlayback
 from core.playback_audio_tap import PlaybackAudioTap
 from core.gapless import GaplessMediaPlayer
+from core.rust_playback import RustMediaPlayer, rust_playback_executable
 from core.audio_controller import AudioController, snap_volume_percentage
 from core.queue_controller import QueueControllerMixin
 from core.lyrics_controller import LyricsController, _FuriganaProgressBridge
@@ -156,10 +157,16 @@ class Player(
             self._playback_audio_requested = False
             self._native_playback_output = None
             self._observed_playback_output = None
-            self.media_player = GaplessMediaPlayer(
-                self, equalizer=self._equalizer.create_processor() if self._equalizer else None,
+            player_options = dict(
+                equalizer=self._equalizer.create_processor() if self._equalizer else None,
                 audio_tap=self.playback_audio_tap,
             )
+            rust_executable = rust_playback_executable()
+            if rust_executable is None:
+                self.media_player = GaplessMediaPlayer(self, **player_options)
+            else:
+                self.media_player = RustMediaPlayer(self, executable=rust_executable, **player_options)
+                self.media_player.rustFallback.connect(self._handle_rust_playback_fallback)
             self.media_player.next_path = self._gapless_next_path
             self.media_player.prepare_resume = self._prepare_playback_resume
             self.media_player.gaplessFallback.connect(
@@ -1680,6 +1687,8 @@ class Player(
             if enabled == self._playback_audio_requested:
                 return
             self._playback_audio_requested = enabled
+            if getattr(self.media_player, "rust_active", False) and not getattr(self, "_closing", False):
+                self._configure_pcm_volume(self.volume_slider.value())
             connections = (
                 (self.media_player.playbackStateChanged, self._sync_native_playback_tap),
                 (self.media_player.audioBufferOutputChanged, self._sync_native_playback_tap),
@@ -2114,6 +2123,8 @@ class Player(
                 # and resume the processed tail of a paused track.
                 self._pcm_worker.close()
                 self.media_player.stop()
+                if isinstance(self.media_player, RustMediaPlayer):
+                    self.media_player.shutdown_rust_playback()
                 self.media_player.setAudioBufferOutput(None)
                 self._stop_pcm_sink()
                 self.statistics_store.close()

@@ -38,13 +38,16 @@ class AudioSignalPathPanel(QGroupBox):
         form = QFormLayout(self)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         for name in ("Codec", "Source sample rate", "Playback route", "Audio output",
-                     "Output sample rate", "ReplayGain", "DSP", "Gapless", "Crossfade"):
+                     "Output sample rate", "ReplayGain", "DSP", "Gapless", "Crossfade",
+                     "Rust underrun frames"):
             value = QLabel("Unavailable")
             value.setTextFormat(Qt.TextFormat.PlainText)
             value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             value.setWordWrap(True)
             form.addRow(name, value)
             self._values[name] = value
+        form.setRowVisible(self._values["Rust underrun frames"], False)
+        self._form = form
         self._job = BackgroundJob(self, "signal-path-metadata")
         self._job.finished.connect(self._apply_source_details)
         self.destroyed.connect(self._job.close)
@@ -82,6 +85,7 @@ class AudioSignalPathPanel(QGroupBox):
         codec, sample_rate = self._source_details
         values["Codec"] = values["Codec"] or codec
         values["Source sample rate"] = f"{sample_rate:,} Hz" if sample_rate else ""
+        self._form.setRowVisible(self._values["Rust underrun frames"], bool(values.get("Rust underrun frames")))
         for name, label in self._values.items():
             text = values.get(name) or "Unavailable"
             if label.text() != text:
