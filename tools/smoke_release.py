@@ -1,5 +1,6 @@
 """Launch and exercise a Windows release ZIP with an isolated profile."""
 
+import argparse
 import json
 from math import isclose
 import os
@@ -22,13 +23,26 @@ def write_fixture(path):
         audio.writeframes(period * 2205)
 
 
-def smoke_release(archive, architecture, work):
+def write_seek_fixtures(directory):
+    with wave.open(str(directory / "seek-profile.wav"), "wb") as audio:
+        audio.setparams((1, 2, 44100, 0, "NONE", ""))
+        audio.writeframes(bytes(44100 * 2 * 30))
+    rows = []
+    for row in range(165):
+        timestamp = f"00:{row // 6:02d}.{row % 6 * 166:03d}"
+        rows.append(f"[{timestamp}]<{timestamp}>Timed lyric {row}\n")
+    (directory / "seek-profile.lrcx").write_text("".join(rows), encoding="utf-8")
+
+
+def smoke_release(archive, architecture, work, *, profile_seeks=False):
     app = extract_update_archive(archive, work / "install",
                                  expected_version=APP_VERSION, architecture=architecture)
     fixtures = work / "fixtures"
     fixtures.mkdir()
     sample = fixtures / "sample.wav"
     write_fixture(sample)
+    if profile_seeks:
+        write_seek_fixtures(fixtures)
     waveform = subprocess.run(
         [str(app / "lrcplus-audio-probe.exe"), str(sample), "--waveform", "200"],
         cwd=app, capture_output=True, check=True, timeout=30,
@@ -39,11 +53,14 @@ def smoke_release(archive, architecture, work):
         raise RuntimeError("The packaged Rust waveform decoder returned unexpected results.")
     print("Packaged Rust waveform decoder passed.")
     settings = work / "settings.json"
-    settings.write_text(json.dumps({
+    profile = {
         "updates": {"automatic_check": False},
         "appearance": {"artwork_source": "album_only"},
         "disabled_plugins": ["discord_rpc"],
-    }), encoding="utf-8")
+    }
+    if profile_seeks:
+        profile["lyrics_global"] = {"scrolling_lyrics": True}
+    settings.write_text(json.dumps(profile), encoding="utf-8")
     data = work / "app-data"
     env = {
         key: value for key, value in os.environ.items()
@@ -61,6 +78,8 @@ def smoke_release(archive, architecture, work):
         if result.returncode or not report.is_file():
             raise RuntimeError(f"LRCPlus smoke test failed (exit code {result.returncode}).")
         print(report.read_text(encoding="utf-8").strip())
+        if profile_seeks:
+            print((fixtures / "seek-memory.json").read_text(encoding="utf-8"))
     except (OSError, RuntimeError, subprocess.TimeoutExpired):
         for diagnostic in (report, data / "logs" / "crash.log"):
             if diagnostic.is_file():
@@ -71,10 +90,14 @@ def smoke_release(archive, architecture, work):
 def main():
     if sys.platform != "win32":
         raise SystemExit("The release smoke test requires Windows.")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile-seeks", action="store_true",
+                        help="Measure app and Rust helper memory across 160 seeks.")
+    args = parser.parse_args()
     architecture = windows_architecture()
     archive = PROJECT_ROOT / "dist" / "release" / f"LRCPlus-v{APP_VERSION}-Windows-{architecture}.zip"
     with TemporaryDirectory(prefix="lrcplus-smoke-") as work:
-        smoke_release(archive, architecture, Path(work))
+        smoke_release(archive, architecture, Path(work), profile_seeks=args.profile_seeks)
 
 
 if __name__ == "__main__":

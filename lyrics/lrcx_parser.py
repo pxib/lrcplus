@@ -2,6 +2,7 @@ import re
 import json
 from io import StringIO
 
+from lyrics import native_formats
 from lyrics.models import LyricLine, LyricSegment
 from lyrics.line_breaks import decode_line_breaks
 from lyrics.formatting import parse_emphasis, parse_quote_prefix
@@ -166,6 +167,47 @@ def load_lrcx(path, *, infer_ends=True):
         return parse_lrcx(file.read(), infer_ends=infer_ends)
 
 
+def _scan_lrcx_python(text):
+    """Read timed chunks and metadata when the native codec is unavailable."""
+    with StringIO(text.lstrip("\ufeff")) as source:
+        for raw_line in source:
+            line = raw_line.rstrip("\r\n")
+            for name in ("line_ends", "reading_groups"):
+                prefix = f"[{name}:"
+                if line.startswith(prefix) and line.endswith("]"):
+                    yield name, line[len(prefix):-1]
+                    break
+            else:
+                if not line or METADATA_RE.match(line):
+                    continue
+                timestamps = list(LINE_TIMESTAMP_RE.finditer(line))
+                if not timestamps:
+                    continue
+                start = _timestamp(timestamps[0])
+                content, quoted = parse_quote_prefix(line[timestamps[-1].end():])
+                content, translation_rows = decode_line_breaks(content)
+                segment_tags = []
+                has_mora = False
+                for token in KARAOKE_TOKEN_RE.finditer(content):
+                    if token.group(1) is None:
+                        segment_tags.append(SEGMENT_TIMESTAMP_RE.match(content, token.start()))
+                    elif SEGMENT_TIMESTAMP_RE.search(token.group(2)):
+                        has_mora = True
+                has_karaoke = bool(segment_tags) or INSTANT_TAG in content or has_mora
+                end = (
+                    _timestamp(segment_tags[-1])
+                    if segment_tags and segment_tags[-1].end() == len(content)
+                    else None
+                )
+                chunks = []
+                cursor, time = 0, start
+                for tag in segment_tags:
+                    chunks.append((time, content[cursor:tag.start()]))
+                    cursor, time = tag.end(), _timestamp(tag)
+                chunks.append((time, content[cursor:]))
+                yield "line", (start, end, quoted, has_karaoke, has_mora, translation_rows, chunks)
+
+
 def parse_lrcx(text, *, infer_ends=True):
     """Load LRCX v1.
 
@@ -183,177 +225,109 @@ def parse_lrcx(text, *, infer_ends=True):
     lines = []
     reading_groups = {}
     line_ends = {}
+    records = native_formats.scan_lrcx(text)
+    if records is None:
+        records = _scan_lrcx_python(text)
 
-    with StringIO(text.lstrip("\ufeff")) as file:
-        for raw_line in file:
-            line = raw_line.rstrip("\r\n")
-            if line.startswith("[line_ends:") and line.endswith("]"):
-                try:
-                    value = json.loads(line[len("[line_ends:"):-1])
-                    if isinstance(value, dict):
-                        line_ends = value
-                except (ValueError, TypeError):
-                    pass
+    for kind, record in records:
+        if kind != "line":
+            try:
+                value = json.loads(record)
+            except (ValueError, TypeError):
                 continue
-            if line.startswith("[reading_groups:") and line.endswith("]"):
-                try:
-                    value = json.loads(line[len("[reading_groups:"):-1])
-                    if isinstance(value, dict):
-                        reading_groups = value
-                except (ValueError, TypeError):
-                    pass
+            if isinstance(value, dict):
+                if kind == "line_ends":
+                    line_ends = value
+                else:
+                    reading_groups = value
+            continue
+
+        line_start, terminal_end, is_blockquote, has_karaoke, has_mora_tags, translation_lines, chunks = record
+        segments = []
+        for timestamp, chunk in chunks:
+            if not chunk and segments:
+                # Consecutive tags can mark a word end and a later line end.
+                if segments[-1].end is None:
+                    segments[-1].end = timestamp
                 continue
-            if not line or METADATA_RE.match(line):
-                continue
+            instant = chunk.startswith(INSTANT_TAG)
+            if instant:
+                chunk = chunk[len(INSTANT_TAG):]
+            parsed = _parse_content(chunk, timestamp, split_newlines=has_karaoke)
+            for segment in parsed:
+                segment.instant = instant
+            segments.extend(parsed)
 
-            line_matches = list(LINE_TIMESTAMP_RE.finditer(line))
-            if not line_matches:
-                continue
+        # Assign visual-line indices after all chunks for this lyric
+        # have been parsed. Timestamped chunks are parsed independently,
+        # so the index must carry across chunk boundaries.
+        visual_line = 0
+        for segment in segments:
+            segment.visual_line = visual_line
+            if segment.text == "\n":
+                visual_line += 1
 
-            line_start = _timestamp(line_matches[0])
-            content = line[line_matches[-1].end():]
-            content, is_blockquote = parse_quote_prefix(content)
-            content, translation_lines = decode_line_breaks(content)
-            # Read the two token types in one pass so ruby cues cannot become
-            # karaoke chunk boundaries.
-            tokens = KARAOKE_TOKEN_RE.finditer(content)
-            segment_matches = []
-            has_mora_tags = False
-            for token in tokens:
-                if token.group(1) is None:
-                    segment_matches.append(SEGMENT_TIMESTAMP_RE.match(content, token.start()))
-                elif SEGMENT_TIMESTAMP_RE.search(token.group(2)):
-                    has_mora_tags = True
-            # Karaoke is explicit in LRCX: segment timestamps or instant tags.
-            has_karaoke = bool(segment_matches) or INSTANT_TAG in content or has_mora_tags
-            segments = []
-
-            if not segment_matches:
-                instant = content.startswith(INSTANT_TAG)
-                if instant:
-                    content = content[len(INSTANT_TAG):]
-                parsed = _parse_content(content, line_start, split_newlines=has_karaoke)
-                for segment in parsed:
-                    segment.instant = instant
-                segments.extend(parsed)
-            else:
-                # Leading content inherits the line timestamp.
-                leading = content[:segment_matches[0].start()]
-                instant = leading.startswith(INSTANT_TAG)
-                if instant:
-                    leading = leading[len(INSTANT_TAG):]
-                parsed = _parse_content(leading, line_start, split_newlines=has_karaoke)
-                for segment in parsed:
-                    segment.instant = instant
-                segments.extend(parsed)
-
-                for index, match in enumerate(segment_matches):
-                    text_start = match.end()
-                    text_end = (
-                        segment_matches[index + 1].start()
-                        if index + 1 < len(segment_matches)
-                        else len(content)
+        text = "".join(segment.text for segment in segments)
+        boundaries = []
+        boundary = 0
+        for segment in segments:
+            boundary += len(segment.text)
+            boundaries.append(boundary)
+        text, style_spans, offsets = parse_emphasis(text, boundaries)
+        source_offset = 0
+        visible_segments = []
+        formatting_end = None
+        for segment in segments:
+            source_end = source_offset + len(segment.text)
+            start = offsets[source_offset]
+            segment.text = text[start:offsets[source_end]]
+            segment.ruby_spans = [
+                (offsets[source_offset + a] - start, offsets[source_offset + b] - start, reading)
+                for a, b, reading in segment.ruby_spans
+                if offsets[source_offset + a] < offsets[source_offset + b]
+            ]
+            if has_mora_tags:
+                readings = []
+                for a, b, raw_reading in segment.ruby_spans:
+                    reading, cues = parse_mora_reading(raw_reading, segment.start)
+                    if reading:
+                        readings.append((a, b, reading))
+                    if a == 0 and b == len(segment.text):
+                        segment.mora_cues = cues
+                segment.ruby_spans = readings
+                if segment.ruby is not None or segment.mora_cues:
+                    segment.ruby = (
+                        readings[0][2] if len(readings) == 1
+                        and readings[0][:2] == (0, len(segment.text)) else None
                     )
-                    chunk = content[text_start:text_end]
-                    timestamp = _timestamp(match)
+                    segment.ruby_source = "manual" if segment.ruby else None
+            source_offset = source_end
+            if segment.text:
+                visible_segments.append(segment)
+                formatting_end = None
+            elif visible_segments:
+                if visible_segments[-1].end is None:
+                    visible_segments[-1].end = segment.start
+                formatting_end = segment.start
+        segments = visible_segments
 
-                    # An empty timestamp between two chunks is an explicit end
-                    # boundary for the preceding chunk, allowing a real pause:
-                    #   word<00:01.000><00:02.000>next
-                    if not chunk and segments:
-                        # Multiple terminal boundaries can encode a segment
-                        # end followed by a later line end (a trailing pause).
-                        # Keep the first end on the segment itself.
-                        if segments[-1].end is None:
-                            segments[-1].end = timestamp
-                        continue
+        # Keep a terminal karaoke boundary separate from the last segment end.
+        explicit_end = terminal_end if terminal_end is not None else formatting_end
+        if terminal_end is not None and segments and segments[-1].end is None:
+            segments[-1].end = terminal_end
 
-                    instant = False
-                    if chunk.startswith(INSTANT_TAG):
-                        instant = True
-                        chunk = chunk[len(INSTANT_TAG):]
-
-                    parsed = _parse_content(chunk, timestamp, split_newlines=has_karaoke)
-                    for segment in parsed:
-                        segment.instant = instant
-                    segments.extend(parsed)
-
-            # Assign visual-line indices after all chunks for this lyric
-            # have been parsed. Timestamped chunks are parsed independently,
-            # so the index must carry across chunk boundaries.
-            visual_line = 0
-            for segment in segments:
-                segment.visual_line = visual_line
-                if segment.text == "\n":
-                    visual_line += 1
-
-            text = "".join(segment.text for segment in segments)
-            boundaries = []
-            boundary = 0
-            for segment in segments:
-                boundary += len(segment.text)
-                boundaries.append(boundary)
-            text, style_spans, offsets = parse_emphasis(text, boundaries)
-            source_offset = 0
-            visible_segments = []
-            formatting_end = None
-            for segment in segments:
-                source_end = source_offset + len(segment.text)
-                start = offsets[source_offset]
-                segment.text = text[start:offsets[source_end]]
-                segment.ruby_spans = [
-                    (offsets[source_offset + a] - start, offsets[source_offset + b] - start, reading)
-                    for a, b, reading in segment.ruby_spans
-                    if offsets[source_offset + a] < offsets[source_offset + b]
-                ]
-                if has_mora_tags:
-                    readings = []
-                    for a, b, raw_reading in segment.ruby_spans:
-                        reading, cues = parse_mora_reading(raw_reading, segment.start)
-                        if reading:
-                            readings.append((a, b, reading))
-                        if a == 0 and b == len(segment.text):
-                            segment.mora_cues = cues
-                    segment.ruby_spans = readings
-                    if segment.ruby is not None or segment.mora_cues:
-                        segment.ruby = (
-                            readings[0][2] if len(readings) == 1
-                            and readings[0][:2] == (0, len(segment.text)) else None
-                        )
-                        segment.ruby_source = "manual" if segment.ruby else None
-                source_offset = source_end
-                if segment.text:
-                    visible_segments.append(segment)
-                    formatting_end = None
-                elif visible_segments:
-                    if visible_segments[-1].end is None:
-                        visible_segments[-1].end = segment.start
-                    formatting_end = segment.start
-            segments = visible_segments
-
-            # A timestamp with no following lyric text is a terminal karaoke
-            # boundary, not an empty segment. Preserve it as the line ending.
-            explicit_end = formatting_end
-            if segment_matches:
-                last_match = segment_matches[-1]
-                trailing = content[last_match.end():]
-                if not trailing:
-                    explicit_end = _timestamp(last_match)
-                    if segments and segments[-1].end is None:
-                        segments[-1].end = explicit_end
-
-            lines.append(
-                LyricLine(
-                    start=line_start,
-                    text=text,
-                    segments=segments,
-                    end=explicit_end,
-                    has_karaoke=has_karaoke,
-                    style_spans=style_spans,
-                    is_blockquote=is_blockquote,
-                    translation_lines=translation_lines,
-                )
+        lines.append(
+            LyricLine(
+                start=line_start,
+                text=text,
+                segments=segments,
+                end=explicit_end,
+                has_karaoke=has_karaoke,
+                style_spans=style_spans,
+                is_blockquote=is_blockquote,
+                translation_lines=translation_lines,
             )
+        )
 
     for index, lyric in enumerate(lines):
         end_ms = line_ends.get(str(index))

@@ -6,12 +6,13 @@ import sys
 from time import monotonic, sleep
 import traceback
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QEventLoop, QTimer, QUrl
 from PySide6.QtMultimedia import QAudioDecoder, QAudioFormat, QMediaPlayer
 from PySide6.QtWidgets import QApplication
 
 from core.audio_dsp import apply_pcm_rate_to_bytes
 from core.pcm_resampler import _native_renderer
+from core.rust_playback import RustMediaPlayer
 from ui.lrc_editor import LrcEditorDialog
 
 
@@ -102,6 +103,88 @@ def _check_lyric_editor(window, target):
         reopened.deleteLater()
 
 
+def _check_rust_transport(window, audio_path):
+    media = window.media_player
+    failures = []
+    record_failure = failures.append
+    muted = window.audio_output.isMuted()
+    window.audio_output.setMuted(True)
+    media.rustFallback.connect(record_failure)
+
+    def details():
+        return f"position={media.position()} ms, fallbacks={failures}"
+
+    try:
+        window.load_audio(audio_path)
+        _wait_for(lambda: media.rust_active and media.isSeekable(),
+                  "The packaged Rust transport did not load the WAV.", details)
+        window.toggle_playback()
+        _wait_for(lambda: media.rust_active and media.position() >= 100,
+                  "The packaged Rust transport did not advance the playback clock.", details)
+        window._seek_from_waveform(2000)
+        _wait_for(lambda: media.rust_active and media.position() >= 2100,
+                  "The packaged Rust transport did not resume after seeking.", details)
+    finally:
+        media.stop()
+        media.rustFallback.disconnect(record_failure)
+        window.audio_output.setMuted(muted)
+
+
+def _profile_repeated_seeks(window, audio_path, report):
+    import json
+    from tools.profile_memory import process_memory
+
+    media = window.media_player
+    window.audio_output.setMuted(True)
+    window.lyrics_view_button.click()
+    window.load_audio(audio_path)
+    _wait_for(lambda: media.rust_active and media.isSeekable()
+              and window.current_lyrics_path == audio_path.with_suffix(".lrcx"),
+              "The seek profile could not load audio and lyrics.", lambda: media.errorString())
+    if not window.scrolling_lyrics_enabled or media.duration() < 24_000:
+        raise RuntimeError("The seek profile requires scrolling lyrics and at least 24 seconds of audio.")
+    renderer = window.scrolling_lyrics_widget
+    if not renderer.isVisible():
+        raise RuntimeError("The scrolling lyrics widget is hidden.")
+    process = media._rust_process
+    pid = process.processId()
+    loop = QEventLoop()
+    samples = []
+
+    def sample(seeks):
+        if not media.rust_active or media._rust_process is not process:
+            raise RuntimeError("The Rust helper changed during the seek profile.")
+        app_working, app_private = process_memory()
+        rust_working, rust_private = process_memory(pid)
+        samples.append(dict(seeks=seeks, lyric=renderer.current_line,
+                            app_private=app_private, app_working=app_working,
+                            rust_private=rust_private, rust_working=rust_working))
+
+    try:
+        window.toggle_playback()
+        _wait_for(lambda: media.position() >= 150, "The seek profile did not start playback.",
+                  lambda: str(media.position()))
+        sample(0)
+        destinations = [[], []]
+        for seek in range(1, 161):
+            position = 2000 if seek % 2 else 22_000
+            window._seek_from_waveform(position)
+            QTimer.singleShot(45, loop.quit)
+            loop.exec()
+            destinations[seek % 2].append(renderer.current_line)
+            if seek % 40 == 0:
+                sample(seek)
+        if min(destinations[0]) <= max(destinations[1]) or min(destinations[1]) < 0:
+            raise RuntimeError("The scrolling lyrics did not follow repeated forward and backward seeks.")
+        window.toggle_playback()
+        QTimer.singleShot(800, loop.quit)
+        loop.exec()
+        sample("settled")
+        report.write_text(json.dumps(samples, indent=2), encoding="utf-8")
+    finally:
+        media.stop()
+
+
 def _check_speed_resampling():
     if _native_renderer() is None:
         raise RuntimeError("The packaged Rust PCM resampler could not load.")
@@ -163,18 +246,32 @@ def run_release_smoke(window, directory):
     directory = Path(directory)
     report = directory / "result.txt"
     frozen = getattr(sys, "frozen", False)
+    hardware_check = ""
     try:
-        transport_check = _check_playback(window, directory / "sample.wav")
+        sample = directory / "sample.wav"
+        transport_check = _check_playback(window, sample)
         if frozen:
+            from lyrics.native_formats import available
+
+            if not available():
+                raise RuntimeError("The packaged Rust lyric codec could not load.")
             _check_speed_resampling()
             _check_melody_detection()
             _check_pcm_engine()
+            profile_audio = directory / "seek-profile.wav"
+            if isinstance(window.media_player, RustMediaPlayer) and not window._audio_output_unavailable:
+                _check_rust_transport(window, sample)
+                hardware_check = "Rust WASAPI playback and seeking, "
+                if profile_audio.is_file():
+                    _profile_repeated_seeks(window, profile_audio, directory / "seek-memory.json")
+            elif profile_audio.is_file():
+                raise RuntimeError("The seek profile requires Rust playback and a Windows audio endpoint.")
         _check_lyric_editor(window, directory / "sample.lrcx")
     except Exception:
         report.write_text(traceback.format_exc(), encoding="utf-8")
         return 1
     audio_checks = "Rust speed resampling, melody detection, PCM playback, " if frozen else ""
-    report.write_text(f"Audio decoding, seeking, {transport_check}, {audio_checks}"
-                      "and LRCX round trip passed.\n",
+    report.write_text(f"Audio decoding, seeking, {transport_check}, {audio_checks}{hardware_check}"
+                      f"and {'Rust ' if frozen else ''}LRCX round trip passed.\n",
                       encoding="utf-8")
     return 0

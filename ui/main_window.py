@@ -1696,6 +1696,9 @@ class Player(
             if enabled == self._playback_audio_requested:
                 return
             self._playback_audio_requested = enabled
+            set_observation = getattr(self.media_player, "set_rust_audio_observation", None)
+            if set_observation is not None:
+                set_observation(enabled)
             if getattr(self.media_player, "rust_active", False) and not getattr(self, "_closing", False):
                 self._configure_pcm_volume(self.volume_slider.value())
             connections = (
@@ -1722,7 +1725,8 @@ class Player(
 
         def _sync_native_playback_tap(self, *_args):
             output = None
-            if self._playback_audio_requested and not self.media_player._gapless_active:
+            if (self._playback_audio_requested and not self.media_player._gapless_active
+                    and not getattr(self.media_player, "rust_active", False)):
                 output = self.media_player.audioBufferOutput()
                 if output is None:
                     output = self._native_playback_output
@@ -1745,7 +1749,8 @@ class Player(
         def _capture_native_playback_audio(self, buffer):
             tap = self.playback_audio_tap
             if (tap.collecting and not getattr(self, "_pcm_route_active", False)
-                    and not self.media_player._gapless_active and buffer.isValid()):
+                    and not self.media_player._gapless_active
+                    and not getattr(self.media_player, "rust_active", False) and buffer.isValid()):
                 tap.capture(buffer.data(), buffer.format(), "native")
 
 

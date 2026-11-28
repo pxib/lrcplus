@@ -44,18 +44,31 @@ pub struct Device {
 }
 
 impl Device {
-    pub fn open() -> Result<Self> {
-        Self::with_buffer(250, 125)
+    pub fn open(endpoint: Option<&str>) -> Result<Self> {
+        Self::with_buffer(endpoint, 250, 125)
     }
 
-    pub fn for_transport() -> Result<Self> {
-        Self::with_buffer(64, 32)
+    pub fn for_transport(endpoint: Option<&str>) -> Result<Self> {
+        Self::with_buffer(endpoint, 64, 32)
     }
 
-    fn with_buffer(buffer_ms: usize, prefill_ms: usize) -> Result<Self> {
-        let output = cpal::default_host()
-            .default_output_device()
-            .ok_or("no default audio device")?;
+    fn with_buffer(endpoint: Option<&str>, buffer_ms: usize, prefill_ms: usize) -> Result<Self> {
+        let host = cpal::default_host();
+        let output = if let Some(name) = endpoint {
+            let mut matches = host
+                .output_devices()?
+                .filter(|device| device.name().is_ok_and(|candidate| candidate == name));
+            let selected = matches
+                .next()
+                .ok_or("the selected audio output is no longer available")?;
+            if matches.next().is_some() {
+                return Err("multiple audio outputs have the selected name".into());
+            }
+            selected
+        } else {
+            host.default_output_device()
+                .ok_or("no default audio device")?
+        };
         let name = output
             .name()
             .unwrap_or_else(|_| "default audio device".to_owned());
@@ -155,7 +168,11 @@ impl Device {
     }
 
     pub fn mark_final(&self) {
-        self.state.finished.store(true, Ordering::Release);
+        self.set_final(true);
+    }
+
+    pub fn set_final(&self, finished: bool) {
+        self.state.finished.store(finished, Ordering::Release);
     }
 
     pub fn set_gain(&self, gain: f32) {

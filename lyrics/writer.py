@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+from lyrics import native_formats
 from lyrics.loader import load_lyrics
 from lyrics.lrcx_parser import get_lrcx_offset
 from lyrics.furigana import build_furigana_segments
@@ -146,18 +147,44 @@ def _generation_mode_tag(generation_mode):
 
 
 def serialize_lrc(lines, generation_mode=None) -> str:
-    output = []
     tag = _generation_mode_tag(generation_mode)
-    if tag:
-        output.append(tag)
+    header = tag + "\n" if tag else ""
+    if native_formats.available():
+        lines = list(lines)
+        result = native_formats.write_lrc(header, lines)
+        if result is not None:
+            return result
+    return header + "".join(
+        f"[{format_timestamp(line.start)}]{_escape_lrc_text(line.text)}\n"
+        for line in lines
+    )
 
-    for line in lines:
-        output.append(
-            f"[{format_timestamp(line.start)}]"
-            f"{_escape_lrc_text(line.text)}"
-        )
 
-    return "\n".join(output) + ("\n" if output else "")
+def _prepare_lrcx_segments(line, manual_overrides):
+    """Encode inline markup independently of the timing boundaries."""
+    result = []
+    text_offset = 0
+    visual_row = 0
+    for segment in _manual_segments(line, manual_overrides):
+        text = segment.text
+        if text == "":
+            result.append((segment, "", False, False))
+            continue
+        ruby_spans = list(getattr(segment, "ruby_spans", []) or [])
+        if not ruby_spans and segment.ruby and getattr(segment, "ruby_source", None) != "generated":
+            ruby_spans = [(0, len(text), segment.ruby)]
+        has_mora = False
+        if segment.mora_cues and len(ruby_spans) == 1:
+            a, b, reading = ruby_spans[0]
+            if (a, b) == (0, len(text)):
+                ruby_spans = [(a, b, format_mora_reading(reading, segment.start, segment.mora_cues))]
+                has_mora = True
+        markup = format_emphasis(text, line.style_spans, text_offset, ruby_spans)
+        text_offset += len(text)
+        result.append((segment, encode_line_breaks(markup, line.translation_lines, visual_row),
+                       markup == "\n", has_mora))
+        visual_row += markup.count("\n")
+    return result
 
 
 def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=None) -> str:
@@ -178,20 +205,23 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
     if abs(float(offset_ms)) > 0.0001:
         output.append(f"[offset:{float(offset_ms):.0f}]")
 
-    for line in lines:
+    prepared = [(line, _prepare_lrcx_segments(line, manual_overrides)) for line in lines]
+    header = "\n".join(output) + "\n"
+    result = native_formats.write_lrcx(header, prepared)
+    if result is not None:
+        return result
+    return header + _write_lrcx_python(prepared)
+
+
+def _write_lrcx_python(lines):
+    output = []
+    for line, segments in lines:
         prefix = f"[{format_timestamp(line.start)}]"
         if line.is_blockquote:
             prefix += "> "
-        segments = _manual_segments(
-            line,
-            manual_overrides,
-        )
-
         parts = []
         active_timestamp = line.start
         has_karaoke_marker = False
-        text_offset = 0
-        visual_row = 0
 
         # Karaoke is an explicit document property. In particular, automatic
         # separation may create several chunks that initially share the same
@@ -200,39 +230,13 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
             getattr(line, "has_karaoke", False)
         )
 
-        for segment_index, segment in enumerate(segments):
-            text = segment.text
-
-            # Empty chunks are editor garbage, not lyric content. Preserve real
-            # spaces (ASCII or full-width) by checking exact emptiness only.
-            if text == "":
+        for segment_index, (segment, text, is_break, has_mora) in enumerate(segments):
+            if segment.text == "":
                 continue
-
-            # Inline ruby spans are independent from karaoke timing. Serialize
-            # them inside this chunk without creating another timestamp boundary.
-            ruby_spans = list(getattr(segment, "ruby_spans", []) or [])
-            if not ruby_spans and (
-                segment.ruby
-                and getattr(segment, "ruby_source", None) != "generated"
-            ):
-                ruby_spans = [(0, len(text), segment.ruby)]
-            if segment.mora_cues and len(ruby_spans) == 1:
-                a, b, reading = ruby_spans[0]
-                if (a, b) == (0, len(text)):
-                    ruby_spans = [(a, b, format_mora_reading(reading, segment.start, segment.mora_cues))]
-                    has_karaoke_marker = True
-            text = format_emphasis(text, line.style_spans, text_offset, ruby_spans)
-            text_offset += len(segment.text)
-
-            # Structural visual newlines are represented by the literal
-            # LRCX marker {\n}; they are not timestamp boundaries.
-            if text == "\n":
-                parts.append(encode_line_breaks(text, line.translation_lines, visual_row))
-                visual_row += 1
+            has_karaoke_marker |= has_mora
+            if is_break:
+                parts.append(text)
                 continue
-            newline_count = text.count("\n")
-            text = encode_line_breaks(text, line.translation_lines, visual_row)
-            visual_row += newline_count
 
             # Ruby is serialized inside the existing karaoke chunk, so it
             # never creates or changes karaoke boundaries.
@@ -252,7 +256,7 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
             if preserve_karaoke_boundaries:
                 end_time = getattr(segment, "end", None)
                 next_segment = (
-                    segments[segment_index + 1]
+                    segments[segment_index + 1][0]
                     if segment_index + 1 < len(segments)
                     else None
                 )
@@ -287,7 +291,7 @@ def serialize_lrcx(lines, manual_overrides=None, offset_ms=0.0, generation_mode=
         if (
             preserve_karaoke_boundaries
             and getattr(line, "end", None) is not None
-            and (not segments or segments[-1].end != line.end or segments[-1].start == line.end)
+            and (not segments or segments[-1][0].end != line.end or segments[-1][0].start == line.end)
         ):
             parts.append(f"<{format_timestamp(float(line.end))}>")
             has_karaoke_marker = True

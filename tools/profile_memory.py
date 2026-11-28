@@ -28,13 +28,22 @@ class _ProcessMemoryCounters(ctypes.Structure):
     ]
 
 
-def process_memory():
+def process_memory(pid=None):
     counters = _ProcessMemoryCounters()
     counters.cb = ctypes.sizeof(counters)
-    if not ctypes.windll.psapi.GetProcessMemoryInfo(
-        ctypes.c_void_p(-1), ctypes.byref(counters), counters.cb,
-    ):
-        raise ctypes.WinError()
+    handle = ctypes.c_void_p(-1)
+    if pid is not None:
+        open_process = ctypes.windll.kernel32.OpenProcess
+        open_process.restype = wintypes.HANDLE
+        handle = ctypes.c_void_p(open_process(0x1000, False, pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            raise ctypes.WinError()
+    try:
+        if not ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+            raise ctypes.WinError()
+    finally:
+        if pid is not None:
+            ctypes.windll.kernel32.CloseHandle(handle)
     return counters.WorkingSetSize, counters.PrivateUsage
 
 

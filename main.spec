@@ -79,9 +79,11 @@ datas, binaries = collect_delvewheel_libs_directory(
 )
 audio_dll = PROJECT_ROOT / "build" / "audio-dsp" / "release" / "lrcplus_audio_dsp_v1.dll"
 audio_probe = PROJECT_ROOT / "build" / "audio-probe" / "release" / "lrcplus-audio-probe.exe"
-if not audio_dll.is_file() or not audio_probe.is_file():
-    raise FileNotFoundError("Build the Rust audio components first with tools/build_release.py.")
-binaries.extend([(str(audio_dll), "."), (str(audio_probe), ".")])
+lyrics_dll = PROJECT_ROOT / "build" / "lyric-formats" / "release" / "lrcplus_lyric_formats_v1.dll"
+native_binaries = (audio_dll, audio_probe, lyrics_dll)
+if not all(binary.is_file() for binary in native_binaries):
+    raise FileNotFoundError("Build the Rust components first with tools/build_release.py.")
+binaries.extend((str(binary), ".") for binary in native_binaries)
 
 
 # ---------------------------------------------------------------------------

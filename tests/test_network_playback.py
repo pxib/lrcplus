@@ -1,5 +1,6 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
+import shutil
 from threading import Event, Thread
 import time
 import wave
@@ -7,11 +8,12 @@ import wave
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from PySide6.QtMultimedia import QAudioBufferOutput, QMediaPlayer
+from PySide6.QtMultimedia import QAudioBufferOutput, QMediaDevices, QMediaPlayer
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QMessageBox
 
 from core.plugin_manager import PluginManager
+from core.native_audio import audio_probe_executable
 from core.radio_browser import Station, StationPage
 from core.radio_favorites import load_station_favorites
 from core.radio_history import load_station_history, remember_station
@@ -93,6 +95,62 @@ def wait_for(predicate, player):
         QTest.qWait(10)
         time.sleep(0.001)
     assert predicate(), player.errorString()
+
+
+def test_rust_radio_rejoins_the_broadcast_on_resume(qapp, stream_server, monkeypatch):
+    if audio_probe_executable() is None or QMediaDevices.defaultAudioOutput().isNull() or not shutil.which("ffmpeg"):
+        pytest.skip("Requires the built Rust transport, a Windows audio output and FFmpeg.")
+    monkeypatch.setenv("LRCPLUS_RUST_PLAYBACK", "1")
+    server, url = stream_server
+    url = url.replace("/audio.wav", "/live.wav")
+    window = Player()
+    media = window.media_player
+    errors = []
+    try:
+        media.rustFallback.connect(errors.append)
+        window.audio_output.setMuted(True)
+        station = Station("Rust radio fixture", url, station_id="rust-radio")
+        window.load_stream(url, station=station)
+        wait_for(lambda: media.rust_active and media.position() >= 100, media)
+        assert window._is_live_stream() and not media.isSeekable()
+        first = media._rust_process
+        window.toggle_playback()
+        assert not media.isPlaying()
+        window.toggle_playback()
+        wait_for(lambda: media.rust_active and media.position() >= 100 and media._rust_process is not first, media)
+        assert media.isPlaying() and not errors
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_rust_http_audio_keeps_its_seekable_clock(qapp, stream_server, monkeypatch):
+    if (audio_probe_executable() is None or QMediaDevices.defaultAudioOutput().isNull()
+            or not shutil.which("ffmpeg") or not shutil.which("ffprobe")):
+        pytest.skip("Requires the built Rust transport, a Windows audio output and FFmpeg tools.")
+    monkeypatch.setenv("LRCPLUS_RUST_PLAYBACK", "1")
+    server, url = stream_server
+    server.available = True
+    save_playback_settings({"pitch_linked_to_speed": True})
+    window = Player()
+    media = window.media_player
+    errors = []
+    try:
+        media.rustFallback.connect(errors.append)
+        window.audio_output.setMuted(True)
+        window.load_stream(url)
+        wait_for(lambda: media.rust_active and media.position() >= 50, media)
+        assert media.duration() == 1000 and media.isSeekable()
+        process = media._rust_process
+        window.toggle_playback()
+        window._seek_from_waveform(450)
+        window.handle_speed_change(125)
+        window.toggle_playback()
+        wait_for(lambda: media.position() >= 550 and media.rust_audible_rate > 1.1, media)
+        assert media.rust_active and media._rust_process is process and not errors
+    finally:
+        window.close()
+        window.deleteLater()
 
 
 def test_network_stream_can_retry_decode_and_reconnect(qapp, stream_server, monkeypatch, tmp_path):

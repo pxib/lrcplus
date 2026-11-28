@@ -1414,6 +1414,27 @@ class FuriganaWidget(DisplayLayersMixin, FuriganaLayoutMixin, FuriganaPaintingMi
         self.loading_text = None
         self._karaoke_furigana_pending = None
 
+    def reset_scrolling_row(self):
+        """Release a viewport row's content and stop its per-line effects."""
+        self.stop_workers()
+        self._highlight_animation.stop()
+        self._line_entrance_animation.stop()
+        self._reading_fade_animation.stop()
+        self.is_current_line = self._was_current_line = False
+        self.highlight_progress = 0.0
+        self.line_entrance_progress = 1.0
+        self._transition_focus(False, animate=False)
+        self._reading_render_target_enabled = self.reading_render_enabled = True
+        self.reading_opacity = 1.0
+        self.lyric = ""
+        self.segments = []
+        self.style_spans = []
+        self.translation_lines = []
+        self.is_blockquote = False
+        self.karaoke_line_end = self.karaoke_position = None
+        self._prepared_layout = []
+        self._prepared_layout_key = self._karaoke_static_bounds = None
+
     def closeEvent(self, event):
         self.stop_workers()
         event.accept()

@@ -1,5 +1,7 @@
 import re
 
+from lyrics import native_formats
+
 GENERATION_MODE_RE = re.compile(
     r"^\[g:([a-z0-9][a-z0-9_.-]*)\]$",
     re.IGNORECASE,
@@ -47,6 +49,15 @@ def parse_lrc_lines(lines):
         03:35.36 Lyric
         03:35.36 (reading)
     """
+    if native_formats.available():
+        lines = list(lines)
+        parsed = native_formats.parse_lrc(lines)
+        if parsed is not None:
+            return parsed
+    return _parse_lrc_lines_python(lines)
+
+
+def _parse_lrc_lines_python(lines):
     timestamp_pattern = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
     physical_lines = []
 

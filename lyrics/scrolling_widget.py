@@ -79,6 +79,7 @@ class ScrollingLyricsWidget(QWidget):
         self._lyrics = []
         self._plain = False
         self._mounted_rows = {}
+        self._spare_rows = []
         self._extents = []
         self._starts = [0]
         self._geometry_signature = None
@@ -306,7 +307,9 @@ class ScrollingLyricsWidget(QWidget):
                 wanted = {self._display_index(index) for index in range(first, last)}
                 for index in self._mounted_rows.keys() - wanted:
                     row = self._mounted_rows.pop(index)
-                    self._discard_row(row)
+                    row.hide()
+                    row.reset_scrolling_row()
+                    self._spare_rows.append(row)
                 for index in sorted(wanted - self._mounted_rows.keys()):
                     self._mounted_rows[index] = self._create_row(self._lyrics[index], index)
                 self.rows = [self._mounted_rows[index] for index in sorted(self._mounted_rows)]
@@ -330,6 +333,9 @@ class ScrollingLyricsWidget(QWidget):
                 if not changed:
                     break
             self._update_reading_render_window(self.current_line, initial=True)
+            # Keep only enough spare renderers for the current viewport.
+            while len(self._spare_rows) > len(self._mounted_rows):
+                self._discard_row(self._spare_rows.pop())
         finally:
             self._syncing_rows = False
 
@@ -805,9 +811,10 @@ class ScrollingLyricsWidget(QWidget):
             self.scroll_animation.stop()
             self.scroll_animation.deleteLater()
             self.scroll_animation = None
-        for row in self.rows:
+        for row in (*self.rows, *self._spare_rows):
             self._discard_row(row)
         self.rows = []
+        self._spare_rows.clear()
         self._mounted_rows.clear()
         self._lyrics = []
         self._extents = []
@@ -843,10 +850,10 @@ class ScrollingLyricsWidget(QWidget):
             self.set_current_line(0, animate=False)
 
     def _create_row(self, lyric, index):
-        row = FuriganaWidget(self.manual_overrides)
+        row = self._spare_rows.pop() if self._spare_rows else FuriganaWidget(self.manual_overrides)
+        row._lyrics_plus_placeholder_source_empty = False
         row.set_direction(self.direction)
-        if self.direction != "vertical":
-            row.set_text_wrapping(True, -1)
+        row.set_text_wrapping(self.direction != "vertical", -1 if self.direction != "vertical" else 0)
         row.set_vertical_padding(self.vertical_padding)
         row.set_alignment(self.alignment)
         # Centered Slide mode may enter from either side. Pick once per

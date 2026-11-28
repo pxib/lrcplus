@@ -156,6 +156,24 @@ impl LiveRate {
         Ok(())
     }
 
+    /// Discard source history while retaining the kernel and PCM allocation.
+    pub fn reset(&mut self, ratio: f64) -> Result<(), &'static str> {
+        if !(1.0 / 128.0..=self.max_ratio).contains(&ratio) {
+            return Err("live resampling ratio is out of range");
+        }
+        self.input.clear();
+        self.input_start = 0;
+        self.total = 0;
+        self.phase = 0.0;
+        self.steady = SteadyRate::Pending;
+        self.ratio = ratio;
+        self.target = ratio;
+        self.step = 0.0;
+        self.remaining = 0;
+        self.eof = false;
+        Ok(())
+    }
+
     pub fn push(&mut self, input: &[f32]) {
         assert_eq!(input.len() % self.channels, 0);
         self.input.extend_from_slice(input);
@@ -304,6 +322,31 @@ impl LiveRate {
 #[cfg(test)]
 mod tests {
     use super::{LiveRate, SteadyRate};
+
+    #[test]
+    fn resetting_discards_source_history_and_keeps_the_kernel() {
+        let mut rate = LiveRate::new(1.0, 2.0, 1, 16).unwrap();
+        let kernel = rate.kernel.as_ptr();
+        rate.push(&[0.8; 256]);
+        rate.render(8, &mut Vec::new(), &mut Vec::new());
+        rate.set_ratio(1.5).unwrap();
+        rate.render(9, &mut Vec::new(), &mut Vec::new());
+        rate.finish();
+
+        rate.reset(0.75).unwrap();
+        assert_eq!(rate.kernel.as_ptr(), kernel);
+        let render = |mut rate: LiveRate| {
+            let (mut pcm, mut positions) = (Vec::new(), Vec::new());
+            rate.push(&[-0.3; 128]);
+            rate.finish();
+            rate.render(256, &mut pcm, &mut positions);
+            (pcm, positions)
+        };
+        assert_eq!(
+            render(rate),
+            render(LiveRate::new(0.75, 2.0, 1, 16).unwrap())
+        );
+    }
 
     #[test]
     fn unity_copies_samples_without_lookahead() {

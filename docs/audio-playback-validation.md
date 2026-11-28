@@ -1,5 +1,10 @@
 # Audio playback validation
 
+Windows release builds use the Rust transport for supported local and HTTP(S)
+audio. The [Rust transport guide](../native/audio_probe/README.md) describes
+the supported processing and device routes. Use `LRCPLUS_RUST_PLAYBACK=0`
+when reproducing the Qt and FFmpeg compatibility paths described below.
+
 ## Gapless playback and ReplayGain
 
 The optional gapless transport decodes the active track and one successor with

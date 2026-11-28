@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import sys
 
 import pytest
 from PySide6.QtCore import QUrl
@@ -92,6 +93,28 @@ def test_experimental_override_can_select_rust_at_unity(make_player, tmp_path):
     player.configure_rust(1, compatible=True, pitch_linked=True, semitones=0)
     player.setSource(QUrl.fromLocalFile(str(tmp_path / "track.wav")))
     assert player.rust_active
+
+
+def test_packaged_app_prefers_rust_at_unity(make_player, tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    player = make_player()
+    player.configure_rust(1, compatible=True, pitch_linked=True, semitones=0)
+    player.setSource(QUrl.fromLocalFile(str(tmp_path / "track.wav")))
+    assert player.rust_active
+
+
+@pytest.mark.parametrize(("mode", "rate", "pitch", "expected"), [
+    (None, 1.0, 0, False), ("1", 1.25, 0, False), ("1", 1.0, 3, False), ("1", 1.0, 0, True),
+])
+def test_gapless_rust_route_requires_opt_in_and_neutral_playback(make_player, tmp_path, mode, rate, pitch, expected):
+    player = make_player(mode=mode)
+    player.setPlaybackRate(rate)
+    player.configure_rust(1, compatible=True, pitch_linked=False, semitones=pitch, gapless=True)
+    player.setSource(QUrl.fromLocalFile(str(tmp_path / "track.wav")))
+    assert player.rust_active == (mode == "1")
+    assert player._rust_gapless == expected
+    if expected:
+        assert not player.rust_independent_pitch
 
 
 def test_qt_override_disables_the_playback_helper(monkeypatch):

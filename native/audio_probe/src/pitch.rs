@@ -10,6 +10,7 @@ pub const BLOCK_FRAMES: usize = 512;
 type State = *mut c_void;
 type New = unsafe extern "C" fn(u32, u32, i32, f64, f64) -> State;
 type Delete = unsafe extern "C" fn(State);
+type Reset = unsafe extern "C" fn(State);
 type SetRatio = unsafe extern "C" fn(State, f64);
 type SetFrames = unsafe extern "C" fn(State, u32);
 type GetFrames = unsafe extern "C" fn(State) -> u32;
@@ -20,6 +21,7 @@ type Retrieve = unsafe extern "C" fn(State, *const *mut f32, u32) -> u32;
 struct Api {
     _library: dll::Library,
     delete: Delete,
+    reset: Reset,
     set_time: SetRatio,
     set_pitch: SetRatio,
     start_pad: GetFrames,
@@ -57,6 +59,7 @@ impl PitchStage {
                 library.symbol::<SetFrames>(c"rubberband_set_max_process_size")?,
                 Api {
                     delete: library.symbol(c"rubberband_delete")?,
+                    reset: library.symbol(c"rubberband_reset")?,
                     set_time: library.symbol(c"rubberband_set_time_ratio")?,
                     set_pitch: library.symbol(c"rubberband_set_pitch_scale")?,
                     start_pad: library.symbol(c"rubberband_get_preferred_start_pad")?,
@@ -91,6 +94,26 @@ impl PitchStage {
             timeline: Timeline::default(),
             finished: false,
         })
+    }
+
+    pub fn reset(&mut self, speed: f64, pitch: f64) {
+        let state = self.state.as_ptr();
+        unsafe {
+            (self.api.reset)(state);
+            (self.api.set_time)(state, 1.0 / speed);
+            (self.api.set_pitch)(state, pitch);
+        }
+        self.speed = speed;
+        self.pitch = pitch;
+        self.trim = None;
+        // Startup padding must contain silence even after reusing input planes.
+        for plane in &mut self.input {
+            plane.fill(0.0);
+        }
+        self.timeline.source = 0.0;
+        self.timeline.output = 0.0;
+        self.timeline.pending.clear();
+        self.finished = false;
     }
 
     pub fn process(
@@ -308,6 +331,46 @@ mod tests {
             .iter()
             .zip([1.2, 2.4, 4.0, 6.0])
             .all(|(a, b)| (a - b).abs() < 1e-9));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires LRCPLUS_TEST_RUBBERBAND pointing to the installed Rubber Band DLL"]
+    fn reset_discards_pending_pcm_and_restarts_the_source_clock() {
+        use super::{PitchStage, BLOCK_FRAMES};
+
+        let library = std::env::var_os("LRCPLUS_TEST_RUBBERBAND").unwrap();
+        let mut pitch = PitchStage::open(library.as_ref(), 48_000, 2, 0.75, 1.3).unwrap();
+        let mut points = vec![0.0; BLOCK_FRAMES];
+        let mut feed = |pitch: &mut PitchStage, sample, speed, scale, finish| {
+            for block in 0..16 {
+                for (index, position) in points.iter_mut().enumerate() {
+                    *position = (block * BLOCK_FRAMES + index + 1) as f64;
+                }
+                pitch.process(
+                    &[sample; BLOCK_FRAMES * 2],
+                    &points,
+                    speed,
+                    scale,
+                    finish && block == 15,
+                );
+            }
+        };
+        feed(&mut pitch, 0.25, 0.75, 1.3, false);
+        assert!(!pitch.timeline.pending.is_empty());
+        pitch.reset(1.0, 1.0);
+        feed(&mut pitch, 0.0, 1.0, 1.0, true);
+
+        let mut samples = Vec::new();
+        let mut clock = Vec::new();
+        while !pitch.drained() {
+            let before = clock.len();
+            pitch.read(BLOCK_FRAMES, &mut samples, &mut clock);
+            assert!(clock.len() > before || pitch.drained());
+        }
+        assert!(clock.len() > 4096);
+        assert_eq!(clock[0], 1.0);
+        assert!(samples.iter().all(|sample| sample.abs() < 1e-7));
     }
 
     #[cfg(windows)]

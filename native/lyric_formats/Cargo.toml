@@ -1,0 +1,9 @@
+[package]
+name = "lrcplus-lyric-formats"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "lrcplus_lyric_formats_v1"
+crate-type = ["cdylib", "rlib"]

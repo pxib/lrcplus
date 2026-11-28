@@ -104,7 +104,7 @@ def main(argv=None) -> int:
     dist.mkdir(parents=True, exist_ok=True)
 
     try:
-        for crate in ("audio_dsp", "audio_probe"):
+        for crate in ("audio_dsp", "audio_probe", "lyric_formats"):
             subprocess.run(
                 ["cargo", "build", "--locked", "--release", "--manifest-path",
                  str(PROJECT_ROOT / "native" / crate / "Cargo.toml"),
@@ -134,6 +134,7 @@ def main(argv=None) -> int:
     required = (app_folder / "LRCPlus.exe", app_folder / "LRCPlusUpdater.exe",
                 app_folder / "lrcplus_audio_dsp_v1.dll",
                 app_folder / "lrcplus-audio-probe.exe",
+                app_folder / "lrcplus_lyric_formats_v1.dll",
                 app_folder / "lrcplus-update.json",
                 app_folder / "themedata" / "optionalthemes.json",
                 app_folder / "docs" / "manual" / "index.html",

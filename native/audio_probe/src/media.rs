@@ -13,6 +13,20 @@ use symphonia::core::units::{Time, TimeBase};
 
 use crate::Result;
 
+pub enum Packet {
+    Data,
+    Pending,
+    End,
+}
+
+pub trait TransportSource {
+    fn format(&self) -> (u32, usize);
+    fn duration(&self) -> u64;
+    fn samples(&self) -> &[f32];
+    fn poll_packet(&mut self) -> Result<Packet>;
+    fn seek_to(&mut self, milliseconds: u64) -> Result<()>;
+}
+
 pub struct Decoder {
     reader: Box<dyn FormatReader>,
     codec: Box<dyn Codec>,
@@ -27,6 +41,28 @@ pub struct Decoder {
     pub frame_count_hint: u64,
     pub sample_rate: u32,
     pub channels: usize,
+}
+
+impl TransportSource for Decoder {
+    fn format(&self) -> (u32, usize) {
+        (self.sample_rate, self.channels)
+    }
+    fn duration(&self) -> u64 {
+        self.duration_ms
+    }
+    fn samples(&self) -> &[f32] {
+        self.current_samples()
+    }
+    fn poll_packet(&mut self) -> Result<Packet> {
+        Ok(if self.next()?.is_some() {
+            Packet::Data
+        } else {
+            Packet::End
+        })
+    }
+    fn seek_to(&mut self, milliseconds: u64) -> Result<()> {
+        self.seek(milliseconds)
+    }
 }
 
 impl Decoder {
@@ -184,14 +220,12 @@ impl Decoder {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use std::path::PathBuf;
 
-    #[test]
-    fn wav_seek_discards_the_samples_before_the_requested_time() -> Result<()> {
-        // 80 ms of mono PCM with a distinct sample at every source frame.
-        let frames = 640_i16;
-        let data_size = u32::from(frames as u16) * 2;
+    pub(crate) fn write_wav(name: &str, sample_rate: u32, samples: &[i16]) -> Result<PathBuf> {
+        let data_size = samples.len() as u32 * 2;
         let mut wav = Vec::new();
         wav.extend(b"RIFF");
         wav.extend((36 + data_size).to_le_bytes());
@@ -199,17 +233,24 @@ mod tests {
         wav.extend(16_u32.to_le_bytes());
         wav.extend(1_u16.to_le_bytes()); // PCM
         wav.extend(1_u16.to_le_bytes()); // mono
-        wav.extend(8000_u32.to_le_bytes());
-        wav.extend(16000_u32.to_le_bytes());
+        wav.extend(sample_rate.to_le_bytes());
+        wav.extend((sample_rate * 2).to_le_bytes());
         wav.extend(2_u16.to_le_bytes()); // block size
         wav.extend(16_u16.to_le_bytes());
         wav.extend(b"data");
         wav.extend(data_size.to_le_bytes());
-        for sample in 0..frames {
+        for sample in samples {
             wav.extend(sample.to_le_bytes());
         }
-        let path = std::env::temp_dir().join(format!("lrcplus-seek-{}.wav", std::process::id()));
+        let path = std::env::temp_dir().join(format!("lrcplus-{name}-{}.wav", std::process::id()));
         std::fs::write(&path, wav)?;
+        Ok(path)
+    }
+
+    #[test]
+    fn wav_seek_discards_the_samples_before_the_requested_time() -> Result<()> {
+        // 80 ms of mono PCM with a distinct sample at every source frame.
+        let path = write_wav("seek", 8000, &(0_i16..640).collect::<Vec<_>>())?;
         let result = (|| {
             let mut decoder = Decoder::open(&path)?;
             assert_eq!(decoder.duration_ms, 80);

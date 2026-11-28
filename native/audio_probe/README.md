@@ -2,8 +2,8 @@
 
 The command-line probe runs local audio through Symphonia decoding, LRCPlus's
 windowed-sinc resampler, a bounded PCM queue, and CPAL device output. On Windows
-the endpoint is the system default WASAPI device. The Windows release bundles
-the helper. [Symphonia 0.5 guide](https://github.com/pdeljanov/Symphonia/blob/v0.5.5/GETTING_STARTED.md) · [CPAL](https://github.com/RustAudio/cpal)
+the helper uses the system default WASAPI device unless an output is selected.
+The Windows release bundles the helper. [Symphonia 0.5 guide](https://github.com/pdeljanov/Symphonia/blob/v0.5.5/GETTING_STARTED.md) · [CPAL](https://github.com/RustAudio/cpal)
 
 ## Run from the repository root
 
@@ -34,20 +34,22 @@ The prototype was built with the x64 Windows GNU Rust toolchain.
 
 ## Try it in LRCPlus on Windows
 
-After building the release probe, start the app from the repository root.
+Windows release builds prefer Rust for compatible audio sources. To exercise
+the same routing in a source checkout, build the release probe and start the
+app from the repository root.
 
 ```powershell
+$env:LRCPLUS_RUST_PLAYBACK = "1"
 .\Scripts\python.exe main.py
 ```
 
-For a local track on the system default audio device, Rust is selected at
-track load when the speed is off 100% and pitch preservation is on, or when
-an independent pitch shift is set. Qt is selected at track load for neutral
-playback and for speed changes with pitch linked. Changes on an active Rust
-track can use the same transport while it remains compatible. **Advanced →
-Audio signal path** shows **Rust (Symphonia and WASAPI)** when the probe is
-active. The probe supplies the playback position for the seek bar and lyrics.
-The panel counts underrun frames from the latest track load or seek.
+**Advanced → Audio signal path** shows the active backend and counts underrun
+frames from the latest stream start or seek. Rust reads local files with
+Symphonia and uses the installed or managed FFmpeg for HTTP(S) audio. Direct
+HTTP(S) URLs also use ffprobe to distinguish a seekable recording from a live
+stream. Rust uses the audio device's clock for the seek bar and lyrics.
+Qt handles sources or endpoints that the Rust route cannot open. Windows
+endpoints with identical display names use Qt's device-ID selection.
 
 The Rust stream stays open as you drag the speed slider. It queues up to
 64 ms of PCM. With **Link pitch to speed** on, it ramps the resampling rate
@@ -60,15 +62,16 @@ adds a short delay to control changes, and toggling the link rebuilds the
 Rust stream at the current position. If the DLL is unavailable, independent
 pitch uses the existing playback route. [Rubber Band integration notes](https://breakfastquay.com/rubberband/integration.html)
 
-The transport applies manual volume and ReplayGain to the output stream. It
-clips boosted PCM to the supported sample range. Tracks that need equalization,
-gapless or crossfade, a non-default audio device, or PCM visualization use the
-existing playback routes.
+The Rust transport applies track or album ReplayGain, manual volume, and the
+equalizer. The visualizer receives bounded PCM snapshots. Gapless playback and
+crossfade apply to eligible local tracks at 100% speed with zero pitch shift.
+The helper preloads one successor on the same stream and advances the queue
+when the outgoing track finishes audibly. For crossfade, the successor's
+position includes the part already heard during the overlap. Queue edits that
+remove buffered successor audio restart at the outgoing track's audible position.
 
-Set `LRCPLUS_RUST_PLAYBACK=1` to prefer Rust for all compatible local
-tracks, or `LRCPLUS_RUST_PLAYBACK=0` to use the Qt baseline. Include both
-the Python app and `lrcplus-audio-probe.exe` in Rust memory and CPU
-measurements.
+Set `LRCPLUS_RUST_PLAYBACK=0` to use the Qt baseline. Include both the Python
+app and `lrcplus-audio-probe.exe` in Rust memory and CPU measurements.
 
 ```powershell
 $env:LRCPLUS_RUST_PLAYBACK = "0"

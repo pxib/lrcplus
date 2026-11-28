@@ -1,6 +1,9 @@
+mod equalizer;
 mod media;
+mod network;
 mod output;
 mod pitch;
+mod tap;
 mod transport;
 mod waveform;
 
@@ -13,7 +16,7 @@ use std::time::Instant;
 use lrcplus_audio_dsp_v1::StreamingRate;
 
 const USAGE: &str = "Usage: lrcplus-audio-probe <file> [--speed 0.25..2] [--volume 0..1] \
-[--seconds N] [--decode-only] [--transport [--pitch-library DLL --pitch SEMITONES]]\n\
+[--seconds N] [--decode-only] [--device NAME] [--transport [--pitch-library DLL --pitch SEMITONES]]\n\
        lrcplus-audio-probe <file> --waveform BUCKETS\n\
 Speed changes pitch by default. Volume defaults to 0.25; transport accepts gain up to 3000.";
 const MAX_TRANSPORT_GAIN: f32 = 3000.0;
@@ -27,6 +30,9 @@ struct Options {
     seconds: Option<f64>,
     decode_only: bool,
     transport: bool,
+    device: Option<String>,
+    stream_ffmpeg: Option<PathBuf>,
+    stream_ffprobe: Option<PathBuf>,
     pitch_library: Option<PathBuf>,
     pitch: f64,
 }
@@ -40,6 +46,9 @@ impl Options {
             seconds: None,
             decode_only: false,
             transport: false,
+            device: None,
+            stream_ffmpeg: None,
+            stream_ffprobe: None,
             pitch_library: None,
             pitch: 0.0,
         };
@@ -51,6 +60,24 @@ impl Options {
             }
             if flag == "--transport" {
                 options.transport = true;
+                continue;
+            }
+            if flag == "--device" {
+                options.device = Some(
+                    args.next()
+                        .and_then(|id| id.into_string().ok())
+                        .filter(|id| !id.is_empty())
+                        .ok_or("expected an output device name")?,
+                );
+                continue;
+            }
+            if flag == "--stream-ffmpeg" {
+                options.stream_ffmpeg = Some(args.next().ok_or("expected an FFmpeg path")?.into());
+                continue;
+            }
+            if flag == "--stream-ffprobe" {
+                options.stream_ffprobe =
+                    Some(args.next().ok_or("expected an ffprobe path")?.into());
                 continue;
             }
             if flag == "--pitch-library" {
@@ -84,6 +111,14 @@ impl Options {
             || (options.pitch != 0.0 && options.pitch_library.is_none())
         {
             return Err("pitch control requires --transport and --pitch-library".into());
+        }
+        if options.stream_ffmpeg.is_some() {
+            let address = options.path.as_os_str().to_str().unwrap_or_default();
+            if !options.transport
+                || !(address.starts_with("http://") || address.starts_with("https://"))
+            {
+                return Err("network audio requires an HTTP(S) URL and --transport".into());
+            }
         }
         Ok(options)
     }
@@ -129,7 +164,7 @@ fn run(options: Options) -> Result<()> {
     let mut device = if options.decode_only {
         None
     } else {
-        Some(output::Device::open()?)
+        Some(output::Device::open(options.device.as_deref())?)
     };
     let (output_rate, output_channels) = device
         .as_ref()

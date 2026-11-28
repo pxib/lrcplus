@@ -28,6 +28,8 @@ class PlayerSleepTimerMixin:
         )
 
     def _sleep_gapless_boundary_reached(self):
+        if getattr(self.media_player, "rust_gapless_boundary", False):
+            return True
         boundary = getattr(self.media_player, "_boundary_us", None)
         sink = getattr(self.media_player, "_sink", None)
         return boundary is not None and sink is not None and sink.processedUSecs() >= boundary

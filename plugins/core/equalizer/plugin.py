@@ -582,7 +582,8 @@ class EqualizerPlugin:
             # Load the backend before publishing the configuration to the audio worker.
             load_dsp_dependencies()
         self.configuration = configuration
-        if self._window is not None and was_active != (configuration is not None):
+        rust_active = getattr(getattr(self._window, "media_player", None), "rust_active", False)
+        if self._window is not None and (rust_active or was_active != (configuration is not None)):
             self._window._refresh_equalizer_route()
 
     def _preview(self, owner, configuration):

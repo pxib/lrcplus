@@ -68,7 +68,7 @@ class AudioController:
             if job is not None:
                 job.cancel()
             if not refresh:
-                self._replaygain_tags = ReplayGain()
+                self._replaygain_tags = getattr(self.media_player, "rust_preloaded_tags", None) or ReplayGain()
                 self._configure_pcm_volume(self.volume_slider.value())
             path = getattr(self, "current_audio_path", None)
             if (path is None or self._replaygain_options()[0] == "off"
@@ -304,6 +304,9 @@ class AudioController:
                 self.media_player.setSource(QUrl())
             self._set_live_speed_lock(True)
             self.statusBar().showMessage(f"Connecting to {self._stream_url.host()}…")
+            configure_network = getattr(self.media_player, "configure_rust_network", None)
+            if configure_network is not None:
+                configure_network(self._station is not None)
             self.media_player.setSource(self._stream_url)
             if resume:
                 self._statistics_rebase()
@@ -842,7 +845,8 @@ class AudioController:
             route = "No audio loaded"
             if has_audio and output_available:
                 if rust:
-                    route = "Rust (Symphonia and WASAPI)"
+                    decoder = "Symphonia" if source.isLocalFile() else "FFmpeg"
+                    route = f"Rust ({decoder} and WASAPI)"
                     sample_rate = player.rust_output_sample_rate
                 elif gapless:
                     route = "FFmpeg → PCM output"
@@ -857,7 +861,7 @@ class AudioController:
                         sample_rate = sink.format().sampleRate()
                 else:
                     route = "Qt Multimedia → Direct output"
-                if (gapless or processed) and self._pcm_equalizer_active():
+                if (rust or gapless or processed) and self._pcm_equalizer_active():
                     effects.append("Equalizer")
                 if self._pcm_rate_active():
                     effects.append(f"Speed {self.playback_speed:.0%}")
@@ -920,30 +924,34 @@ class AudioController:
             decoder = getattr(self.media_player, "_decoder", None)
             if getattr(self.media_player, "_gapless_active", False) and decoder is not None:
                 self._replaygain_tags = decoder.tags
-            self._current_pcm_gain = volume_to_gain(value) * self._replaygain_multiplier()
+            volume = volume_to_gain(value)
+            normalization = self._replaygain_multiplier()
+            self._current_pcm_gain = volume * normalization
             pitch_active = abs(self._pcm_pitch_shift()) >= 0.001
             rate_active = self._pcm_rate_active()
             live_speed = self._live_rate_session
             gapless = self.playback_settings.get("gapless_playback", False)
             crossfade = self.playback_settings.get("crossfade_seconds", 0)
+            rg_options = self._replaygain_options()
             configure_gapless = getattr(self.media_player, "configure_gapless", None)
             gapless_active = configure_gapless is not None and configure_gapless(
                 gapless,
-                volume_to_gain(value), self._replaygain_options(),
+                volume, rg_options,
                 compatible=not (pitch_active or rate_active or live_speed),
                 crossfade_seconds=crossfade,
             )
             configure_rust = getattr(self.media_player, "configure_rust", None)
+            equalizer = getattr(getattr(self, "_equalizer", None), "configuration", None)
             rust_active = configure_rust is not None and configure_rust(
-                0.0 if self.audio_output.isMuted() else self._current_pcm_gain,
-                compatible=not (
-                    gapless or crossfade
-                    or self._pcm_equalizer_active()
-                    or getattr(self, "_playback_audio_requested", False)
-                    or getattr(self, "_audio_output_unavailable", False)
-                ),
+                0.0 if self.audio_output.isMuted() else volume,
+                compatible=not getattr(self, "_audio_output_unavailable", False),
                 pitch_linked=self._pitch_follows_speed(),
                 semitones=getattr(self, "pitch_semitones", 0.0),
+                gapless=gapless,
+                crossfade=crossfade,
+                rg_options=rg_options,
+                normalization=normalization,
+                equalizer=equalizer,
             )
             if gapless_active or rust_active:
                 self._stop_pcm_sink()

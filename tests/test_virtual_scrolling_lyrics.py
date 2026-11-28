@@ -76,6 +76,24 @@ def test_manual_scroll_mounts_rows_without_changing_playback_line(view, qapp):
     assert len(widget.rows) < 40
 
 
+def test_repeated_distant_seeks_reuse_viewport_rows(view, qapp):
+    widget, _ = view
+    widget.set_lyrics(document(1000))
+    for index in (100, 800):
+        widget.set_current_line(index, animate=False)
+    renderers = set(widget.container.findChildren(FuriganaWidget))
+
+    for index in (100, 800) * 12:
+        widget.set_current_line(index, animate=False)
+        row = widget._mounted_rows[index]
+        assert row.lyric == f"Lyric {index}" and row.is_current_line
+        assert set(widget.container.findChildren(FuriganaWidget)) == renderers
+        assert all(row.isHidden() for row in widget._spare_rows)
+
+    widget.clear()
+    assert widget.container.findChildren(FuriganaWidget) == []
+
+
 def test_plain_rows_stay_sharp_and_full_opacity_while_scrolling(view, qapp):
     widget, _ = view
     widget.set_focus_transition(True)
